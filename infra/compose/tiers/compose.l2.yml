@@ -161,7 +161,7 @@ services:
       start_period: 30s
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
     restart: unless-stopped
     read_only: true
     tmpfs:

@@ -46,7 +46,7 @@ interface PeriodStats {
  */
 function printHelp(): void {
     console.log(`
-ClawRoute CLI v1.1
+ClawRoute CLI v1.0
 
 Usage: clawroute <command> [options]
 

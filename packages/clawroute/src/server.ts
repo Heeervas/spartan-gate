@@ -506,7 +506,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
     app.get('/health', (c) => {
         return c.json({
             status: 'ok',
-            version: '1.1.0',
+            version: '1.0.0',
             buildRevision: process.env['CLAWROUTE_BUILD_REVISION'] ?? 'unknown',
             enabled: config.enabled,
             dryRun: config.dryRun,
@@ -1371,7 +1371,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
     // Anthropic-compatible endpoint placeholder
     app.post('/v1/messages', async (c) => {
         // For now, return a helpful error
-        // Full Anthropic format support coming in v1.1
+        // Full Anthropic format support is not implemented yet.
         return c.json(
             {
                 error: {

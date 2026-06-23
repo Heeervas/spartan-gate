@@ -31,7 +31,7 @@ services:
       start_period: 5s
 
   searxng:
-    image: searxng/searxng:latest
+    image: searxng/searxng@sha256:3f52dca114d96af03ab68c666614571395e1c1d9ac7b4eecf7f88ee5072a0942
     container_name: spartan_gate_searxng
     restart: unless-stopped
     read_only: true
@@ -465,7 +465,7 @@ services:
       start_period: 30s
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
     container_name: spartan_gate_caddy
     restart: unless-stopped
     read_only: true

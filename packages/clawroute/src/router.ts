@@ -7,7 +7,7 @@ import {
     TaskTier,
 } from './types.js';
 import { hasApiKey } from './config.js';
-import { calculateCost, calculateCostFromCatalog, getModelEntryStrict, getModelEntryStrictFromCatalog, getProviderForModel, getProviderForModelFromCatalog } from './models.js';
+import { calculateCost, calculateCostFromCatalog, getModelEntryStrict, getModelEntryStrictFromCatalog, getProviderForModel, getProviderForModelFromCatalog, isClawRouteVirtualModel } from './models.js';
 import { estimateMessagesTokens } from './utils.js';
 
 
@@ -77,8 +77,8 @@ export function routeRequest(
 
     // 4. Normal routing based on tier (if no override)
     if (!isOverride) {
-        // 3b. Client-specified model bypass (skip for clawroute/* models)
-        if (!request.model.startsWith('clawroute/')) {
+        // 3b. Client-specified model bypass (skip virtual ClawRoute models)
+        if (!isClawRouteVirtualModel(request.model)) {
             const entry = modelCatalog
                 ? getModelEntryStrictFromCatalog(request.model, modelCatalog)
                 : getModelEntryStrict(request.model);

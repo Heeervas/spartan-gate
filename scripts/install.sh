@@ -215,7 +215,7 @@ caddy_hash_password() {
         return
     fi
     password="$1"
-    docker run --rm caddy:2-alpine caddy hash-password --plaintext "$password"
+    docker run --rm caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794 caddy hash-password --plaintext "$password"
 }
 
 quote_env() {

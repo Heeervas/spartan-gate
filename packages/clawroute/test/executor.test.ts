@@ -370,6 +370,39 @@ describe('Executor Logic', () => {
     });
 
     describe('Passthrough Mode', () => {
+        it('should return unavailable when named ClawRoute auto has no configured provider', async () => {
+            const { executeRequest } = await import('../src/executor.js');
+
+            const config = createTestConfig();
+            config.providerProfile = 'codex';
+            const request = {
+                model: 'custom-1/clawroute/auto',
+                messages: [{ role: 'user' as const, content: 'test' }],
+                stream: false,
+            };
+            const routing: RoutingDecision = {
+                ...createRoutingDecision(
+                    'custom-1/clawroute/auto',
+                    'custom-1/clawroute/auto',
+                    TaskTier.MODERATE,
+                ),
+                reason: 'tier moderate: no API keys for configured models, passthrough',
+                isPassthrough: true,
+            };
+
+            const result = await executeRequest(
+                request,
+                routing,
+                createClassification(TaskTier.MODERATE),
+                config,
+            );
+            const body = await result.response.json() as { error: { message: string } };
+
+            expect(result.response.status).toBe(503);
+            expect(body.error.message).toContain('No API keys found for provider profile "codex"');
+            expect(mockFetch).not.toHaveBeenCalled();
+        });
+
         it('should passthrough when ClawRoute errors', async () => {
             mockFetch.mockResolvedValueOnce(createSuccessResponse());
 

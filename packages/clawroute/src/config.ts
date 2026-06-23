@@ -426,7 +426,7 @@ const DEFAULT_CONFIG: Omit<ClawRouteConfig, 'apiKeys' | 'overrides'> = {
         enabled: true,
     },
 
-    // v1.1: Alerts defaults (disabled)
+    // Alerts defaults (disabled)
     alerts: {},
 };
 
@@ -644,7 +644,7 @@ export function loadConfig(): ClawRouteConfig {
     // Reload API keys (in case they were updated)
     config.apiKeys = loadApiKeys();
 
-    // v1.1: Load alerts configuration from environment
+    // Load alerts configuration from environment
     config.alerts = loadAlertsConfig();
 
     const routingSnapshot = buildRoutingSnapshot(projectRoot);

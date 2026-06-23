@@ -37,7 +37,7 @@ rest of the commands can use `docker` without `sudo`.
 ### 2. Clone
 
 ```sh
-git clone <repo-url> spartan-gate
+git clone https://github.com/Heeervas/spartan-gate.git spartan-gate
 cd spartan-gate
 ```
 
@@ -411,7 +411,7 @@ is the authenticated edge.
 
 ## Public Safety Rules
 
-The public Compose files do not include personal host paths, private credentials, certificate material, Codex profile mounts, or LAN-wide port binds. Runtime data defaults to `runtime/`, which is ignored by Git. Hermes is the bundled default agent, while alternate agents such as OpenClaw belong in private Compose overrides that reuse Spartan Gate's ClawRoute, Browserless, reader, SearXNG, proxy, and internal network contracts.
+The public Compose files do not include personal host paths, private credentials, certificate material, Codex profile mounts, or LAN-wide port binds. Runtime data defaults to `runtime/`, which is ignored by Git. Hermes is the bundled default agent. Alternate agent integrations belong in private Compose overrides that reuse Spartan Gate's ClawRoute, Browserless, reader, SearXNG, proxy, and internal network contracts.
 
 The public docs should remain generic and shareable. Machine-specific cutover notes, real port choices, token ownership, profile names, Tailscale hostnames, and migration notes belong in `private/docs/`.
 
@@ -431,13 +431,11 @@ Useful helper scripts:
 - `scripts/whitelist-domain.sh`: adds permanent or temporary private outbound whitelist domains and recreates only running proxy/DNS services.
 - `scripts/add-port.sh`: adds private Caddy listeners and private Compose port mappings for Hermes app ports.
 
-## Credits And Origin
+## Credits
 
-Spartan Gate was born from earlier forks and prototypes, but is now maintained as an independent monorepo.
+Spartan Gate is maintained as an independent monorepo.
 
 - **Lobster Cage** provided the original Docker cage, isolated network, outbound proxy, DNS relay, reader, and hardening ideas.
 - **ClawRoute** provided the OpenAI-compatible routing service and model-routing logic.
-- **OpenClaw** was an earlier agent used during prototyping. It is not bundled, but private installs can integrate alternate agents through Compose overrides.
-- **wger** was an unrelated experiment. It is intentionally excluded from the product.
 
 The current product identity, structure, and maintenance path are Spartan Gate: a private security gate for Hermes-class agents.

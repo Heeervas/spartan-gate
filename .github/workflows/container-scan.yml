@@ -1,0 +1,49 @@
+name: Container Scan
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "41 4 * * 1"
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build ClawRoute image
+        run: docker build -t spartan-gate-clawroute:scan packages/clawroute
+      - name: Build Hermes image
+        run: docker build -t spartan-gate-hermes:scan apps/hermes-agent
+      - name: Scan ClawRoute image
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/work" \
+            aquasec/trivy@sha256:f5d0e600ecda7449e2a9b272805aef698631d3bb3f3a739a750de2c6819acdc9 \
+            image --exit-code 0 --severity HIGH,CRITICAL --format sarif \
+            --output /work/trivy-clawroute.sarif spartan-gate-clawroute:scan
+      - name: Scan Hermes image
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/work" \
+            aquasec/trivy@sha256:f5d0e600ecda7449e2a9b272805aef698631d3bb3f3a739a750de2c6819acdc9 \
+            image --exit-code 0 --severity HIGH,CRITICAL --format sarif \
+            --output /work/trivy-hermes.sarif spartan-gate-hermes:scan
+      - name: Upload ClawRoute SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-clawroute.sarif') != ''
+        with:
+          sarif_file: trivy-clawroute.sarif
+      - name: Upload Hermes SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-hermes.sarif') != ''
+        with:
+          sarif_file: trivy-hermes.sarif

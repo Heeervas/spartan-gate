@@ -187,7 +187,7 @@ validate_private_env() {
     value=$(env_value "$env_file" "$key")
     test -n "$value" || continue
     case "$value" in
-      *my-lobster*|*lobster-cage*|*openclaw*|*wger*|*/.custom_claw/hermes|*/.custom_claw/hermes/*)
+      */.custom_claw/hermes|*/.custom_claw/hermes/*)
         if test "$allow_existing_stack_paths" = "true"; then
           warn "allowing old stack path because SPARTAN_ALLOW_EXISTING_STACK_PATHS=true: $key=$value"
         else
@@ -279,11 +279,6 @@ fi
 if scan_repo 'private/env/[a][l]berto\.env|[a][l]berto\.env' /tmp/spartan-gate-old-env-name-scan.txt; then
   cat /tmp/spartan-gate-old-env-name-scan.txt >&2
   fail "old private env filename found"
-fi
-
-if scan_paths 'wger|docker-compose\.openclaw|OPENCLAW_|openclaw_' /tmp/spartan-gate-legacy-scan.txt apps infra packages config .env.example package.json; then
-  cat /tmp/spartan-gate-legacy-scan.txt >&2
-  fail "legacy runtime reference found"
 fi
 
 if scan_repo 'ghp_[A-Za-z0-9_]{10,}|sk-[A-Za-z0-9_-]{20,}|sess-[A-Za-z0-9_-]{10,}|BEGIN (RSA |OPENSSH |PRIVATE )?KEY' /tmp/spartan-gate-secret-scan.txt; then

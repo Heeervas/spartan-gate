@@ -305,7 +305,7 @@ export interface ClawRouteConfig {
     /** API keys from environment (NEVER stored in config files) */
     apiKeys: Record<ProviderType, string>;
 
-    /** Alerts configuration (v1.1) */
+    /** Alerts configuration. */
     alerts: AlertsConfig;
 
     /** Per-model maxContext overrides — model ID → token limit */
@@ -921,7 +921,7 @@ export interface ValidationResult {
     hadToolCalls: boolean;
 }
 
-// === Donation & Community Support (v1.1) ===
+// === Donation & Community Support ===
 
 /**
  * Alerts configuration (Pro feature).

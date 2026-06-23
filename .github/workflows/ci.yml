@@ -10,9 +10,9 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -55,10 +55,12 @@ jobs:
       - name: Validate Compose configuration
         run: |
           docker compose -f infra/compose/compose.yml config --quiet
-          COMPOSE_PROFILES=camofox CAMOFOX_URL=http://camofox:9377 \
+          docker compose -f infra/compose/compose.yml --env-file .env.example config --quiet
+          COMPOSE_PROFILES=camofox CAMOFOX_URL=http://camofox:9377 TAILSCALE_IP=127.0.0.1 \
             docker compose \
               -f infra/compose/compose.yml \
               -f private.example/compose.local.yml \
+              --env-file private.example/env/local.env.example \
               config --quiet
 
       - name: Validate example HTTPS Caddyfile
@@ -67,4 +69,4 @@ jobs:
             -e CADDY_AUTH_USER=admin \
             -e CADDY_AUTH_HASH='$2a$14$UMuSzA3WdVqcAwE3yvFeCO.CesMjqqGDVrxpL1s87FsWM/NRrADi2' \
             -v "$PWD/private.example/caddy/Caddyfile.https.example:/etc/caddy/Caddyfile:ro" \
-            caddy:2-alpine caddy adapt --config /etc/caddy/Caddyfile
+            caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794 caddy adapt --config /etc/caddy/Caddyfile

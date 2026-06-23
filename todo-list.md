@@ -8,7 +8,7 @@ Last updated: 2026-06-21
 
 ## Backlog
 
-- [ ] Execute `plans/2026-06-06-browserless-review-follow-up.md`.
+- [ ] Review Browserless hardening follow-ups and convert publishable items into public issues or tracked docs.
 
 ## Done
 - [x] Implement Spartan Gate layers/addons/Hermes mode install model.

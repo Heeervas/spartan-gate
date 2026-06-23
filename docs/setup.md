@@ -33,7 +33,7 @@ works without `sudo`.
 ## Clone And Install A Tier
 
 ```sh
-git clone <repo-url> spartan-gate
+git clone https://github.com/Heeervas/spartan-gate.git spartan-gate
 cd spartan-gate
 scripts/install.sh --tier L0
 ```

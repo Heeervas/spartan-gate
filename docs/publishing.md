@@ -65,7 +65,7 @@ Those ignored paths should not be staged.
 git status --short
 git log --oneline --max-count=5
 git remote -v
-git push origin main
+git push origin master
 ```
 
 If `git status --short` shows private files staged, stop and unstage them before pushing.

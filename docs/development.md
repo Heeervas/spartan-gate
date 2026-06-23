@@ -56,6 +56,6 @@ scripts/doctor.sh
 
 Keep source changes scoped. Public files should stay free of personal paths, private env files, generated builds, dependency folders, certificates, and runtime state.
 
-Local plans under ignored `plans/` are useful for coordination, but they are not
-a durable public explanation of shipped behavior. Promote lasting decisions to
-tracked docs before publishing.
+Scratch notes can be useful for coordination, but they are not a durable public
+explanation of shipped behavior. Promote lasting decisions to tracked docs
+before publishing.

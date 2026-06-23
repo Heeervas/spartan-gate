@@ -23,7 +23,7 @@ class InstallScriptTests(unittest.TestCase):
 printf '%s\\n' "$*" >> {self.log}
 if [[ "$1" == "compose" && "$2" == "version" ]]; then exit 0; fi
 if [[ "$1" == "info" ]]; then exit 0; fi
-if [[ "$1" == "run" && "$3" == "caddy:2-alpine" ]]; then
+if [[ "$1" == "run" && "$3" == caddy:2-alpine@sha256:* ]]; then
   printf '$2a$test-generated-caddy-hash\\n'
   exit 0
 fi
@@ -76,7 +76,7 @@ exit 2
         self.assertTrue((self.data_root / "current" / "hermes").is_dir())
         self.assertNotIn(values["HERMES_API_KEY"], result.stdout)
         self.assertNotIn(values["HERMES_GATEWAY_TOKEN"], result.stdout)
-        self.assertNotIn("caddy:2-alpine", self.log.read_text(encoding="utf-8"))
+        self.assertNotIn("hash-password", self.log.read_text(encoding="utf-8"))
 
     def test_l2_generates_caddy_hash_and_keeps_plaintext_private(self):
         result = self.run_install("L2", "macos")

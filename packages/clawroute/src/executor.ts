@@ -18,7 +18,7 @@ import {
     RequestExecutionContext,
     TaskTier,
 } from './types.js';
-import { calculateCost, calculateCostFromCatalog, getApiBaseUrl, getAuthHeader, getProviderForModel, getProviderForModelFromCatalog } from './models.js';
+import { calculateCost, calculateCostFromCatalog, getApiBaseUrl, getAuthHeader, getProviderForModel, getProviderForModelFromCatalog, isClawRouteVirtualModel } from './models.js';
 import { getApiKey } from './config.js';
 import { getEscalatedModel } from './router.js';
 import { validateResponse } from './validator.js';
@@ -71,13 +71,14 @@ export async function executeRequest(
     const startTime = Date.now();
 
     // Guard: if the router couldn't find API keys and fell through to passthrough,
-    // the routedModel is the raw client model (e.g. 'clawroute/auto') which has no
-    // real provider. Return a clear 503 instead of crashing into the OpenAI endpoint.
-    if (routingDecision.isPassthrough && routingDecision.routedModel.startsWith('clawroute/')) {
+    // the routedModel is the raw client virtual model (e.g. 'clawroute/auto' or
+    // 'custom-1/clawroute/auto') which has no real upstream provider.
+    if (routingDecision.isPassthrough && isClawRouteVirtualModel(routingDecision.routedModel)) {
         const profile = config.providerProfile ?? 'unknown';
         const errResponse = createErrorResponse(
             `No API keys found for provider profile "${profile}". ` +
-            `Check OPENAI_CODEX_TOKEN, OPENAI_CODEX_AUTH_PATH, or OPENROUTER_API_KEY.`
+            `Check OPENAI_CODEX_TOKEN, OPENAI_CODEX_AUTH_PATH, or OPENROUTER_API_KEY.`,
+            503
         );
         const result = buildExecutionResult(
             errResponse, routingDecision, routingDecision.routedModel,
@@ -126,7 +127,7 @@ export async function executeRequest(
                 if (!response.ok) {
                     if (isPolicyBlocked(response)) break;
                     // Can retry if we haven't started streaming
-                    // v1.1: Also check canEscalate for Free plan restrictions
+                    // Also check canEscalate for Free plan restrictions.
                     if (
                         config.escalation.enabled &&
                         retryCount < maxRetries &&
@@ -722,7 +723,7 @@ function extractModelName(modelId: string): string {
 /**
  * Create an error response.
  */
-function createErrorResponse(message: string): Response {
+function createErrorResponse(message: string, status: number = 500): Response {
     return new Response(
         JSON.stringify({
             error: {
@@ -732,7 +733,7 @@ function createErrorResponse(message: string): Response {
             },
         }),
         {
-            status: 500,
+            status,
             headers: {
                 'Content-Type': 'application/json',
             },

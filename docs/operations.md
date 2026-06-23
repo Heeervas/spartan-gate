@@ -26,7 +26,7 @@ it as a problem only if the state stays `starting` for much longer or flips to
 
 ## Agent Runtime
 
-Hermes is the default public agent. If you want to use OpenClaw or another agent, keep that integration in private Compose files and point it at Spartan Gate's internal ClawRoute, Browserless, reader, SearXNG, proxy, and DNS services.
+Hermes is the default public agent. If you want to use another agent, keep that integration in private Compose files and point it at Spartan Gate's internal ClawRoute, Browserless, reader, SearXNG, proxy, and DNS services.
 
 Hermes includes native Pango/Cairo, ffmpeg, and a curated TeX subset for
 creative tools such as Manim, but Python and Node packages should still be

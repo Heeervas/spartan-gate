@@ -356,6 +356,17 @@ export function getModelEntryFromCatalog(
 }
 
 /**
+ * Return true when a client model ID means "let ClawRoute choose".
+ *
+ * Hermes uses a named custom provider prefix for its OpenAI-compatible
+ * ClawRoute adapter, so the virtual model can arrive as either
+ * `clawroute/auto` or `custom-1/clawroute/auto`.
+ */
+export function isClawRouteVirtualModel(modelId: string): boolean {
+    return modelId === 'clawroute/auto' || modelId.endsWith('/clawroute/auto');
+}
+
+/**
  * Extract the provider from a model ID.
  *
  * @param modelId - The model ID (e.g., "anthropic/claude-sonnet-4-6")

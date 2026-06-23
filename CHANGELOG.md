@@ -4,6 +4,16 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Added root OSS governance files, issue/PR templates, Dependabot, CodeQL,
+  Gitleaks, report-only Trivy image scanning, and example-env Compose
+  validation for the public repository.
+- Aligned public clone, branch, package, and ClawRoute metadata with
+  `Heeervas/spartan-gate` on `master` and the `1.0.0` public baseline.
+- Pinned SearXNG and Caddy runtime image references by digest for more
+  reproducible Compose validation and startup.
+- Return a clear 503 when named ClawRoute virtual models such as
+  `custom-1/clawroute/auto` cannot route because no provider keys or profiles
+  are available, instead of falling through to the OpenAI provider path.
 - Added a stable layer/addon model for L0-L4 installs, including ClawRoute as
   an independent addon, stable `spartan-gate` Compose project naming, stable
   `private/data/current` install data roots, and free Hermes user-level

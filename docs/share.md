@@ -18,7 +18,7 @@ Share the Git repo. Do not share:
 ## Colleague Setup
 
 ```sh
-git clone <repo-url> spartan-gate
+git clone https://github.com/Heeervas/spartan-gate.git spartan-gate
 cd spartan-gate
 scripts/install.sh --tier L0
 scripts/doctor.sh

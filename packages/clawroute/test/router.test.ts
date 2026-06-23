@@ -393,6 +393,17 @@ describe('Router', () => {
             expect(decision.reason).not.toContain('client-specified');
         });
 
+        it('should use tier routing when Hermes sends named ClawRoute auto model', () => {
+            const config = createTestConfig();
+            const request = createRequest('custom-1/clawroute/auto');
+            const classification = createClassification(TaskTier.SIMPLE);
+
+            const decision = routeRequest(request, classification, config);
+
+            expect(decision.routedModel).toBe('deepseek/deepseek-chat');
+            expect(decision.reason).not.toContain('client-specified');
+        });
+
         it('should fall through to tier routing for unknown models', () => {
             const config = createTestConfig();
             const request = createRequest('some-random-model/foo');

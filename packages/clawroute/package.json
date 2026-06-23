@@ -1,6 +1,6 @@
 {
     "name": "clawroute",
-    "version": "1.1.0",
+    "version": "1.0.0",
     "description": "Internal OpenAI-compatible model router for Spartan Gate and Hermes-class agents",
     "main": "dist/index.js",
     "type": "module",
@@ -28,12 +28,16 @@
         "anthropic",
         "cost-optimization"
     ],
-    "author": "atharv404",
+    "author": "Spartan Gate contributors",
     "repository": {
         "type": "git",
-        "url": "https://github.com/spartan-gate/spartan-gate.git"
+        "url": "https://github.com/Heeervas/spartan-gate.git",
+        "directory": "packages/clawroute"
     },
-    "homepage": "https://github.com/spartan-gate/spartan-gate/tree/main/packages/clawroute",
+    "bugs": {
+        "url": "https://github.com/Heeervas/spartan-gate/issues"
+    },
+    "homepage": "https://github.com/Heeervas/spartan-gate/tree/master/packages/clawroute",
     "license": "MIT",
     "dependencies": {
         "@hono/node-server": "^1.13.7",

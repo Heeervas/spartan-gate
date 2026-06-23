@@ -11,7 +11,7 @@ import { logAuthWarning } from './auth.js';
 import { initDb, pruneOldEntries, closeDb } from './logger.js';
 import { createApp } from './server.js';
 import { createRuntimeStateManager } from './runtime-state.js';
-// import { isProEnabled } from './router.js'; // Removed in v1.1
+// import { isProEnabled } from './router.js'; // Removed in the Spartan Gate baseline
 import { getStartupSummary } from './stats.js';
 import { TaskTier } from './types.js';
 
@@ -25,7 +25,7 @@ function printBanner(config: ReturnType<typeof loadConfig>): void {
 
     console.log(`
 ╔═══════════════════════════════════════════════════════╗
-║  ClawRoute v1.1                                       ║
+║  ClawRoute v1.0                                       ║
 ║  Intelligent Model Router for Spartan Gate            ║
 ║                                                       ║
 ║  Proxy:     http://${config.proxyHost}:${config.proxyPort}                    ║
