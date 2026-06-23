@@ -1,0 +1,47 @@
+name: ${COMPOSE_PROJECT_NAME:-spartan-gate}
+
+services:
+  hermes:
+    build:
+      context: ../../../apps/hermes-agent
+    image: ${HERMES_IMAGE:-spartan-gate-hermes:latest}
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    environment:
+      HERMES_HOME: /opt/data
+      SPARTAN_HERMES_MODE: ${SPARTAN_HERMES_MODE:-free}
+      SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-}
+      SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-}
+      XDG_CONFIG_HOME: /opt/data/.config
+      PYTHONUSERBASE: /opt/data/.local
+      PIP_TARGET: /opt/data/hermes-extra-site
+      PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes
+      npm_config_prefix: /opt/data/.local
+      NPM_CONFIG_PREFIX: /opt/data/.local
+      HERMES_UID: ${HERMES_UID:-1000}
+      HERMES_GID: ${HERMES_GID:-1000}
+      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-1}
+      HERMES_DASHBOARD_ENABLED: "true"
+      HERMES_DASHBOARD_HOST: 0.0.0.0
+      HERMES_DASHBOARD_PORT: 9119
+      HERMES_DASHBOARD_INSECURE: ${HERMES_DASHBOARD_INSECURE:-1}
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-admin}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-change-me-dashboard-password}
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-change-me-dashboard-secret}
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: ${HERMES_API_PORT:-8642}
+      API_SERVER_KEY: ${HERMES_API_KEY:-change-me-hermes-api-key}
+      HERMES_GATEWAY_TOKEN: ${HERMES_GATEWAY_TOKEN:-change-me-hermes-gateway-token}
+      HERMES_MAX_ITERATIONS: ${HERMES_MAX_ITERATIONS:-90}
+    ports:
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_API_PORT:-8642}:${HERMES_API_PORT:-8642}"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
+    volumes:
+      - ${SPARTAN_HERMES_DATA_PATH:-../../../runtime/hermes-l0}:/opt/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HERMES_API_PORT:-8642}/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

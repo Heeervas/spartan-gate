@@ -1,0 +1,511 @@
+name: spartan-gate
+
+services:
+  proxy:
+    build:
+      context: ../outbound-proxy
+    image: spartan-gate-outbound-proxy:latest
+    container_name: spartan_gate_proxy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    mem_limit: 64m
+    environment:
+      # recommended: daily runtime whitelist refresh for expired temporary domains.
+      SPARTAN_WHITELIST_REFRESH_TIME: ${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}
+      SPARTAN_WHITELIST_REFRESH_TZ: ${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}
+    volumes:
+      # required: public proxy policy and publishable whitelist fragment.
+      - ../outbound-proxy/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
+      - ../outbound-proxy/whitelist.txt:/etc/tinyproxy/whitelist.public.txt:ro
+    networks:
+      - spartan_internal
+      - spartan_external
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8888"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: spartan_gate_searxng
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    mem_limit: 256m
+    volumes:
+      # required: public SearXNG config, safe to publish.
+      - ../../config/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ../../config/searxng/limiter.toml:/etc/searxng/limiter.toml:ro
+    environment:
+      # required: internal-only service URL.
+      SEARXNG_BASE_URL: http://searxng:8080/
+    networks:
+      - spartan_internal
+      - spartan_external
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  reader:
+    build:
+      context: ../reader
+    container_name: spartan_gate_reader
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 128m
+    environment:
+      # required: internal reader service.
+      READER_PORT: 3000
+      # recommended: override from private env only if needed.
+      READER_TIMEOUT: ${READER_TIMEOUT:-15}
+      # required: reader is the controlled direct-GET egress exception for
+      # public page text; it must stay unpublished and SSRF-guarded.
+      NO_PROXY: "*"
+      no_proxy: "*"
+    networks:
+      - spartan_internal
+      - spartan_external
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/health')\""]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  dns:
+    build:
+      context: ../dns
+    container_name: spartan_gate_dns
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run
+    mem_limit: 32m
+    environment:
+      # recommended: daily runtime whitelist refresh for expired temporary domains.
+      SPARTAN_WHITELIST_REFRESH_TIME: ${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}
+      SPARTAN_WHITELIST_REFRESH_TZ: ${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}
+    volumes:
+      # required: DNS relay script and publishable whitelist fragment.
+      - ../dns/entrypoint.sh:/entrypoint.sh:ro
+      - ../outbound-proxy/whitelist.txt:/etc/dns-whitelist.public.txt:ro
+    entrypoint: ["sh", "/entrypoint.sh"]
+    networks:
+      spartan_internal:
+        ipv4_address: ${SPARTAN_DNS_IP:-172.28.0.253}
+      spartan_external: {}
+    healthcheck:
+      test: ["CMD-SHELL", "echo test | nc -w1 127.0.0.1 53 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  clawroute:
+    build:
+      context: ../../packages/clawroute
+      args:
+        CLAWROUTE_BUILD_REVISION: ${CLAWROUTE_BUILD_REVISION:-unknown}
+    container_name: spartan_gate_clawroute
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      # required: internal OpenAI-compatible router.
+      CLAWROUTE_HOST: 0.0.0.0
+      CLAWROUTE_PORT: 18790
+      CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+
+      # recommended: safe public defaults.
+      CLAWROUTE_ENABLED: ${CLAWROUTE_ENABLED:-true}
+      CLAWROUTE_BASELINE_MODEL: ${CLAWROUTE_BASELINE_MODEL:-openrouter/anthropic/claude-sonnet-4.6}
+      CLAWROUTE_DEBUG: ${CLAWROUTE_DEBUG:-false}
+      CLAWROUTE_DRY_RUN: ${CLAWROUTE_DRY_RUN:-false}
+      CLAWROUTE_LOG_CONTENT: ${CLAWROUTE_LOG_CONTENT:-false}
+      CLAWROUTE_PROVIDER: ${CLAWROUTE_PROVIDER:-}
+      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-http://ollama:11434}
+
+      # private/local: real provider keys are supplied by private/env/*.env.
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      STEPFUN_API_KEY: ${STEPFUN_API_KEY:-}
+
+      # private/local: Codex auth paths and mounts live in private/compose.local.yml.
+      OPENAI_CODEX_TOKEN: ${OPENAI_CODEX_TOKEN:-}
+      OPENAI_CODEX_AUTH_PATH: ${OPENAI_CODEX_AUTH_PATH:-}
+      OPENAI_CODEX_AUTH_PATHS: ${OPENAI_CODEX_AUTH_PATHS:-}
+      CODEX_HOME: ${CODEX_HOME:-}
+      CODEX_ROTATION_INTERVAL_HOURS: ${CODEX_ROTATION_INTERVAL_HOURS:-2}
+      CODEX_ROTATION_IDLE_MINUTES: ${CODEX_ROTATION_IDLE_MINUTES:-30}
+      CODEX_BALANCE_LOADER_MODE: ${CODEX_BALANCE_LOADER_MODE:-off}
+      CODEX_SCHEDULE_START_DAY: ${CODEX_SCHEDULE_START_DAY:-mon}
+      CODEX_EARLY_ACTIVATION_ENABLED: ${CODEX_EARLY_ACTIVATION_ENABLED:-true}
+      CODEX_EARLY_ACTIVATION_WEEKLY_PERCENT: ${CODEX_EARLY_ACTIVATION_WEEKLY_PERCENT:-70}
+      CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT: ${CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT:-7}
+      CODEX_COLD_MIGRATION_DECISION_TTL_HOURS: ${CODEX_COLD_MIGRATION_DECISION_TTL_HOURS:-6}
+
+      # private/local: optional admin alerts.
+      CLAWROUTE_ALERT_EMAIL: ${CLAWROUTE_ALERT_EMAIL:-}
+      CLAWROUTE_ALERT_SLACK_WEBHOOK: ${CLAWROUTE_ALERT_SLACK_WEBHOOK:-}
+
+      # required: remote API calls leave through Tinyproxy.
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1,ollama,hermes,clawroute,proxy,caddy,searxng,reader,browserless
+      no_proxy: localhost,127.0.0.1,::1,ollama,hermes,clawroute,proxy,caddy,searxng,reader,browserless
+    volumes:
+      # required: isolated public runtime data. Change this line for a different ClawRoute data path.
+      - ../../runtime/clawroute:/app/data
+      # required: public model routing config.
+      - ../../config/clawroute:/app/config:ro
+    networks:
+      - spartan_internal
+    depends_on:
+      proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  browserless:
+    profiles:
+      - browserless
+    image: ${BROWSERLESS_IMAGE:-ghcr.io/browserless/chromium:v2.51.0}
+    container_name: spartan_gate_browserless
+    restart: unless-stopped
+    mem_limit: 1g
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    # Browserless runs as blessuser (999); grant write access to the host-owned profile mount.
+    group_add:
+      - ${BROWSERLESS_PROFILES_GID:-1000}
+    dns:
+      - ${SPARTAN_DNS_IP:-172.28.0.253}
+    environment:
+      # required: CDP token shared with Hermes and Caddy.
+      TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
+
+      # recommended: local Browserless debugger URL; private override may add Tailscale.
+      EXTERNAL: http://localhost:${BROWSERLESS_DEBUG_PORT:-3005}
+      ENABLE_DEBUGGER: "true"
+      # required for Hermes' broker-owned persistent browser; maximum standard Node timer (~24.8 days).
+      TIMEOUT: ${BROWSERLESS_SESSION_TIMEOUT_MS:-2147483647}
+      SCREEN_WIDTH: 1280
+      SCREEN_HEIGHT: 720
+      TZ: ${BROWSERLESS_TZ:-Europe/Madrid}
+
+      # required: Chromium egress goes through Tinyproxy, internal Docker names bypass it.
+      DEFAULT_LAUNCH_ARGS: "--proxy-server=http://proxy:8888 --proxy-bypass-list=<local>;127.0.0.1;${SPARTAN_INTERNAL_SUBNET:-172.28.0.0/24} --disable-crash-reporter --no-crashpad"
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1,browserless,hermes,proxy,caddy,searxng,reader,clawroute
+      no_proxy: localhost,127.0.0.1,::1,browserless,hermes,proxy,caddy,searxng,reader,clawroute
+    volumes:
+      # required: persistent Chromium profiles for Browserless sessions.
+      - ../../runtime/browserless/profiles:/profiles
+    networks:
+      - spartan_internal
+    depends_on:
+      proxy:
+        condition: service_healthy
+      dns:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/pressure?token=$$TOKEN || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  camofox:
+    profiles:
+      - camofox
+    build:
+      context: ../camofox
+      args:
+        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.11.2}
+    image: ${CAMOFOX_IMAGE:-spartan-gate-camofox:1.11.2}
+    container_name: spartan_gate_camofox
+    restart: unless-stopped
+    mem_limit: 2g
+    shm_size: 1gb
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    dns:
+      - ${SPARTAN_DNS_IP:-172.28.0.253}
+    environment:
+      # optional: Hermes uses Camofox only when CAMOFOX_URL is set.
+      CAMOFOX_PORT: 9377
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-change-me-camofox-access-key}
+      CAMOFOX_API_KEY: ${CAMOFOX_API_KEY:-}
+      CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:-}
+      CAMOFOX_CRASH_REPORT_ENABLED: "false"
+      CAMOFOX_GEOIP: ${CAMOFOX_GEOIP:-false}
+      CAMOFOX_ADDONS: ${CAMOFOX_ADDONS:-}
+      CAMOFOX_PROFILE_DIR: /root/.camofox/profiles
+      CAMOFOX_COOKIES_DIR: /root/.camofox/cookies
+      CAMOFOX_TRACES_DIR: /root/.camofox/traces
+      CAMOFOX_TRACES_MAX_BYTES: ${CAMOFOX_TRACES_MAX_BYTES:-52428800}
+      CAMOFOX_TRACES_TTL_HOURS: ${CAMOFOX_TRACES_TTL_HOURS:-24}
+      MAX_CONCURRENT_PER_USER: ${CAMOFOX_MAX_CONCURRENT_PER_USER:-2}
+      MAX_SESSIONS: ${CAMOFOX_MAX_SESSIONS:-8}
+      MAX_TABS_PER_SESSION: ${CAMOFOX_MAX_TABS_PER_SESSION:-4}
+      MAX_TABS_GLOBAL: ${CAMOFOX_MAX_TABS_GLOBAL:-12}
+      SESSION_TIMEOUT_MS: ${CAMOFOX_SESSION_TIMEOUT_MS:-600000}
+      TAB_INACTIVITY_MS: ${CAMOFOX_TAB_INACTIVITY_MS:-300000}
+      BROWSER_IDLE_TIMEOUT_MS: ${CAMOFOX_BROWSER_IDLE_TIMEOUT_MS:-300000}
+      MAX_OLD_SPACE_SIZE: ${CAMOFOX_MAX_OLD_SPACE_SIZE:-256}
+      ENABLE_VNC: ${CAMOFOX_ENABLE_VNC:-0}
+      VNC_PASSWORD: ${CAMOFOX_VNC_PASSWORD:-}
+      VNC_BIND: 0.0.0.0
+      VNC_PORT: 5900
+      NOVNC_PORT: 6080
+
+      # required: Camofox browser traffic uses Spartan Gate's outbound proxy.
+      PROXY_HOST: proxy
+      PROXY_PORT: 8888
+      PROXY_STRATEGY: round_robin
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,clawroute,browserless
+      no_proxy: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,clawroute,browserless
+    volumes:
+      # required: Camofox storageState, cookies, and traces. Do not share Browserless profiles.
+      - ../../runtime/camofox:/root/.camofox
+    networks:
+      - spartan_internal
+    depends_on:
+      proxy:
+        condition: service_healthy
+      dns:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9377/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  hermes:
+    build:
+      context: ../../apps/hermes-agent
+    container_name: spartan_gate_hermes
+    restart: unless-stopped
+    dns:
+      - ${SPARTAN_DNS_IP:-172.28.0.253}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      proxy:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+      reader:
+        condition: service_healthy
+      dns:
+        condition: service_healthy
+      clawroute:
+        condition: service_healthy
+      browserless:
+        condition: service_healthy
+        required: false
+      camofox:
+        condition: service_healthy
+        required: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    mem_limit: 2g
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+    command: ["gateway", "run"]
+    tmpfs:
+      - /tmp
+      - /run:rw,exec,nosuid,nodev,size=64m,mode=755
+    environment:
+      # required: Hermes runtime home.
+      HERMES_HOME: /opt/data
+      SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-}
+      SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-}
+      SPARTAN_PROXY_AUDIT_LOG: ${SPARTAN_PROXY_AUDIT_LOG:-/opt/data/logs/proxy-audit.log}
+      HF_HOME: /opt/data/.cache/huggingface
+      XDG_CONFIG_HOME: /opt/data/.config
+      PYTHONUSERBASE: /opt/data/.local
+      PIP_TARGET: /opt/data/hermes-extra-site
+      npm_config_prefix: /opt/data/.local
+      NPM_CONFIG_PREFIX: /opt/data/.local
+
+      # required: local API/dashboard runtime.
+      HERMES_DASHBOARD_ENABLED: "true"
+      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-1}
+      HERMES_DASHBOARD_HOST: 0.0.0.0
+      HERMES_DASHBOARD_PORT: 9119
+      HERMES_DASHBOARD_INSECURE: ${HERMES_DASHBOARD_INSECURE:-1}
+      API_SERVER_ENABLED: "true"
+      API_SERVER_PORT: ${HERMES_API_PORT:-8642}
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_KEY: ${HERMES_API_KEY:-change-me-hermes-api-key}
+      HERMES_MAX_ITERATIONS: ${HERMES_MAX_ITERATIONS:-90}
+      HERMES_GATEWAY_TOKEN: ${HERMES_GATEWAY_TOKEN:-change-me-hermes-gateway-token}
+
+      # required: Hermes talks to ClawRoute, not directly to model APIs.
+      OPENAI_BASE_URL: http://clawroute:18790/v1
+      OPENAI_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      CUSTOM_1_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+
+      # required: controlled browser/search/reader integrations.
+      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
+      BROWSERLESS_PROFILE: ${BROWSERLESS_PROFILE:-main}
+      BROWSERLESS_PROFILE_ROOT: /profiles
+      BROWSERLESS_WS_BASE: ws://browserless:3000/chromium
+      BROWSERLESS_DEBUG_PORT: ${BROWSERLESS_DEBUG_PORT:-3005}
+      BROWSERLESS_DEBUG_ORIGIN: ${BROWSERLESS_DEBUG_ORIGIN:-}
+      BROWSERLESS_SCREEN_WIDTH: 1280
+      BROWSERLESS_SCREEN_HEIGHT: 720
+      BROWSERLESS_LANG: ${BROWSERLESS_LANG:-es-ES}
+      BROWSERLESS_HEADLESS: ${BROWSERLESS_HEADLESS:-true}
+      BROWSERLESS_STEALTH: "true"
+      BROWSERLESS_STEALTH_ENDPOINT: ${BROWSERLESS_STEALTH_ENDPOINT:-true}
+      BROWSERLESS_ROUTE: ${BROWSERLESS_ROUTE:-chromium}
+      BROWSERLESS_STEALTH_ROUTE: ${BROWSERLESS_STEALTH_ROUTE:-chromium}
+      BROWSERLESS_USER_AGENT: ${BROWSERLESS_USER_AGENT:-}
+      BROWSERLESS_CDP_BROKER_ENABLED: ${BROWSERLESS_CDP_BROKER_ENABLED:-true}
+      BROWSERLESS_CDP_BROKER_PORT: ${BROWSERLESS_CDP_BROKER_PORT:-9229}
+      BROWSERLESS_CDP_BROKER_TRACE: ${BROWSERLESS_CDP_BROKER_TRACE:-false}
+      BROWSERLESS_HTTP_BASE: http://browserless:3000
+      BROWSERLESS_IGNORE_DEFAULT_ARGS: ${BROWSERLESS_IGNORE_DEFAULT_ARGS:-false}
+      BROWSERLESS_LIVE_TIMEOUT_MS: ${BROWSERLESS_LIVE_TIMEOUT_MS:-900000}
+      BROWSERLESS_LIVE_QUALITY: ${BROWSERLESS_LIVE_QUALITY:-90}
+      BROWSERLESS_LIVE_RESIZABLE: ${BROWSERLESS_LIVE_RESIZABLE:-false}
+      CAMOFOX_URL: ${CAMOFOX_URL:-}
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-}
+      CAMOFOX_USER_ID: ${CAMOFOX_USER_ID:-}
+      CAMOFOX_SESSION_KEY: ${CAMOFOX_SESSION_KEY:-}
+      HERMES_MEET_CAMOFOX_SESSION_KEY: ${HERMES_MEET_CAMOFOX_SESSION_KEY:-}
+      CAMOFOX_ADOPT_EXISTING_TAB: ${CAMOFOX_ADOPT_EXISTING_TAB:-false}
+      HERMES_MEET_CDP_PROFILE: ${HERMES_MEET_CDP_PROFILE:-guest}
+      HERMES_MEET_CDP_URL: ${HERMES_MEET_CDP_URL:-}
+      SPARTAN_INTERNAL_SUBNET: ${SPARTAN_INTERNAL_SUBNET:-172.28.0.0/24}
+      NODE_OPTIONS: --require=/opt/hermes/bootstrap/cdp-patch.js
+      PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes
+      SEARXNG_INSTANCE_URL: http://searxng:8080
+      SEARXNG_URL: http://searxng:8080
+      READER_PROXY_URL: http://reader:3000
+
+      # private/local: Telegram, Discord, GitHub, Raindrop, GogCLI and profiles live in private/compose.local.yml.
+
+      # required: all HTTP egress leaves through Tinyproxy.
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,ollama,browserless,camofox
+      no_proxy: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,ollama,browserless,camofox
+    volumes:
+      # required: isolated public runtime data. Change this line for a different Hermes data path.
+      - ../../runtime/hermes:/opt/data
+      # required: broker can clear stale Chromium Singleton locks after confirming Browserless is idle.
+      - ../../runtime/browserless/profiles:/profiles
+      # required: agent can inspect but not modify the public proxy whitelist fragment.
+      - ../outbound-proxy/whitelist.txt:/etc/proxy-whitelist.public.txt:ro
+    networks:
+      - spartan_internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HERMES_API_PORT:-8642}/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: spartan_gate_caddy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+      - /config/caddy
+      - /data/caddy
+    mem_limit: 64m
+    ports:
+      # recommended: public edge is local-only. Tailscale bind is added in private/compose.local.yml.
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_GATE_PORT:-18789}:18789"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${BROWSERLESS_DEBUG_PORT:-3005}:3005"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
+    environment:
+      # recommended: auth still applies even on local/Tailscale HTTP.
+      CADDY_AUTH_USER: ${CADDY_AUTH_USER:-admin}
+      CADDY_AUTH_HASH: ${CADDY_AUTH_HASH:-$$2a$$14$$UMuSzA3WdVqcAwE3yvFeCO.CesMjqqGDVrxpL1s87FsWM/NRrADi2}
+
+      # required: upstream bearer tokens injected by Caddy.
+      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
+      CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      HERMES_API_PORT: ${HERMES_API_PORT:-8642}
+    volumes:
+      # required: public HTTP edge config and static debugger/portal assets.
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../caddy/local.d:/etc/caddy/local.d:ro
+      - ../caddy/browserless-debugger-router.js:/srv/browserless-debugger/router.js:ro
+      - ../caddy/portal.html:/srv/portal.html:ro
+    networks:
+      - spartan_internal
+      - spartan_external
+
+networks:
+  spartan_internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SPARTAN_INTERNAL_SUBNET:-172.28.0.0/24}
+  spartan_external:
+    driver: bridge

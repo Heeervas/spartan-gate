@@ -1,0 +1,69 @@
+services:
+  clawroute:
+    build:
+      context: ../../../packages/clawroute
+      args:
+        CLAWROUTE_BUILD_REVISION: ${CLAWROUTE_BUILD_REVISION:-unknown}
+    restart: unless-stopped
+    environment:
+      CLAWROUTE_HOST: 0.0.0.0
+      CLAWROUTE_PORT: 18790
+      CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      CLAWROUTE_ENABLED: ${CLAWROUTE_ENABLED:-true}
+      CLAWROUTE_BASELINE_MODEL: ${CLAWROUTE_BASELINE_MODEL:-openrouter/anthropic/claude-sonnet-4.6}
+      CLAWROUTE_DEBUG: ${CLAWROUTE_DEBUG:-false}
+      CLAWROUTE_DRY_RUN: ${CLAWROUTE_DRY_RUN:-false}
+      CLAWROUTE_LOG_CONTENT: ${CLAWROUTE_LOG_CONTENT:-false}
+      CLAWROUTE_PROVIDER: ${CLAWROUTE_PROVIDER:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      STEPFUN_API_KEY: ${STEPFUN_API_KEY:-}
+      OPENAI_CODEX_TOKEN: ${OPENAI_CODEX_TOKEN:-}
+      OPENAI_CODEX_AUTH_PATH: ${OPENAI_CODEX_AUTH_PATH:-}
+      OPENAI_CODEX_AUTH_PATHS: ${OPENAI_CODEX_AUTH_PATHS:-}
+      CODEX_HOME: ${CODEX_HOME:-/codex-home}
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1,hermes,clawroute,proxy,caddy,camofox
+      no_proxy: localhost,127.0.0.1,::1,hermes,clawroute,proxy,caddy,camofox
+    volumes:
+      - ${SPARTAN_CLAWROUTE_DATA_PATH:-../../../runtime/clawroute-l3}:/app/data
+      - ../../../config/clawroute:/app/config:ro
+      - ${SPARTAN_CODEX_HOME_PATH:-../../../private/codex-home}:/codex-home:ro
+    networks:
+      - spartan_internal
+    depends_on:
+      proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  hermes:
+    depends_on:
+      clawroute:
+        condition: service_healthy
+    environment:
+      OPENAI_BASE_URL: http://clawroute:18790/v1
+      OPENAI_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      CUSTOM_1_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      NO_PROXY: localhost,127.0.0.1,::1,hermes,proxy,caddy,camofox,clawroute
+      no_proxy: localhost,127.0.0.1,::1,hermes,proxy,caddy,camofox,clawroute
+
+  caddy:
+    ports:
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
+    environment:
+      CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+    depends_on:
+      clawroute:
+        condition: service_healthy

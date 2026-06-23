@@ -1,0 +1,18 @@
+# Private outbound whitelist extension.
+#
+# Copy this file to:
+#   private/outbound-proxy/whitelist.private.txt
+#
+# Domains here are merged with infra/outbound-proxy/whitelist.txt at container
+# startup. scripts/whitelist-domain.sh writes to the private whitelist by
+# default, so this file should contain local/project/personal entries only.
+#
+# Temporary helper entries use inline metadata and are ignored by runtime
+# whitelists after expiry:
+#   docs.example.com # sg-expires-at=1780300800 sg-ttl=15d
+# TTLs are limited to 365 days. Malformed expiry metadata is rejected.
+# Hostnames and IPv4 addresses are supported; IPv6 literals are rejected.
+
+# my-company.example
+# internal-tool.example
+# docs.example.com

@@ -1,0 +1,2 @@
+# Local Caddy listeners live here.
+# Private setups normally override this directory with private/caddy.local.d.

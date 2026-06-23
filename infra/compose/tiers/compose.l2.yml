@@ -1,0 +1,202 @@
+name: ${COMPOSE_PROJECT_NAME:-spartan-gate}
+
+services:
+  proxy:
+    build:
+      context: ../../outbound-proxy
+    image: spartan-gate-outbound-proxy:latest
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    environment:
+      SPARTAN_WHITELIST_REFRESH_TIME: ${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}
+      SPARTAN_WHITELIST_REFRESH_TZ: ${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}
+    volumes:
+      - ../../outbound-proxy/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
+      - ../../outbound-proxy/whitelist.txt:/etc/tinyproxy/whitelist.public.txt:ro
+    networks:
+      - spartan_internal
+      - spartan_external
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8888"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  dns:
+    build:
+      context: ../../dns
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run
+    environment:
+      SPARTAN_WHITELIST_REFRESH_TIME: ${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}
+      SPARTAN_WHITELIST_REFRESH_TZ: ${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}
+    volumes:
+      - ../../dns/entrypoint.sh:/entrypoint.sh:ro
+      - ../../outbound-proxy/whitelist.txt:/etc/dns-whitelist.public.txt:ro
+    entrypoint: ["sh", "/entrypoint.sh"]
+    networks:
+      spartan_internal:
+        ipv4_address: ${SPARTAN_DNS_IP:-172.28.0.253}
+      spartan_external: {}
+    healthcheck:
+      test: ["CMD-SHELL", "echo test | nc -w1 127.0.0.1 53 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  camofox:
+    build:
+      context: ../../camofox
+      args:
+        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.11.2}
+    image: ${CAMOFOX_IMAGE:-spartan-gate-camofox:1.11.2}
+    restart: unless-stopped
+    shm_size: 1gb
+    dns:
+      - ${SPARTAN_DNS_IP:-172.28.0.253}
+    environment:
+      CAMOFOX_PORT: 9377
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-change-me-camofox-access-key}
+      CAMOFOX_API_KEY: ${CAMOFOX_API_KEY:-}
+      CAMOFOX_CRASH_REPORT_ENABLED: "false"
+      CAMOFOX_GEOIP: ${CAMOFOX_GEOIP:-false}
+      CAMOFOX_PROFILE_DIR: /root/.camofox/profiles
+      CAMOFOX_COOKIES_DIR: /root/.camofox/cookies
+      CAMOFOX_TRACES_DIR: /root/.camofox/traces
+      ENABLE_VNC: ${CAMOFOX_ENABLE_VNC:-1}
+      VNC_PASSWORD: ${CAMOFOX_VNC_PASSWORD:-change-me-vnc-password}
+      VNC_BIND: 0.0.0.0
+      VNC_PORT: 5900
+      NOVNC_PORT: 6080
+      PROXY_HOST: proxy
+      PROXY_PORT: 8888
+      PROXY_STRATEGY: round_robin
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy
+      no_proxy: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy
+    volumes:
+      - ${SPARTAN_CAMOFOX_DATA_PATH:-../../../runtime/camofox-l2}:/root/.camofox
+    networks:
+      - spartan_internal
+    depends_on:
+      proxy:
+        condition: service_healthy
+      dns:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9377/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  hermes:
+    build:
+      context: ../../../apps/hermes-agent
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    dns:
+      - ${SPARTAN_DNS_IP:-172.28.0.253}
+    depends_on:
+      proxy:
+        condition: service_healthy
+      dns:
+        condition: service_healthy
+      camofox:
+        condition: service_healthy
+    environment:
+      HERMES_HOME: /opt/data
+      SPARTAN_HERMES_MODE: ${SPARTAN_HERMES_MODE:-gated}
+      SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-}
+      SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-}
+      XDG_CONFIG_HOME: /opt/data/.config
+      PYTHONUSERBASE: /opt/data/.local
+      PIP_TARGET: /opt/data/hermes-extra-site
+      PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes
+      npm_config_prefix: /opt/data/.local
+      NPM_CONFIG_PREFIX: /opt/data/.local
+      HERMES_DASHBOARD_ENABLED: "true"
+      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-1}
+      HERMES_DASHBOARD_HOST: 0.0.0.0
+      HERMES_DASHBOARD_PORT: 9119
+      HERMES_DASHBOARD_INSECURE: ${HERMES_DASHBOARD_INSECURE:-1}
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: ${HERMES_API_PORT:-8642}
+      API_SERVER_KEY: ${HERMES_API_KEY:-change-me-hermes-api-key}
+      HERMES_GATEWAY_TOKEN: ${HERMES_GATEWAY_TOKEN:-change-me-hermes-gateway-token}
+      HERMES_MAX_ITERATIONS: ${HERMES_MAX_ITERATIONS:-90}
+      CAMOFOX_URL: http://camofox:9377
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-change-me-camofox-access-key}
+      CAMOFOX_USER_ID: ${CAMOFOX_USER_ID:-spartan-camofox-main}
+      CAMOFOX_SESSION_KEY: ${CAMOFOX_SESSION_KEY:-manual-login}
+      CAMOFOX_ADOPT_EXISTING_TAB: ${CAMOFOX_ADOPT_EXISTING_TAB:-true}
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1,hermes,proxy,caddy,camofox
+      no_proxy: localhost,127.0.0.1,::1,hermes,proxy,caddy,camofox
+    volumes:
+      - ${SPARTAN_HERMES_DATA_PATH:-../../../runtime/hermes-l2}:/opt/data
+      - ../../outbound-proxy/whitelist.txt:/etc/proxy-whitelist.public.txt:ro
+    networks:
+      - spartan_internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HERMES_API_PORT:-8642}/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+      - /config/caddy
+      - /data/caddy
+    ports:
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_GATE_PORT:-18789}:18789"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CAMOFOX_NOVNC_PORT:-26080}:26080"
+    environment:
+      CADDY_AUTH_USER: ${CADDY_AUTH_USER:-admin}
+      CADDY_AUTH_HASH: ${CADDY_AUTH_HASH:-$$2a$$14$$UMuSzA3WdVqcAwE3yvFeCO.CesMjqqGDVrxpL1s87FsWM/NRrADi2}
+      HERMES_API_PORT: ${HERMES_API_PORT:-8642}
+      CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
+    volumes:
+      - ../../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../caddy/local.d:/etc/caddy/local.d:ro
+      - ../../caddy/browserless-debugger-router.js:/srv/browserless-debugger/router.js:ro
+      - ../../caddy/portal.html:/srv/portal.html:ro
+    networks:
+      - spartan_internal
+      - spartan_external
+    depends_on:
+      hermes:
+        condition: service_healthy
+
+networks:
+  spartan_internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SPARTAN_INTERNAL_SUBNET:-172.28.0.0/24}
+  spartan_external:
+    driver: bridge

@@ -1,0 +1,8 @@
+# Private outbound whitelist extension.
+#
+# This file is intentionally generic so private.example can be copied to
+# private/ and used immediately. Add project/personal domains here, or use:
+#
+#   scripts/whitelist-domain.sh example.com
+
+# docs.example.com

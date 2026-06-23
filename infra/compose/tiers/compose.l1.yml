@@ -1,0 +1,102 @@
+name: ${COMPOSE_PROJECT_NAME:-spartan-gate}
+
+services:
+  hermes:
+    build:
+      context: ../../../apps/hermes-agent
+    image: ${HERMES_IMAGE:-spartan-gate-hermes:latest}
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    depends_on:
+      camofox:
+        condition: service_healthy
+    environment:
+      HERMES_HOME: /opt/data
+      SPARTAN_HERMES_MODE: ${SPARTAN_HERMES_MODE:-free}
+      SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-}
+      SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-}
+      XDG_CONFIG_HOME: /opt/data/.config
+      PYTHONUSERBASE: /opt/data/.local
+      PIP_TARGET: /opt/data/hermes-extra-site
+      PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes
+      npm_config_prefix: /opt/data/.local
+      NPM_CONFIG_PREFIX: /opt/data/.local
+      HERMES_UID: ${HERMES_UID:-1000}
+      HERMES_GID: ${HERMES_GID:-1000}
+      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-1}
+      HERMES_DASHBOARD_ENABLED: "true"
+      HERMES_DASHBOARD_HOST: 0.0.0.0
+      HERMES_DASHBOARD_PORT: 9119
+      HERMES_DASHBOARD_INSECURE: ${HERMES_DASHBOARD_INSECURE:-1}
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-admin}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-change-me-dashboard-password}
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-change-me-dashboard-secret}
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: ${HERMES_API_PORT:-8642}
+      API_SERVER_KEY: ${HERMES_API_KEY:-change-me-hermes-api-key}
+      HERMES_GATEWAY_TOKEN: ${HERMES_GATEWAY_TOKEN:-change-me-hermes-gateway-token}
+      HERMES_MAX_ITERATIONS: ${HERMES_MAX_ITERATIONS:-90}
+      CAMOFOX_URL: http://camofox:9377
+      CAMOFOX_API_KEY: ${CAMOFOX_API_KEY:-}
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-}
+      CAMOFOX_USER_ID: ${CAMOFOX_USER_ID:-spartan-camofox-main}
+      CAMOFOX_SESSION_KEY: ${CAMOFOX_SESSION_KEY:-manual-login}
+      CAMOFOX_ADOPT_EXISTING_TAB: ${CAMOFOX_ADOPT_EXISTING_TAB:-true}
+      CAMOFOX_REWRITE_LOOPBACK_URLS: "true"
+      CAMOFOX_LOOPBACK_HOST_ALIAS: camofox
+    ports:
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_API_PORT:-8642}:${HERMES_API_PORT:-8642}"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
+    volumes:
+      - ${SPARTAN_HERMES_DATA_PATH:-../../../runtime/hermes-l1}:/opt/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HERMES_API_PORT:-8642}/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  camofox:
+    build:
+      context: ../../camofox
+      args:
+        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.11.2}
+    image: ${CAMOFOX_IMAGE:-spartan-gate-camofox:1.11.2}
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      CAMOFOX_PORT: 9377
+      CAMOFOX_API_KEY: ${CAMOFOX_API_KEY:-}
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-}
+      CAMOFOX_CRASH_REPORT_ENABLED: "false"
+      CAMOFOX_GEOIP: ${CAMOFOX_GEOIP:-false}
+      CAMOFOX_PROFILE_DIR: /root/.camofox/profiles
+      CAMOFOX_COOKIES_DIR: /root/.camofox/cookies
+      CAMOFOX_TRACES_DIR: /root/.camofox/traces
+      CAMOFOX_TRACES_MAX_BYTES: ${CAMOFOX_TRACES_MAX_BYTES:-52428800}
+      CAMOFOX_TRACES_TTL_HOURS: ${CAMOFOX_TRACES_TTL_HOURS:-24}
+      MAX_CONCURRENT_PER_USER: ${CAMOFOX_MAX_CONCURRENT_PER_USER:-2}
+      MAX_SESSIONS: ${CAMOFOX_MAX_SESSIONS:-8}
+      MAX_TABS_PER_SESSION: ${CAMOFOX_MAX_TABS_PER_SESSION:-4}
+      MAX_TABS_GLOBAL: ${CAMOFOX_MAX_TABS_GLOBAL:-12}
+      SESSION_TIMEOUT_MS: ${CAMOFOX_SESSION_TIMEOUT_MS:-600000}
+      TAB_INACTIVITY_MS: ${CAMOFOX_TAB_INACTIVITY_MS:-300000}
+      BROWSER_IDLE_TIMEOUT_MS: ${CAMOFOX_BROWSER_IDLE_TIMEOUT_MS:-300000}
+      MAX_OLD_SPACE_SIZE: ${CAMOFOX_MAX_OLD_SPACE_SIZE:-256}
+      ENABLE_VNC: ${CAMOFOX_ENABLE_VNC:-1}
+      VNC_PASSWORD: ${CAMOFOX_VNC_PASSWORD:-change-me-vnc-password}
+      VNC_BIND: 0.0.0.0
+      VNC_PORT: 5900
+      NOVNC_PORT: 6080
+    ports:
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CAMOFOX_API_PORT:-9377}:9377"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CAMOFOX_NOVNC_PORT:-26080}:6080"
+    volumes:
+      - ${SPARTAN_CAMOFOX_DATA_PATH:-../../../runtime/camofox-l1}:/root/.camofox
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9377/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

@@ -1,0 +1,79 @@
+{
+	admin off
+}
+
+:18789 {
+	@not_websocket {
+		not header Connection *Upgrade*
+	}
+
+	basic_auth @not_websocket {
+		{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
+	}
+
+	reverse_proxy http://hermes:{$HERMES_API_PORT:8642} {
+		header_up -Authorization
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+:18790 {
+	basic_auth {
+		{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
+	}
+
+	reverse_proxy http://clawroute:18790 {
+		header_up Authorization "Bearer {$CLAWROUTE_TOKEN}"
+	}
+}
+
+:3005 {
+	@not_websocket {
+		not header Connection *Upgrade*
+	}
+
+	basic_auth @not_websocket {
+		{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
+	}
+
+	route {
+		@debugger_router path /debugger/router.js
+		handle @debugger_router {
+			header Cache-Control "no-store"
+			rewrite * /router.js
+			root * /srv/browserless-debugger
+			file_server
+		}
+
+		handle {
+			reverse_proxy http://browserless:3000 {
+				header_up Authorization "Bearer {$BROWSERLESS_TOKEN}"
+				header_up Host {host}
+			}
+		}
+	}
+}
+
+:9119 {
+	@internal path /api/* /ws/*
+	handle @internal {
+		reverse_proxy http://hermes:9119
+	}
+
+	handle {
+		basic_auth {
+			{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
+		}
+		reverse_proxy http://hermes:9119
+	}
+}
+
+:26080 {
+	basic_auth {
+		{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
+	}
+
+	reverse_proxy http://camofox:6080
+}
+
+import /etc/caddy/local.d/*.caddy

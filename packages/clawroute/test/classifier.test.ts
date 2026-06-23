@@ -1,0 +1,484 @@
+/**
+ * ClawRoute Classifier Tests
+ *
+ * 30+ test cases covering all classification tiers.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { classifyRequest } from '../src/classifier.js';
+import { getProviderForModel, getApiBaseUrl } from '../src/models.js';
+import { TaskTier, ChatCompletionRequest, ClawRouteConfig } from '../src/types.js';
+import { stripMetadataPreamble } from '../src/utils.js';
+
+// Helper to create a minimal config for testing
+function createTestConfig(): ClawRouteConfig {
+    return {
+        enabled: true,
+        dryRun: false,
+        proxyPort: 18790,
+        proxyHost: '127.0.0.1',
+        authToken: null,
+        classification: {
+            conservativeMode: true,
+            minConfidence: 0.7,
+            toolAwareRouting: true,
+        },
+        escalation: {
+            enabled: true,
+            maxRetries: 2,
+            retryDelayMs: 100,
+            onlyRetryBeforeStreaming: true,
+            onlyRetryWithoutToolCalls: true,
+            alwaysFallbackToOriginal: true,
+        },
+        models: {
+            [TaskTier.HEARTBEAT]: { primary: 'test/heartbeat', fallback: 'test/fallback' },
+            [TaskTier.SIMPLE]: { primary: 'test/simple', fallback: 'test/fallback' },
+            [TaskTier.MODERATE]: { primary: 'test/moderate', fallback: 'test/fallback' },
+            [TaskTier.COMPLEX]: { primary: 'test/complex', fallback: 'test/fallback' },
+            [TaskTier.FRONTIER_SONNET]: { primary: 'test/frontier-sonnet', fallback: 'test/fallback' },
+            [TaskTier.FRONTIER_OPUS]:   { primary: 'test/frontier-opus',   fallback: 'test/fallback' },
+        },
+        logging: {
+            dbPath: ':memory:',
+            logContent: false,
+            logSystemPrompts: false,
+            debugMode: false,
+            retentionDays: 30,
+        },
+        dashboard: { enabled: true },
+        overrides: { globalForceModel: null, sessions: {} },
+        apiKeys: { anthropic: '', openai: '', google: '', deepseek: '', openrouter: '', ollama: '' },
+        alerts: {},
+    };
+}
+
+// Helper to create a request
+function createRequest(
+    lastUserMessage: string,
+    messageCount: number = 1,
+    tools: ChatCompletionRequest['tools'] = undefined,
+    toolChoice: ChatCompletionRequest['tool_choice'] = undefined
+): ChatCompletionRequest {
+    const messages: ChatCompletionRequest['messages'] = [];
+
+    // Add system message if multiple messages
+    if (messageCount > 1) {
+        messages.push({ role: 'system', content: 'You are a helpful assistant.' });
+    }
+
+    // Add filler messages for conversation depth
+    for (let i = 0; i < messageCount - 1; i++) {
+        if (i % 2 === 0) {
+            messages.push({ role: 'user', content: 'Previous message ' + i });
+        } else {
+            messages.push({ role: 'assistant', content: 'Previous response ' + i });
+        }
+    }
+
+    // Add the last user message
+    messages.push({ role: 'user', content: lastUserMessage });
+
+    return {
+        model: 'test-model',
+        messages,
+        tools,
+        tool_choice: toolChoice,
+    };
+}
+
+describe('Classifier', () => {
+    const config = createTestConfig();
+
+    // ========== HEARTBEAT TESTS ==========
+    describe('Heartbeat Detection', () => {
+        it('should classify "ping" as heartbeat', () => {
+            const result = classifyRequest(createRequest('ping'), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+            expect(result.confidence).toBeGreaterThanOrEqual(0.8);
+        });
+
+        it('should classify "status" as heartbeat', () => {
+            const result = classifyRequest(createRequest('status'), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+
+        it('should classify "hi" as heartbeat', () => {
+            const result = classifyRequest(createRequest('hi'), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+
+        it('should classify "hello" as heartbeat', () => {
+            const result = classifyRequest(createRequest('hello'), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+
+        it('should classify "test" as heartbeat', () => {
+            const result = classifyRequest(createRequest('test'), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+
+        it('should classify "are you there?" as heartbeat', () => {
+            const result = classifyRequest(createRequest('are you there?'), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+
+        it('should classify "yo" as heartbeat', () => {
+            const result = classifyRequest(createRequest('yo'), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+
+        it('should NOT classify "Hey, can you help me with something?" as heartbeat', () => {
+            const result = classifyRequest(createRequest('Hey, can you help me with something?'), config);
+            expect(result.tier).not.toBe(TaskTier.HEARTBEAT);
+        });
+    });
+
+    // ========== SIMPLE TESTS ==========
+    describe('Simple Detection', () => {
+        // Note: Very short acknowledgments may be classified as heartbeat
+        // since they're short and could be status checks. This is expected behavior.
+        it('should classify "thanks" as heartbeat or simple', () => {
+            const result = classifyRequest(createRequest('thanks'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+
+        it('should classify "ok" as heartbeat or simple', () => {
+            const result = classifyRequest(createRequest('ok'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+
+        it('should classify "👍" as heartbeat or simple', () => {
+            const result = classifyRequest(createRequest('👍'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+
+        it('should classify "yes" as heartbeat or simple', () => {
+            const result = classifyRequest(createRequest('yes'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+
+        it('should classify "no" as heartbeat or simple', () => {
+            const result = classifyRequest(createRequest('no'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+
+        it('should classify "sounds good!" as simple', () => {
+            const result = classifyRequest(createRequest('sounds good!'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+
+        it('should classify "thank you" as heartbeat or simple', () => {
+            const result = classifyRequest(createRequest('thank you'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+
+        it('should classify "lol" as heartbeat or simple', () => {
+            const result = classifyRequest(createRequest('lol'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+    });
+
+    // ========== FRONTIER TESTS ==========
+    describe('Frontier Detection', () => {
+        it('should classify request with tools + tool_choice as complex (not frontier — explicit frontier only)', () => {
+            const tools = [
+                { type: 'function' as const, function: { name: 'get_weather', description: 'Get weather' } }
+            ];
+            const result = classifyRequest(
+                createRequest('What is the weather?', 1, tools, 'required'),
+                config
+            );
+            // tool_choice='required' escalates to COMPLEX (not FRONTIER — frontier requires explicit opt-in)
+            expect(result.tier).toBe(TaskTier.COMPLEX);
+        });
+
+        it('should classify verb+noun coding request as complex (not frontier — explicit opt-in only)', () => {
+            // "implement" (verb) + "algorithm" (noun) → complex (moved from frontier)
+            const result = classifyRequest(createRequest('Can you implement a sorting algorithm in TypeScript?'), config);
+            expect(result.tier).toBe(TaskTier.COMPLEX);
+        });
+
+        it('should NOT classify casual code-paste review as frontier (no verb+noun)', () => {
+            // Code block is present but no frontier verb+noun pair → should NOT be frontier
+            const message = 'Please review this code:\n```python\ndef hello():\n    print("hello")\n```';
+            const result = classifyRequest(createRequest(message), config);
+            expect(result.tier).not.toBe(TaskTier.FRONTIER_SONNET);
+            expect(result.tier).not.toBe(TaskTier.FRONTIER_OPUS);
+        });
+
+        it('should classify "implement a binary search tree in TypeScript" with context as complex/frontier', () => {
+            const longMessage = 'I need you to implement a binary search tree in TypeScript. ' +
+                'It should support insert, delete, and search operations. ' +
+                'Please also include balancing logic for AVL trees. ' +
+                'Make sure to add comprehensive error handling and type safety.';
+            const result = classifyRequest(createRequest(longMessage), config);
+            // Should be at least COMPLEX due to keywords
+            expect([TaskTier.COMPLEX, TaskTier.FRONTIER_SONNET, TaskTier.FRONTIER_OPUS]).toContain(result.tier);
+        });
+
+        it('should classify very long message as complex (not frontier — explicit opt-in only)', () => {
+            // Long message with analytical keyword → complex
+            const longMessage = 'Please analyze this: ' + 'x'.repeat(10000);
+            const result = classifyRequest(createRequest(longMessage), config);
+            // analytical_keywords ("analyze") + long_message → COMPLEX
+            expect(result.tier).toBe(TaskTier.COMPLEX);
+        });
+    });
+
+    // ========== COMPLEX TESTS ==========
+    describe('Complex Detection', () => {
+        it('should NOT classify request with tools (no tool_choice) as complex — tools alone are not a complexity signal', () => {
+            const tools = [
+                { type: 'function' as const, function: { name: 'search', description: 'Search' } }
+            ];
+            const result = classifyRequest(createRequest('Search for something', 1, tools), config);
+            // Short message with tools but no forced tool_choice → SIMPLE (content-based, ≤120 chars, no complex keywords)
+            expect(result.tier).toBe(TaskTier.SIMPLE);
+        });
+
+        it('should classify "explain the differences between REST and GraphQL" as complex', () => {
+            const message = 'Can you explain the differences between REST and GraphQL in detail? ' +
+                'I want to understand the pros and cons of each approach for my project. ' +
+                'Please include examples of when to use each one.';
+            const result = classifyRequest(createRequest(message), config);
+            expect([TaskTier.COMPLEX, TaskTier.MODERATE]).toContain(result.tier);
+        });
+
+        it('should classify short follow-up in deep conversation as simple (not complex)', () => {
+            // deep_conversation signal removed — message CONTENT drives classification, not count.
+            // A short acknowledgment in a 30-turn conversation should still be cheap.
+            const result = classifyRequest(createRequest('okay thanks!', 30), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE]).toContain(result.tier);
+        });
+    });
+
+    // ========== MODERATE TESTS ==========
+    describe('Moderate Detection', () => {
+        // Note: Short messages may be classified as heartbeat/simple even if they ask questions
+        it('should classify "what\'s the weather like today?" appropriately', () => {
+            const result = classifyRequest(createRequest("what's the weather like today?"), config);
+            // Short question could be heartbeat, simple, or moderate
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE, TaskTier.MODERATE]).toContain(result.tier);
+        });
+
+        it('should classify "tell me a joke" appropriately', () => {
+            const result = classifyRequest(createRequest('tell me a joke'), config);
+            expect([TaskTier.HEARTBEAT, TaskTier.SIMPLE, TaskTier.MODERATE]).toContain(result.tier);
+        });
+
+        it('should classify general questions as moderate or simpler', () => {
+            const result = classifyRequest(createRequest('What is the capital of France?'), config);
+            expect([TaskTier.MODERATE, TaskTier.SIMPLE, TaskTier.HEARTBEAT]).toContain(result.tier);
+        });
+    });
+
+    // ========== TOOL-AWARE ROUTING TESTS ==========
+    describe('Tool-Aware Escalation', () => {
+        it('should NOT escalate heartbeat just because tools are defined (no tool_choice)', () => {
+            const tools = [
+                { type: 'function' as const, function: { name: 'get_time', description: 'Get time' } }
+            ];
+            const result = classifyRequest(createRequest('hi', 1, tools), config);
+            // Tools defined but no forced tool use — should stay heartbeat
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+
+        it('should NOT escalate simple just because tools are defined (no tool_choice)', () => {
+            const tools = [
+                { type: 'function' as const, function: { name: 'send_message', description: 'Send msg' } }
+            ];
+            const result = classifyRequest(createRequest('ok', 1, tools), config);
+            // Tools defined but no forced tool use — should stay simple
+            expect(result.tier).toBe(TaskTier.SIMPLE);
+        });
+
+        it('should escalate to complex (not frontier) when tool_choice is forced (required)', () => {
+            const tools = [
+                { type: 'function' as const, function: { name: 'search', description: 'Search' } }
+            ];
+            const result = classifyRequest(createRequest('hi', 1, tools, 'required'), config);
+            // tool_choice='required' forces tool use → escalates to COMPLEX (frontier requires explicit opt-in)
+            expect(result.tier).toBe(TaskTier.COMPLEX);
+        });
+    });
+
+    // ========== CONFIDENCE ESCALATION TESTS ==========
+    describe('Confidence Escalation', () => {
+        it('should have high confidence for clear heartbeat', () => {
+            const result = classifyRequest(createRequest('ping'), config);
+            expect(result.confidence).toBeGreaterThanOrEqual(0.8);
+        });
+
+        it('should have high confidence for clear acknowledgment', () => {
+            const result = classifyRequest(createRequest('thanks'), config);
+            expect(result.confidence).toBeGreaterThanOrEqual(0.7);
+        });
+
+        it('should set safeToRetry correctly for heartbeat', () => {
+            const result = classifyRequest(createRequest('ping'), config);
+            expect(result.safeToRetry).toBe(true);
+        });
+
+        it('should set safeToRetry correctly for simple', () => {
+            const result = classifyRequest(createRequest('ok'), config);
+            expect(result.safeToRetry).toBe(true);
+        });
+
+        it('should set safeToRetry to false when tools present', () => {
+            const tools = [
+                { type: 'function' as const, function: { name: 'action', description: 'Do something' } }
+            ];
+            const result = classifyRequest(createRequest('go', 1, tools), config);
+            expect(result.safeToRetry).toBe(false);
+        });
+    });
+
+    // ========== EDGE CASES ==========
+    describe('Edge Cases', () => {
+        it('should handle empty message gracefully', () => {
+            const result = classifyRequest(createRequest(''), config);
+            expect(result.tier).toBeDefined();
+        });
+
+        it('should handle message with only whitespace', () => {
+            const result = classifyRequest(createRequest('   '), config);
+            expect(result.tier).toBeDefined();
+        });
+
+        it('should handle very short messages', () => {
+            const result = classifyRequest(createRequest('a'), config);
+            expect(result.tier).toBeDefined();
+        });
+
+        it('should detect model name hints', () => {
+            const request = createRequest('Do something');
+            request.model = 'heartbeat-monitor';
+            const result = classifyRequest(request, config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+    });
+
+    // ========== SPANISH LANGUAGE SUPPORT ==========
+    describe('Spanish Language Support', () => {
+        // Spanish acknowledgments should be recognized as SIMPLE
+        it.each([
+            'Gracias', 'Perfecto', 'Vale', 'Okey', 'Sí',
+            'Hecho', 'Genial', 'Dale', 'Claro', 'De acuerdo', 'Entendido',
+        ])('should classify "%s" as simple (Spanish acknowledgment)', (word) => {
+            const result = classifyRequest(createRequest(word), config);
+            expect(result.tier).toBe(TaskTier.SIMPLE);
+        });
+
+        // Spanish greetings/status checks should be HEARTBEAT via pattern, not just catch-all
+        it('should classify "Hola" as heartbeat (Spanish greeting) in deep conversation', () => {
+            const result = classifyRequest(createRequest('Hola', 5), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+
+        it('should classify "Estás ahí?" as heartbeat (Spanish status check) in deep conversation', () => {
+            const result = classifyRequest(createRequest('Estás ahí?', 5), config);
+            expect(result.tier).toBe(TaskTier.HEARTBEAT);
+        });
+    });
+
+    // ========== SHORT COMMANDS WITH TECHNICAL VERBS ==========
+    describe('Short Commands with Technical Verbs (no noun)', () => {
+        // Technical verb WITHOUT a technical noun should still be SIMPLE
+        it.each([
+            ['Fix it', 'verb only, no technical noun'],
+            ['Fix it, don\'t ask', 'verb + instruction, no noun'],
+            ['How do we fix this?', 'question under 40 chars, no technical noun'],
+            ['Deploy it', 'verb only, no noun'],
+        ])('should classify "%s" as simple (%s)', (msg) => {
+            const result = classifyRequest(createRequest(msg, 5), config);
+            expect(result.tier).toBe(TaskTier.SIMPLE);
+        });
+
+        // Technical verb + technical noun = COMPLEX (should NOT be simple)
+        it('should NOT classify "Fix the database migration" as simple (verb + noun = complex)', () => {
+            const result = classifyRequest(createRequest('Fix the database migration', 5), config);
+            expect(result.tier).not.toBe(TaskTier.SIMPLE);
+        });
+    });
+
+    // ========== SYSTEM PREAMBLE STRIPPING ==========
+    describe('System Preamble Stripping', () => {
+        it('should strip [SYSTEM: ...] block before user text', () => {
+            const input = '[SYSTEM: You are a helpful assistant.]\nWhat is 2+2?';
+            const result = stripMetadataPreamble(input);
+            expect(result).toBe('What is 2+2?');
+        });
+
+        it('should strip [CONTEXT COMPACTION] block before user text', () => {
+            const input = '[CONTEXT COMPACTION] Previous context was compressed.\nActual user question here.';
+            const result = stripMetadataPreamble(input);
+            expect(result).toBe('Actual user question here.');
+        });
+
+        it('should strip [Your active task list was preserved...] block', () => {
+            const input = '[Your active task list was preserved from the previous session.]\nDo the next task.';
+            const result = stripMetadataPreamble(input);
+            expect(result).toBe('Do the next task.');
+        });
+
+        it('should strip [Replying to: "..."] block', () => {
+            const input = '[Replying to: "How do I fix this?"]\nYes, try restarting.';
+            const result = stripMetadataPreamble(input);
+            expect(result).toBe('Yes, try restarting.');
+        });
+    });
+
+    // ========== LONG MESSAGE THRESHOLD ==========
+    describe('Long Message Threshold', () => {
+        it('should NOT classify 650-char message without keywords as complex', () => {
+            // After raising threshold to 800, 650 chars should fall to MODERATE
+            const msg = 'This is a regular message without any special keywords. '.repeat(13).trim();
+            // Ensure msg is roughly 650 chars
+            const padded = msg.substring(0, 650).padEnd(650, '.');
+            const result = classifyRequest(createRequest(padded, 5), config);
+            expect(result.tier).not.toBe(TaskTier.COMPLEX);
+        });
+
+        it('should classify 850-char message as complex via long_message signal', () => {
+            const msg = 'This is a long detailed message with many parts. '.repeat(18).trim();
+            const padded = msg.substring(0, 850).padEnd(850, '.');
+            const result = classifyRequest(createRequest(padded, 5), config);
+            expect(result.tier).toBe(TaskTier.COMPLEX);
+            expect(result.signals).toContain('long_message');
+        });
+    });
+});
+
+describe('Ollama Provider Routing', () => {
+    it('should detect ollama/ prefix as ollama provider', () => {
+        expect(getProviderForModel('ollama/granite4:350m')).toBe('ollama');
+    });
+
+    it('should detect plain ollama/ prefix model', () => {
+        expect(getProviderForModel('ollama/llama3')).toBe('ollama');
+    });
+
+    it('should resolve ollama api base url from OLLAMA_ENDPOINT env', () => {
+        const original = process.env['OLLAMA_ENDPOINT'];
+        process.env['OLLAMA_ENDPOINT'] = 'http://ollama:11434';
+        // getApiBaseUrl returns the raw endpoint (no /v1 suffix).
+        // makeProviderRequest appends /api/chat for the native Ollama path.
+        expect(getApiBaseUrl('ollama')).toBe('http://ollama:11434');
+        if (original === undefined) {
+            delete process.env['OLLAMA_ENDPOINT'];
+        } else {
+            process.env['OLLAMA_ENDPOINT'] = original;
+        }
+    });
+
+    it('should fall back to default ollama endpoint when env not set', () => {
+        const original = process.env['OLLAMA_ENDPOINT'];
+        delete process.env['OLLAMA_ENDPOINT'];
+        // Default endpoint has no /v1 suffix — path is appended by makeProviderRequest.
+        expect(getApiBaseUrl('ollama')).toBe('http://ollama:11434');
+        if (original !== undefined) {
+            process.env['OLLAMA_ENDPOINT'] = original;
+        }
+    });
+});

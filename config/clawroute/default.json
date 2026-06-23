@@ -1,0 +1,39 @@
+{
+    "enabled": true,
+    "dryRun": false,
+    "providerProfile": "openrouter",
+    "baselineModel": "openrouter/anthropic/claude-sonnet-4.6",
+    "proxyPort": 18790,
+    "proxyHost": "127.0.0.1",
+    "authToken": null,
+    "classification": {
+        "conservativeMode": true,
+        "minConfidence": 0.7,
+        "toolAwareRouting": true
+    },
+    "escalation": {
+        "enabled": true,
+        "maxRetries": 1,
+        "retryDelayMs": 100,
+        "onlyRetryBeforeStreaming": true,
+        "onlyRetryWithoutToolCalls": false,
+        "alwaysFallbackToOriginal": false
+    },
+    "logging": {
+        "dbPath": "./data/clawroute.db",
+        "logContent": false,
+        "logSystemPrompts": false,
+        "debugMode": false,
+        "retentionDays": 30
+    },
+    "dashboard": {
+        "enabled": true
+    },
+    "contextOverrides": {
+        "codex/gpt-5.5": 1050000,
+        "codex/gpt-5.4": 1050000,
+        "codex/gpt-5.4-mini": 400000,
+        "codex/gpt-4.1": 256000,
+        "codex/gpt-4.1-mini": 256000
+    }
+}

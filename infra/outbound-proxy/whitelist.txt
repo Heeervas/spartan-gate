@@ -1,0 +1,71 @@
+# Spartan Gate public outbound whitelist.
+#
+# Keep this file generic and publishable. Machine-specific domains, project
+# domains, personal services, private APIs and temporary debugging hosts belong
+# in private/outbound-proxy/whitelist.private.txt.
+
+# Package managers and public source hosting.
+github.com
+api.github.com
+raw.githubusercontent.com
+objects.githubusercontent.com
+codeload.github.com
+registry.npmjs.org
+pypi.org
+files.pythonhosted.org
+deb.debian.org
+security.debian.org
+archive.ubuntu.com
+security.ubuntu.com
+
+# Common AI provider APIs.
+api.openai.com
+auth.openai.com
+chatgpt.com
+openai.com
+openaipublic.blob.core.windows.net
+openaipublic.azureedge.net
+openrouter.ai
+api.anthropic.com
+api.deepseek.com
+api.x.ai
+api.stepfun.com
+generativelanguage.googleapis.com
+aiplatform.googleapis.com
+oauth2.googleapis.com
+www.googleapis.com
+googleapis.com
+
+# Codex/GitHub auth and completions.
+api.githubcopilot.com
+githubcopilot.com
+
+# Search/browser infrastructure that agents commonly need.
+dns.google
+cloudflare-dns.com
+api.osv.dev
+addons.mozilla.org
+
+# Generic smoke-test destinations.
+example.com
+
+# Messaging integrations, disabled unless tokens are configured.
+api.telegram.org
+telegram.org
+core.telegram.org
+discord.com
+gateway.discord.gg
+cdn.discordapp.com
+media.discordapp.net
+
+# Model/artifact registries.
+huggingface.co
+cdn-lfs.huggingface.co
+xethub.hf.co
+registry.ollama.ai
+cdn.ollama.ai
+
+# Hermes upstreams.
+hermes-agent.nousresearch.com
+nousresearch.com
+portal.nousresearch.com

@@ -1,0 +1,58 @@
+# SearXNG - settings for Spartan Gate / Hermes
+# JSON API only, no web UI needed
+
+use_default_settings: true
+
+general:
+  instance_name: "spartan-gate-search"
+  debug: false
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "change-me-or-it-will-be-auto-generated"
+  # No public access – internal Docker network only
+  limiter: false
+  public_instance: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "es"
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true
+
+engines:
+  # Google
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+
+  # DuckDuckGo
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+
+  # Bing
+  - name: bing
+    engine: bing
+    shortcut: b
+    disabled: false
+
+  # Wikipedia
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+
+outgoing:
+  # SearXNG braucht direkten Internetzugang (kein Proxy nötig,
+  # da es im externen Netzwerk hängt)
+  request_timeout: 10.0
+  useragent_suffix: ""

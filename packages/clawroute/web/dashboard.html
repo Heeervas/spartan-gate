@@ -1,0 +1,1284 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClawRoute Dashboard</title>
+  <style>
+    :root {
+      --bg-primary: #0a0e17;
+      --bg-secondary: rgba(22, 27, 40, 0.7);
+      --bg-tertiary: rgba(33, 38, 52, 0.6);
+      --bg-glass: rgba(16, 20, 32, 0.55);
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-muted: #6e7681;
+      --accent-green: #3fb950;
+      --accent-green-dim: #238636;
+      --accent-red: #f85149;
+      --accent-blue: #58a6ff;
+      --accent-yellow: #d29922;
+      --accent-purple: #a371f7;
+      --accent-cyan: #39d2c0;
+      --border-color: rgba(48, 54, 61, 0.6);
+      --glass-border: rgba(255, 255, 255, 0.06);
+      --shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      --shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.55);
+      --gradient-green: linear-gradient(135deg, #3fb950, #2ea043);
+      --gradient-purple: linear-gradient(135deg, #a371f7, #8957e5);
+      --gradient-blue: linear-gradient(135deg, #58a6ff, #388bfd);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Portal nav bar — shown when accessed via /clawroute/* proxy */
+    #portal-nav {
+      display: none;
+      background: rgba(10, 14, 23, 0.95);
+      border-bottom: 1px solid rgba(48, 54, 61, 0.8);
+      padding: 7px 28px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+
+      -webkit-
+    }
+
+    .portal-nav-inner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: 1260px;
+      margin: 0 auto;
+      font-size: 12px;
+    }
+
+    .portal-link {
+      color: var(--accent-blue);
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.2s ease;
+    }
+
+    .portal-link:hover { color: var(--text-primary); }
+    .portal-separator { color: var(--text-muted); }
+
+    .portal-current {
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    /* Animated background gradient */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle at 20% 50%, rgba(63, 185, 80, 0.04) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(88, 166, 255, 0.03) 0%, transparent 50%),
+        radial-gradient(circle at 50% 80%, rgba(163, 113, 247, 0.03) 0%, transparent 50%);
+
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    @keyframes bgShift {
+      0% {
+        transform: translate(0, 0) rotate(0deg);
+      }
+
+      100% {
+        transform: translate(-5%, -5%) rotate(3deg);
+      }
+    }
+
+    .container {
+      max-width: 1260px;
+      margin: 0 auto;
+      padding: 28px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* === Header === */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 36px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+
+
+    }
+
+    @keyframes fadeSlideDown {
+      from {
+
+
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      letter-spacing: -0.3px;
+    }
+
+    h1 .logo {
+      font-size: 30px;
+      filter: drop-shadow(0 0 8px rgba(63, 185, 80, 0.3));
+    }
+
+    h1 .version {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: var(--bg-tertiary);
+      padding: 2px 8px;
+      border-radius: 6px;
+      margin-left: 4px;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 18px;
+      border-radius: 24px;
+      font-size: 13px;
+      font-weight: 600;
+
+      transition: all 0.3s ease;
+    }
+
+    .status-badge.live {
+      background: rgba(35, 134, 54, 0.25);
+      color: var(--accent-green);
+
+    }
+
+    .status-badge.dry-run {
+      background: rgba(210, 153, 34, 0.15);
+      color: var(--accent-yellow);
+    }
+
+    .status-badge.disabled {
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      position: relative;
+    }
+
+    .status-dot::after {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+
+    }
+
+    .status-dot.live {
+      background: var(--accent-green);
+    }
+
+    .status-dot.live::after {
+      border: 2px solid var(--accent-green);
+    }
+
+    .status-dot.dry-run {
+      background: var(--accent-yellow);
+    }
+
+    .status-dot.dry-run::after {
+      border: 2px solid var(--accent-yellow);
+    }
+
+    .status-dot.disabled {
+      background: var(--text-muted);
+      animation: none;
+    }
+
+    .status-dot.disabled::after {
+      display: none;
+    }
+
+    @keyframes heartbeat {
+
+      0%,
+      100% {
+
+        transform: scale(0.8);
+      }
+
+      50% {
+        opacity: 0.6;
+        transform: scale(1.6);
+      }
+    }
+
+    /* === Cards === */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 18px;
+      margin-bottom: 28px;
+    }
+
+    .card {
+      background: var(--bg-glass);
+
+      -webkit-
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 22px;
+      box-shadow: var(--shadow);
+
+
+
+
+
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent-green), transparent);
+
+      transition: opacity 0.3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-hover);
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    .card:hover::before {
+      opacity: 1;
+    }
+
+    .card.animate-visible {
+
+    }
+
+    @keyframes cardEntrance {
+      from {
+
+
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .card-label {
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    .info-icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 1px solid var(--text-muted);
+      color: var(--text-muted);
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: help;
+      transition: all 0.2s ease;
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .info-icon:hover {
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+      transform: scale(1.1);
+    }
+
+    .tooltip {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      right: -8px;
+      background: #1c2333;
+      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 400;
+      letter-spacing: 0;
+      text-transform: none;
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border-color);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      width: 240px;
+      line-height: 1.5;
+      pointer-events: none;
+
+      transform: translateY(4px);
+      transition: all 0.2s ease;
+      z-index: 100;
+    }
+
+    .tooltip::after {
+      content: '';
+      position: absolute;
+      top: 100%;
+      right: 14px;
+      border: 6px solid transparent;
+      border-top-color: #1c2333;
+    }
+
+    .info-icon:hover .tooltip {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .card-value {
+      font-size: 34px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      line-height: 1.1;
+    }
+
+    .card-value.savings {
+      background: var(--gradient-green);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .card-value.neutral {
+      color: var(--text-primary);
+    }
+
+    .card-sub {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-top: 6px;
+    }
+
+    /* Glow effect for active savings */
+    .card.has-savings {
+      box-shadow: var(--shadow), 0 0 30px rgba(63, 185, 80, 0.08);
+    }
+
+    .card.has-savings::before {
+      opacity: 0.6;
+    }
+
+    /* === Sections === */
+    .section {
+      background: var(--bg-glass);
+
+      -webkit-
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow);
+
+
+    }
+
+    .section.animate-visible {
+
+    }
+
+    @keyframes sectionEntrance {
+      from {
+
+
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .section-title {
+      font-size: 15px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* === Tier Breakdown === */
+    .tier-breakdown {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .tier-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+
+
+    }
+
+    .tier-row.animate-visible {
+
+    }
+
+    @keyframes tierSlideIn {
+      from {
+
+
+      }
+
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    .tier-name {
+      width: 90px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .tier-bar {
+      flex: 1;
+      height: 28px;
+      background: rgba(33, 38, 52, 0.5);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .tier-fill {
+      height: 100%;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      padding-left: 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: white;
+      width: 0;
+      transition: width 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    .tier-fill.heartbeat {
+      background: linear-gradient(90deg, #3fb950, #2ea043);
+    }
+
+    .tier-fill.simple {
+      background: linear-gradient(90deg, #58a6ff, #388bfd);
+    }
+
+    .tier-fill.moderate {
+      background: linear-gradient(90deg, #a371f7, #8957e5);
+    }
+
+    .tier-fill.complex {
+      background: linear-gradient(90deg, #d29922, #b08700);
+    }
+
+    .tier-fill.frontier {
+      background: linear-gradient(90deg, #f85149, #da3633);
+    }
+
+    .tier-model {
+      width: 160px;
+      font-size: 11px;
+      color: var(--text-muted);
+      text-align: right;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+
+    /* === Table === */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+    }
+
+    th {
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr {
+      transition: background 0.2s ease;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    tbody tr {
+
+
+    }
+
+    tbody tr.animate-visible {
+
+    }
+
+    @keyframes rowFadeIn {
+      from {
+
+
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .badge.heartbeat {
+      background: rgba(63, 185, 80, 0.15);
+      color: var(--accent-green);
+    }
+
+    .badge.simple {
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent-blue);
+    }
+
+    .badge.moderate {
+      background: rgba(163, 113, 247, 0.15);
+      color: var(--accent-purple);
+    }
+
+    .badge.complex {
+      background: rgba(210, 153, 34, 0.15);
+      color: var(--accent-yellow);
+    }
+
+    .badge.frontier {
+      background: rgba(248, 81, 73, 0.15);
+      color: var(--accent-red);
+    }
+
+    .badge.escalated {
+      background: rgba(248, 81, 73, 0.15);
+      color: var(--accent-red);
+    }
+
+    /* === Controls === */
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-top: 28px;
+
+
+    }
+
+    button {
+      padding: 11px 22px;
+      border-radius: 10px;
+      border: 1px solid var(--border-color);
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+      position: relative;
+      overflow: hidden;
+    }
+
+    button::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at var(--ripple-x, 50%) var(--ripple-y, 50%), rgba(255, 255, 255, 0.15), transparent 60%);
+
+      transition: opacity 0.4s ease;
+    }
+
+    button:active::after {
+      opacity: 1;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button.primary {
+      background: var(--accent-green-dim);
+      border-color: var(--accent-green-dim);
+    }
+
+    button.primary:hover {
+      background: var(--accent-green);
+      box-shadow: 0 4px 20px rgba(63, 185, 80, 0.3);
+    }
+
+    button.danger {
+      background: rgba(248, 81, 73, 0.15);
+      border-color: rgba(248, 81, 73, 0.4);
+      color: var(--accent-red);
+    }
+
+    button.danger:hover {
+      background: var(--accent-red);
+      color: white;
+      box-shadow: 0 4px 20px rgba(248, 81, 73, 0.3);
+    }
+
+    .btn-tooltip {
+      position: relative;
+    }
+
+    .btn-tooltip .btn-tip {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%) translateY(4px);
+      background: #1c2333;
+      color: var(--text-primary);
+      font-size: 11px;
+      font-weight: 400;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+      white-space: nowrap;
+      pointer-events: none;
+
+      transition: all 0.2s ease;
+      z-index: 100;
+    }
+
+    .btn-tooltip:hover .btn-tip {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* === Billing Card === */
+    .billing-card {
+      border-color: rgba(163, 113, 247, 0.2);
+    }
+
+    .billing-card::before {
+      background: linear-gradient(90deg, transparent, var(--accent-purple), transparent);
+    }
+
+    .plan-badge {
+      display: inline-block;
+      padding: 5px 14px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .plan-badge.pro {
+      background: rgba(163, 113, 247, 0.2);
+      color: var(--accent-purple);
+      box-shadow: 0 0 12px rgba(163, 113, 247, 0.1);
+    }
+
+    .plan-badge.free {
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+    }
+
+    .grace-warning {
+      background: rgba(210, 153, 34, 0.08);
+      border: 1px solid rgba(210, 153, 34, 0.3);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: var(--accent-yellow);
+      margin-top: 12px;
+      line-height: 1.4;
+    }
+
+    .billing-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .billing-actions button {
+      flex: 1;
+      font-size: 11px;
+      padding: 8px 12px;
+    }
+
+    /* === Footer === */
+    .footer {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 20px 0 8px;
+      border-top: 1px solid var(--border-color);
+
+      animation: fadeSlideDown 0.6s ease 1s forwards;
+    }
+
+    .footer a {
+      color: var(--accent-blue);
+      text-decoration: none;
+      transition: color 0.2s ease;
+    }
+
+    .footer a:hover {
+      color: var(--accent-purple);
+    }
+
+    .refresh-indicator {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .refresh-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      animation: refreshPulse 30s linear infinite;
+    }
+
+    @keyframes refreshPulse {
+
+      0%,
+      97% {
+        opacity: 0.3;
+      }
+
+      98%,
+      100% {
+        opacity: 1;
+      }
+    }
+
+    /* === Responsive === */
+    @media (max-width: 768px) {
+      .container {
+        padding: 16px;
+      }
+
+      header {
+        flex-direction: column;
+        gap: 16px;
+        text-align: center;
+      }
+
+      .tier-model {
+        display: none;
+      }
+
+      .controls {
+        flex-direction: column;
+      }
+
+      .tooltip {
+        width: 200px;
+        right: -40px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <nav id="portal-nav">
+    <div class="portal-nav-inner">
+      <a href="/" class="portal-link">⊞ All Services</a>
+      <span class="portal-separator">›</span>
+      <a id="archive-dashboard-link" href="/dashboard" class="portal-link">Dashboard</a>
+      <span class="portal-separator">›</span>
+      <a id="archive-codex-link" href="/dashboard-codex" class="portal-link">Codex Usage</a>
+      <span class="portal-separator">›</span>
+      <a id="archive-analysis-link" href="/dashboard-codex-analysis" class="portal-link">Codex Analysis</a>
+      <span class="portal-separator">›</span>
+      <span class="portal-current">Archived</span>
+    </div>
+  </nav>
+  <div class="container">
+    <header>
+      <h1>
+        <span class="logo">🦀</span>
+        ClawRoute
+        <span class="version">v1.1</span>
+      </h1>
+      <div class="status-badge live" id="statusBadge">
+        <span class="status-dot live"></span>
+        <span id="statusText">Live</span>
+      </div>
+    </header>
+
+    <div class="cards">
+      <!-- Saved Today -->
+      <div class="card" id="cardSavings">
+        <div class="card-header">
+          <span class="card-label">Saved Today</span>
+          <div class="info-icon">ⓘ
+            <div class="tooltip">Total USD saved by routing requests to cheaper models today. Calculated as the
+              difference between original model costs and actual routed costs.</div>
+          </div>
+        </div>
+        <div class="card-value savings" id="savedToday">$0.00</div>
+        <div class="card-sub"><span id="savingsPercent">0</span>% savings rate</div>
+      </div>
+
+      <!-- Requests Today -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-label">Requests Today</span>
+          <div class="info-icon">ⓘ
+            <div class="tooltip">Number of LLM requests routed through ClawRoute today. Includes all tiers from
+              heartbeat (cheapest) to frontier (most complex).</div>
+          </div>
+        </div>
+        <div class="card-value neutral" id="requestsToday">0</div>
+        <div class="card-sub"><span id="escalations">0</span> escalations</div>
+      </div>
+
+      <!-- Monthly Savings -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-label">Monthly Savings</span>
+          <div class="info-icon">ⓘ
+            <div class="tooltip">Cumulative savings for the current billing month. This is used to calculate your
+              suggested Pro payment (2% of savings, min $9/mo).</div>
+          </div>
+        </div>
+        <div class="card-value savings" id="savedMonth">$0.00</div>
+        <div class="card-sub"><span id="requestsMonth">0</span> requests this month</div>
+      </div>
+
+      <!-- Plan & Billing -->
+      <div class="card billing-card">
+        <div class="card-header">
+          <span class="card-label">Plan & Billing</span>
+          <div class="info-icon">ⓘ
+            <div class="tooltip">Your current plan. Free = HEARTBEAT/SIMPLE routing only. Pro = full routing for all
+              tiers, escalation, analytics, and custom model mappings.</div>
+          </div>
+        </div>
+        <div class="card-value" id="planStatusValue">
+          <span class="plan-badge free" id="planBadge">Free</span>
+        </div>
+        <div class="card-sub" id="billingSub">Loading...</div>
+        <div id="graceWarning" class="grace-warning" style="display:none;"></div>
+        <div class="billing-actions">
+          <button id="btnAckPayment">💳 Acknowledge Payment</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tier Breakdown -->
+    <div class="section" id="sectionTiers">
+      <div class="section-header">
+        <div class="section-title">
+          📊 Tier Breakdown (Today)
+        </div>
+        <div class="info-icon">ⓘ
+          <div class="tooltip">How requests are distributed by complexity tier. Each tier maps to a different model —
+            lower tiers use cheaper models, saving you money on simple tasks.</div>
+        </div>
+      </div>
+      <div class="tier-breakdown" id="tierBreakdown">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+    <!-- Recent Decisions -->
+    <div class="section" id="sectionRecent">
+      <div class="section-header">
+        <div class="section-title">
+          📋 Recent Routing Decisions
+        </div>
+        <div class="refresh-indicator">
+          <span class="refresh-dot"></span>
+          Auto-refresh 30s
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Tier</th>
+            <th>Routed To</th>
+            <th>Saved</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="recentDecisions">
+          <!-- Populated by JS -->
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <div class="btn-tooltip">
+        <button class="primary" id="btnEnable">✅ Enable</button>
+        <span class="btn-tip">Enable ClawRoute routing — requests will be classified and routed to cheaper models</span>
+      </div>
+      <div class="btn-tooltip">
+        <button id="btnDryRun">🔬 Toggle Dry-Run</button>
+        <span class="btn-tip">Dry-run mode: classify and log decisions without actually rerouting. Safe for
+          testing</span>
+      </div>
+      <div class="btn-tooltip">
+        <button class="danger" id="btnDisable">⏸ Disable</button>
+        <span class="btn-tip">Disable routing — all requests pass through to the original model unchanged</span>
+      </div>
+    </div>
+
+    <div class="footer">
+      ClawRoute v1.1 — Built with ❤️ by <a href="https://github.com/atharv404" target="_blank">atharv404</a>
+    </div>
+  </div>
+
+  <script>
+    // Detect if proxied via /clawroute/* (portal routing)
+    const BASE = location.pathname.startsWith('/clawroute') ? '/clawroute' : '';
+    if (BASE) document.getElementById('portal-nav').style.display = 'block';
+    document.getElementById('archive-dashboard-link').href = BASE + '/dashboard';
+    document.getElementById('archive-codex-link').href = BASE + '/dashboard-codex';
+    document.getElementById('archive-analysis-link').href = BASE + '/dashboard-codex-analysis';
+
+    const tiers = ['heartbeat', 'simple', 'moderate', 'complex', 'frontier'];
+
+    // === Animated Number Counter ===
+    function animateNumber(el, target, prefix = '', suffix = '', decimals = 0) {
+      const start = parseFloat(el.textContent.replace(/[^0-9.\-]/g, '')) || 0;
+      const duration = 600;
+      const startTime = performance.now();
+
+      function update(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease out cubic
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const current = start + (target - start) * eased;
+        el.textContent = prefix + current.toFixed(decimals) + suffix;
+        if (progress < 1) requestAnimationFrame(update);
+      }
+
+      requestAnimationFrame(update);
+    }
+
+    // === Intersection Observer for animations ===
+    function animateOnView() {
+      const cards = document.querySelectorAll('.card');
+      cards.forEach((card, i) => {
+        setTimeout(() => card.classList.add('animate-visible'), i * 100);
+      });
+
+      const sections = document.querySelectorAll('.section');
+      sections.forEach((section, i) => {
+        setTimeout(() => section.classList.add('animate-visible'), 400 + i * 150);
+      });
+    }
+
+    // === Ripple effect on buttons ===
+    document.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('mousedown', (e) => {
+        const rect = btn.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 100;
+        const y = ((e.clientY - rect.top) / rect.height) * 100;
+        btn.style.setProperty('--ripple-x', x + '%');
+        btn.style.setProperty('--ripple-y', y + '%');
+      });
+    });
+
+    // === Data Fetching ===
+    async function fetchStats() {
+      try {
+        const response = await fetch(BASE + '/stats');
+        const data = await response.json();
+        updateDashboard(data);
+      } catch (error) {
+        console.error('Failed to fetch stats:', error);
+      }
+    }
+
+    function updateDashboard(data) {
+      // Status badge
+      const statusBadge = document.getElementById('statusBadge');
+      const statusDot = statusBadge.querySelector('.status-dot');
+      const statusText = document.getElementById('statusText');
+
+      statusBadge.className = 'status-badge';
+      statusDot.className = 'status-dot';
+
+      if (!data.config.enabled) {
+        statusBadge.classList.add('disabled');
+        statusDot.classList.add('disabled');
+        statusText.textContent = 'Disabled';
+      } else if (data.config.dryRun) {
+        statusBadge.classList.add('dry-run');
+        statusDot.classList.add('dry-run');
+        statusText.textContent = 'Dry-Run';
+      } else {
+        statusBadge.classList.add('live');
+        statusDot.classList.add('live');
+        statusText.textContent = 'Live';
+      }
+
+      // Cards — animated counters
+      animateNumber(document.getElementById('savedToday'), data.today.savingsUsd, '$', '', 2);
+      animateNumber(document.getElementById('savingsPercent'), data.today.savingsPercent, '', '', 1);
+      animateNumber(document.getElementById('requestsToday'), data.today.requests, '', '', 0);
+      animateNumber(document.getElementById('escalations'), data.today.escalations, '', '', 0);
+      animateNumber(document.getElementById('savedMonth'), data.thisMonth.savingsUsd, '$', '', 2);
+      animateNumber(document.getElementById('requestsMonth'), data.thisMonth.requests, '', '', 0);
+
+      // Savings glow effect
+      const savingsCard = document.getElementById('cardSavings');
+      if (data.today.savingsUsd > 0) {
+        savingsCard.classList.add('has-savings');
+      } else {
+        savingsCard.classList.remove('has-savings');
+      }
+
+      // Tier breakdown
+      const tierContainer = document.getElementById('tierBreakdown');
+      tierContainer.innerHTML = '';
+
+      const maxCount = Math.max(...tiers.map(t => data.today.tierBreakdown[t] || 0), 1);
+
+      for (let i = 0; i < tiers.length; i++) {
+        const tier = tiers[i];
+        const count = data.today.tierBreakdown[tier] || 0;
+        const pct = (count / maxCount) * 100;
+        const model = data.config.modelMap[tier] || 'unknown';
+        const shortModel = model.split('/').pop();
+
+        const row = document.createElement('div');
+        row.className = 'tier-row';
+        row.innerHTML = `
+          <span class="tier-name">${capitalize(tier)}</span>
+          <div class="tier-bar">
+            <div class="tier-fill ${tier}" id="tierFill-${tier}">
+              ${count > 0 ? count : ''}
+            </div>
+          </div>
+          <span class="tier-model">→ ${shortModel}</span>
+        `;
+        tierContainer.appendChild(row);
+
+        // Staggered animation
+        setTimeout(() => {
+          row.classList.add('animate-visible');
+          const fill = document.getElementById(`tierFill-${tier}`);
+          if (fill) {
+            fill.style.width = `${Math.max(pct, count > 0 ? 12 : 0)}%`;
+          }
+        }, i * 80);
+      }
+
+      // Recent decisions
+      const tbody = document.getElementById('recentDecisions');
+      tbody.innerHTML = '';
+
+      if (data.recentDecisions.length === 0) {
+        tbody.innerHTML = '<tr class="animate-visible"><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 24px;">No routing decisions yet — start making requests!</td></tr>';
+        return;
+      }
+
+      data.recentDecisions.slice(0, 15).forEach((decision, i) => {
+        const time = new Date(decision.timestamp).toLocaleTimeString().slice(0, 5);
+        const model = decision.routedModel.split('/').pop();
+        const saved = '$' + decision.savingsUsd.toFixed(3);
+        const status = decision.escalated ? '<span class="badge escalated">↑ Escalated</span>' : '<span style="color: var(--accent-green)">✓</span>';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${time}</td>
+          <td><span class="badge ${decision.tier}">${decision.tier}</span></td>
+          <td style="font-family: 'SF Mono', monospace; font-size: 12px;">${model}</td>
+          <td style="color: var(--accent-green); font-weight: 500;">${saved}</td>
+          <td>${status}</td>
+        `;
+        tbody.appendChild(tr);
+
+        setTimeout(() => tr.classList.add('animate-visible'), i * 40);
+      });
+    }
+
+    function capitalize(str) {
+      return str.charAt(0).toUpperCase() + str.slice(1);
+    }
+
+    async function apiPost(endpoint) {
+      try {
+        await fetch(BASE + endpoint, { method: 'POST' });
+        fetchStats();
+      } catch (error) {
+        console.error('API error:', error);
+      }
+    }
+
+    // Control buttons
+    document.getElementById('btnEnable').addEventListener('click', () => apiPost('/api/enable'));
+    document.getElementById('btnDisable').addEventListener('click', () => apiPost('/api/disable'));
+    document.getElementById('btnDryRun').addEventListener('click', async () => {
+      const response = await fetch(BASE + '/stats');
+      const data = await response.json();
+      const endpoint = data.config.dryRun ? '/api/dry-run/disable' : '/api/dry-run/enable';
+      apiPost(endpoint);
+    });
+
+    // Billing functions
+    async function fetchBilling() {
+      try {
+        const response = await fetch(BASE + '/billing/summary');
+        const data = await response.json();
+        updateBillingPanel(data);
+      } catch (error) {
+        console.error('Failed to fetch billing:', error);
+      }
+    }
+
+    function updateBillingPanel(data) {
+      const planBadge = document.getElementById('planBadge');
+      const billingSub = document.getElementById('billingSub');
+      const graceWarning = document.getElementById('graceWarning');
+
+      planBadge.className = 'plan-badge ' + data.plan;
+      planBadge.textContent = data.plan === 'pro' ? 'Pro' : 'Free';
+
+      if (data.plan === 'pro' || data.graceActive) {
+        billingSub.textContent = `Suggested: $${data.suggestedUsd.toFixed(2)}/mo (${(data.proRatePercent * 100).toFixed(0)}% of savings)`;
+      } else {
+        billingSub.textContent = 'Limited routing on Free plan';
+      }
+
+      if (data.graceActive) {
+        const graceEnd = new Date(data.graceUntil || '').toLocaleDateString();
+        graceWarning.innerHTML = `⏳ Trial period active until ${graceEnd}. All Pro features enabled.`;
+        graceWarning.style.display = 'block';
+        planBadge.className = 'plan-badge pro';
+        planBadge.textContent = 'Trial';
+      } else {
+        graceWarning.style.display = 'none';
+      }
+    }
+
+    // Payment acknowledgment
+    document.getElementById('btnAckPayment').addEventListener('click', async () => {
+      const amount = prompt('Enter payment amount (USD):', '9');
+      if (!amount) return;
+      const method = prompt('Payment method (stripe/usdc/manual):', 'manual');
+      if (!method) return;
+
+      try {
+        await fetch(BASE + '/billing/acknowledge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amountUsd: parseFloat(amount),
+            method: method,
+            note: 'Acknowledged via dashboard'
+          })
+        });
+        alert('✅ Payment acknowledged! Thank you for supporting ClawRoute.');
+        fetchBilling();
+      } catch (error) {
+        alert('Failed to acknowledge payment');
+      }
+    });
+
+    // Initial load
+    animateOnView();
+    fetchStats();
+    fetchBilling();
+    setInterval(fetchStats, 30000);
+    setInterval(fetchBilling, 60000);
+  </script>
+</body>
+
+</html>

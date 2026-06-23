@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClawRoute Codex Analysis</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --panel: #151a21;
+            --panel-2: #111820;
+            --border: #30363d;
+            --border-soft: rgba(48, 54, 61, 0.65);
+            --text: #d7dee7;
+            --muted: #8b949e;
+            --green: #3fb950;
+            --blue: #58a6ff;
+            --yellow: #d29922;
+            --red: #f85149;
+            --cyan: #39d2c0;
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            font-size: 13px;
+            line-height: 1.45;
+        }
+
+        #portal-nav {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            padding: 6px 24px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(13, 17, 23, 0.96);
+            backdrop-filter: blur(8px);
+        }
+        .portal-inner, .container { max-width: 1320px; margin: 0 auto; }
+        .portal-inner { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .portal-current { color: var(--muted); font-size: 13px; }
+        .portal-menu { display: flex; gap: 4px; flex-wrap: wrap; }
+        .portal-menu a {
+            padding: 4px 9px;
+            border-radius: 6px;
+            color: var(--muted);
+            font-size: 12px;
+            text-decoration: none;
+        }
+        .portal-menu a:hover { background: var(--border); color: var(--text); }
+        .portal-menu a.current { background: rgba(88, 166, 255, 0.13); color: var(--blue); }
+
+        .container { padding: 22px 24px 38px; }
+        .topbar {
+            display: grid;
+            grid-template-columns: minmax(260px, 1fr) auto;
+            gap: 16px;
+            align-items: start;
+            margin-bottom: 16px;
+        }
+        h1 { margin: 0 0 4px; font-size: 28px; line-height: 1.15; }
+        h2 {
+            margin: 0;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        .muted { color: var(--muted); }
+        .status { color: var(--muted); font-size: 12px; text-align: right; }
+
+        .controls {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .field {
+            display: grid;
+            gap: 4px;
+        }
+        label {
+            color: var(--muted);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        select, input, button {
+            height: 32px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #0d1117;
+            color: var(--text);
+            font: inherit;
+            font-size: 12px;
+        }
+        select, input { padding: 0 8px; }
+        button { padding: 0 10px; cursor: pointer; }
+        button.primary { border-color: rgba(88, 166, 255, 0.55); color: var(--blue); }
+        #token { width: 220px; }
+        .number-input { width: 88px; }
+
+        .report {
+            display: grid;
+            gap: 14px;
+        }
+        .hero {
+            display: grid;
+            grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+            gap: 14px;
+            align-items: stretch;
+        }
+        .panel {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel);
+        }
+        .headline {
+            padding: 18px;
+            background: linear-gradient(180deg, rgba(88, 166, 255, 0.07), rgba(21, 26, 33, 0));
+        }
+        .headline-title {
+            margin-bottom: 8px;
+            font-size: 20px;
+            font-weight: 750;
+        }
+        .headline-copy {
+            max-width: 920px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+        .headline-metrics {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin-top: 18px;
+        }
+        .metric {
+            min-width: 0;
+            padding: 12px;
+            border: 1px solid var(--border-soft);
+            border-radius: 8px;
+            background: rgba(13, 17, 23, 0.45);
+        }
+        .metric-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        .metric-value {
+            overflow: hidden;
+            margin-top: 3px;
+            font-size: 23px;
+            font-weight: 760;
+            line-height: 1.15;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        .metric-sub {
+            overflow: hidden;
+            margin-top: 3px;
+            color: var(--muted);
+            font-size: 11px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .decision-list {
+            display: grid;
+            gap: 8px;
+            padding: 14px;
+        }
+        .decision {
+            display: grid;
+            grid-template-columns: 8px 1fr;
+            gap: 10px;
+            align-items: start;
+        }
+        .decision-dot {
+            width: 8px;
+            height: 8px;
+            margin-top: 6px;
+            border-radius: 50%;
+            background: var(--blue);
+        }
+        .decision-dot.good { background: var(--green); }
+        .decision-dot.warn { background: var(--yellow); }
+        .decision-dot.bad { background: var(--red); }
+        .decision-title { font-weight: 700; }
+        .decision-detail { color: var(--muted); font-size: 12px; }
+
+        .slot-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+        .slot-card {
+            display: grid;
+            gap: 10px;
+            padding: 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel);
+        }
+        .slot-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            align-items: baseline;
+        }
+        .slot-title { font-size: 16px; font-weight: 750; }
+        .slot-badge {
+            padding: 2px 7px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+        .slot-stats {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .mini-stat {
+            padding: 8px;
+            border-radius: 6px;
+            background: var(--panel-2);
+        }
+        .mini-stat strong {
+            display: block;
+            font-size: 16px;
+            font-variant-numeric: tabular-nums;
+        }
+        .mini-stat span { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+        .comparison {
+            display: grid;
+            gap: 7px;
+        }
+        .compare-row {
+            display: grid;
+            grid-template-columns: 72px 1fr 100px;
+            gap: 8px;
+            align-items: center;
+            font-size: 12px;
+        }
+        .track {
+            height: 9px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: #0b1016;
+        }
+        .bar {
+            height: 100%;
+            border-radius: inherit;
+            background: var(--blue);
+        }
+        .bar.actual { background: var(--yellow); }
+        .bar.cost { background: var(--green); }
+        .bar.danger { background: var(--red); }
+        .delta-good { color: var(--green); }
+        .delta-bad { color: var(--red); }
+        .delta-neutral { color: var(--muted); }
+
+        .chart-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 12px;
+        }
+        .chart-panel { padding: 14px; }
+        .chart-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+        .legend {
+            display: flex;
+            gap: 10px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+        .legend span::before {
+            content: "";
+            display: inline-block;
+            width: 9px;
+            height: 9px;
+            margin-right: 4px;
+            border-radius: 50%;
+            background: var(--blue);
+        }
+        .legend .actual::before { background: var(--yellow); }
+        .line-chart {
+            width: 100%;
+            height: 180px;
+            overflow: visible;
+        }
+        .axis { stroke: #2b333d; stroke-width: 1; }
+        .line-expected { fill: none; stroke: var(--blue); stroke-width: 2.5; }
+        .line-actual { fill: none; stroke: var(--yellow); stroke-width: 2.5; }
+        .point-expected { fill: var(--blue); }
+        .point-actual { fill: var(--yellow); }
+        .chart-labels {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+        .bar-chart {
+            display: grid;
+            gap: 9px;
+            margin-top: 8px;
+        }
+        .bar-row {
+            display: grid;
+            grid-template-columns: 130px 1fr 112px;
+            gap: 10px;
+            align-items: center;
+            font-size: 12px;
+        }
+        .bar-name {
+            overflow: hidden;
+            color: var(--muted);
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .dual-track {
+            display: grid;
+            gap: 3px;
+        }
+
+        details.panel {
+            padding: 0;
+        }
+        summary {
+            cursor: pointer;
+            padding: 13px 14px;
+            color: var(--text);
+            font-weight: 750;
+            list-style: none;
+        }
+        summary::-webkit-details-marker { display: none; }
+        .details-body { padding: 0 14px 14px; }
+        .tables {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        th, td {
+            padding: 7px 8px;
+            border-bottom: 1px solid var(--border);
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            color: var(--muted);
+            font-size: 10px;
+            font-weight: 750;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        @media (max-width: 1080px) {
+            .hero, .chart-grid, .tables { grid-template-columns: 1fr; }
+            .slot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 720px) {
+            .container { padding: 16px; }
+            .topbar { grid-template-columns: 1fr; }
+            .controls { justify-content: flex-start; }
+            .headline-metrics, .slot-grid, .slot-stats { grid-template-columns: 1fr; }
+            .bar-row, .compare-row { grid-template-columns: 1fr; }
+            #token { width: min(100%, 260px); }
+        }
+    </style>
+</head>
+<body>
+    <nav id="portal-nav">
+        <div class="portal-inner">
+            <span class="portal-current">ClawRoute</span>
+            <div class="portal-menu" aria-label="ClawRoute dashboards">
+                <a id="dashboard-link" href="/dashboard">Dashboard</a>
+                <a id="codex-link" href="/dashboard-codex">Codex Usage</a>
+                <a id="analysis-link" class="current" href="/dashboard-codex-analysis">Codex Analysis</a>
+                <a id="archive-link" href="/dashboard-archive">Archived</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="topbar">
+            <div>
+                <h1>Codex Usage Report</h1>
+                <div id="period-copy" class="muted">Loading quota and token telemetry.</div>
+            </div>
+            <div>
+                <div class="controls">
+                    <div class="field">
+                        <label for="period">Period</label>
+                        <select id="period">
+                            <option value="24h">24 hours</option>
+                            <option value="5d">5 days</option>
+                            <option value="7d" selected>7 days</option>
+                            <option value="30d">30 days</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="token">Bearer token</label>
+                        <input id="token" type="password" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label>&nbsp;</label>
+                        <button id="save-token">Save</button>
+                    </div>
+                    <div class="field">
+                        <label>&nbsp;</label>
+                        <button id="refresh" class="primary">Refresh</button>
+                    </div>
+                    <div class="field">
+                        <label for="usd-eur">USD to EUR</label>
+                        <input id="usd-eur" class="number-input" type="number" step="0.01" min="0" value="0.92">
+                    </div>
+                </div>
+                <div id="status" class="status">Idle</div>
+            </div>
+        </div>
+
+        <div class="report">
+            <section class="hero">
+                <div class="panel headline">
+                    <div class="headline-title" id="headline-title">Loading usage signal</div>
+                    <div class="headline-copy" id="headline-copy">Expected quota use is estimated from observed token volume inside the active quota window, then compared with the latest reported quota percentage per slot.</div>
+                    <div class="headline-metrics" id="headline-metrics"></div>
+                </div>
+                <aside class="panel decision-list" id="insights"></aside>
+            </section>
+
+            <section class="slot-grid" id="slot-cards"></section>
+
+            <section class="chart-grid">
+                <div class="panel chart-panel">
+                    <div class="chart-head">
+                        <h2>Daily quota trend</h2>
+                        <div class="legend"><span>Expected</span><span class="actual">Actual</span></div>
+                    </div>
+                    <svg id="daily-line" class="line-chart" role="img" aria-label="Daily expected and actual quota trend"></svg>
+                    <div id="daily-line-labels" class="chart-labels"></div>
+                    <div id="daily-bars" class="bar-chart"></div>
+                </div>
+                <div class="panel chart-panel">
+                    <div class="chart-head">
+                        <h2>Weekly quota trend</h2>
+                        <div class="legend"><span>Expected</span><span class="actual">Actual</span></div>
+                    </div>
+                    <svg id="weekly-line" class="line-chart" role="img" aria-label="Weekly expected and actual quota trend"></svg>
+                    <div id="weekly-line-labels" class="chart-labels"></div>
+                    <div id="weekly-bars" class="bar-chart"></div>
+                </div>
+            </section>
+
+            <details class="panel" open>
+                <summary>Detailed per-slot table</summary>
+                <div class="details-body">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Slot</th><th>Window</th><th class="num">Req</th><th class="num">Tokens</th>
+                                <th class="num">Expected used</th><th class="num">Actual used</th><th class="num">Variance</th>
+                                <th class="num">API cost</th><th class="num">Sub cost</th><th class="num">Savings</th>
+                            </tr>
+                        </thead>
+                        <tbody id="slot-table"></tbody>
+                    </table>
+                </div>
+            </details>
+
+            <details class="panel" open>
+                <summary>Expensive conversations and prompt bloat</summary>
+                <div class="details-body">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Key</th><th>First</th><th>Last</th><th class="num">Req</th>
+                                <th class="num">Tokens</th><th class="num">Cache</th><th class="num">Msgs</th>
+                                <th class="num">Tools</th><th class="num">Msg chars</th><th class="num">Schema chars</th>
+                                <th>Schema groups</th><th>Alerts</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bloat"></tbody>
+                    </table>
+                </div>
+            </details>
+
+            <details class="panel">
+                <summary>Raw tables</summary>
+                <div class="details-body tables">
+                    <div>
+                        <h2>Daily tokens</h2>
+                        <table>
+                            <thead><tr><th>Day</th><th class="num">Req</th><th class="num">Input</th><th class="num">Cached</th><th class="num">Out</th></tr></thead>
+                            <tbody id="daily"></tbody>
+                        </table>
+                    </div>
+                    <div>
+                        <h2>Current quota</h2>
+                        <table>
+                            <thead><tr><th>Slot</th><th>Window</th><th class="num">Used</th><th>Reset</th><th>Updated</th></tr></thead>
+                            <tbody id="quota"></tbody>
+                        </table>
+                    </div>
+                    <div>
+                        <h2>Model mix</h2>
+                        <div id="models" class="bar-chart"></div>
+                    </div>
+                    <div>
+                        <h2>API and reasoning</h2>
+                        <div id="api-kind" class="bar-chart"></div>
+                        <div id="reasoning" class="bar-chart"></div>
+                    </div>
+                </div>
+            </details>
+        </div>
+    </main>
+
+    <script>
+        const BASE = location.pathname.startsWith('/clawroute') ? '/clawroute' : '';
+        const TOKEN_KEY = 'clawroute.codex.analysis.token';
+        const SLOT_COST_KEY = 'clawroute.codex.analysis.slotCosts';
+        const FX_KEY = 'clawroute.codex.analysis.usdEur';
+        const fmt = new Intl.NumberFormat();
+        const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+        const pct = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+        const pct2 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+        const moneyUsd = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+        const moneyEur = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 });
+
+        document.getElementById('dashboard-link').href = `${BASE}/dashboard`;
+        document.getElementById('codex-link').href = `${BASE}/dashboard-codex`;
+        document.getElementById('analysis-link').href = `${BASE}/dashboard-codex-analysis`;
+        document.getElementById('archive-link').href = `${BASE}/dashboard-archive`;
+
+        const tokenInput = document.getElementById('token');
+        const fxInput = document.getElementById('usd-eur');
+        tokenInput.value = sessionStorage.getItem(TOKEN_KEY) || '';
+        fxInput.value = localStorage.getItem(FX_KEY) || fxInput.value;
+        let lastBody = null;
+
+        function setStatus(text) {
+            document.getElementById('status').textContent = text;
+        }
+
+        function loadSlotCosts() {
+            try {
+                return JSON.parse(localStorage.getItem(SLOT_COST_KEY) || '{}');
+            } catch {
+                return {};
+            }
+        }
+
+        function saveSlotCosts(costs) {
+            localStorage.setItem(SLOT_COST_KEY, JSON.stringify(costs));
+        }
+
+        function slotCost(slot) {
+            const costs = loadSlotCosts();
+            return Number.isFinite(Number(costs[String(slot)])) ? Number(costs[String(slot)]) : 23;
+        }
+
+        function setSlotCost(slot, value) {
+            const costs = loadSlotCosts();
+            costs[String(slot)] = Number(value) || 0;
+            saveSlotCosts(costs);
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#39;');
+        }
+
+        function cell(value, cls = '', raw = false) {
+            const content = raw ? value : escapeHtml(value);
+            return `<td${cls ? ` class="${cls}"` : ''}>${content}</td>`;
+        }
+
+        function totalTokens(row) {
+            return Number(row.totalTokens || 0);
+        }
+
+        function weeklyRows(body) {
+            return (body.slotUsageEstimates || []).filter((row) => row.window === 'weekly');
+        }
+
+        function fiveHourRows(body) {
+            return (body.slotUsageEstimates || []).filter((row) => row.window === 'fiveHour');
+        }
+
+        function slotSet(body) {
+            return [...new Set((body.slotUsageEstimates || []).map((row) => row.slotIndex))].sort((a, b) => a - b);
+        }
+
+        function varianceClass(value) {
+            if (value > 2) return 'delta-bad';
+            if (value < -2) return 'delta-good';
+            return 'delta-neutral';
+        }
+
+        function renderHeadline(body) {
+            const weekly = weeklyRows(body).filter((row) => row.requests > 0);
+            const five = fiveHourRows(body).filter((row) => row.requests > 0);
+            const weeklyExpected = weekly.reduce((sum, row) => sum + (row.expectedQuotaDelta || 0), 0);
+            const weeklyActual = weekly.reduce((sum, row) => sum + (row.actualQuotaDelta || 0), 0);
+            const fiveActualMax = Math.max(0, ...five.map((row) => row.actualQuotaDelta || 0));
+            const apiCost = Number(body.summary?.apiCostUsd || 0);
+            const fx = Number(fxInput.value) || 0;
+            const subCost = weekly.reduce((sum, row) => sum + slotCost(row.slotIndex), 0);
+            const apiEur = apiCost * fx;
+            const savings = apiEur - subCost;
+            const variance = weeklyActual - weeklyExpected;
+            const title = variance > 8
+                ? 'Quota is higher than token-based expectation'
+                : variance < -8
+                    ? 'Quota is lower than token-based expectation'
+                    : 'Quota is tracking close to token-based expectation';
+            document.getElementById('headline-title').textContent = title;
+            document.getElementById('headline-copy').textContent =
+                `Across selected agent-attributed slots, current weekly quota is ${pct2.format(weeklyActual)}% versus ${pct2.format(weeklyExpected)}% expected from token volume in each active window. Subscription savings are estimated from the editable per-slot EUR costs.`;
+            document.getElementById('headline-metrics').innerHTML = [
+                ['Weekly expected', `${pct2.format(weeklyExpected)}%`, `${variance >= 0 ? '+' : ''}${pct2.format(variance)} pts vs actual`],
+                ['Weekly actual used', `${pct2.format(weeklyActual)}%`, `${weekly.length} active slot windows`],
+                ['Max 5h used', `${pct2.format(fiveActualMax)}%`, 'largest burst pressure'],
+                ['API vs sub', moneyEur.format(savings), `${moneyUsd.format(apiCost)} API estimate`],
+            ].map(([label, value, sub]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-sub">${sub}</div></div>`).join('');
+        }
+
+        function renderInsights(body) {
+            const weekly = weeklyRows(body);
+            const active = weekly.filter((row) => row.requests > 0);
+            const worst = [...active].sort((a, b) => Math.abs((b.actualQuotaDelta || 0) - (b.expectedQuotaDelta || 0)) - Math.abs((a.actualQuotaDelta || 0) - (a.expectedQuotaDelta || 0)))[0];
+            const hottestFive = [...fiveHourRows(body)].sort((a, b) => (b.actualQuotaDelta || 0) - (a.actualQuotaDelta || 0))[0];
+            const apiCost = Number(body.summary?.apiCostUsd || 0);
+            const fx = Number(fxInput.value) || 0;
+            const subCost = active.reduce((sum, row) => sum + slotCost(row.slotIndex), 0);
+            const savings = apiCost * fx - subCost;
+            const items = [
+                {
+                    tone: worst && worst.actualQuotaDelta > worst.expectedQuotaDelta + 2 ? 'warn' : 'good',
+                    title: worst ? `Slot ${worst.slotIndex} attribution check` : 'Attribution check',
+                    detail: worst
+                        ? `${pct2.format(worst.actualQuotaDelta)}% current weekly quota vs ${pct2.format(worst.expectedQuotaDelta)}% expected from attributed tokens. External Codex use on a slot will appear here as positive variance.`
+                        : 'No attributed weekly usage in this period.',
+                },
+                {
+                    tone: hottestFive && hottestFive.actualQuotaDelta > 70 ? 'bad' : 'warn',
+                    title: hottestFive ? `Five-hour pressure: slot ${hottestFive.slotIndex}` : 'Five-hour pressure',
+                    detail: hottestFive
+                        ? `${pct2.format(hottestFive.actualQuotaDelta)}% current five-hour quota. This is the operational burst limiter.`
+                        : 'No five-hour movement in this period.',
+                },
+                {
+                    tone: savings >= 0 ? 'good' : 'warn',
+                    title: 'Subscription economics',
+                    detail: `${moneyEur.format(savings)} estimated savings versus API pricing after ${moneyEur.format(subCost)} subscription cost.`,
+                },
+            ];
+            document.getElementById('insights').innerHTML = items.map((item) => `
+                <div class="decision">
+                    <span class="decision-dot ${item.tone}"></span>
+                    <div>
+                        <div class="decision-title">${item.title}</div>
+                        <div class="decision-detail">${item.detail}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderSlotCards(body) {
+            const bySlot = new Map();
+            for (const row of body.slotUsageEstimates || []) {
+                const entry = bySlot.get(row.slotIndex) || {};
+                entry[row.window] = row;
+                bySlot.set(row.slotIndex, entry);
+            }
+            const fx = Number(fxInput.value) || 0;
+            document.getElementById('slot-cards').innerHTML = [...bySlot.entries()].sort(([a], [b]) => a - b).map(([slot, entry]) => {
+                const weekly = entry.weekly || {};
+                const five = entry.fiveHour || {};
+                const apiEur = Number(weekly.apiCostUsd || 0) * fx;
+                const sub = slotCost(slot);
+                const savings = apiEur - sub;
+                const weeklyDelta = (weekly.actualQuotaDelta || 0) - (weekly.expectedQuotaDelta || 0);
+                const fiveDelta = (five.actualQuotaDelta || 0) - (five.expectedQuotaDelta || 0);
+                const maxBar = Math.max(1, weekly.actualQuotaDelta || 0, weekly.expectedQuotaDelta || 0, five.actualQuotaDelta || 0, five.expectedQuotaDelta || 0);
+                return `<article class="slot-card">
+                    <div class="slot-head">
+                        <div class="slot-title">Slot ${slot}</div>
+                        <label class="slot-badge">Sub EUR <input class="slot-sub-input number-input" data-slot="${slot}" type="number" min="0" step="0.01" value="${sub}"></label>
+                    </div>
+                    <div class="slot-stats">
+                        <div class="mini-stat"><strong>${fmt.format(weekly.requests || 0)}</strong><span>requests</span></div>
+                        <div class="mini-stat"><strong>${compact.format(totalTokens(weekly))}</strong><span>tokens</span></div>
+                        <div class="mini-stat"><strong class="${savings >= 0 ? 'delta-good' : 'delta-bad'}">${moneyEur.format(savings)}</strong><span>savings</span></div>
+                    </div>
+                    <div class="comparison">
+                        ${compareRow('Weekly', weekly.expectedQuotaDelta || 0, weekly.actualQuotaDelta || 0, weeklyDelta, maxBar)}
+                        ${compareRow('Five-hour', five.expectedQuotaDelta || 0, five.actualQuotaDelta || 0, fiveDelta, maxBar)}
+                    </div>
+                </article>`;
+            }).join('');
+            document.querySelectorAll('.slot-sub-input').forEach((input) => {
+                input.addEventListener('change', () => {
+                    setSlotCost(input.dataset.slot, input.value);
+                    if (lastBody) renderReport(lastBody);
+                });
+            });
+        }
+
+        function compareRow(label, expected, actual, delta, maxBar) {
+            const expectedW = Math.max(0, Math.min(100, expected / maxBar * 100));
+            const actualW = Math.max(0, Math.min(100, actual / maxBar * 100));
+            return `<div class="compare-row">
+                <div class="muted">${label}</div>
+                <div class="dual-track">
+                    <div class="track" title="Expected ${pct2.format(expected)}%"><div class="bar" style="width:${expectedW}%"></div></div>
+                    <div class="track" title="Actual used ${pct2.format(actual)}%"><div class="bar actual" style="width:${actualW}%"></div></div>
+                </div>
+                <div class="${varianceClass(delta)}">${pct2.format(expected)}% / ${pct2.format(actual)}%</div>
+            </div>`;
+        }
+
+        function renderLineChart(svgId, labelsId, rows, windowKey) {
+            const svg = document.getElementById(svgId);
+            const labels = document.getElementById(labelsId);
+            const grouped = aggregateByBucket(rows, windowKey);
+            const width = 640;
+            const height = 180;
+            const pad = 20;
+            const max = Math.max(1, ...grouped.flatMap((row) => [row.expected, row.actual]));
+            const x = (i) => grouped.length <= 1 ? width / 2 : pad + i * ((width - pad * 2) / (grouped.length - 1));
+            const y = (value) => height - pad - (value / max) * (height - pad * 2);
+            const points = (key) => grouped.map((row, i) => `${x(i)},${y(row[key])}`).join(' ');
+            svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+            svg.innerHTML = `
+                <line class="axis" x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}"></line>
+                <line class="axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}"></line>
+                <polyline class="line-expected" points="${points('expected')}"></polyline>
+                <polyline class="line-actual" points="${points('actual')}"></polyline>
+                ${grouped.map((row, i) => `<circle class="point-expected" cx="${x(i)}" cy="${y(row.expected)}" r="3"><title>${escapeHtml(row.bucket)} expected ${pct2.format(row.expected)}%</title></circle><circle class="point-actual" cx="${x(i)}" cy="${y(row.actual)}" r="3"><title>${escapeHtml(row.bucket)} actual ${pct2.format(row.actual)}%</title></circle>`).join('')}
+            `;
+            labels.innerHTML = grouped.length > 0
+                ? `<span>${grouped[0].bucket}</span><span>${grouped[grouped.length - 1].bucket}</span>`
+                : '';
+        }
+
+        function aggregateByBucket(rows, windowKey) {
+            const map = new Map();
+            for (const row of rows || []) {
+                const current = map.get(row.bucket) || { bucket: row.bucket, expected: 0, actual: 0, totalTokens: 0 };
+                current.totalTokens += row.totalTokens || 0;
+                if (windowKey === 'weekly') {
+                    current.expected += row.weeklyExpectedQuotaDelta || 0;
+                    current.actual += row.weeklyActualQuotaDelta || 0;
+                } else {
+                    current.expected += row.fiveHourExpectedQuotaDelta || 0;
+                    current.actual += row.fiveHourActualQuotaDelta || 0;
+                }
+                map.set(row.bucket, current);
+            }
+            return [...map.values()].sort((a, b) => a.bucket.localeCompare(b.bucket));
+        }
+
+        function renderUsageBars(id, rows, windowKey) {
+            const max = Math.max(1, ...rows.map((row) => Math.max(
+                windowKey === 'weekly' ? row.weeklyActualQuotaDelta : row.fiveHourActualQuotaDelta,
+                windowKey === 'weekly' ? row.weeklyExpectedQuotaDelta : row.fiveHourExpectedQuotaDelta,
+            )));
+            document.getElementById(id).innerHTML = rows.map((row) => {
+                const actual = windowKey === 'weekly' ? row.weeklyActualQuotaDelta : row.fiveHourActualQuotaDelta;
+                const expected = windowKey === 'weekly' ? row.weeklyExpectedQuotaDelta : row.fiveHourExpectedQuotaDelta;
+                return `<div class="bar-row">
+                    <div class="bar-name">${escapeHtml(row.bucket)} · slot ${escapeHtml(row.slotIndex)}</div>
+                    <div class="dual-track">
+                        <div class="track"><div class="bar" style="width:${Math.min(100, expected / max * 100)}%"></div></div>
+                        <div class="track"><div class="bar actual" style="width:${Math.min(100, actual / max * 100)}%"></div></div>
+                    </div>
+                    <div class="${varianceClass(actual - expected)}">${pct2.format(expected)}% / ${pct2.format(actual)}%</div>
+                </div>`;
+            }).join('');
+        }
+
+        function renderSlotTable(body) {
+            const fx = Number(fxInput.value) || 0;
+            document.getElementById('slot-table').innerHTML = (body.slotUsageEstimates || []).map((row) => {
+                const subCost = row.window === 'weekly' ? slotCost(row.slotIndex) : 0;
+                const apiEur = Number(row.apiCostUsd || 0) * fx;
+                const savings = row.window === 'weekly' ? apiEur - subCost : apiEur;
+                const delta = (row.actualQuotaDelta || 0) - (row.expectedQuotaDelta || 0);
+                return `<tr>${
+                    cell(row.slotIndex)
+                    + cell(row.window)
+                    + cell(fmt.format(row.requests || 0), 'num')
+                    + cell(compact.format(row.totalTokens || 0), 'num')
+                    + cell(`${pct2.format(row.expectedQuotaDelta || 0)}%`, 'num')
+                    + cell(`${pct2.format(row.actualQuotaDelta || 0)}%`, 'num')
+                    + cell(`<span class="${varianceClass(delta)}">${delta >= 0 ? '+' : ''}${pct2.format(delta)}%</span>`, 'num', true)
+                    + cell(moneyUsd.format(row.apiCostUsd || 0), 'num')
+                    + cell(row.window === 'weekly' ? moneyEur.format(subCost) : '-', 'num')
+                    + cell(row.window === 'weekly' ? `<span class="${savings >= 0 ? 'delta-good' : 'delta-bad'}">${moneyEur.format(savings)}</span>` : '-', 'num', true)
+                }</tr>`;
+            }).join('');
+        }
+
+        function renderRawTables(body) {
+            document.getElementById('daily').innerHTML = (body.daily || []).map((row) => `<tr>${
+                cell(row.day)
+                + cell(fmt.format(row.requests || 0), 'num')
+                + cell(fmt.format(row.inputTokens || 0), 'num')
+                + cell(`${fmt.format(row.cachedInputTokens || 0)} (${pct.format(row.cachedPercent || 0)}%)`, 'num')
+                + cell(fmt.format(row.outputTokens || 0), 'num')
+            }</tr>`).join('');
+            document.getElementById('quota').innerHTML = (body.quotaSnapshots || []).map((row) => `<tr>${
+                cell(row.slotIndex)
+                + cell(row.window)
+                + cell(`${pct2.format(row.usedPercent || 0)}%`, 'num')
+                + cell(row.resetAt || '')
+                + cell(row.updatedAt || '')
+            }</tr>`).join('');
+            renderMix('models', body.modelMix || []);
+            renderMix('api-kind', body.apiKindMix || []);
+            renderMix('reasoning', body.reasoningEffortMix || []);
+        }
+
+        function renderBloat(body) {
+            const rows = body.expensiveConversations || [];
+            document.getElementById('bloat').innerHTML = rows.length > 0
+                ? rows.map((row) => {
+                    const groups = (row.topToolSchemaGroups || [])
+                        .map((group) => `${group.key}: ${compact.format(group.chars)}`)
+                        .join(', ');
+                    const alerts = (row.alerts || []).join(', ');
+                    return `<tr>${
+                        cell(row.key || 'unknown')
+                        + cell(row.firstSeenAt || '')
+                        + cell(row.lastSeenAt || '')
+                        + cell(fmt.format(row.requests || 0), 'num')
+                        + cell(compact.format(row.totalTokens || 0), 'num')
+                        + cell(`${pct.format(row.cachedPercent || 0)}%`, 'num')
+                        + cell(fmt.format(row.maxMessageCount || 0), 'num')
+                        + cell(fmt.format(row.maxToolCount || 0), 'num')
+                        + cell(compact.format(row.maxMessageChars || 0), 'num')
+                        + cell(compact.format(row.maxToolSchemaChars || 0), 'num')
+                        + cell(groups || '-')
+                        + cell(alerts || '-')
+                    }</tr>`;
+                }).join('')
+                : `<tr>${cell('No Codex conversations in this period', '', false)}<td colspan="11"></td></tr>`;
+        }
+
+        function renderMix(id, rows) {
+            document.getElementById(id).innerHTML = rows.map((row) => {
+                const share = Math.max(0, Math.min(100, Number(row.requestSharePercent) || 0));
+                const name = row.key || 'not set';
+                return `<div class="bar-row"><div class="bar-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div><div class="track"><div class="bar cost" style="width:${share}%"></div></div><div>${pct.format(share)}%</div></div>`;
+            }).join('');
+        }
+
+        function renderReport(body) {
+            renderHeadline(body);
+            renderInsights(body);
+            renderSlotCards(body);
+            renderLineChart('daily-line', 'daily-line-labels', body.dailySlotUsage || [], 'weekly');
+            renderLineChart('weekly-line', 'weekly-line-labels', body.weeklySlotUsage || [], 'weekly');
+            renderUsageBars('daily-bars', body.dailySlotUsage || [], 'weekly');
+            renderUsageBars('weekly-bars', body.weeklySlotUsage || [], 'weekly');
+            renderSlotTable(body);
+            renderBloat(body);
+            renderRawTables(body);
+        }
+
+        async function load() {
+            setStatus('Loading');
+            const period = document.getElementById('period').value;
+            const headers = {};
+            const token = tokenInput.value.trim();
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const response = await fetch(`${BASE}/api/codex/analysis?period=${encodeURIComponent(period)}`, { headers });
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body?.error?.message || `HTTP ${response.status}`);
+            }
+            const body = await response.json();
+            lastBody = body;
+            document.getElementById('period-copy').textContent = `${body.period.start} to ${body.period.end}`;
+            renderReport(body);
+            setStatus('Loaded');
+        }
+
+        document.getElementById('save-token').addEventListener('click', () => {
+            sessionStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
+            load().catch((error) => setStatus(error.message));
+        });
+        document.getElementById('refresh').addEventListener('click', () => load().catch((error) => setStatus(error.message)));
+        document.getElementById('period').addEventListener('change', () => load().catch((error) => setStatus(error.message)));
+        fxInput.addEventListener('change', () => {
+            localStorage.setItem(FX_KEY, fxInput.value);
+            if (lastBody) renderReport(lastBody);
+        });
+        load().catch((error) => setStatus(error.message));
+    </script>
+</body>
+</html>

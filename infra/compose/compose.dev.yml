@@ -1,0 +1,10 @@
+services:
+  clawroute:
+    environment:
+      # recommended/dev: verbose router diagnostics without adding private keys.
+      CLAWROUTE_DEBUG: "true"
+      CLAWROUTE_DRY_RUN: ${CLAWROUTE_DRY_RUN:-false}
+    volumes:
+      # recommended/dev: live-edit public ClawRoute source from this repo only.
+      - ../../packages/clawroute/src:/app/src:ro
+      - ../../packages/clawroute/web:/app/web:ro

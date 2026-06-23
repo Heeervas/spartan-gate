@@ -1,0 +1,22 @@
+services:
+  hermes:
+    restart: always
+    environment:
+      HERMES_DUMP_REQUESTS: "false"
+      HERMES_DUMP_REQUEST_STDOUT: "false"
+
+  clawroute:
+    restart: always
+    environment:
+      CLAWROUTE_DEBUG: "false"
+      CLAWROUTE_DRY_RUN: "false"
+      CLAWROUTE_LOG_CONTENT: "false"
+
+  caddy:
+    restart: always
+    ports:
+      # recommended/prod: keep the public example local-only and put LAN/Tailscale binds in private/compose.local.yml.
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_GATE_PORT:-18789}:18789"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${BROWSERLESS_DEBUG_PORT:-3005}:3005"
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"

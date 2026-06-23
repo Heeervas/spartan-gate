@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClawRoute Dashboard</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --green: #3fb950;
+      --blue: #58a6ff;
+      --purple: #a371f7;
+      --yellow: #d29922;
+      --red: #f85149;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    #portal-nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 6px 24px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(13, 17, 23, 0.95);
+      backdrop-filter: blur(8px);
+    }
+    .portal-inner, .container { max-width: 1200px; margin: 0 auto; }
+    .portal-inner { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .portal-current { color: var(--text-muted); font-size: 13px; }
+    .portal-menu { display: flex; gap: 4px; }
+    .portal-menu a {
+      padding: 4px 9px;
+      border-radius: 6px;
+      color: var(--text-muted);
+      font-size: 12px;
+      text-decoration: none;
+    }
+    .portal-menu a:hover { background: var(--border); color: var(--text); }
+    .portal-menu a.current { background: rgba(88, 166, 255, 0.12); color: var(--blue); }
+
+    .container { padding: 24px; }
+    header, .section-head, .status, .controls, .request-meta, .route-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    header, .section-head { justify-content: space-between; flex-wrap: wrap; }
+    header { margin-bottom: 16px; }
+    h1 { font-size: 28px; line-height: 1.2; }
+    h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .eyebrow, .card-label {
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .lede, .muted, .card-sub, footer { color: var(--text-muted); }
+
+    .status {
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .status.live { border-color: rgba(63, 185, 80, 0.55); color: var(--green); }
+    .status.dry { border-color: rgba(210, 153, 34, 0.55); color: var(--yellow); }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .card, .section {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+    }
+    .card { min-width: 0; padding: 11px 14px; }
+    .card-value {
+      overflow: hidden;
+      margin: 1px 0;
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .card-sub { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .savings-value { color: var(--green); }
+
+    .section { padding: 14px; margin-bottom: 12px; }
+    .section-head { margin-bottom: 12px; }
+    .section-head .muted { font-size: 11px; }
+
+    .tier-list { display: grid; gap: 9px; }
+    .tier-item { display: grid; grid-template-columns: 118px 1fr minmax(120px, 190px); align-items: center; gap: 12px; }
+    .tier-name { color: var(--text-muted); font-size: 12px; }
+    .tier-track { height: 7px; overflow: hidden; border-radius: 999px; background: var(--bg); }
+    .tier-bar { height: 100%; border-radius: 999px; transition: width 0.3s; }
+    .tier-model { overflow: hidden; color: var(--text-muted); font: 11px ui-monospace, SFMono-Regular, monospace; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+    .bg-heartbeat { background: var(--green); }
+    .bg-simple { background: var(--blue); }
+    .bg-moderate { background: var(--purple); }
+    .bg-complex { background: var(--yellow); }
+    .bg-frontier_sonnet, .bg-frontier_opus { background: var(--red); }
+
+    .decision-list { display: grid; gap: 8px; }
+    .decision, .decision-group {
+      overflow: hidden;
+      border: 1px solid rgba(139, 148, 158, 0.22);
+      border-radius: 9px;
+      background: var(--bg);
+    }
+    .decision.error { border-color: rgba(248, 81, 73, 0.5); background: rgba(248, 81, 73, 0.06); }
+    .decision > summary, .decision-group > summary {
+      display: grid;
+      grid-template-columns: 64px 105px minmax(130px, 1fr) 74px 72px;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 11px;
+      cursor: pointer;
+      list-style: none;
+      font-size: 12px;
+    }
+    .decision > summary::-webkit-details-marker, .decision-group > summary::-webkit-details-marker { display: none; }
+    .decision > summary:hover, .decision-group > summary:hover { background: rgba(139, 148, 158, 0.06); }
+    .decision-group {
+      border-color: rgba(88, 166, 255, 0.3);
+      background: linear-gradient(145deg, rgba(88, 166, 255, 0.06), var(--bg) 35%);
+    }
+    .decision-group > summary { grid-template-columns: 94px 105px minmax(130px, 1fr) 86px 72px; }
+    .group-count { color: var(--blue); font-weight: 700; font-variant-numeric: tabular-nums; }
+    .group-runs {
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+      border-top: 1px solid rgba(88, 166, 255, 0.18);
+    }
+    .group-runs .decision { background: rgba(13, 17, 23, 0.72); }
+    .session-group { border-color: rgba(163, 113, 247, 0.38); }
+    .session-group > summary { grid-template-columns: 116px minmax(160px, 1fr) 150px minmax(150px, auto) 120px 72px; }
+    .turn-group { border-color: rgba(88, 166, 255, 0.28); }
+    .turn-group > summary { grid-template-columns: 90px minmax(160px, 1fr) 150px 120px 72px; }
+    .hierarchy-id { color: var(--purple); font: 700 11px ui-monospace, SFMono-Regular, monospace; }
+    .turn-group .hierarchy-id { color: var(--blue); }
+    .hierarchy-metric { color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .summary-quota { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+    .summary-quota:empty { display: none; }
+    .trace-items { display: grid; gap: 6px; margin-top: 9px; }
+    .trace-item { padding: 7px 9px; border-left: 2px solid var(--border); border-radius: 4px; background: var(--card); font-size: 11px; }
+    .trace-role { margin-right: 7px; color: var(--blue); font-weight: 700; text-transform: uppercase; }
+    .trace-preview { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+    .trace-tool { margin-top: 4px; color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, monospace; }
+    .decision-time, .decision-latency { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    .decision-model { overflow: hidden; font-family: ui-monospace, SFMono-Regular, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .decision-preview {
+      overflow: hidden;
+      color: var(--text-muted);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .inspect-label { color: var(--blue); font-size: 11px; text-align: right; }
+    .decision[open] > summary .inspect-label::after { content: "Close"; }
+    .decision:not([open]) > summary .inspect-label::after { content: "Inspect"; }
+    .decision-group[open] > summary .inspect-label::after { content: "Close"; }
+    .decision-group:not([open]) > summary .inspect-label::after { content: "Expand"; }
+    .badge {
+      width: fit-content;
+      padding: 2px 7px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .badge-heartbeat { color: var(--green); border-color: rgba(63, 185, 80, 0.4); }
+    .badge-simple { color: var(--blue); border-color: rgba(88, 166, 255, 0.4); }
+    .badge-moderate { color: var(--purple); border-color: rgba(163, 113, 247, 0.4); }
+    .badge-complex { color: var(--yellow); border-color: rgba(210, 153, 34, 0.4); }
+    .badge-frontier_sonnet, .badge-frontier_opus { color: var(--red); border-color: rgba(248, 81, 73, 0.4); }
+
+    .decision-detail { padding: 0 11px 11px; border-top: 1px solid rgba(139, 148, 158, 0.16); }
+    .request-preview {
+      margin-top: 10px;
+      padding: 9px 10px;
+      border-left: 3px solid var(--blue);
+      border-radius: 4px;
+      background: var(--card);
+      color: var(--text);
+      font: 12px/1.45 ui-monospace, SFMono-Regular, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .route-line { flex-wrap: wrap; margin-top: 9px; font-size: 12px; }
+    .route-model { padding: 2px 6px; border-radius: 5px; background: var(--card); font-family: ui-monospace, SFMono-Regular, monospace; }
+    .route-arrow { color: var(--text-muted); }
+    .request-meta { flex-wrap: wrap; margin-top: 8px; color: var(--text-muted); font-size: 11px; }
+    .meta-pill { padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; }
+    .token-usage { flex: 1 1 280px; min-width: 220px; }
+    .token-usage-head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+    .token-track { display: flex; width: 100%; height: 6px; overflow: hidden; border-radius: 999px; background: var(--border); }
+    .token-cached { background: var(--blue); }
+    .token-live { background: var(--green); }
+    .decision.error .token-live { background: var(--red); }
+    .token-legend-cached { color: var(--blue); }
+    .token-legend-live { color: var(--green); }
+    .decision.error .token-legend-live { color: var(--red); }
+    .reason { margin-top: 8px; color: var(--text-muted); font-size: 11px; }
+    .reason strong { color: var(--text); }
+    .empty-state { padding: 18px; color: var(--text-muted); text-align: center; font-size: 12px; }
+
+    .controls { flex-wrap: wrap; margin-top: 2px; }
+    button {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--card);
+      color: var(--text);
+      cursor: pointer;
+      font: 600 11px inherit;
+    }
+    button:hover { background: var(--border); }
+    button.primary { border-color: var(--green); background: var(--green); color: white; }
+    footer { margin-top: 28px; text-align: center; font-size: 12px; }
+
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .decision > summary, .decision-group > summary, .session-group > summary, .turn-group > summary { grid-template-columns: 74px 95px 1fr 62px; }
+      .summary-quota { grid-column: 2 / -1; }
+      .inspect-label { display: none; }
+    }
+    @media (max-width: 640px) {
+      #portal-nav { padding-inline: 12px; }
+      .portal-current { display: none; }
+      .container { padding: 16px; }
+      .grid { grid-template-columns: 1fr 1fr; }
+      .tier-item { grid-template-columns: 95px 1fr; }
+      .tier-model { display: none; }
+      .decision > summary, .decision-group > summary, .session-group > summary, .turn-group > summary { grid-template-columns: 68px 88px minmax(0, 1fr); }
+      .decision-latency { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav id="portal-nav">
+    <div class="portal-inner">
+      <span class="portal-current">ClawRoute</span>
+      <div class="portal-menu" aria-label="ClawRoute dashboards">
+        <a id="dashboard-link" class="current" href="/dashboard">Dashboard</a>
+        <a id="codex-link" href="/dashboard-codex">Codex Usage</a>
+        <a id="analysis-link" href="/dashboard-codex-analysis">Codex Analysis</a>
+        <a id="archive-link" href="/dashboard-archive">Archived</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container">
+    <header>
+      <div>
+        <p class="eyebrow">Operator</p>
+        <h1>ClawRoute Dashboard</h1>
+        <p class="lede">Routing distribution, savings and inspectable recent decisions.</p>
+      </div>
+      <div id="status" class="status"><span class="status-dot"></span><span id="status-text">Loading...</span></div>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <p class="card-label">Saved Today</p>
+        <p id="stat-savings-today" class="card-value savings-value">$0.00</p>
+        <p id="stat-savings-pct" class="card-sub">0% rate</p>
+      </div>
+      <div class="card">
+        <p class="card-label">Requests Today</p>
+        <p id="stat-requests-today" class="card-value">0</p>
+        <p id="stat-escalations" class="card-sub">0 escalations</p>
+      </div>
+      <div class="card">
+        <p class="card-label">Monthly Savings</p>
+        <p id="stat-savings-month" class="card-value savings-value">$0.00</p>
+        <p id="stat-requests-month" class="card-sub">0 requests</p>
+      </div>
+      <div class="card">
+        <p class="card-label">Plan & Billing</p>
+        <p id="stat-plan" class="card-value">-</p>
+        <p id="stat-billing-sub" class="card-sub">Loading...</p>
+      </div>
+    </div>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Tier Distribution</h2>
+          <p class="muted">Today's request count and effective model mapping.</p>
+        </div>
+      </div>
+      <div id="tier-list" class="tier-list"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Live Decisions</h2>
+          <p class="muted">Session metrics → user-turn metrics → request deltas and routing detail.</p>
+        </div>
+        <span id="decision-count" class="muted">0 decisions</span>
+      </div>
+      <div id="decisions-body" class="decision-list"></div>
+    </section>
+
+    <div class="controls">
+      <button onclick="apiAction('/api/enable')" class="primary">Enable</button>
+      <button onclick="apiAction('/api/dry-run/toggle')">Toggle Dry-Run</button>
+      <button onclick="apiAction('/api/disable')">Disable</button>
+    </div>
+
+    <footer>ClawRoute Dashboard • <span id="last-update">Syncing...</span></footer>
+  </div>
+
+  <script>
+    const BASE = location.pathname.startsWith('/clawroute') ? '/clawroute' : '';
+    const state = { lastBillingUpdate: 0, turnDetails: new Map(), quotaCalibration: null };
+
+    document.getElementById('dashboard-link').href = `${BASE}/dashboard`;
+    document.getElementById('codex-link').href = `${BASE}/dashboard-codex`;
+    document.getElementById('analysis-link').href = `${BASE}/dashboard-codex-analysis`;
+    document.getElementById('archive-link').href = `${BASE}/dashboard-archive`;
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[char]));
+    }
+
+    function shortModel(value) {
+      return String(value || 'unknown').split('/').pop();
+    }
+
+    function tierLabel(value) {
+      return String(value || 'unknown').replaceAll('_', ' ');
+    }
+
+    function decisionKey(decision) {
+      return [
+        decision.requestId,
+        decision.timestamp,
+        decision.originalModel,
+        decision.routedModel,
+        decision.inputTokens,
+        decision.outputTokens,
+      ].join('|');
+    }
+
+    function compactNumber(value) {
+      return new Intl.NumberFormat([], { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value) || 0);
+    }
+
+    function metricSummary(metrics) {
+      return `${compactNumber(metrics?.cachedInputTokens)} cached / ${compactNumber(metrics?.uncachedInputTokens)} uncached / ${compactNumber(metrics?.outputTokens)} out`;
+    }
+
+    function quotaPercent(value) {
+      const number = Number(value) || 0;
+      return number < 0.01 ? number.toFixed(4) : number < 1 ? number.toFixed(3) : number.toFixed(2);
+    }
+
+    function estimateQuota(tokens, windowKey) {
+      const calibration = state.quotaCalibration?.[windowKey];
+      const rate = Number(calibration?.quotaPctPerMillionTotalTokens);
+      if (!(Number(tokens) > 0) || !(rate > 0)) return null;
+      return {
+        percent: (Number(tokens) / 1_000_000) * rate,
+        rate,
+        sampleTokens: Number(calibration.totalTokens) || 0,
+      };
+    }
+
+    function quotaEstimatePills(tokens, coveragePercent, showUnavailable = false) {
+      const fiveHour = estimateQuota(tokens, 'fiveHour');
+      const weekly = estimateQuota(tokens, 'weekly');
+      if (!fiveHour && !weekly) {
+        return showUnavailable ? '<span class="meta-pill">quota estimate unavailable</span>' : '';
+      }
+      const coverage = Math.max(0, Math.min(100, Number(coveragePercent) || 0));
+      const pill = (label, estimate, burstSensitive = false) => estimate
+        ? `<span class="meta-pill" title="${escapeHtml(`${quotaPercent(estimate.rate)} quota points per 1M tokens • ${compactNumber(estimate.sampleTokens)} calibration tokens • ${quotaPercent(coverage)}% attribution coverage${burstSensitive ? ' • burst-sensitive estimate' : ''}`)}">~${quotaPercent(estimate.percent)}% ${label} equiv.</span>`
+        : `<span class="meta-pill" title="No valid ${escapeHtml(label)} calibration sample">${escapeHtml(label)} unavailable</span>`;
+      return pill('5h', fiveHour, true) + pill('weekly', weekly);
+    }
+
+    function renderTraceItems(trace) {
+      const delta = trace?.delta;
+      if (!delta) return '';
+      const items = (delta.items || []).map((item) => {
+        const tools = (item.toolCalls || []).map((call) => {
+          const keys = (call.argumentKeys || []).join(', ') || 'no parsed keys';
+          return `<div class="trace-tool">tool ${escapeHtml(call.name)}(${escapeHtml(keys)}) • ${Number(call.argumentChars) || 0} argument chars</div>`;
+        }).join('');
+        return `<div class="trace-item">
+          <span class="trace-role">${escapeHtml(item.role)}</span>
+          <span class="trace-preview">${escapeHtml(item.preview || `${Number(item.chars) || 0} chars`)}</span>
+          ${tools}
+        </div>`;
+      }).join('');
+      return `<div class="trace-items">
+        ${items || '<div class="trace-item">No content items added in this request.</div>'}
+        ${delta.omittedItems ? `<div class="trace-item">${Number(delta.omittedItems)} additional items omitted.</div>` : ''}
+      </div>`;
+    }
+
+    function renderDecision(decision, nested = false) {
+      const context = decision.context || {};
+      const preview = decision.promptPreview || 'No user-message preview was recorded for this request.';
+      const inputTokens = Math.max(0, Number(decision.inputTokens) || 0);
+      const cachedInputTokens = Math.min(inputTokens, Math.max(0, Number(decision.cachedInputTokens) || 0));
+      const liveInputTokens = Math.max(0, inputTokens - cachedInputTokens);
+      const cachedWidth = inputTokens > 0 ? (cachedInputTokens / inputTokens) * 100 : 0;
+      const liveWidth = inputTokens > 0 ? 100 - cachedWidth : 0;
+      const flags = [
+        decision.escalated ? 'escalated' : null,
+        decision.isDryRun ? 'dry-run' : null,
+        decision.isOverride ? 'override' : null,
+        decision.hadToolCalls ? 'tool calls returned' : null,
+        decision.error ? 'error' : null,
+      ].filter(Boolean);
+      const trace = decision.requestTrace || null;
+      const delta = trace?.delta;
+      const isAttributedCodex = String(decision.actualModel || '').startsWith('codex/')
+        && decision.selectedCodexSlotIndex !== null
+        && decision.selectedCodexSlotIndex !== undefined;
+      const requestQuotaPills = quotaEstimatePills(
+        isAttributedCodex ? inputTokens + (Number(decision.outputTokens) || 0) : 0,
+        isAttributedCodex ? 100 : 0,
+        String(decision.actualModel || '').startsWith('codex/'),
+      );
+      return `
+        <details class="decision${decision.error ? ' error' : ''}" data-open-key="decision:${escapeHtml(decisionKey(decision))}">
+          <summary title="${escapeHtml(preview)}">
+            <span class="decision-time">${escapeHtml(new Date(decision.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</span>
+            <span class="badge badge-${escapeHtml(decision.tier)}">${escapeHtml(tierLabel(decision.tier))}</span>
+            <span class="decision-preview">${escapeHtml(preview)}</span>
+            <span class="decision-latency">${Number(decision.responseTimeMs) || 0}ms</span>
+            <span class="inspect-label"></span>
+          </summary>
+          <div class="decision-detail">
+            <div class="request-preview">${escapeHtml(preview)}</div>
+            <div class="route-line">
+              <span class="route-model">${escapeHtml(decision.originalModel)}</span>
+              <span class="route-arrow">to</span>
+              <span class="route-model">${escapeHtml(decision.routedModel)}</span>
+              ${decision.actualModel && decision.actualModel !== decision.routedModel ? `
+                <span class="route-arrow">actual</span>
+                <span class="route-model">${escapeHtml(decision.actualModel)}</span>` : ''}
+            </div>
+            <div class="request-meta">
+              ${trace ? `<span class="meta-pill">${escapeHtml(trace.phase.replaceAll('_', ' '))}</span>` : ''}
+              ${delta ? `<span class="meta-pill">+${Number(delta.addedMessageCount) || 0} messages</span>` : ''}
+              ${delta?.removedMessageCount ? `<span class="meta-pill">-${Number(delta.removedMessageCount)} replaced</span>` : ''}
+              ${delta ? `<span class="meta-pill">+${compactNumber(delta.addedChars)} chars</span>` : ''}
+              ${delta?.toolCallCount ? `<span class="meta-pill">${Number(delta.toolCallCount)} tool calls</span>` : ''}
+              ${delta?.toolResultCount ? `<span class="meta-pill">${Number(delta.toolResultCount)} tool results</span>` : ''}
+              ${requestQuotaPills}
+              <span class="meta-pill">confidence ${Math.round((Number(decision.confidence) || 0) * 100)}%</span>
+              <div class="meta-pill token-usage" title="${cachedInputTokens} cached input tokens, ${liveInputTokens} uncached input tokens">
+                <div class="token-usage-head">
+                  <span><span class="token-legend-cached">${cachedInputTokens} cached</span> / <span class="token-legend-live">${liveInputTokens} uncached</span></span>
+                  <span>${Number(decision.outputTokens) || 0} out</span>
+                </div>
+                <div class="token-track" role="img" aria-label="${cachedInputTokens} cached and ${liveInputTokens} uncached input tokens">
+                  <span class="token-cached" style="width:${cachedWidth}%"></span>
+                  <span class="token-live" style="width:${liveWidth}%"></span>
+                </div>
+              </div>
+              <span class="meta-pill">${Number(context.messageCount) || 0} messages</span>
+              <span class="meta-pill">${Number(context.toolCount) || 0} tools</span>
+              <span class="meta-pill">${context.hasSystem ? 'system prompt' : 'no system prompt'}</span>
+              ${flags.map((flag) => `<span class="meta-pill">${escapeHtml(flag)}</span>`).join('')}
+            </div>
+            ${renderTraceItems(trace)}
+            <p class="reason"><strong>Classification:</strong> ${escapeHtml(decision.reason || 'No reason recorded.')}${decision.error ? ` • <strong>Error:</strong> ${escapeHtml(decision.error)}` : ''}</p>
+          </div>
+        </details>`;
+    }
+
+    function renderTurn(turn) {
+      const cached = state.turnDetails.get(turn.id);
+      const requests = cached?.requests || [];
+      const detail = requests.length
+        ? requests.map((decision) => renderDecision(decision, true)).join('')
+        : '<div class="empty-state">Expand to load request detail.</div>';
+      return `
+        <details class="decision-group turn-group" data-open-key="turn:${escapeHtml(turn.id)}" ontoggle="loadTurnDetails(this, '${escapeHtml(turn.id)}')">
+          <summary title="${escapeHtml(turn.promptPreview || 'No content preview recorded')}">
+            <span class="hierarchy-id">turn ${escapeHtml(turn.id.slice(0, 6))}</span>
+            <span class="decision-preview">${escapeHtml(turn.promptPreview || 'Content logging disabled')}</span>
+            <span class="hierarchy-metric">${Number(turn.metrics.requests) || 0} requests • ${compactNumber(turn.metrics.inputTokens)} in</span>
+            <span class="hierarchy-metric">${Math.round(Number(turn.metrics.cachedPercent) || 0)}% cached</span>
+            <span class="inspect-label"></span>
+          </summary>
+          <div class="group-runs">
+            <div class="request-meta">
+              <span class="meta-pill">${escapeHtml(turn.initialTier || 'unknown')}</span>
+              <span class="meta-pill">${escapeHtml(turn.initialModel || 'unknown')}</span>
+              <span class="meta-pill">${escapeHtml(metricSummary(turn.metrics))}</span>
+              ${quotaEstimatePills(turn.metrics.attributedCodexTokens, turn.metrics.quotaCoveragePercent, Number(turn.metrics.codexTokens) > 0)}
+              <span class="meta-pill">avg ${Number(turn.metrics.averageResponseMs) || 0}ms</span>
+              <span class="meta-pill">${Number(turn.metrics.toolCalls) || 0} calls / ${Number(turn.metrics.toolResults) || 0} results</span>
+              ${turn.models.length > 1 ? `<span class="meta-pill">${turn.models.length} models</span>` : ''}
+            </div>
+            <div id="turn-detail-${escapeHtml(turn.id)}" class="decision-list">${detail}</div>
+          </div>
+        </details>`;
+    }
+
+    function renderSession(session) {
+      const latest = new Date(session.lastSeenAt).toLocaleString();
+      const quotaEstimate = quotaEstimatePills(
+        session.metrics.attributedCodexTokens,
+        session.metrics.quotaCoveragePercent,
+        Number(session.metrics.codexTokens) > 0,
+      );
+      return `<details class="decision-group session-group" data-open-key="session:${escapeHtml(session.id)}">
+        <summary title="Session ${escapeHtml(session.id)}">
+          <span class="hierarchy-id">session ${escapeHtml(session.id.slice(0, 8))}</span>
+          <span class="decision-preview">${Number(session.turnCount) || 0} turns • active ${escapeHtml(latest)}</span>
+          <span class="hierarchy-metric">${Number(session.metrics.requests) || 0} requests • ${compactNumber(session.metrics.inputTokens)} in</span>
+          <span class="summary-quota">${quotaEstimate}</span>
+          <span class="hierarchy-metric">${Math.round(Number(session.metrics.cachedPercent) || 0)}% cached</span>
+          <span class="inspect-label"></span>
+        </summary>
+        <div class="group-runs">
+          <div class="request-meta">
+            <span class="meta-pill">${escapeHtml(metricSummary(session.metrics))}</span>
+            <span class="meta-pill">avg ${Number(session.metrics.averageResponseMs) || 0}ms</span>
+            <span class="meta-pill">${Number(session.metrics.toolCalls) || 0} calls / ${Number(session.metrics.toolResults) || 0} results</span>
+            <span class="meta-pill">${session.models.length} model${session.models.length === 1 ? '' : 's'}</span>
+            ${session.hasMoreTurns ? '<span class="meta-pill">older turns omitted</span>' : ''}
+          </div>
+          ${session.turns.map(renderTurn).join('')}
+        </div>
+      </details>`;
+    }
+
+    async function loadTurnDetails(element, turnId) {
+      if (!element.open || state.turnDetails.has(turnId)) return;
+      const target = document.getElementById(`turn-detail-${turnId}`);
+      if (target) target.innerHTML = '<div class="empty-state">Loading requests...</div>';
+      try {
+        const response = await fetch(`${BASE}/api/routing/turns/${turnId}`, { credentials: 'same-origin' });
+        if (!response.ok) throw new Error(`Turn request failed with ${response.status}`);
+        const payload = await response.json();
+        state.turnDetails.set(turnId, payload);
+        if (target) {
+          target.innerHTML = payload.requests.length
+            ? payload.requests.map((decision) => renderDecision(decision, true)).join('')
+            : '<div class="empty-state">No request detail is available.</div>';
+        }
+      } catch (error) {
+        if (target) target.innerHTML = `<div class="empty-state">${escapeHtml(error.message || error)}</div>`;
+      }
+    }
+
+    function updateDOM(data, liveRouting) {
+      state.quotaCalibration = liveRouting?.quotaCalibration || null;
+      document.getElementById('stat-savings-today').textContent = `$${data.today.savingsUsd.toFixed(2)}`;
+      document.getElementById('stat-savings-pct').textContent = `${data.today.savingsPercent.toFixed(1)}% savings rate`;
+      document.getElementById('stat-requests-today').textContent = data.today.requests;
+      document.getElementById('stat-escalations').textContent = `${data.today.escalations} escalations`;
+      document.getElementById('stat-savings-month').textContent = `$${data.thisMonth.savingsUsd.toFixed(2)}`;
+      document.getElementById('stat-requests-month').textContent = `${data.thisMonth.requests} requests`;
+
+      const status = document.getElementById('status');
+      const statusText = document.getElementById('status-text');
+      if (!data.config.enabled) {
+        status.className = 'status';
+        statusText.textContent = 'Disabled';
+      } else if (data.config.dryRun) {
+        status.className = 'status dry';
+        statusText.textContent = 'Dry-Run';
+      } else {
+        status.className = 'status live';
+        statusText.textContent = 'Live';
+      }
+
+      const tierOrder = ['heartbeat', 'simple', 'moderate', 'complex', 'frontier_sonnet', 'frontier_opus'];
+      const max = Math.max(...tierOrder.map((tier) => data.today.tierBreakdown[tier] || 0), 1);
+      document.getElementById('tier-list').innerHTML = tierOrder.map((tier) => {
+        const count = data.today.tierBreakdown[tier] || 0;
+        const model = data.config.modelMap[tier] || '';
+        return `
+          <div class="tier-item">
+            <div class="tier-name">${escapeHtml(tierLabel(tier))} (${count})</div>
+            <div class="tier-track"><div class="tier-bar bg-${tier}" style="width:${(count / max) * 100}%"></div></div>
+            <div class="tier-model" title="${escapeHtml(model)}">${escapeHtml(shortModel(model))}</div>
+          </div>`;
+      }).join('');
+
+      const decisionsBody = document.getElementById('decisions-body');
+      const openKeys = new Set(Array.from(
+        decisionsBody.querySelectorAll('details[data-open-key][open]')
+      ).map((element) => element.dataset.openKey));
+      const decisions = data.recentDecisions.slice(0, 50);
+      const sessions = liveRouting?.sessions || [];
+      const legacy = decisions.filter((decision) => !decision.turnId);
+      document.getElementById('decision-count').textContent = sessions.length
+        ? `${sessions.length} sessions • ${sessions.reduce((sum, session) => sum + session.turns.length, 0)} recent turns${liveRouting.hasMoreSessions ? ' • more retained' : ''}`
+        : `${legacy.length} legacy decisions`;
+      decisionsBody.innerHTML = [
+        ...sessions.map(renderSession),
+        ...legacy.map((decision) => renderDecision(decision)),
+      ].join('') || '<div class="empty-state">No routing decisions have been recorded yet.</div>';
+      decisionsBody.querySelectorAll('details[data-open-key]').forEach((element) => {
+        if (openKeys.has(element.dataset.openKey)) element.open = true;
+      });
+      document.getElementById('last-update').textContent = `Last sync: ${new Date().toLocaleTimeString()}`;
+    }
+
+    async function fetchData() {
+      try {
+        const [response, liveResponse] = await Promise.all([
+          fetch(`${BASE}/stats`, { credentials: 'same-origin' }),
+          fetch(`${BASE}/api/routing/live`, { credentials: 'same-origin' }),
+        ]);
+        if (!response.ok) throw new Error(`Stats request failed with ${response.status}`);
+        const liveRouting = liveResponse.ok ? await liveResponse.json() : null;
+        updateDOM(await response.json(), liveRouting);
+
+        if (Date.now() - state.lastBillingUpdate > 60000) {
+          const billingResponse = await fetch(`${BASE}/billing/summary`, { credentials: 'same-origin' });
+          if (billingResponse.ok) {
+            const billing = await billingResponse.json();
+            document.getElementById('stat-plan').textContent = String(billing.plan || '-').toUpperCase();
+            document.getElementById('stat-billing-sub').textContent = billing.graceActive
+              ? 'Trial Active'
+              : `$${Number(billing.suggestedUsd || 0).toFixed(2)} suggested`;
+          }
+          state.lastBillingUpdate = Date.now();
+        }
+      } catch (error) {
+        document.getElementById('status').className = 'status';
+        document.getElementById('status-text').textContent = 'Unavailable';
+        console.error('Fetch error', error);
+      }
+    }
+
+    async function apiAction(path) {
+      if (path === '/api/dry-run/toggle') {
+        const response = await fetch(`${BASE}/stats`, { credentials: 'same-origin' });
+        const data = await response.json();
+        path = data.config.dryRun ? '/api/dry-run/disable' : '/api/dry-run/enable';
+      }
+      await fetch(`${BASE}${path}`, { method: 'POST', credentials: 'same-origin' });
+      await fetchData();
+    }
+
+    fetchData();
+    setInterval(fetchData, 5000);
+  </script>
+</body>
+</html>

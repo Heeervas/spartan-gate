@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: packages/clawroute/package-lock.json
+
+      - name: Install Clawroute dependencies
+        run: npm ci --prefix packages/clawroute
+
+      - name: Build Clawroute
+        run: npm run clawroute:build
+
+      - name: Test Clawroute
+        run: npm run clawroute:test
+
+      - name: Test Hermes Python integration
+        run: python3 -m unittest discover -s apps/hermes-agent -p "test_*.py"
+
+      - name: Test Hermes JavaScript integration
+        run: node --test apps/hermes-agent/test_*.js
+
+      - name: Test whitelist tooling
+        run: |
+          python3 -m unittest \
+            scripts/test_whitelist_domain.py \
+            scripts/test_tooling_camofox.py \
+            scripts/test_camofox_patch_server.py
+
+      - name: Validate shell syntax
+        run: |
+          bash -n \
+            scripts/aliases.sh \
+            scripts/browserless-snapshot.sh \
+            scripts/doctor.sh \
+            scripts/hermes-profile-new.sh \
+            scripts/whitelist-domain.sh \
+            apps/hermes-agent/entrypoint-wrapper.sh \
+            infra/dns/entrypoint.sh \
+            infra/outbound-proxy/entrypoint.sh
+
+      - name: Validate Compose configuration
+        run: |
+          docker compose -f infra/compose/compose.yml config --quiet
+          COMPOSE_PROFILES=camofox CAMOFOX_URL=http://camofox:9377 \
+            docker compose \
+              -f infra/compose/compose.yml \
+              -f private.example/compose.local.yml \
+              config --quiet
+
+      - name: Validate example HTTPS Caddyfile
+        run: |
+          docker run --rm \
+            -e CADDY_AUTH_USER=admin \
+            -e CADDY_AUTH_HASH='$2a$14$UMuSzA3WdVqcAwE3yvFeCO.CesMjqqGDVrxpL1s87FsWM/NRrADi2' \
+            -v "$PWD/private.example/caddy/Caddyfile.https.example:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy adapt --config /etc/caddy/Caddyfile

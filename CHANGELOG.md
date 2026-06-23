@@ -1,0 +1,47 @@
+# Changelog
+
+All notable changes to Spartan Gate are documented here.
+
+## Unreleased
+
+- Added a stable layer/addon model for L0-L4 installs, including ClawRoute as
+  an independent addon, stable `spartan-gate` Compose project naming, stable
+  `private/data/current` install data roots, and free Hermes user-level
+  Python/Node package installs for lower tiers.
+- Added OpenAI-compatible `/v1/images/edits` support for ClawRoute image
+  requests, including multipart references, Codex Auth translation, and
+  OpenAI API-key passthrough.
+- Run Hermes helper shell, doctor, profile, health, cache, Meet, and GOG
+  workspace commands as the runtime Hermes UID/GID with stable Hermes
+  environment vars.
+- Added optional Hermes workload numeric UID/GID drops for normal host-owned
+  data folders while keeping `/opt/hermes` root-owned, and moved Python
+  `[proxy-audit]` lines to `/opt/data/logs/proxy-audit.log` by default.
+- Kept generic streaming Codex rate-limit errors request-local while preserving
+  long slot cooldowns for explicit `usage_limit_reached` responses.
+- Clear stale Codex slot cooldowns after real reset evidence, including
+  epoch-millisecond `resets_at` values and successful live usage refreshes.
+- Gate automatic Codex usage checks by durable weekly activation checkpoints
+  in balancer mode, while keeping slot 0 continuously active.
+- Add per-slot expected reset editing and explicit usage checks to the Codex
+  dashboard.
+- Keep usage polling from refreshing OAuth credentials, reload reauthenticated
+  files correctly, and back off failed token refresh attempts.
+- Stop presenting expired persisted quota windows as current usage, and return
+  explicit errors when a manual usage check fails.
+- Added the Coordinator agent system, project-specific CI, session state, and
+  local-plan handling.
+- Hardened expiring egress whitelists against regex bypasses, overflow,
+  malformed metadata, invalid hosts, timezone drift, and concurrent writes.
+- Upgraded the Hermes startup pipeline while preserving the upstream UID and
+  applying profile configuration migrations before s6 reconciliation.
+- Aligned Hermes Docker profile startup with upstream s6 supervision, moved the
+  Browserless CDP broker under s6, and retired automatic API port shifting.
+- Added Camofox profile, noVNC, add-on, Meet, and authenticated clipping
+  support with preflight-safe operational helpers.
+- Changed Codex account scheduling to activate accounts on staggered days, then
+  optimize weekly spend by required burn rate before each reset.
+- Corrected Responses streaming event shape, identity, usage accounting, and
+  completion semantics.
+- Added regression coverage for five-hour Codex safety, malformed whitelist
+  recovery, URL ports, and Camofox tab-close locking.

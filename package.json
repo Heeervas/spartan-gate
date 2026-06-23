@@ -1,0 +1,18 @@
+{
+  "name": "spartan-gate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A private security gate for Hermes-class agents.",
+  "license": "MIT",
+  "scripts": {
+    "doctor": "sh scripts/doctor.sh",
+    "compose:config": "docker compose -f infra/compose/compose.yml config",
+    "whitelist": "bash scripts/whitelist-domain.sh",
+    "add-port": "bash scripts/add-port.sh",
+    "clawroute:build": "npm --prefix packages/clawroute run build",
+    "clawroute:test": "npm --prefix packages/clawroute test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

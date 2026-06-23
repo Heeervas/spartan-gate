@@ -1,0 +1,1273 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codex Usage Dashboard</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-muted: #8b949e;
+            --green: #3fb950;
+            --blue: #58a6ff;
+            --purple: #a371f7;
+            --yellow: #d29922;
+            --red: #f85149;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
+
+        #portal-nav {
+            background: rgba(13, 17, 23, 0.95);
+            border-bottom: 1px solid var(--border);
+            padding: 6px 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(8px);
+        }
+
+        .portal-inner, header, .section-head, .account-head, .auth-row, .status-grid {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .portal-inner, .container { max-width: 1200px; margin: 0 auto; }
+        .portal-link, .text-link { color: var(--blue); text-decoration: none; }
+        .portal-inner { justify-content: space-between; }
+        .portal-menu { display: flex; gap: 4px; }
+        .portal-menu a {
+            padding: 4px 9px;
+            border-radius: 6px;
+            color: var(--text-muted);
+            font-size: 12px;
+            text-decoration: none;
+        }
+        .portal-menu a:hover { background: var(--border); color: var(--text); }
+        .portal-menu a.current { background: rgba(88, 166, 255, 0.12); color: var(--blue); }
+        .portal-current, .lede, .card-sub, .account-meta, .window-copy, .muted, footer { color: var(--text-muted); }
+        .container { padding: 24px; }
+        header, .section-head, .account-head, .auth-row, .status-grid { justify-content: space-between; flex-wrap: wrap; }
+        header { margin-bottom: 16px; }
+        h1 { font-size: 28px; line-height: 1.2; }
+        h2 { font-size: 18px; }
+        .eyebrow, .card-label, .section-title, .window-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .header-actions, .badge-row { display: flex; gap: 12px; flex-wrap: wrap; }
+        .grid, .account-list, .window-list, .error-list { display: grid; gap: 16px; }
+        .grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 12px; gap: 10px; }
+        .account-list { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+        .card, .section, .account-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .account-card { padding: 14px; min-width: 0; }
+        .grid .card { padding: 11px 14px; }
+        .grid .card-value { margin: 1px 0; font-size: 22px; line-height: 1.2; }
+        .grid .card-sub { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+        .card-value { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .section { margin-bottom: 24px; }
+        .section-title { color: var(--text); }
+        .hidden { display: none !important; }
+
+        .button, button, input {
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            font: inherit;
+        }
+
+        .button, button {
+            background: var(--card);
+            color: var(--text);
+            padding: 8px 16px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .button:hover, button:hover { background: var(--border); }
+        .button.primary, button.primary { background: var(--green); border-color: var(--green); color: #fff; }
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        .banner { border-left: 3px solid var(--blue); }
+        .banner.warn { border-left-color: var(--yellow); }
+        .banner.error { border-left-color: var(--red); }
+        .banner.success { border-left-color: var(--green); }
+        #status-banner { padding: 10px 14px; margin-bottom: 12px; }
+        .status-grid { align-items: flex-start; }
+        .status-copy { flex: 1 1 260px; }
+        .status-copy strong { display: block; font-size: 13px; }
+        .status-copy .muted { font-size: 11px; }
+        .status-meta { font-size: 11px; color: var(--text-muted); }
+
+        .badge {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            border: 1px solid transparent;
+        }
+
+        .badge-live, .badge-cache, .badge-stale { color: var(--blue); border-color: rgba(88, 166, 255, 0.35); }
+        .badge-cooldown, .badge-partial { color: var(--yellow); border-color: rgba(210, 153, 34, 0.35); }
+        .badge-persisted { color: var(--purple); border-color: rgba(163, 113, 247, 0.35); }
+        .badge-error { color: var(--red); border-color: rgba(248, 81, 73, 0.45); }
+
+        .account-head { align-items: flex-start; flex-wrap: nowrap; }
+        .account-head > div:first-child { min-width: 0; }
+        .account-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+        .account-key {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 15px;
+            font-weight: 700;
+        }
+        .account-meta {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 11px;
+        }
+        .account-card .badge-row { justify-content: flex-end; gap: 5px; }
+        .window-list {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .usage-window {
+            display: grid;
+            justify-items: center;
+            gap: 5px;
+            min-width: 0;
+            padding: 9px 6px;
+            border: 1px solid rgba(139, 148, 158, 0.2);
+            border-radius: 10px;
+            background: var(--bg);
+            text-align: center;
+        }
+        .usage-gauge {
+            --value: 0;
+            --tone: var(--green);
+            position: relative;
+            display: grid;
+            width: 74px;
+            aspect-ratio: 1;
+            place-items: center;
+            border-radius: 50%;
+            background: conic-gradient(var(--tone) calc(var(--value) * 1%), var(--border) 0);
+            font-variant-numeric: tabular-nums;
+        }
+        .usage-gauge::before {
+            position: absolute;
+            width: 56px;
+            aspect-ratio: 1;
+            border-radius: 50%;
+            background: var(--bg);
+            content: "";
+        }
+        .usage-percent { position: relative; z-index: 1; font-size: 17px; font-weight: 700; }
+        .usage-reset {
+            width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-muted);
+            font-size: 10px;
+        }
+        .cache-strip {
+            margin-top: 9px;
+            padding: 8px 9px;
+            border: 1px solid rgba(88, 166, 255, 0.28);
+            border-radius: 9px;
+            background: rgba(88, 166, 255, 0.06);
+        }
+        .cache-strip-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 5px;
+            color: var(--text-muted);
+            font-size: 10px;
+        }
+        .cache-strip-head strong { color: var(--blue); }
+        .cache-strip-track {
+            display: flex;
+            width: 100%;
+            height: 6px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: var(--border);
+        }
+        .cache-strip-cached { background: var(--blue); }
+        .cache-strip-live { background: var(--green); }
+        .reset-credit-strip {
+            display: grid;
+            gap: 7px;
+            margin-top: 9px;
+            padding: 8px 9px;
+            border: 1px solid rgba(63, 185, 80, 0.28);
+            border-radius: 9px;
+            background: rgba(63, 185, 80, 0.06);
+        }
+        .reset-credit-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            color: var(--text-muted);
+            font-size: 10px;
+        }
+        .reset-credit-head strong { color: var(--green); }
+        .reset-credit-list { display: grid; gap: 4px; }
+        .reset-credit-item {
+            display: grid;
+            grid-template-columns: minmax(80px, 0.8fr) minmax(0, 1fr);
+            gap: 8px;
+            color: var(--text-muted);
+            font-size: 10px;
+        }
+        .reset-credit-item strong {
+            overflow: hidden;
+            color: var(--text);
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .empty-state, .empty-window {
+            padding: 20px;
+            border: 1px dashed rgba(139, 148, 158, 0.35);
+            border-radius: 12px;
+            color: var(--text-muted);
+        }
+        .account-card .empty-window { padding: 14px; margin-top: 12px; font-size: 12px; }
+        .account-card.has-error {
+            border-color: rgba(248, 81, 73, 0.65);
+            background: linear-gradient(145deg, rgba(248, 81, 73, 0.12), var(--card) 42%);
+            box-shadow: inset 0 0 0 1px rgba(248, 81, 73, 0.08);
+        }
+        .slot-error {
+            margin-top: 9px;
+            padding: 7px 9px;
+            border: 1px solid rgba(248, 81, 73, 0.3);
+            border-radius: 7px;
+            background: rgba(248, 81, 73, 0.09);
+            color: #ffb4ae;
+            font-size: 11px;
+            line-height: 1.35;
+        }
+        .slot-error strong { color: var(--red); }
+
+        #balancer-section { padding: 14px; margin-bottom: 12px; }
+        #balancer-section .section-head .muted { font-size: 11px; }
+        #balancer-section .section-head button { padding: 6px 10px; font-size: 11px; }
+        .control-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+        .control-card { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+        .control-card label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+        .control-card select { width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+        .control-card input[type="checkbox"] { width: auto; margin-right: 8px; }
+        .control-card input[type="number"] { padding: 6px 8px; margin-top: 5px; }
+        .control-help { margin-top: 4px; font-size: 10px; line-height: 1.35; color: var(--text-muted); }
+        #build-revision { overflow: hidden; font-size: 14px !important; text-overflow: ellipsis; white-space: nowrap; }
+        .cold-migration-pool { display: grid; gap: 8px; margin-top: 12px; }
+        .cold-migration-card {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 10px;
+            align-items: center;
+            padding: 10px;
+            border: 1px solid rgba(248, 81, 73, 0.35);
+            border-radius: 8px;
+            background: rgba(248, 81, 73, 0.08);
+        }
+        .cold-migration-card button { padding: 6px 10px; font-size: 11px; }
+        .cold-migration-actions { display: flex; gap: 6px; }
+        .cold-migration-main { font-size: 12px; line-height: 1.45; }
+        .cold-migration-main strong { color: var(--red); }
+        .slot-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: space-between;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(139, 148, 158, 0.2);
+            align-items: center;
+        }
+        .slot-controls label { display: flex; align-items: center; font-size: 12px; white-space: nowrap; }
+        .slot-controls input { width: auto; margin-right: 6px; }
+        .slot-controls button { padding: 5px 9px; font-size: 11px; white-space: nowrap; }
+        .slot-actions { display: flex; gap: 6px; }
+        .reset-control {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            width: 100%;
+            gap: 6px;
+            align-items: end;
+        }
+        .reset-control label { display: grid; gap: 3px; min-width: 0; white-space: normal; }
+        .reset-control input[type="datetime-local"] { width: 100%; min-width: 0; margin: 0; padding: 5px 7px; font-size: 11px; }
+        .slot-state {
+            overflow: hidden;
+            margin-top: 8px;
+            color: var(--text-muted);
+            font-size: 11px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        footer { text-align: center; margin-top: 36px; font-size: 12px; }
+
+        @media (max-width: 980px) {
+            .account-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .control-grid { grid-template-columns: 1fr 1fr; }
+        }
+
+        @media (max-width: 640px) {
+            .container { padding: 16px; }
+            .card-value { font-size: 24px; }
+            .account-list { grid-template-columns: 1fr; }
+            .control-grid { grid-template-columns: 1fr; }
+            #portal-nav { padding-inline: 12px; }
+            .portal-current { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <nav id="portal-nav">
+        <div class="portal-inner">
+            <span class="portal-current">ClawRoute</span>
+            <div class="portal-menu" aria-label="ClawRoute dashboards">
+                <a id="dashboard-link" href="/dashboard">Dashboard</a>
+                <a id="codex-link" class="current" href="/dashboard-codex">Codex Usage</a>
+                <a id="analysis-link" href="/dashboard-codex-analysis">Codex Analysis</a>
+                <a id="archive-link" href="/dashboard-archive">Archived</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <header>
+            <div>
+                <p class="eyebrow">Operator</p>
+                <h1>Codex Usage Dashboard</h1>
+                <p class="lede">Same-origin Codex quota visibility for 5h, Weekly, stale, partial, and cooldown-only states.</p>
+            </div>
+            <div class="header-actions">
+                <button id="refresh-button" type="button" class="primary">Refresh</button>
+            </div>
+        </header>
+
+        <section id="auth-card" class="section hidden">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Bearer Token Required</h2>
+                    <p id="auth-copy" class="muted">A 401 means /api/codex/usage needs Authorization. The token stays in sessionStorage for this tab only.</p>
+                </div>
+            </div>
+            <form id="auth-form" class="auth-form">
+                <label class="window-copy" for="token-input">Bearer token</label>
+                <div class="auth-row">
+                    <input id="token-input" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste CLAWROUTE_TOKEN">
+                    <button type="submit" class="primary">Save Token</button>
+                    <button id="clear-token" type="button">Forget Token</button>
+                </div>
+            </form>
+        </section>
+
+        <div class="grid">
+            <div class="card">
+                <p class="card-label">Accounts</p>
+                <p id="summary-accounts" class="card-value">0</p>
+                <p id="summary-accounts-sub" class="card-sub">Waiting for first sync</p>
+            </div>
+            <div class="card">
+                <p class="card-label">Last Sync</p>
+                <p id="summary-sync" class="card-value">-</p>
+                <p id="summary-sync-sub" class="card-sub">No live fetch yet</p>
+            </div>
+            <div class="card">
+                <p class="card-label">Banked Resets</p>
+                <p id="summary-resets" class="card-value">-</p>
+                <p id="summary-resets-sub" class="card-sub">No reset credit telemetry</p>
+            </div>
+            <div class="card">
+                <p class="card-label">Fallback Rows</p>
+                <p id="summary-fallbacks" class="card-value">0</p>
+                <p id="summary-fallbacks-sub" class="card-sub">Cache, persisted, or cooldown</p>
+            </div>
+            <div class="card">
+                <p class="card-label">Slot Errors</p>
+                <p id="summary-errors" class="card-value">0</p>
+                <p id="summary-errors-sub" class="card-sub">No degraded slots</p>
+            </div>
+        </div>
+
+        <section id="status-banner" class="section banner">
+            <div class="status-grid">
+                <div class="status-copy">
+                    <strong id="status-title">Loading Codex usage</strong>
+                    <p id="status-copy" class="muted">Fetching /api/codex/usage from the current origin.</p>
+                </div>
+                <p id="status-meta" class="status-meta">No last updated metadata yet.</p>
+            </div>
+        </section>
+
+        <section id="balancer-section" class="section">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Balancer Controls</h2>
+                    <p class="muted">Persistent controls using the same bearer token as the existing usage dashboard.</p>
+                </div>
+                <button id="reset-balancer" type="button">Reset to environment defaults</button>
+            </div>
+            <div class="control-grid">
+                <div class="control-card">
+                    <label for="balancer-mode">Balancer mode</label>
+                    <select id="balancer-mode">
+                        <option value="off">Off</option>
+                        <option value="shadow">Shadow</option>
+                        <option value="on">On</option>
+                    </select>
+                    <p class="control-help">Off uses legacy rotation. Shadow calculates decisions without applying them. On applies quota-aware routing.</p>
+                </div>
+                <div class="control-card">
+                    <label><input id="early-activation-enabled" type="checkbox">Early activation</label>
+                    <input id="early-activation-percent" type="number" min="1" max="100" step="1">
+                    <p class="control-help">Activates the next scheduled slot when every active slot reaches this weekly percentage. It never generates artificial traffic.</p>
+                </div>
+                <div class="control-card">
+                    <p class="card-label">Prompt cache lease</p>
+                    <p id="cache-lease" class="card-value" style="font-size:15px">No active lease</p>
+                    <button id="rotate-cache-lease" type="button">Rotate now</button>
+                    <p class="control-help">Build: <span id="build-revision">-</span></p>
+                    <p id="balancer-source" class="control-help">Loading effective configuration.</p>
+                </div>
+                <div class="control-card">
+                    <label for="cold-migration-threshold">Cold migration limit</label>
+                    <input id="cold-migration-threshold" type="number" min="0" max="100" step="0.5">
+                    <p class="control-help">Blocks old conversations when estimated 5h impact is at or above this percent. Default 7%.</p>
+                </div>
+            </div>
+            <div id="cold-migration-pool" class="cold-migration-pool"></div>
+        </section>
+
+        <section class="section">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Accounts</h2>
+                    <p class="muted">One row per accountKey with slotIndex as secondary context.</p>
+                </div>
+                <p id="accounts-meta" class="status-meta">No data loaded.</p>
+            </div>
+            <div id="accounts-body" class="account-list">
+                <div class="empty-state">Loading live and cached Codex usage windows.</div>
+            </div>
+        </section>
+
+        <footer>Codex Usage Dashboard • <span id="footer-sync">No last sync yet</span></footer>
+    </div>
+
+    <script>
+        const BASE = location.pathname.startsWith('/clawroute') ? '/clawroute' : '';
+        const TOKEN_KEY = 'clawroute.codexUsageToken';
+        const REFRESH_MS = 60000;
+        const sourceRank = { live: 0, cache: 1, persisted: 2, cooldown: 3 };
+
+        const refreshButton = document.getElementById('refresh-button');
+        const authCard = document.getElementById('auth-card');
+        const authCopy = document.getElementById('auth-copy');
+        const authForm = document.getElementById('auth-form');
+        const tokenInput = document.getElementById('token-input');
+        const clearTokenButton = document.getElementById('clear-token');
+        const accountsBody = document.getElementById('accounts-body');
+        const balancerMode = document.getElementById('balancer-mode');
+        const earlyActivationEnabled = document.getElementById('early-activation-enabled');
+        const earlyActivationPercent = document.getElementById('early-activation-percent');
+        const coldMigrationThreshold = document.getElementById('cold-migration-threshold');
+        const coldMigrationPool = document.getElementById('cold-migration-pool');
+        const resetBalancerButton = document.getElementById('reset-balancer');
+        const rotateCacheLeaseButton = document.getElementById('rotate-cache-lease');
+        let balancerState = null;
+        let cacheUsageState = null;
+
+        document.getElementById('dashboard-link').href = `${BASE}/dashboard`;
+        document.getElementById('codex-link').href = `${BASE}/dashboard-codex`;
+        document.getElementById('analysis-link').href = `${BASE}/dashboard-codex-analysis`;
+        document.getElementById('archive-link').href = `${BASE}/dashboard-archive`;
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+        }
+
+        function getRows(payload) {
+            if (Array.isArray(payload?.accounts)) return payload.accounts;
+            return Array.isArray(payload?.rows) ? payload.rows : [];
+        }
+
+        function getErrors(payload) {
+            return Array.isArray(payload?.slotErrors) ? payload.slotErrors : [];
+        }
+
+        function getResetCreditErrors(payload) {
+            return Array.isArray(payload?.resetCreditErrors) ? payload.resetCreditErrors : [];
+        }
+
+        function latestIso(values) {
+            return values.filter(Boolean).sort((left, right) => Date.parse(right) - Date.parse(left))[0] || null;
+        }
+
+        function fmtDate(value) {
+            if (!value) return '-';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '-';
+            return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        }
+
+        function localDateTimeValue(value) {
+            if (!value) return '';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '';
+            return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+        }
+
+        function fmtPercent(value) {
+            return `${Math.round(Number(value) || 0)}%`;
+        }
+
+        function fmtPercent1(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? `${number.toFixed(number >= 10 ? 0 : 1)}%` : '-';
+        }
+
+        function fmtMtokens(value) {
+            const number = Number(value) || 0;
+            return `${(number / 1_000_000).toFixed(number >= 1_000_000 ? 2 : 3)}M`;
+        }
+
+        function relativeTime(value) {
+            if (!value) return 'unknown';
+            const diff = Date.parse(value) - Date.now();
+            const abs = Math.abs(diff);
+            const minutes = Math.floor(abs / 60000);
+            const hours = Math.floor(minutes / 60);
+            if (abs < 60000) return diff >= 0 ? 'in <1m' : '<1m ago';
+            if (hours >= 24) {
+                const days = Math.floor(hours / 24);
+                return diff >= 0 ? `in ${days}d` : `${days}d ago`;
+            }
+            if (hours >= 1) return diff >= 0 ? `in ${hours}h ${minutes % 60}m` : `${hours}h ${minutes % 60}m ago`;
+            return diff >= 0 ? `in ${minutes}m` : `${minutes}m ago`;
+        }
+
+        function countdownText(value) {
+            if (!value) return 'No countdown';
+            const diff = Date.parse(value) - Date.now();
+            if (!Number.isFinite(diff)) return 'Unknown';
+            if (diff <= 0) return 'now';
+            const seconds = Math.floor(diff / 1000);
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+            if (hours > 0) return `${hours}h ${minutes}m`;
+            return `${minutes}m ${seconds % 60}s`;
+        }
+
+        function updateCountdowns() {
+            document.querySelectorAll('[data-countdown]').forEach((element) => {
+                element.textContent = `${element.getAttribute('data-countdown-prefix') || ''}${countdownText(element.getAttribute('data-countdown'))}`;
+            });
+        }
+
+        function gaugeTone(value) {
+            if (value >= 90) return 'var(--red)';
+            if (value >= 70) return 'var(--yellow)';
+            return 'var(--green)';
+        }
+
+        function sourceLabel(source) {
+            return { live: 'Live', cache: 'Cache', persisted: 'Persisted', cooldown: 'Cooldown' }[source] || 'Unknown';
+        }
+
+        function sourceBadge(source) {
+            return `badge-${source || 'persisted'}`;
+        }
+
+        function betterRow(candidate, current) {
+            if (!current) return true;
+            return (sourceRank[candidate.source] ?? 9) < (sourceRank[current.source] ?? 9)
+                || ((sourceRank[candidate.source] ?? 9) === (sourceRank[current.source] ?? 9) && Number(candidate.stale) < Number(current.stale));
+        }
+
+        function newerWindow(candidate, current) {
+            if (!candidate) return current;
+            if (!current) return candidate;
+            return Date.parse(candidate.updatedAt || '') >= Date.parse(current.updatedAt || '') ? candidate : current;
+        }
+
+        function newerResetCredits(candidate, current) {
+            if (!candidate) return current;
+            if (!current) return candidate;
+            return Date.parse(candidate.updatedAt || '') >= Date.parse(current.updatedAt || '') ? candidate : current;
+        }
+
+        function rowSlotIndexes(row) {
+            if (Array.isArray(row?.slotIndexes) && row.slotIndexes.length) {
+                return row.slotIndexes
+                    .map((value) => Number(value))
+                    .filter((value) => Number.isInteger(value))
+                    .sort((left, right) => left - right);
+            }
+            return Number.isInteger(row?.slotIndex) ? [row.slotIndex] : [];
+        }
+
+        function rowSlotPaths(row) {
+            if (!Array.isArray(row?.slotPaths)) return [];
+            return Array.from(new Set(row.slotPaths.filter((value) => typeof value === 'string' && value.trim())));
+        }
+
+        function groupRows(rows) {
+            const grouped = new Map();
+            for (const row of rows) {
+                const slotIndexes = rowSlotIndexes(row);
+                const slotPaths = rowSlotPaths(row);
+                const current = grouped.get(row.accountKey);
+                if (!current) {
+                    grouped.set(row.accountKey, {
+                        ...row,
+                        slotIndex: slotIndexes[0] ?? row.slotIndex,
+                        slotIndexes,
+                        slotPaths,
+                    });
+                    continue;
+                }
+                current.slotIndexes.push(...slotIndexes);
+                current.slotPaths.push(...slotPaths);
+                current.fiveHour = newerWindow(row.fiveHour, current.fiveHour);
+                current.weekly = newerWindow(row.weekly, current.weekly);
+                current.resetCredits = newerResetCredits(row.resetCredits, current.resetCredits);
+                current.lastFetchedAt = latestIso([current.lastFetchedAt, row.lastFetchedAt]);
+                current.updatedAt = latestIso([current.updatedAt, row.updatedAt]);
+                current.cooldownUntil = latestIso([current.cooldownUntil, row.cooldownUntil]);
+                current.stale = current.stale && row.stale;
+                if (betterRow(row, current)) current.source = row.source;
+            }
+            return Array.from(grouped.values()).map((row) => ({
+                ...row,
+                slotIndexes: Array.from(new Set(row.slotIndexes)).sort((left, right) => left - right),
+                slotPaths: Array.from(new Set(row.slotPaths)),
+            })).sort((left, right) => left.slotIndexes[0] - right.slotIndexes[0]);
+        }
+
+        function syncMeta(accounts, errors) {
+            const fetched = latestIso(accounts.map((account) => account.lastFetchedAt));
+            const updated = latestIso(accounts.map((account) => account.updatedAt));
+            const parts = [];
+            if (fetched) parts.push(`Last sync ${fmtDate(fetched)} (${relativeTime(fetched)})`);
+            if (updated && updated !== fetched) parts.push(`Last updated ${fmtDate(updated)} (${relativeTime(updated)})`);
+            if (errors.length) parts.push(`${errors.length} degraded slot${errors.length === 1 ? '' : 's'}`);
+            return parts.length ? parts.join(' • ') : 'No last sync metadata yet.';
+        }
+
+        function setBanner(kind, title, copy, meta) {
+            const banner = document.getElementById('status-banner');
+            banner.className = `section banner ${kind}`;
+            document.getElementById('status-title').textContent = title;
+            document.getElementById('status-copy').textContent = copy;
+            document.getElementById('status-meta').textContent = meta;
+        }
+
+        function setAuthState(visible, message) {
+            authCard.classList.toggle('hidden', !visible);
+            authCopy.textContent = message;
+        }
+
+        function renderSummary(accounts, errors) {
+            const fallbackCount = accounts.filter((account) => account.source !== 'live').length;
+            const lastSync = latestIso(accounts.map((account) => account.lastFetchedAt));
+            const resetRows = accounts.filter((account) => account.resetCredits);
+            const resetTotal = resetRows.reduce((sum, account) => sum + (Number(account.resetCredits?.availableCount) || 0), 0);
+            const resetDetailCount = resetRows.filter((account) => account.resetCredits?.detailsAvailable).length;
+            const configuredSlots = balancerState?.slots?.length || 0;
+            const enabledSlots = (balancerState?.slots || []).filter((slot) => slot.enabled).length;
+            document.getElementById('summary-accounts').textContent = String(accounts.length);
+            document.getElementById('summary-accounts-sub').textContent = configuredSlots
+                ? `${configuredSlots} configured slots • ${enabledSlots} enabled • grouped by accountKey`
+                : accounts.length ? 'Grouped by accountKey' : 'No usage rows yet';
+            document.getElementById('summary-sync').textContent = lastSync ? fmtDate(lastSync) : '-';
+            document.getElementById('summary-sync-sub').textContent = lastSync ? relativeTime(lastSync) : 'No live fetch yet';
+            document.getElementById('summary-resets').textContent = resetRows.length ? String(resetTotal) : '-';
+            document.getElementById('summary-resets-sub').textContent = resetRows.length
+                ? `${resetRows.length} account${resetRows.length === 1 ? '' : 's'} • ${resetDetailCount} with expiry detail`
+                : 'No reset credit telemetry';
+            document.getElementById('summary-fallbacks').textContent = String(fallbackCount);
+            document.getElementById('summary-fallbacks-sub').textContent = fallbackCount ? 'Cache, persisted, or cooldown in use' : 'All accounts are live';
+            document.getElementById('summary-errors').textContent = String(errors.length);
+            document.getElementById('summary-errors-sub').textContent = errors.length ? 'Partial fetch or degraded fallback' : 'No degraded slots';
+            document.getElementById('accounts-meta').textContent = syncMeta(accounts, errors);
+            document.getElementById('footer-sync').textContent = syncMeta(accounts, errors);
+        }
+
+        function renderWindow(label, window) {
+            const value = Math.max(0, Math.min(100, Number(window.usedPercent) || 0));
+            const reset = window.resetAt ? `Reset ${countdownText(window.resetAt)}` : `${escapeHtml(String(window.windowMinutes))} min`;
+            return `
+                <div class="usage-window" title="Resets ${escapeHtml(fmtDate(window.resetAt))}">
+                    <div class="window-label">${label}</div>
+                    <div class="usage-gauge" style="--value:${value};--tone:${gaugeTone(value)}">
+                        <span class="usage-percent">${fmtPercent(value)}</span>
+                    </div>
+                    <p class="usage-reset"${window.resetAt ? ` data-countdown-prefix="Reset " data-countdown="${escapeHtml(window.resetAt)}"` : ''}>${reset}</p>
+                </div>`;
+        }
+
+        function renderCacheStrip(accountKey) {
+            const usage = cacheUsageState?.recent || cacheUsageState?.day || cacheUsageState;
+            const dayUsage = cacheUsageState?.day || null;
+            const activeAccountKey = balancerState?.activeLease?.accountKey;
+            if (!usage || !activeAccountKey || accountKey !== activeAccountKey) return '';
+            const cachedPercent = Math.max(0, Math.min(100, Number(usage.cachedPercent) || 0));
+            const livePercent = 100 - cachedPercent;
+            const periodLabel = Number(usage.periodHours) < 1
+                ? `${Math.round(Number(usage.periodHours) * 60)}m`
+                : `${usage.periodHours || 24}h`;
+            const daySuffix = dayUsage
+                ? ` • ${fmtPercent(dayUsage.cachedPercent)} over 24h`
+                : '';
+            return `
+                <div class="cache-strip" title="Aggregated Codex input tokens during the last ${periodLabel}">
+                    <div class="cache-strip-head">
+                        <span>Prompt cache • ${periodLabel}</span>
+                        <span><strong>${fmtPercent(cachedPercent)} cached</strong> • ${Number(usage.cachedInputTokens) || 0}/${Number(usage.inputTokens) || 0} tokens${daySuffix}</span>
+                    </div>
+                    <div class="cache-strip-track" role="img" aria-label="${fmtPercent(cachedPercent)} cached input tokens">
+                        <span class="cache-strip-cached" style="width:${cachedPercent}%"></span>
+                        <span class="cache-strip-live" style="width:${livePercent}%"></span>
+                    </div>
+                </div>`;
+        }
+
+        function resetCreditSourceLabel(source) {
+            return {
+                live: 'Live details',
+                liveCountOnly: 'Live count only',
+                persisted: 'Last known',
+            }[source] || 'Unknown source';
+        }
+
+        function renderResetCreditStrip(resetCredits) {
+            if (!resetCredits) return '';
+            const count = Number.isFinite(Number(resetCredits.availableCount)) ? Number(resetCredits.availableCount) : null;
+            const credits = Array.isArray(resetCredits.credits) ? resetCredits.credits : [];
+            const items = credits.length
+                ? `<div class="reset-credit-list">${credits.map((credit) => {
+                    const label = credit.title || credit.resetType || credit.status || 'Reset credit';
+                    const dates = [
+                        credit.grantedAt ? `Grant ${fmtDate(credit.grantedAt)}` : null,
+                        credit.expiresAt ? `Expires ${fmtDate(credit.expiresAt)}` : null,
+                        credit.redeemedAt ? `Redeemed ${fmtDate(credit.redeemedAt)}` : null,
+                    ].filter(Boolean).join(' • ') || 'No date detail';
+                    return `<div class="reset-credit-item">
+                        <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
+                        <span title="${escapeHtml(dates)}">${escapeHtml(dates)}</span>
+                    </div>`;
+                }).join('')}</div>`
+                : `<div class="reset-credit-item"><strong>${count === 0 ? '0 available' : 'Details unavailable'}</strong><span>${resetCredits.detailsAvailable ? 'No credit rows returned' : 'Grant and expiry dates unavailable'}</span></div>`;
+            const updated = resetCredits.updatedAt ? ` • ${relativeTime(resetCredits.updatedAt)}` : '';
+            return `
+                <div class="reset-credit-strip">
+                    <div class="reset-credit-head">
+                        <span>Banked resets</span>
+                        <span><strong>${count === null ? '-' : count}</strong> available • ${escapeHtml(resetCreditSourceLabel(resetCredits.source))}${escapeHtml(updated)}</span>
+                    </div>
+                    ${items}
+                </div>`;
+        }
+
+        function renderSlotErrors(errors) {
+            if (!errors.length) return '';
+            return errors.map((error) => `
+                <div class="slot-error">
+                    <strong>Slot ${escapeHtml(String(error.slotIndex))} error:</strong>
+                    ${escapeHtml(error.message)}
+                    ${error.source ? ` • fallback: ${escapeHtml(error.source)}` : ''}
+                </div>`).join('');
+        }
+
+        function authStatusText(slot) {
+            if (!slot || slot.authAvailable !== false) return 'Auth ready';
+            const label = {
+                expired_refresh_failed: 'Auth refresh failed',
+                expired: 'Auth expired',
+                unknown_account: 'Auth account unknown',
+                missing: 'Auth missing',
+            }[slot.authUnavailableReason] || 'Auth unavailable';
+            return slot.authRetryAt ? `${label} until ${relativeTime(slot.authRetryAt)}` : label;
+        }
+
+        function renderSlotControls(slot) {
+            return `
+                <div class="slot-controls">
+                    <label title="Enabled for routing. Disabling preserves usage telemetry."><input class="slot-enabled" type="checkbox" data-slot="${slot.slotIndex}" ${slot.enabled ? 'checked' : ''}>Routing</label>
+                    <div class="slot-actions">
+                        <button class="activate-slot" type="button" data-slot="${slot.slotIndex}" ${slot.activated || slot.exhausted || slot.slotIndex === 0 ? 'disabled' : ''}>Activate now</button>
+                        <button class="check-slot-usage" type="button" data-slot="${slot.slotIndex}">Check usage</button>
+                    </div>
+                    <div class="reset-control">
+                        <label>Expected weekly reset
+                            <input class="expected-reset" type="datetime-local" data-slot="${slot.slotIndex}" value="${escapeHtml(localDateTimeValue(slot.expectedWeeklyResetAt))}">
+                        </label>
+                        <button class="save-expected-reset" type="button" data-slot="${slot.slotIndex}" ${slot.accountKey ? '' : 'disabled'}>Save</button>
+                    </div>
+                </div>`;
+        }
+
+        function renderAccount(account, errorsBySlot) {
+            const windows = [];
+            if (account.fiveHour) windows.push(renderWindow('5h', account.fiveHour));
+            if (account.weekly) windows.push(renderWindow('Weekly', account.weekly));
+            const secondary = `Slot${account.slotIndexes.length > 1 ? 's' : ''} ${account.slotIndexes.join(', ')}`;
+            const pathMeta = account.slotPaths?.length
+                ? `Path${account.slotPaths.length > 1 ? 's' : ''} ${account.slotPaths.join(', ')}`
+                : null;
+            const meta = [
+                pathMeta,
+                account.lastFetchedAt ? `Sync ${relativeTime(account.lastFetchedAt)}` : null,
+            ].filter(Boolean).join(' • ');
+            const fullMeta = [
+                secondary,
+                pathMeta,
+                account.lastFetchedAt ? `Fetched ${relativeTime(account.lastFetchedAt)}` : null,
+                account.updatedAt ? `Updated ${relativeTime(account.updatedAt)}` : null,
+            ].filter(Boolean).join(' • ');
+            const empty = account.cooldownUntil
+                ? `<div class="empty-window">Cooldown-only state. Resets in <span data-countdown="${escapeHtml(account.cooldownUntil)}"></span>.</div>`
+                : '<div class="empty-window">Empty state. No live, cached, or stale usage window values were returned.</div>';
+            const slotState = balancerState?.slots?.find((slot) => account.slotIndexes.includes(slot.slotIndex));
+            const slotErrors = account.slotIndexes.flatMap((slotIndex) => errorsBySlot.get(slotIndex) || []);
+            const controls = slotState ? `
+                <div class="slot-state">
+                    ${escapeHtml(slotState.scheduledDay)} •
+                    ${slotState.activated ? `Active (${escapeHtml(slotState.activationReason)})` : 'Not activated'} •
+                    ${slotState.telemetryFresh ? 'Fresh' : 'Telemetry pending'} •
+                    ${escapeHtml(authStatusText(slotState))}
+                </div>
+                ${renderSlotControls(slotState)}` : '';
+            return `
+                <article class="account-card${slotErrors.length ? ' has-error' : ''}">
+                    <div class="account-head">
+                        <div>
+                            <p class="eyebrow">${escapeHtml(secondary)}</p>
+                            <div class="account-title">
+                                <span class="account-key" title="${escapeHtml(account.accountKey)}">${escapeHtml(account.accountKey)}</span>
+                            </div>
+                            <p class="account-meta" title="${escapeHtml(fullMeta)}">${escapeHtml(meta)}</p>
+                        </div>
+                        <div class="badge-row">
+                            <span class="badge ${sourceBadge(account.source)}">${escapeHtml(sourceLabel(account.source))}</span>
+                            ${slotErrors.length ? `<span class="badge badge-error">${slotErrors.length} error${slotErrors.length === 1 ? '' : 's'}</span>` : ''}
+                            ${account.stale ? '<span class="badge badge-stale">Stale</span>' : ''}
+                            ${!windows.length && account.cooldownUntil ? '<span class="badge badge-cooldown">Cooldown only</span>' : ''}
+                        </div>
+                    </div>
+                    <div class="window-list">${windows.join('') || empty}</div>
+                    ${renderCacheStrip(account.accountKey)}
+                    ${renderResetCreditStrip(account.resetCredits)}
+                    ${renderSlotErrors(slotErrors)}
+                    ${controls}
+                </article>`;
+        }
+
+        function renderBalancerOnlySlot(slot, errorsBySlot) {
+            const windows = [];
+            const slotErrors = errorsBySlot.get(slot.slotIndex) || [];
+            if (slot.fiveHourUsedPercent !== null && slot.fiveHourUsedPercent !== undefined) {
+                windows.push(renderWindow('5h', {
+                    usedPercent: slot.fiveHourUsedPercent,
+                    resetAt: slot.fiveHourResetAt || null,
+                    windowMinutes: 300,
+                }));
+            }
+            if (slot.weeklyUsedPercent !== null && slot.weeklyUsedPercent !== undefined) {
+                windows.push(renderWindow('Weekly', {
+                    usedPercent: slot.weeklyUsedPercent,
+                    resetAt: slot.weeklyResetAt || null,
+                    windowMinutes: 10080,
+                }));
+            }
+            const pathLabel = slot.path ? `Path ${slot.path}` : 'No auth path';
+            const telemetryLabel = slot.exhausted
+                ? 'Persisted telemetry'
+                : slot.lastUsageCheckAt
+                    ? `Sync ${relativeTime(slot.lastUsageCheckAt)}`
+                    : 'Telemetry pending';
+            const meta = `${pathLabel} • ${telemetryLabel}`;
+            const fullMeta = [
+                slot.scheduledDay,
+                pathLabel,
+                slot.lastUsageCheckAt ? `Last usage check ${fmtDate(slot.lastUsageCheckAt)}` : null,
+                slot.weeklyResetAt ? `Weekly reset ${fmtDate(slot.weeklyResetAt)}` : null,
+            ].filter(Boolean).join(' • ');
+            return `
+                <article class="account-card${slotErrors.length ? ' has-error' : ''}">
+                    <div class="account-head">
+                        <div>
+                            <p class="eyebrow">Slot ${slot.slotIndex}</p>
+                            <div class="account-title">
+                                <span class="account-key" title="${escapeHtml(slot.accountKey || 'Unknown account')}">${escapeHtml(slot.accountKey || 'Unknown account')}</span>
+                            </div>
+                            <p class="account-meta" title="${escapeHtml(fullMeta)}">${escapeHtml(meta)}</p>
+                        </div>
+                        <div class="badge-row">
+                            ${slotErrors.length ? `<span class="badge badge-error">${slotErrors.length} error${slotErrors.length === 1 ? '' : 's'}</span>` : ''}
+                            ${slot.exhausted ? '<span class="badge badge-cooldown">Exhausted</span>' : ''}
+                            ${slot.telemetryFresh ? '<span class="badge badge-live">Fresh</span>' : '<span class="badge badge-stale">Stale</span>'}
+                        </div>
+                    </div>
+                    ${windows.length ? `<div class="window-list">${windows.join('')}</div>` : '<div class="empty-window">Usage telemetry unavailable.</div>'}
+                    ${renderCacheStrip(slot.accountKey)}
+                    ${renderSlotErrors(slotErrors)}
+                    <div class="slot-state">
+                        ${slot.activated ? `Active (${escapeHtml(slot.activationReason)})` : 'Not activated'} •
+                        ${slot.weeklyUsedPercent === null ? 'Weekly usage unknown' : `Weekly ${fmtPercent(slot.weeklyUsedPercent)}`} •
+                        ${escapeHtml(authStatusText(slot))}
+                    </div>
+                    ${renderSlotControls(slot)}
+                </article>`;
+        }
+
+        function renderBalancer(state) {
+            balancerState = state;
+            if (!state?.settings) return;
+            balancerMode.value = state.settings.mode;
+            earlyActivationEnabled.checked = Boolean(state.settings.earlyActivationEnabled);
+            earlyActivationPercent.value = String(state.settings.earlyActivationWeeklyPercent);
+            coldMigrationThreshold.value = String(state.settings.coldMigrationFiveHourThresholdPercent);
+            const sources = state.settingSources || {};
+            const lease = state.activeLease;
+            document.getElementById('cache-lease').textContent = lease
+                ? `Slot ${lease.slotIndex} • ${lease.status} • until ${new Date(lease.nominalExpiresAt).toLocaleTimeString()}`
+                : 'No active lease';
+            rotateCacheLeaseButton.disabled = !lease;
+            document.getElementById('balancer-source').textContent =
+                `Mode: ${sources.mode || 'environment'} • Early activation: ${sources.earlyActivationEnabled || 'environment'} • Threshold: ${sources.earlyActivationWeeklyPercent || 'environment'} • Cold migration: ${sources.coldMigrationFiveHourThresholdPercent || 'environment'}`;
+            renderColdMigrationPool(state.coldMigrationDecisions || []);
+        }
+
+        function renderColdMigrationPool(decisions) {
+            if (!decisions.length) {
+                coldMigrationPool.innerHTML = '';
+                return;
+            }
+            coldMigrationPool.innerHTML = decisions.map((decision) => `
+                <div class="cold-migration-card" data-decision="${escapeHtml(decision.id)}">
+                    <div class="cold-migration-main">
+                        <strong>Cold migration blocked: ${fmtPercent1(decision.estimatedFiveHourPercent)} 5h impact</strong>
+                        <div>${fmtMtokens(decision.estimatedInputTokens)} estimated input • threshold ${fmtPercent1(decision.thresholdFiveHourPercent)} • expires ${relativeTime(decision.expiresAt)}</div>
+                        <div>From slot ${escapeHtml(decision.previousSlotIndex ?? '?')} remaining ${fmtPercent1(decision.previousFiveHourRemainingPercent)} 5h → slot ${escapeHtml(decision.targetSlotIndex)} remaining ${fmtPercent1(decision.targetFiveHourRemainingPercent)} 5h / ${fmtPercent1(decision.targetWeeklyRemainingPercent)} weekly</div>
+                    </div>
+                    <div class="cold-migration-actions">
+                        <button class="approve-cold-migration" data-decision="${escapeHtml(decision.id)}" type="button">Yes</button>
+                        <button class="dismiss-cold-migration" data-decision="${escapeHtml(decision.id)}" type="button">No</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderPayload(payload, status) {
+            cacheUsageState = {
+                recent: payload?.cacheUsageRecent || null,
+                day: payload?.cacheUsage || null,
+            };
+            const groupedAccounts = groupRows(getRows(payload));
+            const errors = [...getErrors(payload), ...getResetCreditErrors(payload)];
+            const errorsBySlot = new Map();
+            for (const error of errors) {
+                const slotIndex = Number(error.slotIndex);
+                if (!Number.isInteger(slotIndex)) continue;
+                const slotErrors = errorsBySlot.get(slotIndex) || [];
+                slotErrors.push(error);
+                errorsBySlot.set(slotIndex, slotErrors);
+            }
+            renderSummary(groupedAccounts, errors);
+
+            if (!groupedAccounts.length) {
+                if (balancerState?.slots?.length) {
+                    accountsBody.innerHTML = balancerState.slots.map((slot) => renderBalancerOnlySlot(slot, errorsBySlot)).join('');
+                } else {
+                    const message = payload?.error?.message || (status === 401 ? 'Authentication required for /api/codex/usage.' : 'No Codex usage data available.');
+                    accountsBody.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+                }
+            } else {
+                const representedSlots = new Set(groupedAccounts.flatMap((account) => account.slotIndexes));
+                const missingSlots = (balancerState?.slots || []).filter((slot) => !representedSlots.has(slot.slotIndex));
+                accountsBody.innerHTML = [
+                    ...groupedAccounts.map((account) => renderAccount(account, errorsBySlot)),
+                    ...missingSlots.map((slot) => renderBalancerOnlySlot(slot, errorsBySlot)),
+                ].join('');
+            }
+
+            const staleCount = groupedAccounts.filter((account) => account.stale).length;
+            const cooldownCount = groupedAccounts.filter((account) => account.cooldownUntil && !account.fiveHour && !account.weekly).length;
+            if (status === 401) {
+                setBanner('warn', 'Authorization required', 'The page received a 401 and is waiting for a bearer token.', 'The token is stored only in sessionStorage.');
+            } else if (payload?.partial) {
+                setBanner('warn', 'Partial usage snapshot', 'Some slots failed and fallback data is being shown where possible.', syncMeta(groupedAccounts, errors));
+            } else if (!groupedAccounts.length) {
+                setBanner(status === 502 ? 'error' : 'banner', 'No usage rows available', payload?.error?.message || 'No 5h or Weekly usage windows were returned.', syncMeta(groupedAccounts, errors));
+            } else if (cooldownCount) {
+                setBanner('warn', 'Cooldown-only accounts present', `${cooldownCount} account${cooldownCount === 1 ? '' : 's'} only have cooldown metadata right now.`, syncMeta(groupedAccounts, errors));
+            } else if (staleCount) {
+                setBanner('banner', 'Stale snapshot in use', `${staleCount} account${staleCount === 1 ? '' : 's'} are showing persisted usage windows.`, syncMeta(groupedAccounts, errors));
+            } else {
+                setBanner('success', 'Live Codex usage loaded', 'The dashboard is showing current same-origin usage data.', syncMeta(groupedAccounts, errors));
+            }
+
+            updateCountdowns();
+        }
+
+        async function requestUsage(token) {
+            const headers = token ? { Authorization: `Bearer ${token}` } : {};
+            const response = await fetch(`${BASE}/api/codex/usage`, {
+                method: 'GET',
+                headers,
+                credentials: 'same-origin',
+            });
+            if (response.status === 401) return { status: 401, body: { partial: false, accounts: [], slotErrors: [], resetCreditErrors: [] } };
+            const body = await response.json();
+            return { status: response.status, body };
+        }
+
+        async function requestApi(path, token, options = {}) {
+            const headers = {
+                ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            };
+            const response = await fetch(`${BASE}${path}`, {
+                ...options,
+                headers,
+                credentials: 'same-origin',
+            });
+            const body = await response.json();
+            if (!response.ok) {
+                const error = new Error(body?.error?.message || `Request failed with ${response.status}`);
+                error.status = response.status;
+                throw error;
+            }
+            return body;
+        }
+
+        async function loadUsage() {
+            refreshButton.disabled = true;
+            try {
+                const token = sessionStorage.getItem(TOKEN_KEY) || '';
+                const [result, health] = await Promise.all([
+                    requestUsage(token.trim()),
+                    requestApi('/health', ''),
+                ]);
+                if (result.status === 401) {
+                    if (token) sessionStorage.removeItem(TOKEN_KEY);
+                    setAuthState(true, 'A 401 response requires Authorization. Enter the bearer token and retry.');
+                    renderPayload(result.body, 401);
+                    return;
+                }
+                const balancer = await requestApi('/api/codex/balancer', token.trim());
+                renderBalancer(balancer);
+                document.getElementById('build-revision').textContent = health.buildRevision || 'unknown';
+                setAuthState(false, '');
+                renderPayload(result.body, result.status);
+            } catch (error) {
+                if (error.status === 401) {
+                    sessionStorage.removeItem(TOKEN_KEY);
+                    setAuthState(true, 'A 401 response requires Authorization. Enter the bearer token and retry.');
+                    renderPayload({ partial: false, accounts: [], slotErrors: [], resetCreditErrors: [] }, 401);
+                    return;
+                }
+                setAuthState(false, '');
+                renderPayload({ partial: false, accounts: [], slotErrors: [], resetCreditErrors: [], error: { message: error instanceof Error ? error.message : 'Failed to load Codex usage' } }, 502);
+            } finally {
+                refreshButton.disabled = false;
+            }
+        }
+
+        authForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const token = tokenInput.value.trim();
+            if (!token) {
+                setAuthState(true, 'Enter a bearer token to retry /api/codex/usage.');
+                return;
+            }
+            refreshButton.disabled = true;
+            try {
+                const result = await requestUsage(token);
+                if (result.status === 401) {
+                    sessionStorage.removeItem(TOKEN_KEY);
+                    setAuthState(true, 'Token rejected. Enter a valid bearer token.');
+                    renderPayload(result.body, 401);
+                    return;
+                }
+                sessionStorage.setItem(TOKEN_KEY, token);
+                tokenInput.value = '';
+                setAuthState(false, '');
+                renderPayload(result.body, result.status);
+            } catch (error) {
+                setAuthState(true, error instanceof Error ? error.message : 'Failed to authenticate the token.');
+            } finally {
+                refreshButton.disabled = false;
+            }
+        });
+
+        clearTokenButton.addEventListener('click', () => {
+            sessionStorage.removeItem(TOKEN_KEY);
+            tokenInput.value = '';
+            setAuthState(true, 'Stored token cleared. The next fetch will retry without Authorization.');
+            renderPayload({ partial: false, accounts: [], slotErrors: [], resetCreditErrors: [] }, 401);
+        });
+
+        refreshButton.addEventListener('click', loadUsage);
+        balancerMode.addEventListener('change', async () => {
+            await updateSettings({ mode: balancerMode.value });
+        });
+        earlyActivationEnabled.addEventListener('change', async () => {
+            await updateSettings({ earlyActivationEnabled: earlyActivationEnabled.checked });
+        });
+        earlyActivationPercent.addEventListener('change', async () => {
+            const value = Number(earlyActivationPercent.value);
+            if (!Number.isFinite(value) || value < 1 || value > 100) {
+                alert('Early activation must be between 1 and 100.');
+                await loadUsage();
+                return;
+            }
+            await updateSettings({ earlyActivationWeeklyPercent: value });
+        });
+        coldMigrationThreshold.addEventListener('change', async () => {
+            const value = Number(coldMigrationThreshold.value);
+            if (!Number.isFinite(value) || value < 0 || value > 100) {
+                alert('Cold migration limit must be between 0 and 100.');
+                await loadUsage();
+                return;
+            }
+            await updateSettings({ coldMigrationFiveHourThresholdPercent: value });
+        });
+        resetBalancerButton.addEventListener('click', async () => {
+            if (!confirm('Reset all balancer settings and slot overrides to environment defaults?')) return;
+            await mutateBalancer('/api/codex/balancer/reset', { method: 'POST' });
+        });
+        rotateCacheLeaseButton.addEventListener('click', async () => {
+            if (!confirm('End the current prompt cache lease and select again on the next request?')) return;
+            await mutateBalancer('/api/codex/balancer/rotate', { method: 'POST' });
+        });
+        accountsBody.addEventListener('change', async (event) => {
+            const target = event.target;
+            if (!target.classList.contains('slot-enabled')) return;
+            const slot = Number(target.dataset.slot);
+            const enabled = target.checked;
+            if (!confirm(`${enabled ? 'Enable' : 'Disable'} slot ${slot} for routing?`)) {
+                target.checked = !enabled;
+                return;
+            }
+            await mutateBalancer(`/api/codex/balancer/slots/${slot}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ enabled }),
+            });
+        });
+        accountsBody.addEventListener('click', async (event) => {
+            const target = event.target;
+            const slot = Number(target.dataset.slot);
+            if (target.classList.contains('activate-slot')) {
+                if (!confirm(`Activate slot ${slot} for the current weekly cycle?`)) return;
+                await mutateBalancer(`/api/codex/balancer/slots/${slot}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ activateNow: true }),
+                });
+                return;
+            }
+            if (target.classList.contains('check-slot-usage')) {
+                target.disabled = true;
+                try {
+                    const token = (sessionStorage.getItem(TOKEN_KEY) || '').trim();
+                    await requestApi(`/api/codex/usage/slots/${slot}`, token, { method: 'POST' });
+                    await loadUsage();
+                } catch (error) {
+                    alert(error.message || 'Failed to check slot usage.');
+                    await loadUsage();
+                }
+                return;
+            }
+            if (target.classList.contains('save-expected-reset')) {
+                const input = accountsBody.querySelector(`.expected-reset[data-slot="${slot}"]`);
+                const expectedWeeklyResetAt = input?.value
+                    ? new Date(input.value).toISOString()
+                    : null;
+                await mutateBalancer(`/api/codex/balancer/slots/${slot}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ expectedWeeklyResetAt }),
+                });
+            }
+        });
+        coldMigrationPool.addEventListener('click', async (event) => {
+            const target = event.target;
+            const decision = target.dataset?.decision;
+            if (!decision) return;
+            if (target.classList.contains('approve-cold-migration')) {
+                await mutateBalancer(`/api/codex/cold-migrations/${encodeURIComponent(decision)}/approve`, { method: 'POST' });
+            }
+            if (target.classList.contains('dismiss-cold-migration')) {
+                await mutateBalancer(`/api/codex/cold-migrations/${encodeURIComponent(decision)}/dismiss`, { method: 'POST' });
+            }
+        });
+
+        async function updateSettings(body) {
+            await mutateBalancer('/api/codex/balancer/settings', {
+                method: 'PATCH',
+                body: JSON.stringify(body),
+            });
+        }
+
+        async function mutateBalancer(path, options) {
+            try {
+                const token = (sessionStorage.getItem(TOKEN_KEY) || '').trim();
+                renderBalancer(await requestApi(path, token, options));
+                await loadUsage();
+            } catch (error) {
+                if (error.status === 401) {
+                    sessionStorage.removeItem(TOKEN_KEY);
+                    setAuthState(true, 'Token rejected. Enter a valid bearer token.');
+                }
+                alert(error.message || 'Failed to update the balancer.');
+                await loadUsage();
+            }
+        }
+        setInterval(updateCountdowns, 1000);
+        setInterval(() => {
+            if (authCard.classList.contains('hidden') || sessionStorage.getItem(TOKEN_KEY)) loadUsage();
+        }, REFRESH_MS);
+        loadUsage();
+    </script>
+</body>
+</html>
