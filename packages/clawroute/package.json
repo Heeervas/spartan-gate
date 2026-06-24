@@ -40,19 +40,19 @@
     "homepage": "https://github.com/Heeervas/spartan-gate/tree/master/packages/clawroute",
     "license": "MIT",
     "dependencies": {
-        "@hono/node-server": "^1.13.7",
+        "@hono/node-server": "^2.0.6",
         "bcrypt": "^6.0.0",
         "dotenv": "^16.4.7",
         "hono": "^4.6.16",
         "sql.js": "^1.11.0",
-        "undici": "^6.24.1"
+        "undici": "^8.5.0"
     },
     "devDependencies": {
         "@types/node": "^22.10.6",
         "@types/sql.js": "^1.4.9",
         "tsx": "^4.19.2",
         "typescript": "^5.7.3",
-        "vitest": "^2.1.8"
+        "vitest": "^3.2.6"
     },
     "engines": {
         "node": ">=18.0.0"
