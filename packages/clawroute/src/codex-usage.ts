@@ -6,7 +6,7 @@ import {
     getCodexAuthSlots,
     loadCodexUsageAuthSlot,
 } from './codex-transport.js';
-import { getProxyAgent } from './http-proxy.js';
+import { FetchInitWithDispatcher, getProxyAgent } from './http-proxy.js';
 import {
     getCodexResetCreditSnapshots,
     getCodexUsageSnapshots,
@@ -542,7 +542,7 @@ async function defaultFetchUsage(slot: ServiceSlot, timeoutMs = DEFAULT_TIMEOUT_
     const auth = await ensureCodexUsageAuth(slot, dispatcher, timeoutMs);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+    const fetchOptions: FetchInitWithDispatcher = {
         method: 'GET',
         headers: {
             Authorization: `Bearer ${auth.accessToken}`,
@@ -571,7 +571,7 @@ async function defaultFetchResetCredits(slot: ServiceSlot, timeoutMs = DEFAULT_T
     const auth = await ensureCodexUsageAuth(slot, dispatcher, timeoutMs);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+    const fetchOptions: FetchInitWithDispatcher = {
         method: 'GET',
         headers: {
             Authorization: `Bearer ${auth.accessToken}`,

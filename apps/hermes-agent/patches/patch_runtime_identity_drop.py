@@ -28,10 +28,28 @@ MAIN_DROP_NEW = f'''drop() {{
 }}
 '''
 
-DASHBOARD_DROP_OLD = '''exec s6-setuidgid hermes hermes dashboard \\
+DASHBOARD_DROP_OLD = '''# Skip the drop when already non-root.
+[ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open
+exec s6-setuidgid hermes hermes dashboard \\
+    --host "$dash_host" --port "$dash_port" --no-open
+'''
+DASHBOARD_DROP_OLD_LEGACY = '''exec s6-setuidgid hermes hermes dashboard \\
     --host "$dash_host" --port "$dash_port" --no-open $insecure
 '''
 DASHBOARD_DROP_NEW = f'''{DASHBOARD_MARKER}
+if [ "$(id -u)" != 0 ]; then
+    exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open
+fi
+if [ -n "${{SPARTAN_HERMES_RUN_UID:-}}${{SPARTAN_HERMES_RUN_GID:-}}" ]; then
+    _spartan_run_uid="${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}"
+    _spartan_run_gid="${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}"
+    exec /command/s6-applyuidgid -u "$_spartan_run_uid" -g "$_spartan_run_gid" hermes dashboard \\
+        --host "$dash_host" --port "$dash_port" --no-open $insecure
+fi
+exec /command/s6-setuidgid hermes hermes dashboard \\
+    --host "$dash_host" --port "$dash_port" --no-open
+'''
+DASHBOARD_DROP_NEW_LEGACY = f'''{DASHBOARD_MARKER}
 if [ -n "${{SPARTAN_HERMES_RUN_UID:-}}${{SPARTAN_HERMES_RUN_GID:-}}" ]; then
     _spartan_run_uid="${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}"
     _spartan_run_gid="${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}"
@@ -54,9 +72,12 @@ def patch_main_wrapper_source(source: str) -> str:
 def patch_dashboard_source(source: str) -> str:
     if DASHBOARD_MARKER in source:
         return source
-    if DASHBOARD_DROP_OLD not in source:
+    if DASHBOARD_DROP_OLD in source:
+        return source.replace(DASHBOARD_DROP_OLD, DASHBOARD_DROP_NEW, 1)
+    if DASHBOARD_DROP_OLD_LEGACY in source:
+        return source.replace(DASHBOARD_DROP_OLD_LEGACY, DASHBOARD_DROP_NEW_LEGACY, 1)
+    else:
         raise ValueError("dashboard privilege-drop anchor not found")
-    return source.replace(DASHBOARD_DROP_OLD, DASHBOARD_DROP_NEW, 1)
 
 
 def patch_file(path: Path, patcher, label: str) -> str:

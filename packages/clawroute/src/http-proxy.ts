@@ -1,5 +1,9 @@
 import { ProxyAgent } from 'undici';
 
+export type FetchInitWithDispatcher = Omit<RequestInit, 'dispatcher'> & {
+    dispatcher?: unknown;
+};
+
 let proxyAgent: ProxyAgent | null = null;
 let proxyUrl = '';
 

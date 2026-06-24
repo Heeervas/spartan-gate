@@ -85,6 +85,7 @@ PY
 - Private, localhost, internal Docker, link-local, reserved, multicast and
   unspecified targets are blocked before fetch.
 - Private IPs and localhost targets fail before fetch.
+- DNS resolution failures fail closed before fetch.
 - Redirects to private/internal targets are blocked.
 - POST/PUT/DELETE/PATCH are rejected by the reader itself.
 - `file://` and other non-HTTP(S) schemes are rejected.

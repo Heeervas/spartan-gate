@@ -1,6 +1,6 @@
 import { getApiKey } from './config.js';
 import { makeCodexImageRequest } from './codex-transport.js';
-import { getProxyAgent } from './http-proxy.js';
+import { FetchInitWithDispatcher, getProxyAgent } from './http-proxy.js';
 import { getApiBaseUrl, getAuthHeader, getModelEntryFromCatalog } from './models.js';
 import { ClawRouteConfig, ImageEditRequest, ImageGenerationRequest, ModelEntry } from './types.js';
 
@@ -280,7 +280,7 @@ export async function executeImageGeneration(
         );
     }
 
-    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+    const fetchOptions: FetchInitWithDispatcher = {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -295,7 +295,7 @@ export async function executeImageGeneration(
     }
 
     try {
-        return await fetch(`${getApiBaseUrl('openai')}/images/generations`, fetchOptions);
+        return await fetch(`${getApiBaseUrl('openai')}/images/generations`, fetchOptions as RequestInit);
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to generate image';
         return createServerErrorResponse(message);
@@ -331,7 +331,7 @@ export async function executeImageEdit(
         );
     }
 
-    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+    const fetchOptions: FetchInitWithDispatcher = {
         method: 'POST',
         headers: {
             ...getAuthHeader('openai', apiKey),
@@ -345,7 +345,7 @@ export async function executeImageEdit(
     }
 
     try {
-        return await fetch(`${getApiBaseUrl('openai')}/images/edits`, fetchOptions);
+        return await fetch(`${getApiBaseUrl('openai')}/images/edits`, fetchOptions as RequestInit);
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to edit image';
         return createServerErrorResponse(message);

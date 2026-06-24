@@ -1,4 +1,4 @@
-FROM node:22-slim AS build
+FROM node:22-trixie-slim AS build
 
 WORKDIR /app
 
@@ -13,22 +13,25 @@ COPY web ./web
 RUN npm run build
 RUN npm prune --omit=dev
 
-FROM node:22-slim AS runtime
+RUN mkdir -p /app/data
+
+FROM gcr.io/distroless/nodejs22-debian13 AS runtime
 
 ARG CLAWROUTE_BUILD_REVISION=unknown
 
 WORKDIR /app
 
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/package-lock.json ./package-lock.json
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/config ./config
-COPY --from=build /app/web ./web
+ENV PATH="/nodejs/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-RUN mkdir -p /app/data && chown -R node:node /app/data
+COPY --from=build --chown=1000:1000 /app/package.json ./package.json
+COPY --from=build --chown=1000:1000 /app/package-lock.json ./package-lock.json
+COPY --from=build --chown=1000:1000 /app/node_modules ./node_modules
+COPY --from=build --chown=1000:1000 /app/dist ./dist
+COPY --from=build --chown=1000:1000 /app/config ./config
+COPY --from=build --chown=1000:1000 /app/web ./web
+COPY --from=build --chown=1000:1000 /app/data ./data
 
-USER node
+USER 1000:1000
 
 EXPOSE 18790
 
@@ -37,4 +40,4 @@ ENV CLAWROUTE_HOST=0.0.0.0
 ENV CLAWROUTE_PORT=18790
 ENV CLAWROUTE_BUILD_REVISION=${CLAWROUTE_BUILD_REVISION}
 
-CMD ["node", "dist/index.js"]
+CMD ["dist/index.js"]

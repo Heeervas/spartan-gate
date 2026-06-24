@@ -37,6 +37,9 @@ class WhitelistDomainTests(unittest.TestCase):
     def lines(self):
         return self.whitelist.read_text().splitlines()
 
+    def line_domains(self):
+        return [line.split("#", 1)[0].strip() for line in self.lines()]
+
     def test_adds_permanent_domain(self):
         result = self.run_helper("Example.COM")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -96,7 +99,11 @@ class WhitelistDomainTests(unittest.TestCase):
         self.whitelist.write_text("example.com # sg-expires-at=1700000900 sg-ttl=15m\nexample.com # sg-expires-at=1700021600 sg-ttl=6h\n")
         result = self.run_helper("15d", "example.com")
         self.assertEqual(result.returncode, 0, result.stderr)
-        matching = [line for line in self.lines() if line.startswith("example.com")]
+        matching = [
+            line
+            for domain, line in zip(self.line_domains(), self.lines())
+            if domain == "example.com"
+        ]
         self.assertEqual(matching, ["example.com # sg-expires-at=1701296000 sg-ttl=15d"])
 
     def test_rejects_invalid_ipv4_and_ipv6_explicitly(self):

@@ -94,6 +94,17 @@ class ProxyBootstrapTests(unittest.TestCase):
             )
         )
 
+    def test_brave_search_detection_requires_exact_hostname(self):
+        self.assertTrue(self.module._is_brave_search_url('https://api.search.brave.com/res/v1/web/search?q=test'))
+        self.assertFalse(self.module._is_brave_search_url('https://api.search.brave.com.attacker.test/search?q=test'))
+        self.assertFalse(self.module._is_brave_search_url('https://attacker.test/?next=api.search.brave.com'))
+
+    def test_searxng_detection_requires_exact_configured_hostname(self):
+        self.module.SEARXNG_URL = 'http://searxng:8080'
+        self.assertTrue(self.module._is_searxng_search_url('http://searxng:8080/search?q=test'))
+        self.assertFalse(self.module._is_searxng_search_url('http://evil-searxng.test/search?q=test'))
+        self.assertFalse(self.module._is_searxng_search_url('http://attacker.test/path?next=searxng/search'))
+
     def test_supports_suffix_entries(self):
         os.environ['NO_PROXY'] = '.internal.example'
         self.assertTrue(

@@ -8,7 +8,6 @@ import urllib.parse
 import urllib.request
 from http.server import HTTPServer
 from contextlib import redirect_stderr
-from types import SimpleNamespace
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("server.py")
@@ -54,11 +53,15 @@ class ReaderServerTests(unittest.TestCase):
         self.old_fetch_url = reader_server.fetch_url
         self.old_is_blocked = reader_server.is_blocked
         self.old_getaddrinfo = reader_server.socket.getaddrinfo
+        self.old_open_checked_socket = reader_server._open_checked_socket
+        self.old_http_response = reader_server.http.client.HTTPResponse
 
     def tearDown(self):
         reader_server.fetch_url = self.old_fetch_url
         reader_server.is_blocked = self.old_is_blocked
         reader_server.socket.getaddrinfo = self.old_getaddrinfo
+        reader_server._open_checked_socket = self.old_open_checked_socket
+        reader_server.http.client.HTTPResponse = self.old_http_response
 
     def test_fetch_wraps_output_as_untrusted_content(self):
         reader_server.is_blocked = lambda _url: False
@@ -94,17 +97,43 @@ class ReaderServerTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertTrue(reader_server.is_blocked(url))
 
+    def test_dns_resolution_failure_is_blocked(self):
+        def raise_gaierror(*_args, **_kwargs):
+            raise reader_server.socket.gaierror("not found")
+
+        reader_server.socket.getaddrinfo = raise_gaierror
+        self.assertTrue(reader_server.is_blocked("http://missing.example/page"))
+
     def test_blocked_redirect_raises_explicit_exception(self):
-        handler = reader_server.SafeRedirectHandler()
+        class RedirectResponse:
+            status = 302
+
+            def __init__(self, _sock):
+                pass
+
+            def begin(self):
+                pass
+
+            def getheader(self, name, default=None):
+                if name == "Location":
+                    return "http://127.0.0.1:3000/private"
+                return default
+
+        class FakeSocket:
+            def sendall(self, _data):
+                pass
+
+            def close(self):
+                pass
+
+        reader_server.socket.getaddrinfo = lambda *_args, **_kwargs: [
+            (reader_server.socket.AF_INET, reader_server.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80)),
+        ]
+        reader_server._open_checked_socket = lambda *_args, **_kwargs: FakeSocket()
+        reader_server.http.client.HTTPResponse = RedirectResponse
+
         with self.assertRaises(reader_server.BlockedDestination):
-            handler.redirect_request(
-                SimpleNamespace(full_url="https://public.example"),
-                None,
-                302,
-                "Found",
-                {},
-                "http://127.0.0.1:3000/private",
-            )
+            reader_server.fetch_url("http://public.example/page")
 
     def test_fetch_blocks_private_resolution_used_for_actual_connection(self):
         reader_server.socket.getaddrinfo = lambda *_args, **_kwargs: [
@@ -113,6 +142,10 @@ class ReaderServerTests(unittest.TestCase):
 
         with self.assertRaises(reader_server.BlockedDestination):
             reader_server.fetch_url("http://public.example/page")
+
+    def test_fetch_validates_url_even_when_called_directly(self):
+        with self.assertRaises(reader_server.BlockedDestination):
+            reader_server.fetch_url("http://127.0.0.1:3000/private")
 
     def test_audit_log_redacts_query_string(self):
         stderr = io.StringIO()

@@ -18,7 +18,8 @@ import re
 import sys
 import signal
 import socket
-import urllib.request
+import ssl
+import http.client
 import urllib.error
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -29,6 +30,7 @@ MAX_RESPONSE_SIZE = 2 * 1024 * 1024  # 2 MB max download
 MAX_TEXT_LENGTH = 100_000              # 100k chars max response
 LISTEN_PORT = int(os.environ.get("READER_PORT", "3000"))
 REQUEST_TIMEOUT = int(os.environ.get("READER_TIMEOUT", "15"))
+MAX_REDIRECTS = 5
 UNTRUSTED_BEGIN = "BEGIN_UNTRUSTED_WEB_CONTENT"
 UNTRUSTED_END = "END_UNTRUSTED_WEB_CONTENT"
 UNTRUSTED_HEADER = "untrusted-web-content"
@@ -144,7 +146,7 @@ def is_blocked(url: str) -> bool:
     try:
         infos = socket.getaddrinfo(hostname, parsed.port or 443)
     except socket.gaierror:
-        return False
+        return True
 
     for info in infos:
         if _is_blocked_ip(info[4][0]):
@@ -184,44 +186,75 @@ def create_checked_connection(address, timeout=None, source_address=None):
     raise OSError(f"Could not connect to {host}")
 
 
-class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if is_blocked(newurl):
-            audit_log("BLOCKED-REDIRECT", newurl)
-            raise BlockedDestination("Redirect blocked: internal/private network")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 def mark_untrusted(text: str) -> str:
     """Wrap fetched page text so downstream agents keep it separated as data."""
     return f"{UNTRUSTED_BEGIN}\n{text}\n{UNTRUSTED_END}\n"
 
 
-def fetch_url(url: str) -> tuple[str, str]:
-    """Fetch URL content. Returns (content, content_type)."""
-    req = urllib.request.Request(
-        url,
-        method="GET",
-        headers={
-            "User-Agent": "Mozilla/5.0 (compatible; SpartanGate-Reader/1.0)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8",
-            "Accept-Language": "en,de;q=0.5",
-        },
-    )
+def _request_path(parsed: urllib.parse.ParseResult) -> str:
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return path
 
-    opener = urllib.request.build_opener(SafeRedirectHandler)
-    original_create_connection = socket.create_connection
-    socket.create_connection = create_checked_connection
+
+def _open_checked_socket(hostname: str, port: int, use_tls: bool):
+    sock = create_checked_connection((hostname, port), timeout=REQUEST_TIMEOUT)
+    if not use_tls:
+        return sock
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context.wrap_socket(sock, server_hostname=hostname)
+
+
+def fetch_url(url: str, redirects: int = 0) -> tuple[str, str]:
+    """Fetch URL content. Returns (content, content_type)."""
+    if redirects > MAX_REDIRECTS:
+        raise BlockedDestination("Redirect blocked: too many redirects")
+
+    if is_blocked(url):
+        raise BlockedDestination("Destination blocked: internal/private network")
+
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise BlockedDestination("Destination blocked: missing hostname")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    use_tls = parsed.scheme == "https"
+    host_header = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    request = (
+        f"GET {_request_path(parsed)} HTTP/1.1\r\n"
+        f"Host: {host_header}\r\n"
+        "User-Agent: Mozilla/5.0 (compatible; SpartanGate-Reader/1.0)\r\n"
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8\r\n"
+        "Accept-Language: en,de;q=0.5\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii", errors="ignore")
+
+    sock = _open_checked_socket(hostname, port, use_tls)
     try:
-        with opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
-            content_type = resp.headers.get("Content-Type", "text/html")
-            data = resp.read(MAX_RESPONSE_SIZE)
-            charset = "utf-8"
-            if "charset=" in content_type:
-                charset = content_type.split("charset=")[-1].split(";")[0].strip()
-            return data.decode(charset, errors="replace"), content_type
+        sock.sendall(request)
+        resp = http.client.HTTPResponse(sock)
+        resp.begin()
+        if resp.status in {301, 302, 303, 307, 308}:
+            location = resp.getheader("Location")
+            if not location:
+                raise BlockedDestination("Redirect blocked: missing Location header")
+            newurl = urllib.parse.urljoin(url, location)
+            if is_blocked(newurl):
+                audit_log("BLOCKED-REDIRECT", newurl)
+                raise BlockedDestination("Redirect blocked: internal/private network")
+            return fetch_url(newurl, redirects + 1)
+
+        content_type = resp.getheader("Content-Type", "text/html")
+        data = resp.read(MAX_RESPONSE_SIZE)
+        charset = "utf-8"
+        if "charset=" in content_type:
+            charset = content_type.split("charset=")[-1].split(";")[0].strip()
+        return data.decode(charset, errors="replace"), content_type
     finally:
-        socket.create_connection = original_create_connection
+        sock.close()
 
 
 def extract_text(html_content: str) -> str:

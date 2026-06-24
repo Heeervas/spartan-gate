@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { ProxyAgent } from 'undici';
+import { FetchInitWithDispatcher } from './http-proxy.js';
 import {
     CodexAccountScheduleRow,
     CodexAuthUnavailableReason,
@@ -872,7 +873,7 @@ async function refreshTokens(
         : null;
 
     try {
-        const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+        const fetchOptions: FetchInitWithDispatcher = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1565,7 +1566,7 @@ async function executeCodexImageCall(
     };
     if (auth.accountId) headers['chatgpt-account-id'] = auth.accountId;
 
-    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+    const fetchOptions: FetchInitWithDispatcher = {
         method: 'POST',
         headers,
         body: JSON.stringify(await buildCodexImageRequestBody(request)),
@@ -2910,7 +2911,7 @@ async function executeCodexCall(
         'OpenAI-Beta': 'responses=experimental',
     };
     if (auth.accountId) headers['chatgpt-account-id'] = auth.accountId;
-    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+    const fetchOptions: FetchInitWithDispatcher = {
         method: 'POST',
         headers,
         body: JSON.stringify(body),

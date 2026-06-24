@@ -25,7 +25,7 @@ import { validateResponse } from './validator.js';
 import { pipeStream, pipeOllamaStream, adaptOllamaResponse, getSSEHeaders, StreamResult } from './streaming.js';
 import { makeCodexRequest } from './codex-transport.js';
 import { sleep, estimateMessagesTokens, safeJsonParse } from './utils.js';
-import { getProxyAgent } from './http-proxy.js';
+import { FetchInitWithDispatcher, getProxyAgent } from './http-proxy.js';
 
 /**
  * Check if escalation is allowed based on plan and tier.
@@ -693,7 +693,7 @@ async function makeProviderRequest(
     const proxyAgent = provider !== 'ollama' ? getProxyAgent() : null;
 
     try {
-        const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+        const fetchOptions: FetchInitWithDispatcher = {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

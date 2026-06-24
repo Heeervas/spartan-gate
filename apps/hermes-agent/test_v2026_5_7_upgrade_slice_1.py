@@ -22,7 +22,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn(
             'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:2fd49b834b886db260d829884908932c88eb9f0b2782efd44a727cda5b02d7fe',
+            'sha256:05a1e2ac8293b3a94bdfc1d8068bf495d7bd9e94d0300661bfa773f1e7576488',
             dockerfile,
         )
 

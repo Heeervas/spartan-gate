@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS node22
 
-FROM docker.io/nousresearch/hermes-agent:main@sha256:2fd49b834b886db260d829884908932c88eb9f0b2782efd44a727cda5b02d7fe
+FROM docker.io/nousresearch/hermes-agent:main@sha256:05a1e2ac8293b3a94bdfc1d8068bf495d7bd9e94d0300661bfa773f1e7576488
 
 USER root
 
@@ -25,7 +25,9 @@ RUN echo 'export PATH="/opt/hermes/.venv/bin:$PATH"' > /etc/profile.d/hermes-ven
 
 # CLI-Toolbox: Network, System, Dev, Data Processing, Media
 # (matches Hermes's toolbox minus packages the base image already includes)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
     # --- Network ---
     curl \
     wget \
@@ -110,11 +112,11 @@ COPY browserless-cdp-broker.py /opt/hermes/bootstrap/browserless-cdp-broker.py
 COPY runtime-docs/ /opt/hermes/runtime-docs/
 
 # Install gogcli (Google CLI — Gmail, Calendar, Drive, Docs, Sheets, etc.)
-# https://github.com/steipete/gogcli
+# https://github.com/openclaw/gogcli
 RUN set -eux; \
-    GOGCLI_VERSION="0.12.0"; \
+    GOGCLI_VERSION="0.30.0"; \
     ARCH="$(dpkg --print-architecture)"; \
-    curl -fsSL "https://github.com/steipete/gogcli/releases/download/v${GOGCLI_VERSION}/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz" \
+    curl -fsSL "https://github.com/openclaw/gogcli/releases/download/v${GOGCLI_VERSION}/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz" \
         | tar xz -C /usr/local/bin gog; \
     chmod +x /usr/local/bin/gog
 
