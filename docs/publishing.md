@@ -98,3 +98,24 @@ Before treating the repo as publishable:
   was committed, stop, rotate it, and prepare a separate history-rewrite plan.
 - Verify fresh installs do not seed `web-search-plus`; native Hermes SearXNG is
   the documented search path for layers that include SearXNG.
+
+## Current Readiness Posture
+
+The public repo is ready to present as a credible OSS baseline for local/private
+agent hardening when the pre-push checks pass. Describe it as defensive
+infrastructure for private deployments, not as a turnkey public-Internet
+security product.
+
+Keep these caveats visible in announcements and release notes:
+
+- Public Compose edge bindings are localhost-first. Tailscale or other private
+  exposure belongs in ignored private overrides.
+- Browserless debugger WebSockets use `BROWSERLESS_EDGE_TOKEN` instead of
+  browser Basic Auth so Safari/Firefox login flows do not loop during WebSocket
+  upgrades.
+- Hermes dashboard `/api/*` and `/ws/*` remain same-origin pass-through routes
+  behind the private edge so the dashboard can call its own backend.
+- Reader reduces SSRF risk with request validation and checked connection
+  resolution, but fetched web content is still untrusted input.
+- `scripts/doctor.sh`, CI, and `npm audit --omit=dev` are readiness gates, not
+  substitutes for reviewing a private deployment's exposure model.

@@ -1,0 +1,79 @@
+# Spartan Gate
+
+Spartan Gate is defensive Docker infrastructure for private Hermes-class AI
+agents. It combines Hermes, ClawRoute, Caddy, Browserless/Camofox, Tinyproxy,
+dnsmasq, SearXNG, and a bounded Reader service to reduce direct network,
+credential, and browser exposure.
+
+Read this first when orienting an LLM or coding agent to the repository.
+
+## Start Here
+
+- [README](README.md): product summary, quick start, tiers, and common commands.
+- [Security](docs/security.md): threat model, controls, secrets, logging, and
+  boundary ownership.
+- [Layers](docs/layers.md): L0-L4 service model, addons, and Hermes modes.
+- [Environment](docs/env.md): public environment variables and operator-facing
+  contracts.
+- [Operations](docs/operations.md): safe startup, helper aliases, profiles,
+  logs, Browserless, Camofox, and recovery workflows.
+- [Publishing](docs/publishing.md): public/private split, OSS readiness checks,
+  and current readiness posture.
+
+## Architecture
+
+- [Architecture](docs/architecture.md): high-level service layout.
+- [ClawRoute](docs/clawroute.md): OpenAI-compatible LLM router behavior.
+- [Reader](docs/reader.md): GET-only web reader and untrusted-content contract.
+- [Profiles](docs/profiles.md): Hermes and browser profile behavior.
+- [Patches](docs/patches.md): Hermes patch ownership and runtime adaptation.
+- [Development](docs/development.md): local development and validation commands.
+
+## Main Code Areas
+
+- `apps/hermes-agent/`: Hermes image adaptation, runtime wrappers, patches, and
+  tests.
+- `packages/clawroute/`: TypeScript LLM router, OpenAI-compatible API, provider
+  routing, dashboards, and Vitest suite.
+- `infra/compose/`: public Docker Compose topology and tier overlays.
+- `infra/caddy/`: authenticated local/private edge routing.
+- `infra/outbound-proxy/` and `infra/dns/`: whitelist-controlled HTTP and DNS
+  egress.
+- `infra/reader/`: bounded Python GET-only web reader.
+- `infra/browserless/` and `infra/camofox/`: browser service integration.
+- `config/clawroute/`: public runtime routing examples.
+- `scripts/`: installer, doctor, aliases, and operator helpers.
+- `private.example/`: publishable templates for ignored private configuration.
+
+## Safety Rules For Agents
+
+- Do not inspect, summarize, or publish ignored `private/`, `runtime/`, browser
+  profile, OAuth, or token-bearing data unless the user explicitly asks for a
+  safe local operation.
+- Preserve fail-closed behavior for network, auth, policy, Reader, Caddy, and
+  ClawRoute boundaries.
+- Keep Hermes off external networks in gated tiers; use Tinyproxy/DNS/Reader for
+  controlled egress.
+- Update docs and `CHANGELOG.md` when operator-visible behavior changes.
+- Validate the narrow changed surface first, then broaden according to blast
+  radius.
+
+## Validation Shortcuts
+
+```sh
+npm run clawroute:build
+npm run clawroute:test
+python3 -m unittest discover -s apps/hermes-agent -p "test_*.py"
+node --test apps/hermes-agent/test_*.js
+python3 -m unittest discover -s scripts -p "test_*.py"
+python3 -m unittest discover -s infra/reader -p "test_*.py"
+docker compose -f infra/compose/compose.yml config --quiet
+scripts/doctor.sh
+```
+
+## Agent Readability Plan
+
+The first agent-orientation artifact is this root `llms.txt`, because it is
+small, easy to keep in sync, and does not require a separate generated wiki.
+See [docs/agent-readability.md](docs/agent-readability.md) for the rollout plan
+and criteria for adding a fuller LLM wiki later.

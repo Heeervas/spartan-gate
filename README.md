@@ -6,6 +6,16 @@ Spartan Gate is defensive infrastructure for private AI agents. It puts Hermes i
 
 Hermes is the primary agent/runtime. ClawRoute is the internal OpenAI-compatible LLM router. The surrounding services enforce controlled outbound access, browser mediation, search, read-only web fetching, and authenticated local entry points.
 
+## Status
+
+Spartan Gate is OSS-ready as a local/private defensive boundary for
+Hermes-class agents. It is not a claim of production certification for public
+Internet exposure. Keep public edge ports bound to localhost or private
+networks, replace all placeholders before use, and review
+[docs/security.md](docs/security.md) before widening access.
+
+For machine-readable repository orientation, see [llms.txt](llms.txt).
+
 ## Quick Start
 
 These commands are the basic path for a fresh machine. The installer creates

@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Added an explicit OSS-readiness posture to the public docs and a root
+  `llms.txt` entry map plus agent-readability plan for future LLM/code-agent
+  orientation.
 - Hardened Browserless debugger exposure by requiring a generated
   `BROWSERLESS_EDGE_TOKEN` on WebSocket upgrades while preserving browser
   Basic Auth for HTTP debugger pages and keeping Safari/Firefox login flows
