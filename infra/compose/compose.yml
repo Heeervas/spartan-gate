@@ -402,6 +402,7 @@ services:
 
       # required: controlled browser/search/reader integrations.
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
+      BROWSERLESS_EDGE_TOKEN: ${BROWSERLESS_EDGE_TOKEN:-change-me-browserless-edge-token}
       BROWSERLESS_PROFILE: ${BROWSERLESS_PROFILE:-main}
       BROWSERLESS_PROFILE_ROOT: /profiles
       BROWSERLESS_WS_BASE: ws://browserless:3000/chromium
@@ -488,6 +489,7 @@ services:
 
       # required: upstream bearer tokens injected by Caddy.
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
+      BROWSERLESS_EDGE_TOKEN: ${BROWSERLESS_EDGE_TOKEN:-change-me-browserless-edge-token}
       CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       HERMES_API_PORT: ${HERMES_API_PORT:-8642}
     volumes:

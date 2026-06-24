@@ -73,10 +73,12 @@ test('debugger router route mapping matches Browserless route names', () => {
 });
 
 test('debugger router accepts canonical sgRoute over legacy sgStealthRoute', () => {
-  const context = loadRouterContext('?sgRoute=stealth&sgStealthRoute=chromium');
+  const context = loadRouterContext('?sgRoute=stealth&sgStealthRoute=chromium&sgEdgeToken=edge-secret');
   const launch = encodeURIComponent(JSON.stringify({ args: [] }));
 
   new context.window.WebSocket(`ws://browserless:3000/chromium?launch=${launch}`);
 
-  assert.equal(new URL(context.lastWebSocketUrl).pathname, '/stealth');
+  const rewritten = new URL(context.lastWebSocketUrl);
+  assert.equal(rewritten.pathname, '/stealth');
+  assert.equal(rewritten.searchParams.get('sgEdgeToken'), 'edge-secret');
 });

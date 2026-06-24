@@ -56,6 +56,9 @@ function buildDebuggerUrl(env, profile, initialUrl, originOverride) {
   if (env.BROWSERLESS_USER_AGENT) {
     url.searchParams.set('sgUserAgent', env.BROWSERLESS_USER_AGENT);
   }
+  if (env.BROWSERLESS_EDGE_TOKEN) {
+    url.searchParams.set('sgEdgeToken', env.BROWSERLESS_EDGE_TOKEN);
+  }
   if (launch.ignoreDefaultArgs === true) {
     url.searchParams.set('sgIgnoreDefaultArgs', 'true');
   }

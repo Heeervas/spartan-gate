@@ -2,7 +2,7 @@
  * ClawRoute Authentication Middleware
  *
  * Simple token-based authentication for the proxy.
- * If CLAWROUTE_TOKEN is set, requires Bearer token or query param.
+ * If CLAWROUTE_TOKEN is set, requires a Bearer token.
  */
 
 import { Context, Next } from 'hono';
@@ -35,17 +35,11 @@ export function createAuthMiddleware(config: ClawRouteConfig, exemptPaths?: stri
             }
         }
 
-        // Check query parameter
-        const queryToken = c.req.query('token');
-        if (queryToken === config.authToken) {
-            return next();
-        }
-
         // Authentication failed
         return c.json(
             {
                 error: {
-                    message: 'Unauthorized. Provide Bearer token in Authorization header or token query param.',
+                    message: 'Unauthorized. Provide Bearer token in Authorization header.',
                     type: 'authentication_error',
                     code: 'unauthorized',
                 },

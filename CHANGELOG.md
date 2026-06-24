@@ -4,6 +4,24 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Hardened Browserless debugger exposure by requiring a generated
+  `BROWSERLESS_EDGE_TOKEN` on WebSocket upgrades while preserving browser
+  Basic Auth for HTTP debugger pages and keeping Safari/Firefox login flows
+  out of Basic Auth loops.
+- Documented the intentional Hermes dashboard `/api/*` and `/ws/*`
+  same-origin pass-through so dashboard internals keep working behind the
+  localhost/private edge instead of being broken by Caddy Basic Auth prompts.
+- Generate a real `CADDY_AUTH_HASH` from the installer-managed Caddy password
+  for all tiers, including L0/L1, and add installer coverage for that contract.
+- Removed ClawRoute query-string token authentication, protected stats and
+  dashboard endpoints when `CLAWROUTE_TOKEN` is configured, and emit explicit
+  SSE error events before closing failed upstream streams.
+- Hardened Reader SSRF handling by validating the actual connection
+  resolution for each request/redirect and redacting URL query strings from
+  audit logs.
+- Updated ClawRoute production dependencies, added production `npm audit` plus
+  installer/Caddy contract checks to CI, and pinned the Tinyproxy base image by
+  digest.
 - Added root OSS governance files, issue/PR templates, Dependabot, CodeQL,
   Gitleaks, report-only Trivy image scanning, and example-env Compose
   validation for the public repository.

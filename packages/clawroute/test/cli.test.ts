@@ -19,7 +19,7 @@ type RequestCapture = {
 
 const unauthorizedPayload = {
     error: {
-        message: 'Unauthorized. Provide Bearer token in Authorization header or token query param.',
+        message: 'Unauthorized. Provide Bearer token in Authorization header.',
         type: 'authentication_error',
         code: 'unauthorized',
     },

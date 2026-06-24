@@ -245,7 +245,7 @@ write_env_file() {
         HERMES_DASHBOARD_BASIC_AUTH_USERNAME
         HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
         HERMES_DASHBOARD_BASIC_AUTH_SECRET
-        CLAWROUTE_TOKEN BROWSERLESS_TOKEN CADDY_AUTH_USER CADDY_AUTH_HASH
+        CLAWROUTE_TOKEN BROWSERLESS_TOKEN BROWSERLESS_EDGE_TOKEN CADDY_AUTH_USER CADDY_AUTH_HASH
         SPARTAN_CADDY_PASSWORD
         CAMOFOX_URL CAMOFOX_API_KEY CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID
         CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB CAMOFOX_ENABLE_VNC
@@ -309,14 +309,11 @@ write_env_file() {
     append_env HERMES_DASHBOARD_BASIC_AUTH_SECRET "$(get_or_generate HERMES_DASHBOARD_BASIC_AUTH_SECRET 32)"
     append_env CLAWROUTE_TOKEN "$(get_or_generate CLAWROUTE_TOKEN 32)"
     append_env BROWSERLESS_TOKEN "$(get_or_generate BROWSERLESS_TOKEN 32)"
+    append_env BROWSERLESS_EDGE_TOKEN "$(get_or_generate BROWSERLESS_EDGE_TOKEN 32)"
     append_env CADDY_AUTH_USER "admin"
     caddy_password="$(get_or_generate SPARTAN_CADDY_PASSWORD 24)"
     append_env SPARTAN_CADDY_PASSWORD "$caddy_password"
-    if [[ "$TIER" == "L0" || "$TIER" == "L1" ]]; then
-        append_env CADDY_AUTH_HASH "$(env_value CADDY_AUTH_HASH || printf '%s' '$2a$14$UMuSzA3WdVqcAwE3yvFeCO.CesMjqqGDVrxpL1s87FsWM/NRrADi2')"
-    else
-        append_env CADDY_AUTH_HASH "$(caddy_hash_password "$caddy_password")"
-    fi
+    append_env CADDY_AUTH_HASH "$(caddy_hash_password "$caddy_password")"
     if [[ "$TIER" == "L0" ]]; then
         append_env CAMOFOX_URL ""
     else

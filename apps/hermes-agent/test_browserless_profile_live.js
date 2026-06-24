@@ -17,9 +17,18 @@ test('buildDebuggerUrl asks debugger to use Browserless chromium endpoint for pr
   assert.equal(url.searchParams.get('sgRoute'), 'chromium');
   assert.equal(url.searchParams.get('sgStealthRoute'), 'chromium');
   assert.equal(url.searchParams.get('sgAutostart'), 'false');
+  assert.equal(url.searchParams.get('sgEdgeToken'), null);
   assert.match(url.searchParams.get('sgFlags'), /--proxy-server=http:\/\/proxy:8888/);
   assert.match(url.searchParams.get('sgFlags'), /--lang=es-ES/);
   assert.match(url.searchParams.get('sgCode'), /accounts\.google\.com/);
+});
+
+test('buildDebuggerUrl forwards Browserless edge token without requiring WebSocket Basic Auth', () => {
+  const url = new URL(buildDebuggerUrl({
+    BROWSERLESS_EDGE_TOKEN: 'edge-secret',
+  }, 'main', 'https://example.com'));
+
+  assert.equal(url.searchParams.get('sgEdgeToken'), 'edge-secret');
 });
 
 test('buildDebuggerUrl autostarts non-Google profile seeding sessions', () => {

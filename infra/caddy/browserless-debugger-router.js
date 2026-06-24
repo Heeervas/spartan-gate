@@ -98,6 +98,7 @@ const spartanHeadless = spartanParams.get("sgHeadless") || "true";
 const spartanStealthEndpoint = spartanParams.get("sgStealthEndpoint") !== "false";
 const spartanStealthRoute = spartanParams.get("sgRoute") || spartanParams.get("sgStealthRoute") || "chromium";
 const spartanUserAgent = spartanParams.get("sgUserAgent") || "";
+const spartanEdgeToken = spartanParams.get("sgEdgeToken") || "";
 const NativeWebSocket = window.WebSocket;
 
 if (spartanUserDataDir || spartanStealthEndpoint) {
@@ -115,6 +116,9 @@ if (spartanUserDataDir || spartanStealthEndpoint) {
         if (spartanUserAgent) {
           parsed.searchParams.set("userAgent", spartanUserAgent);
         }
+        if (spartanEdgeToken) {
+          parsed.searchParams.set("sgEdgeToken", spartanEdgeToken);
+        }
         target = parsed.toString();
       }
 
@@ -130,6 +134,9 @@ if (spartanUserDataDir || spartanStealthEndpoint) {
           ? launch.args.filter((arg) => !arg.startsWith("--user-data-dir="))
           : [];
         parsed.searchParams.set("launch", JSON.stringify(launch));
+        if (spartanEdgeToken) {
+          parsed.searchParams.set("sgEdgeToken", spartanEdgeToken);
+        }
         target = parsed.toString();
       }
     } catch {

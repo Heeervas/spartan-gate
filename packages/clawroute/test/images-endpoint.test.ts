@@ -5,7 +5,7 @@ import { ClawRouteConfig, TaskTier } from '../src/types.js';
 const AUTH_TOKEN = 'image-route-secret';
 const UNAUTHORIZED = {
     error: {
-        message: 'Unauthorized. Provide Bearer token in Authorization header or token query param.',
+        message: 'Unauthorized. Provide Bearer token in Authorization header.',
         type: 'authentication_error',
         code: 'unauthorized',
     },

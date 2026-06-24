@@ -62,7 +62,7 @@ exit 2
             values[key] = value.strip("'\"")
         return values
 
-    def test_l0_generates_private_env_without_caddy_hash_container(self):
+    def test_l0_generates_private_env_with_real_caddy_hash(self):
         result = self.run_install("L0", "linux")
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -74,9 +74,12 @@ exit 2
         self.assertEqual(values["CAMOFOX_URL"], "")
         self.assertIn("HERMES_API_KEY", values)
         self.assertTrue((self.data_root / "current" / "hermes").is_dir())
+        self.assertEqual(values["CADDY_AUTH_HASH"], "$2a$test-generated-caddy-hash")
+        self.assertIn("SPARTAN_CADDY_PASSWORD", values)
+        self.assertIn("BROWSERLESS_EDGE_TOKEN", values)
         self.assertNotIn(values["HERMES_API_KEY"], result.stdout)
         self.assertNotIn(values["HERMES_GATEWAY_TOKEN"], result.stdout)
-        self.assertNotIn("hash-password", self.log.read_text(encoding="utf-8"))
+        self.assertNotIn(values["SPARTAN_CADDY_PASSWORD"], result.stdout)
 
     def test_l2_generates_caddy_hash_and_keeps_plaintext_private(self):
         result = self.run_install("L2", "macos")

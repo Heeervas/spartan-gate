@@ -13,6 +13,10 @@ Public env docs describe names and behavior only. Real values and machine-specif
 - `HERMES_DASHBOARD_PORT`: Caddy edge port for the Hermes dashboard.
 - `CADDY_AUTH_USER`: Basic Auth username.
 - `CADDY_AUTH_HASH`: Caddy password hash.
+- `BROWSERLESS_EDGE_TOKEN`: generated edge token added to Browserless debugger
+  WebSocket URLs by the profile-live helper. It prevents unauthenticated
+  Browserless WebSocket upgrades without relying on browser Basic Auth for the
+  WebSocket handshake.
 - `SPARTAN_INTERNAL_SUBNET`: internal Docker subnet.
 - `SPARTAN_DNS_IP`: fixed DNS relay address inside that subnet.
 - `SPARTAN_ALLOW_EXISTING_STACK_PATHS`: keep `false` for fresh installs; set
@@ -61,7 +65,9 @@ and agent configuration; Browserless profiles control Chromium login state.
 
 ## Browserless
 
-- `BROWSERLESS_TOKEN`: shared bearer token between Browserless, Hermes, and Caddy.
+- `BROWSERLESS_TOKEN`: internal bearer token shared between Browserless,
+  Hermes, and Caddy. Do not expose it in profile-live URLs; Caddy injects it
+  only when proxying to Browserless.
 - `BROWSERLESS_IMAGE`: Browserless container image, default
   `ghcr.io/browserless/chromium:v2.51.0`. Pin this in private env during
   incidents before recreating Browserless.

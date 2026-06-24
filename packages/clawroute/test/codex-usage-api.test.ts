@@ -17,7 +17,7 @@ import {
 const ADMIN_TOKEN = 'admin-secret';
 const UNAUTHORIZED = {
     error: {
-        message: 'Unauthorized. Provide Bearer token in Authorization header or token query param.',
+        message: 'Unauthorized. Provide Bearer token in Authorization header.',
         type: 'authentication_error',
         code: 'unauthorized',
     },
@@ -535,10 +535,16 @@ describe('GET /api/codex/analysis', () => {
 });
 
 describe('GET /dashboard-codex', () => {
-    it('serves a public HTML shell with codex usage UI markers for the next slice', async () => {
+    it('requires auth before serving the dashboard shell when CLAWROUTE_TOKEN is set', async () => {
         const app = await createTestApp();
 
-        const response = await app.request('/dashboard-codex');
+        const missing = await app.request('/dashboard-codex');
+        expect(missing.status).toBe(401);
+
+        const queryToken = await app.request('/dashboard-codex?token=admin-secret');
+        expect(queryToken.status).toBe(401);
+
+        const response = await app.request('/dashboard-codex', { headers: authHeaders() });
         expect(response.status).toBe(200);
         expect(response.headers.get('content-type')).toMatch(/text\/html/i);
         const html = await response.text();
@@ -580,7 +586,10 @@ describe('GET /dashboard-codex-analysis', () => {
     it('serves the analysis dashboard shell with API and auth markers', async () => {
         const app = await createTestApp();
 
-        const response = await app.request('/dashboard-codex-analysis');
+        const missing = await app.request('/dashboard-codex-analysis');
+        expect(missing.status).toBe(401);
+
+        const response = await app.request('/dashboard-codex-analysis', { headers: authHeaders() });
         expect(response.status).toBe(200);
         expect(response.headers.get('content-type')).toMatch(/text\/html/i);
         const html = await response.text();
@@ -602,7 +611,10 @@ describe('dashboard routes', () => {
     it.each(['/dashboard', '/dashboard2'])('%s serves Dashboard 2 with navigation and request inspection', async (path) => {
         const app = await createTestApp();
 
-        const response = await app.request(path);
+        const missing = await app.request(path);
+        expect(missing.status).toBe(401);
+
+        const response = await app.request(path, { headers: authHeaders() });
         expect(response.status).toBe(200);
         expect(response.headers.get('content-type')).toMatch(/text\/html/i);
         const html = await response.text();
@@ -627,7 +639,10 @@ describe('dashboard routes', () => {
     it('/dashboard-archive retains the legacy dashboard', async () => {
         const app = await createTestApp();
 
-        const response = await app.request('/dashboard-archive');
+        const missing = await app.request('/dashboard-archive');
+        expect(missing.status).toBe(401);
+
+        const response = await app.request('/dashboard-archive', { headers: authHeaders() });
         expect(response.status).toBe(200);
         expect(response.headers.get('content-type')).toMatch(/text\/html/i);
         expect(await response.text()).toMatch(/ClawRoute Dashboard/i);

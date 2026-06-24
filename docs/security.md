@@ -10,11 +10,26 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
 - Browserless and Camofox are internal-network only and configured to use Tinyproxy.
 - DNS forwarding is whitelist based.
 - Tinyproxy denies non-whitelisted destinations.
-- Reader only allows GET, blocks private/internal targets, and is the narrow direct-egress exception for public page text.
+- Reader only allows GET, blocks private/internal targets, revalidates the
+  address used for each outbound connection, and is the narrow direct-egress
+  exception for public page text.
 - Reader labels fetched text as untrusted content; agents must extract facts from it before using it to decide on tool calls.
-- Caddy requires Basic Auth and the public Compose binds edge ports to `127.0.0.1` only.
+- Caddy requires Basic Auth for browser-facing HTTP entry points and the public
+  Compose binds edge ports to `127.0.0.1` only.
+- Browserless debugger WebSockets do not rely on browser Basic Auth prompts,
+  which can loop or drop credentials in Safari/Firefox. Profile-seeding URLs
+  carry a generated `BROWSERLESS_EDGE_TOKEN` as a short edge authorization
+  guard, while Caddy still injects the internal `BROWSERLESS_TOKEN` only toward
+  Browserless.
+- The Hermes dashboard keeps same-origin `/api/*` and `/ws/*` requests
+  pass-through behind the localhost/private edge. Protect it with local binding,
+  Tailscale/private exposure, and Hermes' own application controls; do not
+  publish the dashboard edge broadly.
 - Tailscale exposure belongs in `private/compose.local.yml`; do not publish edge ports on `0.0.0.0` or LAN addresses in public files.
 - Extra Hermes app ports belong in `private/caddy.local.d` plus `private/compose.local.yml`; use `scripts/add-port.sh` instead of editing public Compose.
+- ClawRoute stats, dashboards, and API endpoints require bearer auth when
+  `CLAWROUTE_TOKEN` is configured; `/health` remains public for local health
+  checks.
 - ClawRoute content logging is disabled by default.
 - Hermes application workloads run as the unprivileged `hermes` user under s6.
   Local deployments may drop those workloads directly to the host owner's
@@ -70,4 +85,4 @@ real browsing or integration inventory by adding it to `infra/outbound-proxy/whi
 
 ## Logging
 
-Keep `CLAWROUTE_LOG_CONTENT=false` unless you are debugging in a private environment and accept the privacy impact. Reader audit logs include URLs, so treat logs as sensitive.
+Keep `CLAWROUTE_LOG_CONTENT=false` unless you are debugging in a private environment and accept the privacy impact. Reader audit logs redact URL query strings, but hosts and paths can still be sensitive; treat logs as private operational data.

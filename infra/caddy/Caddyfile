@@ -28,15 +28,31 @@
 }
 
 :3005 {
-	@not_websocket {
-		not header Connection *Upgrade*
+	@browserless_websocket {
+		header Connection *Upgrade*
 	}
 
-	basic_auth @not_websocket {
-		{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
+	@browserless_websocket_authorized {
+		header Connection *Upgrade*
+		query sgEdgeToken={$BROWSERLESS_EDGE_TOKEN:change-me-browserless-edge-token}
 	}
 
-	route {
+	handle @browserless_websocket_authorized {
+		reverse_proxy http://browserless:3000 {
+			header_up Authorization "Bearer {$BROWSERLESS_TOKEN}"
+			header_up Host {host}
+		}
+	}
+
+	handle @browserless_websocket {
+		respond "Unauthorized" 401
+	}
+
+	handle {
+		basic_auth {
+			{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
+		}
+
 		@debugger_router path /debugger/router.js
 		handle @debugger_router {
 			header Cache-Control "no-store"
@@ -55,8 +71,11 @@
 }
 
 :9119 {
-	@internal path /api/* /ws/*
-	handle @internal {
+	# Hermes dashboard serves its own /api and /ws same-origin requests.
+	# Keep this pass-through so browser dashboard sessions do not loop through
+	# Caddy Basic Auth on internal fetch/WebSocket calls.
+	@dashboard_internal path /api/* /ws/*
+	handle @dashboard_internal {
 		reverse_proxy http://hermes:9119
 	}
 

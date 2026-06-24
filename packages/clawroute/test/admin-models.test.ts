@@ -9,7 +9,7 @@ import { resetModelRegistry } from '../src/models.js';
 const ADMIN_TOKEN = 'admin-secret';
 const UNAUTHORIZED = {
     error: {
-        message: 'Unauthorized. Provide Bearer token in Authorization header or token query param.',
+        message: 'Unauthorized. Provide Bearer token in Authorization header.',
         type: 'authentication_error',
         code: 'unauthorized',
     },

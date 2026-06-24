@@ -350,6 +350,29 @@ describe('codexResponseToStream regressions', () => {
         expect(result.error).toBe('Codex upstream failed [slot:1 code:server_error]');
     });
 
+    it('emits an explicit SSE error when the upstream stream read fails', async () => {
+        const upstreamResponse = new Response(new ReadableStream<Uint8Array>({
+            pull(controller) {
+                controller.error(new Error('upstream socket closed'));
+            },
+        }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        const written: string[] = [];
+        const decoder = new TextDecoder();
+        const writable = new WritableStream<Uint8Array>({
+            write(chunk) {
+                written.push(decoder.decode(chunk));
+            },
+        });
+
+        const result = await pipeStream(upstreamResponse, writable.getWriter());
+        const body = written.join('');
+
+        expect(result.error).toBe('upstream socket closed');
+        expect(body).toContain('event: error');
+        expect(body).toContain('"code":"stream_error"');
+        expect(body).toContain('data: [DONE]');
+    });
+
     it('round-trips assistant reasoning_content into Responses reasoning items', () => {
         const requestBody = buildCodexRequestBody({
             messages: [

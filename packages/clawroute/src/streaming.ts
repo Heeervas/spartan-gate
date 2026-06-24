@@ -92,8 +92,8 @@ export async function pipeStream(
     } catch (error) {
         result.error = error instanceof Error ? error.message : 'Stream error';
 
-        // Try to send a [DONE] marker to cleanly close the stream
         try {
+            await writeStreamError(writer, encoder, result.error);
             await writer.write(encoder.encode('data: [DONE]\n\n'));
         } catch {
             // Ignore errors closing the stream
@@ -284,6 +284,7 @@ export async function pipeOllamaStream(
         result.error = error instanceof Error ? error.message : 'Stream error';
 
         try {
+            await writeStreamError(writer, encoder, result.error);
             await writer.write(encoder.encode('data: [DONE]\n\n'));
         } catch {
             // Ignore
@@ -298,6 +299,20 @@ export async function pipeOllamaStream(
     }
 
     return result;
+}
+
+async function writeStreamError(
+    writer: WritableStreamDefaultWriter<Uint8Array>,
+    encoder: InstanceType<typeof TextEncoder>,
+    message: string
+): Promise<void> {
+    await writer.write(encoder.encode(`event: error\ndata: ${JSON.stringify({
+        error: {
+            message,
+            type: 'stream_error',
+            code: 'stream_error',
+        },
+    })}\n\n`));
 }
 
 async function processOllamaLine(

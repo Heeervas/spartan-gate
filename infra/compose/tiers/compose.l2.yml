@@ -179,6 +179,7 @@ services:
       HERMES_API_PORT: ${HERMES_API_PORT:-8642}
       CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
+      BROWSERLESS_EDGE_TOKEN: ${BROWSERLESS_EDGE_TOKEN:-change-me-browserless-edge-token}
     volumes:
       - ../../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ../../caddy/local.d:/etc/caddy/local.d:ro

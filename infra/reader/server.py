@@ -7,8 +7,9 @@ Only GET requests allowed – POST, PUT, DELETE are rejected (405).
 Security:
 - GET-only: all other HTTP methods return 405
 - SSRF protection: blocks private/internal IPs (RFC 1918, link-local, loopback)
+  before fetch and again for the address used by each connection
 - Response size cap: 2 MB download, 100k chars output
-- Audit logging: every request logged with timestamp and URL
+- Audit logging: every request logged with timestamp and query-redacted URL
 """
 
 import os
@@ -31,6 +32,7 @@ REQUEST_TIMEOUT = int(os.environ.get("READER_TIMEOUT", "15"))
 UNTRUSTED_BEGIN = "BEGIN_UNTRUSTED_WEB_CONTENT"
 UNTRUSTED_END = "END_UNTRUSTED_WEB_CONTENT"
 UNTRUSTED_HEADER = "untrusted-web-content"
+_ORIGINAL_CREATE_CONNECTION = socket.create_connection
 
 # Internal Docker service names (prevent SSRF to internal services)
 BLOCKED_HOSTNAMES = {
@@ -49,8 +51,17 @@ class BlockedDestination(Exception):
 
 
 # ── Audit logger ──
+def redact_url_for_log(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    query = "[REDACTED_QUERY]" if parsed.query else ""
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, ""))
+
+
 def audit_log(action: str, url: str = "", detail: str = ""):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = redact_url_for_log(url)
     trunc_url = url[:200] + "…" if len(url) > 200 else url
     parts = [f"[reader-audit] {ts} {action}"]
     if trunc_url:
@@ -142,6 +153,37 @@ def is_blocked(url: str) -> bool:
     return False
 
 
+def create_checked_connection(address, timeout=None, source_address=None):
+    host, port = address[:2]
+    try:
+        ipaddress.ip_address(host)
+        candidates = [(host, port)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise OSError(f"DNS resolution failed for {host}") from exc
+        candidates = [(info[4][0], info[4][1]) for info in infos]
+
+    if not candidates:
+        raise OSError(f"DNS resolution returned no addresses for {host}")
+
+    for candidate_host, _candidate_port in candidates:
+        if _is_blocked_ip(candidate_host):
+            raise BlockedDestination("Resolved address blocked: internal/private network")
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            return _ORIGINAL_CREATE_CONNECTION(candidate, timeout=timeout, source_address=source_address)
+        except OSError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"Could not connect to {host}")
+
+
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if is_blocked(newurl):
@@ -168,13 +210,18 @@ def fetch_url(url: str) -> tuple[str, str]:
     )
 
     opener = urllib.request.build_opener(SafeRedirectHandler)
-    with opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
-        content_type = resp.headers.get("Content-Type", "text/html")
-        data = resp.read(MAX_RESPONSE_SIZE)
-        charset = "utf-8"
-        if "charset=" in content_type:
-            charset = content_type.split("charset=")[-1].split(";")[0].strip()
-        return data.decode(charset, errors="replace"), content_type
+    original_create_connection = socket.create_connection
+    socket.create_connection = create_checked_connection
+    try:
+        with opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
+            content_type = resp.headers.get("Content-Type", "text/html")
+            data = resp.read(MAX_RESPONSE_SIZE)
+            charset = "utf-8"
+            if "charset=" in content_type:
+                charset = content_type.split("charset=")[-1].split(";")[0].strip()
+            return data.decode(charset, errors="replace"), content_type
+    finally:
+        socket.create_connection = original_create_connection
 
 
 def extract_text(html_content: str) -> str:

@@ -501,6 +501,12 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
     // Auth middleware (model listing is exempt — read-only discovery on internal network)
     app.use('/v1/*', createAuthMiddleware(config, ['/v1/models']));
     app.use('/api/*', createAuthMiddleware(config));
+    app.use('/stats', createAuthMiddleware(config));
+    app.use('/dashboard', createAuthMiddleware(config));
+    app.use('/dashboard2', createAuthMiddleware(config));
+    app.use('/dashboard-codex', createAuthMiddleware(config));
+    app.use('/dashboard-codex-analysis', createAuthMiddleware(config));
+    app.use('/dashboard-archive', createAuthMiddleware(config));
 
     // Health check
     app.get('/health', (c) => {

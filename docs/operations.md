@@ -192,7 +192,10 @@ Browserless process and shares it among Hermes' internal browser clients; it
 does not make the active profile available for a separate debugger session.
 Open the printed debugger URL in your browser and pass Caddy Basic Auth. The
 helper asks Browserless to use the selected `BROWSERLESS_ROUTE` with
-`stealth=true` while writing the profile.
+`stealth=true` while writing the profile. The helper also appends the generated
+`BROWSERLESS_EDGE_TOKEN` to debugger WebSocket URLs so Caddy can authorize the
+upgrade without depending on browser Basic Auth behavior during the WebSocket
+handshake.
 For `accounts.google.com`, click Run manually and complete the login yourself.
 A TLS edge prints the certificate hostname, not a raw Tailscale IP. Complete
 the login, then close the debugger tab before starting Hermes. If login state is

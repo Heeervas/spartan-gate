@@ -144,6 +144,22 @@ describe('Integration Tests', () => {
             expect(body).toHaveProperty('thisMonth');
             expect(body).toHaveProperty('allTime');
         });
+
+        it('requires bearer auth for stats when auth token is configured and ignores query tokens', async () => {
+            const { createApp } = await import('../src/server.js');
+            const authedApp = createApp({ ...createTestConfig(), authToken: 'admin-token' });
+
+            const missing = await authedApp.request('/stats');
+            expect(missing.status).toBe(401);
+
+            const queryToken = await authedApp.request('/stats?token=admin-token');
+            expect(queryToken.status).toBe(401);
+
+            const authorized = await authedApp.request('/stats', {
+                headers: { Authorization: 'Bearer admin-token' },
+            });
+            expect(authorized.status).toBe(200);
+        });
     });
 
     describe('Config Endpoint', () => {

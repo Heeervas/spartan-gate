@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import pathlib
 import threading
 import unittest
@@ -6,6 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import HTTPServer
+from contextlib import redirect_stderr
 from types import SimpleNamespace
 
 
@@ -51,10 +53,12 @@ class ReaderServerTests(unittest.TestCase):
     def setUp(self):
         self.old_fetch_url = reader_server.fetch_url
         self.old_is_blocked = reader_server.is_blocked
+        self.old_getaddrinfo = reader_server.socket.getaddrinfo
 
     def tearDown(self):
         reader_server.fetch_url = self.old_fetch_url
         reader_server.is_blocked = self.old_is_blocked
+        reader_server.socket.getaddrinfo = self.old_getaddrinfo
 
     def test_fetch_wraps_output_as_untrusted_content(self):
         reader_server.is_blocked = lambda _url: False
@@ -101,6 +105,24 @@ class ReaderServerTests(unittest.TestCase):
                 {},
                 "http://127.0.0.1:3000/private",
             )
+
+    def test_fetch_blocks_private_resolution_used_for_actual_connection(self):
+        reader_server.socket.getaddrinfo = lambda *_args, **_kwargs: [
+            (reader_server.socket.AF_INET, reader_server.socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80)),
+        ]
+
+        with self.assertRaises(reader_server.BlockedDestination):
+            reader_server.fetch_url("http://public.example/page")
+
+    def test_audit_log_redacts_query_string(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            reader_server.audit_log("FETCH", "https://public.example/path?token=secret&email=a@example.com")
+
+        line = stderr.getvalue()
+        self.assertIn("https://public.example/path?[REDACTED_QUERY]", line)
+        self.assertNotIn("token=secret", line)
+        self.assertNotIn("a@example.com", line)
 
     def test_non_get_methods_are_rejected(self):
         with ReaderHarness() as harness:
