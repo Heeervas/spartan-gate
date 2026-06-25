@@ -44,6 +44,10 @@ function isPolicyBlocked(response: Response): boolean {
     return response.status === 403 && response.headers.get('X-ClawRoute-Policy-Block') !== null;
 }
 
+function isCodexModel(model: string): boolean {
+    return model.startsWith('codex/');
+}
+
 function copyClawRoutePolicyHeaders(from: Response, to: Headers): void {
     const policyBlock = from.headers.get('X-ClawRoute-Policy-Block');
     const retryable = from.headers.get('X-ClawRoute-Retryable');
@@ -62,6 +66,24 @@ function extractPolicyBlock(response: Response, estimatedInputTokens: number): E
         toolSchemaFingerprint: response.headers.get('X-ClawRoute-Tool-Schema-Fingerprint'),
         estimatedInputTokens,
     };
+}
+
+function errorMessageFromBodyText(bodyText: string): string | null {
+    const parsed = safeJsonParse<Record<string, unknown>>(bodyText);
+    const error = parsed && typeof parsed['error'] === 'object' && parsed['error'] !== null
+        ? parsed['error'] as Record<string, unknown>
+        : parsed;
+    const message = typeof error?.['message'] === 'string' ? error['message'] : bodyText.trim();
+    return message || null;
+}
+
+async function summarizeErrorResponse(response: Response): Promise<string | null> {
+    if (response.ok) return null;
+    try {
+        return errorMessageFromBodyText(await response.clone().text());
+    } catch {
+        return response.statusText || `HTTP ${response.status}`;
+    }
 }
 
 /**
@@ -145,7 +167,8 @@ export async function executeRequest(
                         config.escalation.enabled &&
                         retryCount < maxRetries &&
                         routingDecision.safeToRetry &&
-                        canEscalate(currentTier, config)
+                        canEscalate(currentTier, config) &&
+                        !isCodexModel(currentModel)
                     ) {
                         const escalation = getEscalatedModel(currentTier, config, modelCatalog);
                         if (escalation) {
@@ -161,7 +184,7 @@ export async function executeRequest(
 
                     // Can't retry or no escalation available
                     // Fall back to original model if configured
-                    if (config.escalation.alwaysFallbackToOriginal && currentModel !== routingDecision.originalModel) {
+                    if (config.escalation.alwaysFallbackToOriginal && currentModel !== routingDecision.originalModel && !isCodexModel(currentModel)) {
                         currentModel = routingDecision.originalModel;
                         escalationChain.push(currentModel);
                         response = await makeProviderRequest(request, currentModel, config, currentTier, modelCatalog, executionContext);
@@ -176,7 +199,8 @@ export async function executeRequest(
                 if (
                     config.escalation.enabled &&
                     retryCount < maxRetries &&
-                    routingDecision.safeToRetry
+                    routingDecision.safeToRetry &&
+                    !isCodexModel(currentModel)
                 ) {
                     const escalation = getEscalatedModel(currentTier, config, modelCatalog);
                     if (escalation) {
@@ -191,7 +215,7 @@ export async function executeRequest(
                 }
 
                 // Fall back to original model
-                if (config.escalation.alwaysFallbackToOriginal) {
+                if (config.escalation.alwaysFallbackToOriginal && !isCodexModel(currentModel)) {
                     currentModel = routingDecision.originalModel;
                     escalationChain.push(currentModel);
                     try {
@@ -348,6 +372,7 @@ export async function executeRequest(
         errHeaders.set('X-ClawRoute-Tier', currentTier);
         errHeaders.set('X-ClawRoute-Escalated', String(escalated));
         copyClawRoutePolicyHeaders(response!, errHeaders);
+        const streamError = await summarizeErrorResponse(response!);
         const wrappedStreamError = new Response(response!.body, {
             status: response!.status,
             statusText: response!.statusText,
@@ -367,6 +392,7 @@ export async function executeRequest(
             modelCatalog
         ));
         streamErrorResult.policyBlock = extractPolicyBlock(response!, inputTokens);
+        streamErrorResult.streamError = streamError;
         return streamErrorResult;
     } else {
         // NON-STREAMING REQUEST
@@ -441,7 +467,8 @@ export async function executeRequest(
                     if (
                         config.escalation.enabled &&
                         retryCount < maxRetries &&
-                        routingDecision.safeToRetry
+                        routingDecision.safeToRetry &&
+                        !isCodexModel(currentModel)
                     ) {
                         const escalation = getEscalatedModel(currentTier, config, modelCatalog);
                         if (escalation) {
@@ -456,7 +483,7 @@ export async function executeRequest(
                     }
 
                     // Fall back to original
-                    if (config.escalation.alwaysFallbackToOriginal && currentModel !== routingDecision.originalModel) {
+                    if (config.escalation.alwaysFallbackToOriginal && currentModel !== routingDecision.originalModel && !isCodexModel(currentModel)) {
                         currentModel = routingDecision.originalModel;
                         escalationChain.push(currentModel);
                         response = await makeProviderRequest(request, currentModel, config, currentTier, modelCatalog, executionContext);
@@ -469,7 +496,8 @@ export async function executeRequest(
                 if (
                     config.escalation.enabled &&
                     retryCount < maxRetries &&
-                    routingDecision.safeToRetry
+                    routingDecision.safeToRetry &&
+                    !isCodexModel(currentModel)
                 ) {
                     const escalation = getEscalatedModel(currentTier, config, modelCatalog);
                     if (escalation) {
@@ -485,7 +513,7 @@ export async function executeRequest(
                 }
 
                 // Fall back to original
-                if (config.escalation.alwaysFallbackToOriginal) {
+                if (config.escalation.alwaysFallbackToOriginal && !isCodexModel(currentModel)) {
                     currentModel = routingDecision.originalModel;
                     escalationChain.push(currentModel);
                     try {
@@ -524,6 +552,9 @@ export async function executeRequest(
         headers.set('X-ClawRoute-Tier', currentTier);
         headers.set('X-ClawRoute-Escalated', String(escalated));
         copyClawRoutePolicyHeaders(response!, headers);
+        const streamError = response!.ok
+            ? null
+            : errorMessageFromBodyText(finalBodyText ?? '') ?? await summarizeErrorResponse(response!);
 
         const finalResponse = new Response(finalBodyText ?? response!.body, {
             status: response!.status,
@@ -546,6 +577,7 @@ export async function executeRequest(
         ));
         executionResult.cachedInputTokens = cachedInputTokens;
         executionResult.policyBlock = extractPolicyBlock(response!, inputTokens);
+        executionResult.streamError = streamError;
         return executionResult;
     }
 }

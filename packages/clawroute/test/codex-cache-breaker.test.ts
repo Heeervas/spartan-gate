@@ -119,6 +119,7 @@ beforeEach(() => {
     resetRotationState();
     resetCodexCacheBreakerState();
     vi.stubEnv('CODEX_CACHE_BREAKER_ENABLED', 'true');
+    vi.stubEnv('CODEX_CACHE_BREAKER_BLOCKING_ENABLED', 'true');
     vi.stubEnv('CODEX_CACHE_BREAKER_MIN_INPUT_TOKENS', '20000');
     vi.stubEnv('CODEX_CACHE_BREAKER_LOW_CACHE_RATIO', '0.20');
     vi.stubEnv('CODEX_CACHE_BREAKER_CONSECUTIVE_MISSES', '2');
@@ -147,6 +148,33 @@ describe('Codex cache-miss breaker', () => {
         expect(getCodexCacheBreakerBlock(blockKey())).toBeNull();
     });
 
+    it('records a large low-cache stream error even on a baseline user turn without immediate blocking', () => {
+        const block = recordMiss({
+            comparison: 'baseline',
+            phase: 'user_input',
+            inputTokens: 83_027,
+            cachedInputTokens: 0,
+            streamError: 'Stream error',
+        });
+
+        expect(block).toBeNull();
+        expect(getCodexCacheBreakerSnapshot().breakers[0]).toMatchObject({
+            status: 'watching',
+            consecutiveMisses: 1,
+            uncachedTokensSinceRecovery: 83_027,
+            key: blockKey(),
+            recent: [
+                expect.objectContaining({
+                    comparison: 'baseline',
+                    phase: 'user_input',
+                    streamError: 'Stream error',
+                    failureKind: 'stream_error',
+                }),
+            ],
+        });
+        expect(getCodexCacheBreakerBlock(blockKey())).toBeNull();
+    });
+
     it('records one low-cache prefix miss without blocking the next request yet', () => {
         recordMiss({ comparison: 'baseline', phase: 'user_input' });
         recordMiss();
@@ -163,6 +191,20 @@ describe('Codex cache-miss breaker', () => {
             key: blockKey(),
         });
         expect(getCodexCacheBreakerBlock(blockKey())?.id).toBe(block?.id);
+    });
+
+    it('defaults active blocking off while still tracking low-cache misses', () => {
+        vi.stubEnv('CODEX_CACHE_BREAKER_BLOCKING_ENABLED', 'false');
+
+        expect(recordMiss()).toBeNull();
+        expect(recordMiss()).toBeNull();
+
+        expect(getCodexCacheBreakerBlock(blockKey())).toBeNull();
+        expect(getCodexCacheBreakerSnapshot().breakers[0]).toMatchObject({
+            status: 'watching',
+            consecutiveMisses: 2,
+            uncachedTokensSinceRecovery: 52_000,
+        });
     });
 
     it('treats healthy baseline user turns as recovery between prefix misses', () => {
@@ -210,6 +252,32 @@ describe('Codex cache-miss breaker', () => {
         vi.stubEnv('CODEX_CACHE_BREAKER_UNCACHED_BUDGET_TOKENS', '100000');
 
         recordMiss({ comparison: 'baseline', phase: 'user_input', inputTokens: 150_000 });
+        expect(getCodexCacheBreakerBlock(blockKey())).toBeNull();
+    });
+
+    it('does not block cold baseline misses without stream errors', () => {
+        const result = recordMiss({
+            comparison: 'baseline',
+            phase: 'user_input',
+            inputTokens: 150_000,
+            cachedInputTokens: 0,
+            streamError: null,
+        });
+
+        const snapshot = getCodexCacheBreakerSnapshot();
+        expect(result).toBeNull();
+        expect(snapshot.breakers[0]).toMatchObject({
+            status: 'watching',
+            consecutiveMisses: 0,
+            uncachedTokensSinceRecovery: 0,
+            recent: [
+                expect.objectContaining({
+                    expectedHit: false,
+                    lowCache: false,
+                    failureKind: null,
+                }),
+            ],
+        });
         expect(getCodexCacheBreakerBlock(blockKey())).toBeNull();
     });
 
@@ -261,6 +329,46 @@ describe('Codex cache-miss breaker', () => {
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
+    it('does not fail-closed after a single baseline stream-error cache failure', async () => {
+        const dir = makeTempDir();
+        const authPath = writeAuth(dir, 'auth.json', 'token-cache-breaker', 'acct-cache-breaker');
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', authPath);
+        recordMiss({
+            actualModel: 'codex/gpt-5.4-mini',
+            comparison: 'baseline',
+            phase: 'user_input',
+            inputTokens: 86_992,
+            cachedInputTokens: 0,
+            streamError: 'Stream error',
+        });
+
+        const fetchMock = vi.fn(async () => new Response([
+            'event: response.output_text.delta',
+            `data: ${JSON.stringify({ delta: 'ok after previous stream error' })}`,
+            '',
+            'event: response.completed',
+            `data: ${JSON.stringify({ response: { status: 'completed', usage: { input_tokens: 3, output_tokens: 5 } } })}`,
+            '',
+        ].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+        vi.stubGlobal('fetch', fetchMock);
+
+        const response = await makeCodexRequest(
+            {
+                messages: [{ role: 'user', content: 'retry after failed stream' }],
+                prompt_cache_key: promptCacheKey,
+                stream: false,
+                tools: [],
+            },
+            'codex/gpt-5.4-mini',
+            null,
+        );
+        const body = await response.json() as { choices: Array<{ message: { content: string } }> };
+
+        expect(response.status).toBe(200);
+        expect(body.choices[0]?.message.content).toBe('ok after previous stream error');
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it('logs streaming preflight breaker blocks as zero-token routing rows', async () => {
         const dir = makeTempDir();
         const authPath = writeAuth(dir, 'auth.json', 'token-cache-breaker', 'acct-cache-breaker');
@@ -310,6 +418,48 @@ describe('Codex cache-miss breaker', () => {
                 toolSchemaFingerprint,
                 source: 'preflight',
             },
+        });
+    });
+
+    it('logs streaming Codex HTTP errors as routing rows with an error message', async () => {
+        const dir = makeTempDir();
+        const authPath = writeAuth(dir, 'auth.json', 'token-cache-breaker', 'acct-cache-breaker');
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', authPath);
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+            error: {
+                message: 'This operation was aborted',
+                code: 'codex_error',
+                type: 'server_error',
+            },
+        }), {
+            status: 502,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        vi.stubGlobal('fetch', fetchMock);
+        const config = createTestConfig();
+        await initDb(config);
+        const app = createApp(config);
+
+        const response = await app.request('/v1/chat/completions', {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: 'codex/gpt-5.4-mini',
+                stream: true,
+                tools: [],
+                messages: [{ role: 'user', content: 'hola' }],
+            }),
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const decisions = getRecentDecisions(1);
+
+        expect(response.status).toBe(502);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(decisions[0]).toMatchObject({
+            actualModel: 'codex/gpt-5.4-mini',
+            error: 'Codex API error (502): This operation was aborted [slot:0 code:codex_error]',
+            selectedCodexSlotIndex: 0,
+            selectedCodexAccountKey: accountKey,
         });
     });
 

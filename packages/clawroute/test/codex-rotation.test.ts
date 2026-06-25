@@ -732,13 +732,72 @@ describe('makeCodexRequest regressions', () => {
         const fetchMock = vi.fn(async () => successResponse('ok'));
         vi.stubGlobal('fetch', fetchMock);
 
-        await transport.makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
-        await transport.makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        const cacheRequest = { ...baseRequest, prompt_cache_key: 'lease-test' };
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
         transport.forceRotateCodexCacheLease();
-        await transport.makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
 
         expect(fetchMock.mock.calls.map(([, init]) => authHeader(init))).toEqual([
             'Bearer token-second',
+            'Bearer token-second',
+            'Bearer token-first',
+        ]);
+    });
+
+    it('does not reuse the active cache lease for unrelated requests without a cache key', async () => {
+        const dir = makeTempDir();
+        const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
+        const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+        vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
+
+        const { transport, selectCodexBalanceCandidate } = await importTransportWithBalanceLoaderMocks({
+            selectorSnapshot: {
+                fallbackReason: null,
+                accounts: [],
+            },
+            selectorResult: {
+                fallbackReason: null,
+                selectedAccountKey: 'acct-second-key',
+                selectedSlotIndex: 1,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: 'acct-second-key', slotIndexes: [1] },
+                    { accountKey: 'acct-first-key', slotIndexes: [0] },
+                ],
+            },
+        });
+        selectCodexBalanceCandidate
+            .mockReturnValueOnce({
+                fallbackReason: null,
+                selectedAccountKey: 'acct-second-key',
+                selectedSlotIndex: 1,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: 'acct-second-key', slotIndexes: [1] },
+                    { accountKey: 'acct-first-key', slotIndexes: [0] },
+                ],
+            })
+            .mockReturnValue({
+                fallbackReason: null,
+                selectedAccountKey: 'acct-first-key',
+                selectedSlotIndex: 0,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: 'acct-first-key', slotIndexes: [0] },
+                    { accountKey: 'acct-second-key', slotIndexes: [1] },
+                ],
+            });
+        transport.resetRotationState();
+
+        const fetchMock = vi.fn(async () => successResponse('ok'));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await transport.makeCodexRequest({ ...baseRequest, prompt_cache_key: 'lease-test' }, 'codex/gpt-5.4-mini', null);
+        await transport.makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+
+        expect(fetchMock.mock.calls.map(([, init]) => authHeader(init))).toEqual([
             'Bearer token-second',
             'Bearer token-first',
         ]);

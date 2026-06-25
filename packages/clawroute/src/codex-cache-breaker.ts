@@ -24,7 +24,11 @@ type CacheBreakerOutcome = {
     recovery: boolean;
     phase: string | null;
     comparison: string | null;
+    streamError: string | null;
+    failureKind: 'expected_hit_miss' | 'stream_error' | null;
 };
+
+type CacheBreakerBlockReason = 'consecutive_misses' | 'uncached_budget' | 'stream_error';
 
 type CacheBreakerRecord = {
     id: string;
@@ -32,7 +36,7 @@ type CacheBreakerRecord = {
     startedAt: string;
     updatedAt: string;
     blockedAt: string | null;
-    blockReason: 'consecutive_misses' | 'uncached_budget' | null;
+    blockReason: CacheBreakerBlockReason | null;
     approvalExpiresAt: string | null;
     consecutiveMisses: number;
     uncachedTokensSinceRecovery: number;
@@ -47,6 +51,7 @@ export type CodexCacheBreakerOutcomeInput = CacheBreakerKey & {
     outputTokens: number;
     phase?: string | null;
     comparison?: string | null;
+    streamError?: string | null;
 };
 
 export type CodexCacheBreakerBlock = {
@@ -54,7 +59,7 @@ export type CodexCacheBreakerBlock = {
     policy: typeof CODEX_CACHE_BREAKER_POLICY;
     key: CacheBreakerKey;
     blockedAt: string;
-    blockReason: 'consecutive_misses' | 'uncached_budget' | null;
+    blockReason: CacheBreakerBlockReason | null;
     approvalExpiresAt: string | null;
     consecutiveMisses: number;
     uncachedTokensSinceRecovery: number;
@@ -64,6 +69,7 @@ export type CodexCacheBreakerBlock = {
 
 export type CodexCacheBreakerSettings = {
     enabled: boolean;
+    blockingEnabled: boolean;
     minInputTokens: number;
     lowCacheRatio: number;
     consecutiveMisses: number;
@@ -102,6 +108,7 @@ function parseInteger(value: string | undefined, fallback: number, min: number, 
 export function getCodexCacheBreakerSettings(): CodexCacheBreakerSettings {
     return {
         enabled: parseBool(process.env['CODEX_CACHE_BREAKER_ENABLED'], true),
+        blockingEnabled: parseBool(process.env['CODEX_CACHE_BREAKER_BLOCKING_ENABLED'], false),
         minInputTokens: parseInteger(process.env['CODEX_CACHE_BREAKER_MIN_INPUT_TOKENS'], 20_000, 1, 10_000_000),
         lowCacheRatio: parseNumber(process.env['CODEX_CACHE_BREAKER_LOW_CACHE_RATIO'], 0.20, 0, 1),
         consecutiveMisses: parseInteger(process.env['CODEX_CACHE_BREAKER_CONSECUTIVE_MISSES'], 2, 1, 100),
@@ -155,6 +162,13 @@ function shouldEvaluate(input: CodexCacheBreakerOutcomeInput, settings: CodexCac
     return input.comparison === 'prefix' || input.comparison === 'retry';
 }
 
+function isLowCacheStreamError(input: CodexCacheBreakerOutcomeInput, settings: CodexCacheBreakerSettings): boolean {
+    if (!settings.enabled) return false;
+    if (input.inputTokens < settings.minInputTokens) return false;
+    if (!input.streamError) return false;
+    return isLowCache(input, settings);
+}
+
 function isLowCache(input: CodexCacheBreakerOutcomeInput, settings: CodexCacheBreakerSettings): boolean {
     const ratio = input.inputTokens > 0 ? input.cachedInputTokens / input.inputTokens : 0;
     return ratio < settings.lowCacheRatio;
@@ -192,7 +206,12 @@ export function recordCodexCacheBreakerOutcome(input: CodexCacheBreakerOutcomeIn
     };
 
     const expectedHit = shouldEvaluate(input, settings);
-    const lowCache = expectedHit && isLowCache(input, settings);
+    const lowCacheExpectedHit = expectedHit && isLowCache(input, settings);
+    const lowCacheStreamError = isLowCacheStreamError(input, settings);
+    const lowCache = lowCacheExpectedHit || lowCacheStreamError;
+    const failureKind = lowCacheStreamError
+        ? 'stream_error'
+        : lowCacheExpectedHit ? 'expected_hit_miss' : null;
     const recovery = isRecovery(input, settings);
     const cachedRatio = input.inputTokens > 0 ? input.cachedInputTokens / input.inputTokens : 0;
     const uncachedInputTokens = Math.max(0, input.inputTokens - input.cachedInputTokens);
@@ -210,6 +229,8 @@ export function recordCodexCacheBreakerOutcome(input: CodexCacheBreakerOutcomeIn
         recovery,
         phase: input.phase ?? null,
         comparison: input.comparison ?? null,
+        streamError: input.streamError ?? null,
+        failureKind,
     });
     record.outcomes = record.outcomes.slice(-Math.max(settings.windowRequests, settings.consecutiveMisses, 1));
     if (recovery) {
@@ -221,10 +242,10 @@ export function recordCodexCacheBreakerOutcome(input: CodexCacheBreakerOutcomeIn
     }
     record.updatedAt = timestamp;
 
-    if (lowCache && record.consecutiveMisses >= settings.consecutiveMisses) {
+    if (settings.blockingEnabled && lowCache && record.consecutiveMisses >= settings.consecutiveMisses) {
         record.blockedAt ??= timestamp;
         record.blockReason ??= 'consecutive_misses';
-    } else if (lowCache && record.uncachedTokensSinceRecovery >= settings.uncachedBudgetTokens) {
+    } else if (settings.blockingEnabled && lowCache && record.uncachedTokensSinceRecovery >= settings.uncachedBudgetTokens) {
         record.blockedAt ??= timestamp;
         record.blockReason ??= 'uncached_budget';
     }
@@ -236,6 +257,7 @@ export function recordCodexCacheBreakerOutcome(input: CodexCacheBreakerOutcomeIn
 export function getCodexCacheBreakerBlock(key: CacheBreakerKey): CodexCacheBreakerBlock | null {
     const settings = getCodexCacheBreakerSettings();
     if (!settings.enabled) return null;
+    if (!settings.blockingEnabled) return null;
     const record = records.get(keyId(key));
     if (!record?.blockedAt) return null;
     if (isApprovalActive(record, Date.now())) return null;
@@ -250,7 +272,7 @@ export function getCodexCacheBreakerSnapshot() {
             ...serializeRecord(record),
             startedAt: record.startedAt,
             updatedAt: record.updatedAt,
-            status: record.blockedAt
+            status: record.blockedAt && getCodexCacheBreakerSettings().blockingEnabled
                 ? isApprovalActive(record, nowMs) ? 'approved' : 'blocked'
                 : 'watching',
         })),

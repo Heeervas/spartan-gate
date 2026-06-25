@@ -138,6 +138,7 @@ const pendingLeasesBySlotIndex = new Map<number, number>();
 const slotLastSelectedAtByIndex = new Map<number, number>();
 type ActiveCodexCacheLease = {
     id: string;
+    affinityKey: string;
     accountKey: string;
     slotIndex: number;
     startedAt: number;
@@ -179,6 +180,12 @@ function envMinutes(name: string, fallback: number): number {
     return Number.isFinite(value) && value > 0 ? value * 60_000 : fallback * 60_000;
 }
 
+function envMilliseconds(name: string, fallback: number, min: number, max: number): number {
+    const value = Number(process.env[name] ?? fallback);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(value)));
+}
+
 function envHours(name: string, fallback: number): number {
     const value = Number(process.env[name] ?? fallback);
     return Number.isFinite(value) && value > 0 ? value * 3_600_000 : fallback * 3_600_000;
@@ -216,6 +223,10 @@ function getCacheLeaseMaxMs(): number {
     return Math.max(getCacheLeaseDurationMs(), envMinutes('CODEX_CACHE_LEASE_MAX_MINUTES', 120));
 }
 
+function getCodexRequestTimeoutMs(): number {
+    return envMilliseconds('CODEX_REQUEST_TIMEOUT_MS', 180_000, 10_000, 900_000);
+}
+
 function serializeActiveCacheLease(now: number): CodexBalancerLease | null {
     const lease = activeCacheLease;
     if (!lease || now >= lease.maxExpiresAt) return null;
@@ -238,10 +249,12 @@ function clearExpiredCacheLease(now: number): void {
     if (activeCacheLease && !serializeActiveCacheLease(now)) activeCacheLease = null;
 }
 
-function startCacheLease(selection: BalanceLoaderSelection, now: number): void {
+function startCacheLease(selection: BalanceLoaderSelection, now: number, affinityKey: string | null): void {
+    if (!affinityKey) return;
     if (selection.selectedSlotIndex === null || !selection.selectedAccountKey) return;
     activeCacheLease = {
         id: crypto.randomUUID(),
+        affinityKey,
         accountKey: selection.selectedAccountKey,
         slotIndex: selection.selectedSlotIndex,
         startedAt: now,
@@ -252,10 +265,12 @@ function startCacheLease(selection: BalanceLoaderSelection, now: number): void {
     };
 }
 
-function applyCacheLease(selection: BalanceLoaderSelection, now: number): BalanceLoaderSelection {
+function applyCacheLease(selection: BalanceLoaderSelection, now: number, affinityKey: string | null): BalanceLoaderSelection {
+    if (!affinityKey) return selection;
     clearExpiredCacheLease(now);
     const lease = activeCacheLease;
     if (lease
+        && lease.affinityKey === affinityKey
         && selection.eligibleAccountKeys?.has(lease.accountKey)
         && selection.eligibleSlotIndexes?.has(lease.slotIndex)) {
         return {
@@ -268,7 +283,7 @@ function applyCacheLease(selection: BalanceLoaderSelection, now: number): Balanc
         };
     }
     if (lease) activeCacheLease = null;
-    if (selection.fallbackReason === null) startCacheLease(selection, now);
+    if (selection.fallbackReason === null) startCacheLease(selection, now, affinityKey);
     return selection;
 }
 
@@ -1595,7 +1610,7 @@ async function executeCodexImageCall(
     if (proxyAgent) fetchOptions.dispatcher = proxyAgent;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60_000);
+    const timeoutId = setTimeout(() => controller.abort(), getCodexRequestTimeoutMs());
     fetchOptions.signal = controller.signal;
 
     try {
@@ -2779,6 +2794,17 @@ function invalidateSlotAuth(slotIndex: number): void {
 function shouldRetryCodexError(status: number, errorBody: string): boolean {
     if (status === 401) return true;
     if (status === 500) return true;
+    if (status === 502) {
+        const parsedError = parseCodexError(errorBody);
+        const code = asNonEmptyString(parsedError?.['code']);
+        const type = asNonEmptyString(parsedError?.['type']);
+        const message = asNonEmptyString(parsedError?.['message']) ?? '';
+        return code === 'codex_error'
+            || code === 'server_error'
+            || type === 'server_error'
+            || type === 'upstream_error'
+            || /aborted|timeout|timed out|fetch failed/i.test(message);
+    }
     return status === 429 && getCodexUpstreamType(errorBody) === 'usage_limit_reached';
 }
 
@@ -2980,7 +3006,7 @@ async function executeCodexCall(
     if (proxyAgent) fetchOptions.dispatcher = proxyAgent;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60_000);
+    const timeoutId = setTimeout(() => controller.abort(), getCodexRequestTimeoutMs());
     fetchOptions.signal = controller.signal;
 
     try {
@@ -3105,7 +3131,7 @@ export async function makeCodexRequest(
                     excludedAccountKeys,
                 });
                 if (balanceLoaderMode === 'on') {
-                    selection = applyCacheLease(selection, now);
+                    selection = applyCacheLease(selection, now, affinityKey);
                 }
                 if (balanceLoaderMode === 'on') {
                     const coldMigration = evaluateColdMigration({ request, affinityKey, selection });
@@ -3206,7 +3232,7 @@ export async function makeCodexRequest(
         releaseCodexAuth();
 
         // Success or non-retriable error → return immediately
-        if (response.status !== 401 && response.status !== 429 && response.status !== 500) {
+        if (response.status !== 401 && response.status !== 429 && response.status !== 500 && response.status !== 502) {
             if (response.ok && activeCacheLease?.slotIndex === slotUsed) {
                 activeCacheLease.lastUsedAt = Date.now();
             }
@@ -3247,9 +3273,9 @@ export async function makeCodexRequest(
             markSlotRateLimited(slotUsed, errBody);
             if (accountKeyUsed) excludedAccountKeys.add(accountKeyUsed);
         } else {
-            // 500 — server error, may be account-specific; try next slot without rate-limit penalty
+            // Transient server error, may be account-specific; try next slot without rate-limit penalty.
             console.warn(
-                `[codex-rotation] Slot ${slotUsed} returned 500, trying next slot...`
+                `[codex-rotation] Slot ${slotUsed} returned ${response.status}, trying next slot...`
                 + (attempt + 1 < slotCount ? ` (attempt ${attempt + 1}/${slotCount})` : ' (no more slots)'),
             );
             advanceSlot();
@@ -3342,7 +3368,7 @@ export async function makeCodexImageRequest(
         );
         releaseCodexAuth();
 
-        if (response.status !== 401 && response.status !== 429 && response.status !== 500) {
+        if (response.status !== 401 && response.status !== 429 && response.status !== 500 && response.status !== 502) {
             return response;
         }
 

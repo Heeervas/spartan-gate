@@ -234,8 +234,9 @@ Codex subscription routing: `OPENAI_CODEX_TOKEN`, `OPENAI_CODEX_AUTH_PATH`,
 `CODEX_SCHEDULE_START_DAY`, `CODEX_EARLY_ACTIVATION_ENABLED`,
 `CODEX_EARLY_ACTIVATION_WEEKLY_PERCENT`,
 `CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT`,
-`CODEX_COLD_MIGRATION_DECISION_TTL_HOURS`, `CODEX_ROTATION_INTERVAL_HOURS`, and
-`CODEX_ROTATION_IDLE_MINUTES`. For multi-account Codex pools,
+`CODEX_COLD_MIGRATION_DECISION_TTL_HOURS`, `CODEX_ROTATION_INTERVAL_HOURS`,
+`CODEX_ROTATION_IDLE_MINUTES`, and `CODEX_REQUEST_TIMEOUT_MS`. For
+multi-account Codex pools,
 `CODEX_BALANCE_LOADER_MODE=shadow` computes the recommendation while keeping
 legacy slot choice. With `on`, UTC weekday lanes are used only while one or more
 accounts lack fresh weekly telemetry, including after a weekly reset. Once all
@@ -270,6 +271,9 @@ slot eligibility: upstream can still return a temporary rate limit. ClawRoute
 keeps long slot cooldowns for explicit `usage_limit_reached` responses with
 reset metadata, but generic streaming rate-limit errors are treated as
 request-local failures instead of account exhaustion.
+`CODEX_REQUEST_TIMEOUT_MS` bounds how long ClawRoute waits for Codex response
+headers before aborting a request; it defaults to `180000` so long Hermes
+sessions have more room than the older 60-second cutoff.
 Cold prompt-cache migrations are blocked before upstream when an old session
 would move to a different Codex account and the calibrated estimated impact is
 at or above `CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT`, which defaults
@@ -280,12 +284,16 @@ matching retry; dismissing it keeps the request blocked. Pending decisions expir
 after `CODEX_COLD_MIGRATION_DECISION_TTL_HOURS`, default `6`, and store only
 session/account hashes, slot indexes, estimates, and timestamps.
 The Codex cache-miss breaker is enabled by default with
-`CODEX_CACHE_BREAKER_ENABLED=true`. It blocks before upstream when the same
-prompt-cache key, model, account, slot, and tool schema repeatedly return low
-provider cache on large expected-hit requests. Healthy same-key cache results
-at or above the low-cache ratio reset the breaker even when the request is a
-new user-turn baseline, because OpenAI prompt caching is best-effort and may
-only reuse part of a stable prefix. Defaults are
+`CODEX_CACHE_BREAKER_ENABLED=true`, but hard preflight blocking is disabled by
+default with `CODEX_CACHE_BREAKER_BLOCKING_ENABLED=false`. In the default mode
+it records low-cache health for awareness without returning mid-turn 403s to
+Hermes. Set `CODEX_CACHE_BREAKER_BLOCKING_ENABLED=true` only when the operator
+explicitly wants fail-closed quota protection for repeated low-cache
+expected-hit requests on the same prompt-cache key, model, account, slot, and
+tool schema. Healthy same-key cache results at or above the low-cache ratio
+reset the breaker even when the request is a new user-turn baseline, because
+OpenAI prompt caching is best-effort and may only reuse part of a stable
+prefix. Defaults are
 `CODEX_CACHE_BREAKER_MIN_INPUT_TOKENS=20000`,
 `CODEX_CACHE_BREAKER_LOW_CACHE_RATIO=0.20`,
 `CODEX_CACHE_BREAKER_CONSECUTIVE_MISSES=2`,
@@ -295,13 +303,13 @@ only reuse part of a stable prefix. Defaults are
 `CODEX_CACHE_BREAKER_WINDOW_REQUESTS` controls recent diagnostic history in
 the breaker payload; it is not a blocking threshold. The legacy
 `CODEX_CACHE_BREAKER_WINDOW_MISSES` setting may still appear in settings
-payloads for compatibility, but blocking is driven by consecutive expected-hit
-misses or the uncached-token budget since the last healthy same-key cache
-result. Breaker-blocked preflight attempts are logged to `routing_log` as
-zero-token policy rows with policy metadata in `context_info`, so Codex
-analysis can distinguish prevented spend from provider usage. The authenticated
-`/api/codex/cache-breaker` route reports active breaker state. Operators can
-temporarily continue a matching session with
+payloads for compatibility. When hard blocking is enabled, blocking is driven
+by consecutive expected-hit misses or the uncached-token budget since the last
+healthy same-key cache result. Breaker-blocked preflight attempts are logged to
+`routing_log` as zero-token policy rows with policy metadata in `context_info`,
+so Codex analysis can distinguish prevented spend from provider usage. The
+authenticated `/api/codex/cache-breaker` route reports active breaker state.
+Operators can temporarily continue a matching session with
 `POST /api/codex/cache-breaker/:id/approve` or remove the blocker with
 `POST /api/codex/cache-breaker/:id/clear`; neither action rotates accounts
 automatically.

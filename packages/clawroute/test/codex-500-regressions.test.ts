@@ -199,6 +199,48 @@ describe('makeCodexRequest 500 regressions', () => {
         expect(message['content']).toBe('slot 1 recovered after slot 0 auth expired');
     });
 
+    it('retries the next slot after a retryable 502 Codex abort', async () => {
+        const dir = makeTempDir();
+        const firstPath = join(dir, 'first.json');
+        const secondPath = join(dir, 'second.json');
+        writeAuth(firstPath, { access_token: 'token-first', account_id: 'acct-first' });
+        writeAuth(secondPath, { access_token: 'token-second', account_id: 'acct-second' });
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+
+        const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+            const authorization = authHeader(init);
+            if (authorization === 'Bearer token-first') {
+                return new Response(JSON.stringify({
+                    error: {
+                        message: 'This operation was aborted',
+                        code: 'codex_error',
+                        type: 'server_error',
+                    },
+                }), {
+                    status: 502,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            if (authorization === 'Bearer token-second') {
+                return successResponse('slot 1 recovered after slot 0 aborted');
+            }
+            throw new Error(`Unexpected Authorization header: ${authorization}`);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const response = await makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        const body = await response.json() as Record<string, unknown>;
+        const choices = body['choices'] as Array<Record<string, unknown>>;
+        const message = choices[0]?.['message'] as Record<string, unknown>;
+
+        expect(fetchMock.mock.calls.map(([, init]) => authHeader(init))).toEqual([
+            'Bearer token-first',
+            'Bearer token-second',
+        ]);
+        expect(response.status).toBe(200);
+        expect(message['content']).toBe('slot 1 recovered after slot 0 aborted');
+    });
+
     it('reloads the auth file after a 401 auth error so a refreshed token works without restart', async () => {
         const dir = makeTempDir();
         const authPath = join(dir, 'auth.json');

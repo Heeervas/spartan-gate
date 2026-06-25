@@ -426,6 +426,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
                 outputTokens: input.result.outputTokens,
                 phase: requestTrace.phase,
                 comparison: requestTrace.delta.comparison,
+                streamError: input.result.streamError ?? null,
             });
         }
 
@@ -1244,7 +1245,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             //     For non-streaming, log asynchronously via setImmediate (tokens already correct).
             if (result.policyBlock) {
                 buildAndLog();
-            } else if (body.stream) {
+            } else if (body.stream && result.response.ok && result.response.body) {
                 result.logWhenDone = buildAndLog;
             } else {
                 setImmediate(buildAndLog);
@@ -1358,7 +1359,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             };
             if (result.policyBlock) {
                 buildAndLog();
-            } else if (wantsStream) {
+            } else if (wantsStream && result.response.ok && result.response.body) {
                 result.logWhenDone = buildAndLog;
             } else {
                 setImmediate(buildAndLog);
