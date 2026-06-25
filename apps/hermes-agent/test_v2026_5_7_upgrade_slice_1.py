@@ -174,15 +174,25 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertNotIn('Browserless main CDP broker did not become ready; see $broker_log" >&2\n        exit 1', entrypoint)
 
     def test_compose_uses_upstream_dashboard_env_contract(self):
-        compose = read_text(COMPOSE_PATH)
+        for path in [
+            COMPOSE_PATH,
+            TIER_COMPOSE_DIR / 'compose.l0.yml',
+            TIER_COMPOSE_DIR / 'compose.l1.yml',
+            TIER_COMPOSE_DIR / 'compose.l2.yml',
+        ]:
+            with self.subTest(path=path.name):
+                compose = read_text(path)
 
-        self.assertIn('HERMES_DASHBOARD: ${HERMES_DASHBOARD:-1}', compose)
-        self.assertIn('HERMES_DASHBOARD_HOST: 0.0.0.0', compose)
-        self.assertIn('HERMES_DASHBOARD_INSECURE: ${HERMES_DASHBOARD_INSECURE:-1}', compose)
-        self.assertIn('SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-}', compose)
-        self.assertIn('SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-}', compose)
-        self.assertNotIn('SPARTAN_HERMES_DATA_GID:', compose)
-        self.assertNotIn('SPARTAN_HERMES_DATA_GROUP_REPAIR:', compose)
+                self.assertIn('HERMES_DASHBOARD: ${HERMES_DASHBOARD:-1}', compose)
+                self.assertIn('HERMES_DASHBOARD_HOST: 0.0.0.0', compose)
+                self.assertIn('HERMES_DASHBOARD_INSECURE: ${HERMES_DASHBOARD_INSECURE:-1}', compose)
+                self.assertIn('HERMES_DASHBOARD_BASIC_AUTH_USERNAME:', compose)
+                self.assertIn('HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:', compose)
+                self.assertIn('HERMES_DASHBOARD_BASIC_AUTH_SECRET:', compose)
+                self.assertIn('SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-}', compose)
+                self.assertIn('SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-}', compose)
+                self.assertNotIn('SPARTAN_HERMES_DATA_GID:', compose)
+                self.assertNotIn('SPARTAN_HERMES_DATA_GROUP_REPAIR:', compose)
 
     def test_tier_compose_allows_user_level_python_and_node_installs(self):
         for name in ('compose.l0.yml', 'compose.l1.yml', 'compose.l2.yml'):

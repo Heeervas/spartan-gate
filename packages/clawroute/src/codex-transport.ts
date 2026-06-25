@@ -172,7 +172,7 @@ type ActiveCodexCacheLease = {
     maxExpiresAt: number;
     selectionReason: string | null;
 };
-let activeCacheLease: ActiveCodexCacheLease | null = null;
+const activeCacheLeases = new Map<string, ActiveCodexCacheLease>();
 const authRefreshPromises = new Map<string, Promise<Awaited<ReturnType<typeof refreshTokens>>>>();
 const authRefreshRetryAt = new Map<string, number>();
 type AuthFileSnapshot = {
@@ -248,17 +248,39 @@ function getCacheLeaseMaxMs(): number {
     return Math.max(getCacheLeaseDurationMs(), envMinutes('CODEX_CACHE_LEASE_MAX_MINUTES', 120));
 }
 
+function getCacheLeaseMaxEntries(): number {
+    const value = Number(process.env['CODEX_CACHE_LEASE_MAX_ENTRIES'] ?? 256);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 256;
+}
+
+function getCacheLeaseMode(): 'keyed' | 'global' | 'off' {
+    const mode = (process.env['CODEX_CACHE_LEASE_MODE'] ?? 'keyed').trim().toLowerCase();
+    if (mode === 'global' || mode === 'off') return mode;
+    return 'keyed';
+}
+
 function getCodexRequestTimeoutMs(): number {
     return envMilliseconds('CODEX_REQUEST_TIMEOUT_MS', 180_000, 10_000, 900_000);
 }
 
-function serializeActiveCacheLease(now: number): CodexBalancerLease | null {
-    const lease = activeCacheLease;
-    if (!lease || now >= lease.maxExpiresAt) return null;
+function getPromptCacheRetention(modelName: string): '24h' | null {
+    if (modelName !== 'gpt-5.5') return null;
+    const value = (process.env['CODEX_PROMPT_CACHE_RETENTION'] ?? '24h').trim().toLowerCase();
+    if (value === '' || value === 'unset' || value === 'off' || value === 'none') return null;
+    return value === '24h' ? '24h' : null;
+}
+
+function isCacheLeaseUsable(lease: ActiveCodexCacheLease, now: number): boolean {
+    if (now >= lease.maxExpiresAt) return false;
     const inGrace = now >= lease.nominalExpiresAt;
-    if (inGrace && now - lease.lastUsedAt >= getCacheLeaseIdleGraceMs()) return null;
+    return !(inGrace && now - lease.lastUsedAt >= getCacheLeaseIdleGraceMs());
+}
+
+function serializeCacheLease(lease: ActiveCodexCacheLease, now: number): CodexBalancerLease {
+    const inGrace = now >= lease.nominalExpiresAt;
     return {
         id: lease.id,
+        affinityKeyHash: hashPromptCacheKey(lease.affinityKey),
         accountKey: lease.accountKey,
         slotIndex: lease.slotIndex,
         startedAt: new Date(lease.startedAt).toISOString(),
@@ -270,14 +292,49 @@ function serializeActiveCacheLease(now: number): CodexBalancerLease | null {
     };
 }
 
-function clearExpiredCacheLease(now: number): void {
-    if (activeCacheLease && !serializeActiveCacheLease(now)) activeCacheLease = null;
+function serializeActiveCacheLease(now: number): CodexBalancerLease | null {
+    const leases = serializeActiveCacheLeases(now);
+    return leases[0] ?? null;
+}
+
+function serializeActiveCacheLeases(now: number): CodexBalancerLease[] {
+    clearExpiredCacheLeases(now);
+    return Array.from(activeCacheLeases.values())
+        .sort((left, right) => right.lastUsedAt - left.lastUsedAt)
+        .map((lease) => serializeCacheLease(lease, now));
+}
+
+function clearExpiredCacheLeases(now: number): void {
+    for (const [key, lease] of activeCacheLeases.entries()) {
+        if (!isCacheLeaseUsable(lease, now)) activeCacheLeases.delete(key);
+    }
+}
+
+function getLeaseMapKey(affinityKey: string): string {
+    return getCacheLeaseMode() === 'global' ? '__global__' : affinityKey;
+}
+
+function evictOverflowCacheLeases(): void {
+    const maxEntries = getCacheLeaseMaxEntries();
+    while (activeCacheLeases.size > maxEntries) {
+        let oldestKey: string | null = null;
+        let oldestLastUsedAt = Number.POSITIVE_INFINITY;
+        for (const [key, lease] of activeCacheLeases.entries()) {
+            if (lease.lastUsedAt < oldestLastUsedAt) {
+                oldestKey = key;
+                oldestLastUsedAt = lease.lastUsedAt;
+            }
+        }
+        if (!oldestKey) return;
+        activeCacheLeases.delete(oldestKey);
+    }
 }
 
 function startCacheLease(selection: BalanceLoaderSelection, now: number, affinityKey: string | null): void {
+    if (getCacheLeaseMode() === 'off') return;
     if (!affinityKey) return;
     if (selection.selectedSlotIndex === null || !selection.selectedAccountKey) return;
-    activeCacheLease = {
+    activeCacheLeases.set(getLeaseMapKey(affinityKey), {
         id: crypto.randomUUID(),
         affinityKey,
         accountKey: selection.selectedAccountKey,
@@ -287,13 +344,15 @@ function startCacheLease(selection: BalanceLoaderSelection, now: number, affinit
         nominalExpiresAt: now + getCacheLeaseDurationMs(),
         maxExpiresAt: now + getCacheLeaseMaxMs(),
         selectionReason: selection.decisionReason ?? null,
-    };
+    });
+    evictOverflowCacheLeases();
 }
 
 function applyCacheLease(selection: BalanceLoaderSelection, now: number, affinityKey: string | null): BalanceLoaderSelection {
+    if (getCacheLeaseMode() === 'off') return selection;
     if (!affinityKey) return selection;
-    clearExpiredCacheLease(now);
-    const lease = activeCacheLease;
+    clearExpiredCacheLeases(now);
+    const lease = activeCacheLeases.get(getLeaseMapKey(affinityKey));
     if (lease
         && lease.affinityKey === affinityKey
         && selection.eligibleAccountKeys?.has(lease.accountKey)
@@ -307,17 +366,19 @@ function applyCacheLease(selection: BalanceLoaderSelection, now: number, affinit
             decisionReason: 'cache_lease_reuse',
         };
     }
-    if (lease) activeCacheLease = null;
+    if (lease && getCacheLeaseMode() === 'global') activeCacheLeases.delete(getLeaseMapKey(affinityKey));
     if (selection.fallbackReason === null) startCacheLease(selection, now, affinityKey);
     return selection;
 }
 
 export function forceRotateCodexCacheLease(): void {
-    activeCacheLease = null;
+    activeCacheLeases.clear();
 }
 
 export function invalidateCodexCacheLeaseForSlot(slotIndex: number): void {
-    if (activeCacheLease?.slotIndex === slotIndex) activeCacheLease = null;
+    for (const [key, lease] of activeCacheLeases.entries()) {
+        if (lease.slotIndex === slotIndex) activeCacheLeases.delete(key);
+    }
 }
 
 function getBalanceLoaderMode(): CodexBalanceLoaderMode {
@@ -775,7 +836,7 @@ export async function getCodexBalancerState(): Promise<CodexBalancerState> {
         scheduleRows,
         accounts: selector.accounts,
     });
-    clearExpiredCacheLease(now);
+    clearExpiredCacheLeases(now);
     return {
         ...state,
         activeLease: serializeActiveCacheLease(now),
@@ -1160,7 +1221,7 @@ export function resetRotationState(): void {
     lastQueryEndTime = 0;
     activeRequests = 0;
     sessionAffinities.clear();
-    activeCacheLease = null;
+    activeCacheLeases.clear();
     pendingLeasesByAccountKey.clear();
     pendingLeasesBySlotIndex.clear();
     slotLastSelectedAtByIndex.clear();
@@ -1479,6 +1540,8 @@ export function buildCodexRequestBody(
         store: false,
     };
     if (promptCacheKey) body['prompt_cache_key'] = promptCacheKey;
+    const promptCacheRetention = getPromptCacheRetention(modelName);
+    if (promptCacheKey && promptCacheRetention) body['prompt_cache_retention'] = promptCacheRetention;
 
     // Forward compatible parameters
     // Note: temperature is intentionally omitted — Codex endpoint rejects it as unsupported.
@@ -3259,8 +3322,9 @@ export async function makeCodexRequest(
 
         // Success or non-retriable error → return immediately
         if (response.status !== 401 && response.status !== 429 && response.status !== 500 && response.status !== 502) {
-            if (response.ok && activeCacheLease?.slotIndex === slotUsed) {
-                activeCacheLease.lastUsedAt = Date.now();
+            const cacheLease = affinityKey ? activeCacheLeases.get(getLeaseMapKey(affinityKey)) : null;
+            if (response.ok && cacheLease?.slotIndex === slotUsed) {
+                cacheLease.lastUsedAt = Date.now();
             }
             if (response.ok && approvedColdMigrationDecisionId) {
                 consumeCodexColdMigrationDecision(approvedColdMigrationDecisionId);

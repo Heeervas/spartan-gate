@@ -1491,10 +1491,8 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
         const runtimeSnapshot = getRuntimeSnapshot();
         const models = getEnabledModelsFromCatalog(runtimeSnapshot.modelCatalog);
 
-        // Virtual model: clawroute/auto — agents can select this to let
-        // ClawRoute classify and route to the best model automatically.
-        const autoModel = {
-            id: 'clawroute/auto',
+        const buildAutoModel = (id: string) => ({
+            id,
             object: 'model' as const,
             created: 1700000000,
             owned_by: 'clawroute',
@@ -1504,12 +1502,16 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             tool_capable: true,
             multimodal: true,
             description: 'Auto-routes to the best model based on request complexity',
-        };
+        });
 
         return c.json({
             object: 'list',
             data: [
-                autoModel,
+                // Virtual models — agents can select these to let ClawRoute
+                // classify and route to the best model automatically. Hermes
+                // discovers the named custom provider form.
+                buildAutoModel('clawroute/auto'),
+                buildAutoModel('custom-1/clawroute/auto'),
                 ...models.map(m => ({
                     id: m.id,
                     object: 'model',
@@ -1532,9 +1534,9 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
         const modelId = c.req.param('id');
 
         // Virtual model: clawroute/auto
-        if (modelId === 'clawroute/auto') {
+        if (modelId === 'clawroute/auto' || modelId === 'custom-1/clawroute/auto') {
             return c.json({
-                id: 'clawroute/auto',
+                id: modelId,
                 object: 'model',
                 created: 1700000000,
                 owned_by: 'clawroute',

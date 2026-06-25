@@ -11,6 +11,11 @@ Public env docs describe names and behavior only. Real values and machine-specif
 - `CLAWROUTE_EDGE_PORT`: Caddy edge port for ClawRoute.
 - `BROWSERLESS_DEBUG_PORT`: Caddy edge port for Browserless debugging.
 - `HERMES_DASHBOARD_PORT`: Caddy edge port for the Hermes dashboard.
+- `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`,
+  `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`, and
+  `HERMES_DASHBOARD_BASIC_AUTH_SECRET`: required by the upstream Hermes
+  dashboard when it binds outside loopback. Caddy Basic Auth still protects the
+  edge; these variables keep the internal dashboard process from failing closed.
 - `CADDY_AUTH_USER`: Basic Auth username.
 - `CADDY_AUTH_HASH`: Caddy password hash.
 - `BROWSERLESS_EDGE_TOKEN`: generated edge token added to Browserless debugger
@@ -274,6 +279,13 @@ request-local failures instead of account exhaustion.
 `CODEX_REQUEST_TIMEOUT_MS` bounds how long ClawRoute waits for Codex response
 headers before aborting a request; it defaults to `180000` so long Hermes
 sessions have more room than the older 60-second cutoff.
+Prompt-cache leases default to `CODEX_CACHE_LEASE_MODE=keyed`, which keeps a
+bounded independent lease per Hermes `prompt_cache_key`/affinity instead of a
+single global lease. `global` restores the old one-lease behavior and `off`
+disables cache leases. `CODEX_CACHE_LEASE_MAX_ENTRIES` defaults to `256`;
+oldest leases are evicted first. `CODEX_PROMPT_CACHE_RETENTION` defaults to
+`24h` and is sent for `gpt-5.5` requests that have a `prompt_cache_key`; set it
+to `unset` or `off` to omit the field.
 Cold prompt-cache migrations are blocked before upstream when an old session
 would move to a different Codex account and the calibrated estimated impact is
 at or above `CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT`, which defaults

@@ -1225,6 +1225,7 @@ export interface CodexBalancerSlotState {
 
 export interface CodexBalancerLease {
     id: string;
+    affinityKeyHash: string | null;
     accountKey: string;
     slotIndex: number;
     startedAt: string;

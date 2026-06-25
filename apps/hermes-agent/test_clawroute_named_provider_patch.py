@@ -19,8 +19,10 @@ def load_module():
 class ClawrouteNamedProviderPatchTests(unittest.TestCase):
     def setUp(self):
         self._old_home = os.environ.get('HERMES_HOME')
+        self._old_openai_base_url = os.environ.get('OPENAI_BASE_URL')
         self.tmp = tempfile.TemporaryDirectory()
         os.environ['HERMES_HOME'] = self.tmp.name
+        os.environ.pop('OPENAI_BASE_URL', None)
         self.home = pathlib.Path(self.tmp.name)
 
     def tearDown(self):
@@ -29,6 +31,10 @@ class ClawrouteNamedProviderPatchTests(unittest.TestCase):
             os.environ.pop('HERMES_HOME', None)
         else:
             os.environ['HERMES_HOME'] = self._old_home
+        if self._old_openai_base_url is None:
+            os.environ.pop('OPENAI_BASE_URL', None)
+        else:
+            os.environ['OPENAI_BASE_URL'] = self._old_openai_base_url
 
     def write_config(self, relative_path, text):
         path = self.home / relative_path
@@ -70,8 +76,10 @@ class ClawrouteNamedProviderPatchTests(unittest.TestCase):
             text = path.read_text(encoding='utf-8')
             self.assertIn('default: custom-1/clawroute/auto', text)
             self.assertIn('provider: custom-1', text)
+            self.assertIn('base_url: http://clawroute:18790/v1', text)
             self.assertNotIn('default: clawroute/auto', text)
             self.assertNotIn('provider: custom\n', text)
+            self.assertNotIn('${OPENAI_BASE_URL}', text)
 
     def test_skips_unrelated_custom_provider_config(self):
         module = load_module()
@@ -109,6 +117,26 @@ class ClawrouteNamedProviderPatchTests(unittest.TestCase):
         first = path.read_text(encoding='utf-8')
         self.assertIn('Already patched:', module.patch_file(path))
         self.assertEqual(first, path.read_text(encoding='utf-8'))
+
+    def test_materializes_base_url_for_already_named_provider(self):
+        module = load_module()
+        path = self.write_config(
+            'config.yaml',
+            '\n'.join([
+                'model:',
+                '  default: custom-1/clawroute/auto',
+                '  provider: custom-1',
+                '  base_url: ${OPENAI_BASE_URL}',
+                '  context_length: 256000',
+                '  api_key_env: CUSTOM_1_API_KEY',
+                '',
+            ]),
+        )
+
+        self.assertIn('Patched:', module.patch_file(path))
+        text = path.read_text(encoding='utf-8')
+        self.assertIn('base_url: http://clawroute:18790/v1', text)
+        self.assertNotIn('${OPENAI_BASE_URL}', text)
 
     def test_main_applies_patch_to_all_targets(self):
         module = load_module()

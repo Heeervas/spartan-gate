@@ -135,6 +135,20 @@ describe('Model Endpoints', () => {
             });
         });
 
+        it('should expose the Hermes named ClawRoute auto model alias', async () => {
+            const res = await app.request('/v1/models');
+            const body = await res.json();
+
+            const model = body.data.find((entry: { id: string }) => entry.id === 'custom-1/clawroute/auto');
+
+            expect(model).toMatchObject({
+                id: 'custom-1/clawroute/auto',
+                owned_by: 'clawroute',
+                tool_capable: true,
+                multimodal: true,
+            });
+        });
+
         it('should expose bundled openai/gpt-image-2 with image-safe capabilities', async () => {
             const res = await app.request('/v1/models');
             const body = await res.json();
@@ -193,6 +207,18 @@ describe('Model Endpoints', () => {
             expect(res.status).toBe(200);
             expect(body.id).toBe('openrouter/google/gemini-2.5-flash');
             expect(body.object).toBe('model');
+        });
+
+        it('should return the Hermes named ClawRoute auto model alias', async () => {
+            const res = await app.request('/v1/models/custom-1/clawroute/auto');
+            const body = await res.json();
+
+            expect(res.status).toBe(200);
+            expect(body).toMatchObject({
+                id: 'custom-1/clawroute/auto',
+                owned_by: 'clawroute',
+                tool_capable: true,
+            });
         });
 
         it('should return 404 for an unknown model ID', async () => {
