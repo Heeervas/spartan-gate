@@ -279,6 +279,21 @@ impact, and remaining five-hour/weekly headroom. Approving a decision allows one
 matching retry; dismissing it keeps the request blocked. Pending decisions expire
 after `CODEX_COLD_MIGRATION_DECISION_TTL_HOURS`, default `6`, and store only
 session/account hashes, slot indexes, estimates, and timestamps.
+The Codex cache-miss breaker is enabled by default with
+`CODEX_CACHE_BREAKER_ENABLED=true`. It blocks before upstream when the same
+prompt-cache key, model, account, slot, and tool schema repeatedly return low
+provider cache on large expected-hit requests. Defaults are
+`CODEX_CACHE_BREAKER_MIN_INPUT_TOKENS=20000`,
+`CODEX_CACHE_BREAKER_LOW_CACHE_RATIO=0.20`,
+`CODEX_CACHE_BREAKER_CONSECUTIVE_MISSES=2`,
+`CODEX_CACHE_BREAKER_WINDOW_MISSES=3`,
+`CODEX_CACHE_BREAKER_WINDOW_REQUESTS=5`, and
+`CODEX_CACHE_BREAKER_APPROVAL_TTL_MINUTES=15`. The authenticated
+`/api/codex/cache-breaker` route reports active breaker state. Operators can
+temporarily continue a matching session with
+`POST /api/codex/cache-breaker/:id/approve` or remove the blocker with
+`POST /api/codex/cache-breaker/:id/clear`; neither action rotates accounts
+automatically.
 `/dashboard-codex` also shows read-only banked Codex reset credits when the
 ChatGPT reset-credit endpoint returns them. ClawRoute displays sanitized
 available counts plus grant and expiry dates where available, persists only

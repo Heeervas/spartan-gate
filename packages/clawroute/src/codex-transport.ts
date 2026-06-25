@@ -18,7 +18,14 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { ProxyAgent } from 'undici';
-import { FetchInitWithDispatcher } from './http-proxy.js';
+import { FetchInitWithDispatcher, fetchWithProxyAgent } from './http-proxy.js';
+import {
+    CODEX_CACHE_BREAKER_POLICY,
+    getCodexCacheBreakerBlock,
+    hashPromptCacheKey,
+    resetCodexCacheBreakerState,
+} from './codex-cache-breaker.js';
+import { buildToolSchemaFingerprint } from './request-trace.js';
 import {
     CodexAccountScheduleRow,
     CodexAuthUnavailableReason,
@@ -339,6 +346,17 @@ function resolvePromptCacheKey(
         ?? extractSessionIdFromRequest(request);
     if (!raw?.trim()) return null;
     return `clawroute:${createHash('sha256').update(raw.trim()).digest('hex').slice(0, 32)}`;
+}
+
+function resolveCacheBreakerPromptCacheKey(
+    request: Record<string, unknown>,
+    executionContext: RequestExecutionContext,
+): string | null {
+    return executionContext.promptCacheKey
+        ?? (typeof request['prompt_cache_key'] === 'string' ? request['prompt_cache_key'] : null)
+        ?? (typeof request['user'] === 'string' ? request['user'] : null)
+        ?? executionContext.sessionId
+        ?? extractSessionIdFromRequest(request);
 }
 
 function getSlotAccountId(slot: CodexAuthSlot): string | null {
@@ -886,7 +904,9 @@ async function refreshTokens(
         };
         if (proxyAgent) fetchOptions.dispatcher = proxyAgent;
 
-        const response = await fetch(OAUTH_TOKEN_URL, fetchOptions as RequestInit);
+        const response = proxyAgent
+            ? await fetchWithProxyAgent(OAUTH_TOKEN_URL, fetchOptions)
+            : await fetch(OAUTH_TOKEN_URL, fetchOptions as RequestInit);
         if (!response.ok) return null;
 
         const payload = await response.json() as Record<string, unknown>;
@@ -1106,6 +1126,7 @@ export function resetRotationState(): void {
     slotLastSelectedAtByIndex.clear();
     authRefreshPromises.clear();
     authRefreshRetryAt.clear();
+    resetCodexCacheBreakerState();
     rotationIntervalMs = -1;
     rotationIdleMs = -1;
 }
@@ -1578,7 +1599,9 @@ async function executeCodexImageCall(
     fetchOptions.signal = controller.signal;
 
     try {
-        const upstream = await fetch(url, fetchOptions as RequestInit);
+        const upstream = proxyAgent
+            ? await fetchWithProxyAgent(url, fetchOptions)
+            : await fetch(url, fetchOptions as RequestInit);
         clearTimeout(timeoutId);
 
         if (!upstream.ok) {
@@ -2805,6 +2828,40 @@ function coldMigrationBlockedResponse(decisionId: string, estimatedFiveHourPerce
     );
 }
 
+function cacheMissBreakerBlockedResponse(block: NonNullable<ReturnType<typeof getCodexCacheBreakerBlock>>): Response {
+    return new Response(
+        JSON.stringify({
+            error: {
+                message: 'Codex prompt cache miss breaker blocked this request before spending more quota.',
+                type: 'policy_block',
+                code: 'codex_cache_miss_breaker_blocked',
+                policy: CODEX_CACHE_BREAKER_POLICY,
+                breaker_id: block.id,
+                model: block.key.actualModel,
+                slot_index: block.key.slotIndex,
+                account_key: block.key.accountKey,
+                prompt_cache_key_hash: block.key.promptCacheKeyHash,
+                tool_schema_fingerprint: block.key.toolSchemaFingerprint,
+                consecutive_misses: block.consecutiveMisses,
+                recent: block.recent,
+                recommendations: [
+                    'Compact or restart the Hermes session to rebuild a stable prompt prefix.',
+                    'Approve this breaker only if continuing on the same cache lease is intentional.',
+                    'Switch model/session only after checking cache and quota impact.',
+                ],
+            },
+        }),
+        {
+            status: 403,
+            headers: {
+                'Content-Type': 'application/json',
+                'X-ClawRoute-Policy-Block': CODEX_CACHE_BREAKER_POLICY,
+                'X-ClawRoute-Retryable': 'false',
+            },
+        },
+    );
+}
+
 function evaluateColdMigration(input: {
     request: Record<string, unknown>;
     affinityKey: string | null;
@@ -2923,7 +2980,9 @@ async function executeCodexCall(
     fetchOptions.signal = controller.signal;
 
     try {
-        const upstream = await fetch(url, fetchOptions as RequestInit);
+        const upstream = proxyAgent
+            ? await fetchWithProxyAgent(url, fetchOptions)
+            : await fetch(url, fetchOptions as RequestInit);
         clearTimeout(timeoutId);
 
         if (!upstream.ok) {
@@ -2999,6 +3058,7 @@ export async function makeCodexRequest(
     const modelName = modelId.includes('/') ? modelId.split('/').slice(1).join('/') : modelId;
     const sessionId = executionContext.sessionId ?? extractSessionIdFromRequest(request);
     const promptCacheKey = resolvePromptCacheKey(request, executionContext);
+    const cacheBreakerPromptCacheKey = resolveCacheBreakerPromptCacheKey(request, executionContext);
     const affinityKey = promptCacheKey ?? sessionId;
     const balanceLoaderMode = getBalanceLoaderMode();
 
@@ -3114,6 +3174,19 @@ export async function makeCodexRequest(
             slotIndex: slotUsed,
             accountKey: accountKeyUsed,
         };
+        const promptCacheKeyHash = hashPromptCacheKey(cacheBreakerPromptCacheKey);
+        if (accountKeyUsed && promptCacheKeyHash) {
+            const block = getCodexCacheBreakerBlock({
+                promptCacheKeyHash,
+                actualModel: modelId,
+                accountKey: accountKeyUsed,
+                slotIndex: slotUsed,
+                toolSchemaFingerprint: buildToolSchemaFingerprint(request['tools'] ?? []),
+            });
+            if (block) {
+                return cacheMissBreakerBlockedResponse(block);
+            }
+        }
         const lease = claimSelectionLease(accountKeyUsed, slotUsed);
         const response = await executeCodexCall(
             result.auth,

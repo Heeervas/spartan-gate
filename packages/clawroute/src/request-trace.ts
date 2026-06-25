@@ -98,18 +98,21 @@ export function buildRequestTraceSnapshot(
     const turnId = session.id && lastUserIndex >= 0
         ? hash(`turn\0${session.id}\0${messageFingerprints[lastUserIndex]}`)
         : null;
-    const toolsJson = stableJson(body.tools ?? []);
     return {
         turnId,
         requestFingerprint: messageFingerprints.at(-1) ?? hash('empty-request'),
         messageFingerprints,
         messages,
-        toolSchemaFingerprint: hash(toolsJson),
+        toolSchemaFingerprint: buildToolSchemaFingerprint(body.tools ?? []),
         toolCount: body.tools?.length ?? 0,
         toolSchemaChars: safeJson(body.tools ?? []).length,
         sessionSource: session.source,
         logContent,
     };
+}
+
+export function buildToolSchemaFingerprint(tools: unknown): string {
+    return hash(stableJson(tools ?? []));
 }
 
 function summarizeMessage(message: ChatMessage, logContent: boolean): RequestTraceDeltaItem {

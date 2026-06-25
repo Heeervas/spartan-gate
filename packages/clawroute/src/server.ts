@@ -54,6 +54,13 @@ import {
     invalidateCodexCacheLeaseForSlot,
 } from './codex-transport.js';
 import {
+    approveCodexCacheBreaker,
+    clearCodexCacheBreaker,
+    getCodexCacheBreakerSnapshot,
+    hashPromptCacheKey,
+    recordCodexCacheBreakerOutcome,
+} from './codex-cache-breaker.js';
+import {
     resetCodexBalancerToEnvironment,
     updateCodexBalancerSettings,
     updateCodexExpectedWeeklyReset,
@@ -384,6 +391,28 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
         };
         logRouting(logEntry);
 
+        const promptCacheKeyHash = hashPromptCacheKey(input.promptCacheKey);
+        if (input.result.actualModel.startsWith('codex/')
+            && promptCacheKeyHash
+            && input.result.selectedCodexAccountKey
+            && input.result.selectedCodexSlotIndex !== null
+            && input.result.selectedCodexSlotIndex !== undefined) {
+            recordCodexCacheBreakerOutcome({
+                promptCacheKeyHash,
+                actualModel: input.result.actualModel,
+                accountKey: input.result.selectedCodexAccountKey,
+                slotIndex: input.result.selectedCodexSlotIndex,
+                toolSchemaFingerprint: traceSnapshot.toolSchemaFingerprint,
+                requestId: input.requestId,
+                turnId: traceSnapshot.turnId,
+                inputTokens: input.result.inputTokens,
+                cachedInputTokens: input.result.cachedInputTokens ?? 0,
+                outputTokens: input.result.outputTokens,
+                phase: requestTrace.phase,
+                comparison: requestTrace.delta.comparison,
+            });
+        }
+
         if (input.result.actualModel.startsWith('codex/') && bloat.bloatAlerts.length > 0) {
             console.warn(JSON.stringify({
                 event: 'codex_request_bloat_alert',
@@ -634,6 +663,38 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             return c.json({ error: { message: period.message, code: 'invalid_period' } }, 400);
         }
         return c.json(getCodexAnalysis(period));
+    });
+
+    app.get('/api/codex/cache-breaker', (c) => {
+        return c.json(getCodexCacheBreakerSnapshot());
+    });
+
+    app.post('/api/codex/cache-breaker/:breakerId/approve', async (c) => {
+        let ttlMinutes: number | undefined;
+        try {
+            const body = await c.req.json().catch(() => ({})) as { ttlMinutes?: unknown };
+            if (body.ttlMinutes !== undefined) {
+                ttlMinutes = Number(body.ttlMinutes);
+                if (!Number.isFinite(ttlMinutes)) {
+                    return c.json({ error: { message: 'ttlMinutes must be a finite number', code: 'invalid_ttl' } }, 400);
+                }
+            }
+        } catch {
+            return c.json({ error: { message: 'Invalid JSON body', code: 'invalid_json' } }, 400);
+        }
+        const breaker = approveCodexCacheBreaker(c.req.param('breakerId'), ttlMinutes);
+        if (!breaker) {
+            return c.json({ error: { message: 'Unknown cache breaker', code: 'unknown_breaker' } }, 404);
+        }
+        return c.json({ breaker, state: getCodexCacheBreakerSnapshot() });
+    });
+
+    app.post('/api/codex/cache-breaker/:breakerId/clear', (c) => {
+        const breaker = clearCodexCacheBreaker(c.req.param('breakerId'));
+        if (!breaker) {
+            return c.json({ error: { message: 'Unknown cache breaker', code: 'unknown_breaker' } }, 404);
+        }
+        return c.json({ breaker, state: getCodexCacheBreakerSnapshot() });
     });
 
     app.post('/api/codex/usage/slots/:slotIndex', async (c) => {

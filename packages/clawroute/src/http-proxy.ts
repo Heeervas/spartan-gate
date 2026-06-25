@@ -1,4 +1,4 @@
-import { ProxyAgent } from 'undici';
+import { fetch as undiciFetch, ProxyAgent } from 'undici';
 
 export type FetchInitWithDispatcher = Omit<RequestInit, 'dispatcher'> & {
     dispatcher?: unknown;
@@ -15,4 +15,8 @@ export function getProxyAgent(): ProxyAgent | null {
         proxyAgent = new ProxyAgent(nextUrl);
     }
     return proxyAgent;
+}
+
+export async function fetchWithProxyAgent(input: string | URL, init: FetchInitWithDispatcher): Promise<Response> {
+    return await undiciFetch(input, init as Parameters<typeof undiciFetch>[1]) as unknown as Response;
 }

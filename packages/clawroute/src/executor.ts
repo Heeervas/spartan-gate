@@ -25,7 +25,7 @@ import { validateResponse } from './validator.js';
 import { pipeStream, pipeOllamaStream, adaptOllamaResponse, getSSEHeaders, StreamResult } from './streaming.js';
 import { makeCodexRequest } from './codex-transport.js';
 import { sleep, estimateMessagesTokens, safeJsonParse } from './utils.js';
-import { FetchInitWithDispatcher, getProxyAgent } from './http-proxy.js';
+import { FetchInitWithDispatcher, fetchWithProxyAgent, getProxyAgent } from './http-proxy.js';
 
 /**
  * Check if escalation is allowed based on plan and tier.
@@ -703,7 +703,9 @@ async function makeProviderRequest(
             signal: controller.signal,
         };
         if (proxyAgent) fetchOptions.dispatcher = proxyAgent;
-        const response = await fetch(url, fetchOptions as RequestInit);
+        const response = proxyAgent
+            ? await fetchWithProxyAgent(url, fetchOptions)
+            : await fetch(url, fetchOptions as RequestInit);
         return response;
     } finally {
         clearTimeout(timeoutId);

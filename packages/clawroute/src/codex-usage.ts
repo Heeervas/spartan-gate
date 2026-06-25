@@ -6,7 +6,7 @@ import {
     getCodexAuthSlots,
     loadCodexUsageAuthSlot,
 } from './codex-transport.js';
-import { FetchInitWithDispatcher, getProxyAgent } from './http-proxy.js';
+import { FetchInitWithDispatcher, fetchWithProxyAgent, getProxyAgent } from './http-proxy.js';
 import {
     getCodexResetCreditSnapshots,
     getCodexUsageSnapshots,
@@ -553,7 +553,9 @@ async function defaultFetchUsage(slot: ServiceSlot, timeoutMs = DEFAULT_TIMEOUT_
     if (dispatcher) fetchOptions.dispatcher = dispatcher;
 
     try {
-        const response = await fetch(USAGE_URL, fetchOptions as RequestInit);
+        const response = dispatcher
+            ? await fetchWithProxyAgent(USAGE_URL, fetchOptions)
+            : await fetch(USAGE_URL, fetchOptions as RequestInit);
         if (!response.ok) throw new Error(`Codex usage HTTP ${response.status}`);
         return await response.json() as CodexUsageRawResponse;
     } catch (error) {
@@ -584,7 +586,9 @@ async function defaultFetchResetCredits(slot: ServiceSlot, timeoutMs = DEFAULT_T
     if (dispatcher) fetchOptions.dispatcher = dispatcher;
 
     try {
-        const response = await fetch(RESET_CREDITS_URL, fetchOptions as RequestInit);
+        const response = dispatcher
+            ? await fetchWithProxyAgent(RESET_CREDITS_URL, fetchOptions)
+            : await fetch(RESET_CREDITS_URL, fetchOptions as RequestInit);
         if (!response.ok) throw new Error(`Codex reset credits HTTP ${response.status}`);
         return await response.json() as unknown;
     } catch (error) {
