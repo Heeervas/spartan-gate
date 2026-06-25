@@ -364,6 +364,78 @@ describe('logger debounced persistence', () => {
         });
     });
 
+    it('excludes policy-block rows from request trace parent candidates', async () => {
+        await initDb(createTestConfig(':memory:'));
+        const trace = (fingerprint: string, messageCount: number, policyBlock = false) => JSON.stringify({
+            tool_schema_fingerprint: 'tools-v1',
+            request_trace: {
+                version: 1,
+                sessionSource: 'prompt_cache_key',
+                requestFingerprint: fingerprint,
+                messageFingerprints: Array.from({ length: messageCount }, (_, index) => `prefix-${index + 1}`),
+                parentRequestId: null,
+                phase: 'tool_results',
+                delta: {
+                    comparison: 'prefix',
+                    addedMessageCount: 1,
+                    removedMessageCount: 0,
+                    addedChars: 10,
+                    roleCounts: { tool: 1 },
+                    toolCallCount: 0,
+                    toolResultCount: 1,
+                    items: [],
+                    omittedItems: 0,
+                    toolSchemas: { status: 'unchanged', count: 0, chars: 2 },
+                },
+            },
+            ...(policyBlock ? {
+                policy_block: {
+                    policy: 'codex_cache_miss_breaker',
+                    breaker_id: 'breaker-a',
+                    source: 'preflight',
+                },
+            } : {}),
+        });
+
+        logRouting({
+            ...createLogEntry(),
+            request_id: 'request-ok',
+            session_id: 'session-a',
+            turn_id: 'turn-a',
+            context_info: trace('prefix-ok', 3),
+        });
+        logRouting({
+            ...createLogEntry(),
+            request_id: 'request-blocked',
+            session_id: 'session-a',
+            turn_id: 'turn-a',
+            input_tokens: 0,
+            output_tokens: 0,
+            error: 'codex_cache_miss_breaker',
+            context_info: trace('prefix-blocked', 4, true),
+        });
+
+        expect(getRecentTurnTraceCandidates('turn-a')).toEqual([
+            expect.objectContaining({
+                requestId: 'request-ok',
+                requestFingerprint: 'prefix-ok',
+                messageCount: 3,
+            }),
+        ]);
+        expect(getRecentDecisions(2)[0]).toMatchObject({
+            error: 'codex_cache_miss_breaker',
+            inputTokens: 0,
+            outputTokens: 0,
+            context: {
+                policyBlock: {
+                    policy: 'codex_cache_miss_breaker',
+                    breakerId: 'breaker-a',
+                    source: 'preflight',
+                },
+            },
+        });
+    });
+
     it('excludes non-Codex requests from the quota-estimation token basis', async () => {
         await initDb(createTestConfig(':memory:'));
         logRouting({

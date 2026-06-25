@@ -2857,6 +2857,10 @@ function cacheMissBreakerBlockedResponse(block: NonNullable<ReturnType<typeof ge
                 'Content-Type': 'application/json',
                 'X-ClawRoute-Policy-Block': CODEX_CACHE_BREAKER_POLICY,
                 'X-ClawRoute-Retryable': 'false',
+                'X-ClawRoute-Breaker-Id': block.id,
+                'X-ClawRoute-Breaker-Reason': block.blockReason ?? '',
+                'X-ClawRoute-Cache-Key-Hash': block.key.promptCacheKeyHash,
+                'X-ClawRoute-Tool-Schema-Fingerprint': block.key.toolSchemaFingerprint,
             },
         },
     );

@@ -120,6 +120,24 @@ function toolSchemaGroupsFromContext(context: Record<string, unknown> | null): C
     });
 }
 
+function policyBlockFromContext(context: Record<string, unknown> | null): NonNullable<RecentDecision['context']>['policyBlock'] | undefined {
+    const value = context?.['policy_block'];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const raw = value as Record<string, unknown>;
+    const policy = typeof raw['policy'] === 'string' ? raw['policy'] : null;
+    if (!policy) return undefined;
+    const estimatedInputTokens = Number(raw['estimated_input_tokens']);
+    return {
+        policy,
+        breakerId: typeof raw['breaker_id'] === 'string' ? raw['breaker_id'] : null,
+        blockReason: typeof raw['block_reason'] === 'string' ? raw['block_reason'] : null,
+        cacheKeyHash: typeof raw['cache_key_hash'] === 'string' ? raw['cache_key_hash'] : null,
+        toolSchemaFingerprint: typeof raw['tool_schema_fingerprint'] === 'string' ? raw['tool_schema_fingerprint'] : null,
+        estimatedInputTokens: Number.isFinite(estimatedInputTokens) ? estimatedInputTokens : null,
+        source: typeof raw['source'] === 'string' ? raw['source'] : null,
+    };
+}
+
 const ROUTING_LOG_SCHEMA = `
     CREATE TABLE IF NOT EXISTS routing_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -790,6 +808,7 @@ function recentDecisionFromRow(row: Record<string, unknown>): RecentDecision {
         toolSchemaRoughTokens: numberFromContext(parsed, 'tool_schema_rough_tokens'),
         topToolSchemaGroups: toolSchemaGroupsFromContext(parsed),
         bloatAlerts: stringArrayFromContext(parsed, 'bloat_alerts'),
+        policyBlock: policyBlockFromContext(parsed),
     } : null;
     return {
         timestamp: String(row['timestamp']),
@@ -839,6 +858,10 @@ export function getRecentTurnTraceCandidates(turnId: string, limit = 200): Reque
             SELECT request_id, context_info
             FROM routing_log
             WHERE turn_id = ? AND request_id IS NOT NULL
+              AND NOT (
+                  json_valid(context_info)
+                  AND json_type(context_info, '$.policy_block') IS NOT NULL
+              )
             ORDER BY id DESC
             LIMIT ?
         `);

@@ -338,6 +338,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             traceSnapshot,
             traceSnapshot.turnId ? getRecentTurnTraceCandidates(traceSnapshot.turnId) : [],
         );
+        const policyBlock = input.result.policyBlock ?? null;
         const contextInfo = JSON.stringify({
             msg_count: (input.body.messages ?? []).length,
             has_system: (input.body.messages ?? []).some((m) => m.role === 'system'),
@@ -356,7 +357,21 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             bloat_alerts: bloat.bloatAlerts,
             tool_schema_fingerprint: traceSnapshot.toolSchemaFingerprint,
             request_trace: requestTrace,
+            ...(policyBlock ? {
+                policy_block: {
+                    policy: policyBlock.policy,
+                    breaker_id: policyBlock.breakerId ?? null,
+                    block_reason: policyBlock.blockReason ?? null,
+                    cache_key_hash: policyBlock.promptCacheKeyHash ?? null,
+                    tool_schema_fingerprint: policyBlock.toolSchemaFingerprint ?? traceSnapshot.toolSchemaFingerprint,
+                    estimated_input_tokens: policyBlock.estimatedInputTokens ?? input.result.inputTokens,
+                    source: 'preflight',
+                },
+            } : {}),
         });
+        const loggedInputTokens = policyBlock ? 0 : input.result.inputTokens;
+        const loggedCachedInputTokens = policyBlock ? 0 : (input.result.cachedInputTokens ?? 0);
+        const loggedOutputTokens = policyBlock ? 0 : input.result.outputTokens;
 
         const logEntry: LogEntry = {
             timestamp: nowIso(),
@@ -366,12 +381,12 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             tier: input.routing.tier,
             classification_reason: input.classification.reason,
             confidence: input.classification.confidence,
-            input_tokens: input.result.inputTokens,
-            output_tokens: input.result.outputTokens,
-            cached_input_tokens: input.result.cachedInputTokens ?? 0,
-            original_cost_usd: input.result.originalCostUsd,
-            actual_cost_usd: input.result.actualCostUsd,
-            savings_usd: input.result.savingsUsd,
+            input_tokens: loggedInputTokens,
+            output_tokens: loggedOutputTokens,
+            cached_input_tokens: loggedCachedInputTokens,
+            original_cost_usd: policyBlock ? 0 : input.result.originalCostUsd,
+            actual_cost_usd: policyBlock ? 0 : input.result.actualCostUsd,
+            savings_usd: policyBlock ? 0 : input.result.savingsUsd,
             escalated: input.result.escalated,
             escalation_chain: JSON.stringify(input.result.escalationChain),
             response_time_ms: input.result.responseTimeMs,
@@ -379,7 +394,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             is_dry_run: input.routing.isDryRun,
             is_override: input.routing.isOverride,
             session_id: input.session.id,
-            error: input.result.streamError ?? null,
+            error: policyBlock?.policy ?? input.result.streamError ?? null,
             prompt_preview: promptPreview,
             context_info: contextInfo,
             request_api_kind: input.requestApiKind,
@@ -392,7 +407,8 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
         logRouting(logEntry);
 
         const promptCacheKeyHash = hashPromptCacheKey(input.promptCacheKey);
-        if (input.result.actualModel.startsWith('codex/')
+        if (!policyBlock
+            && input.result.actualModel.startsWith('codex/')
             && promptCacheKeyHash
             && input.result.selectedCodexAccountKey
             && input.result.selectedCodexSlotIndex !== null
@@ -1226,7 +1242,9 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
 
             // P1: For streaming, fire log callback after stream ends (executor back-fills tokens).
             //     For non-streaming, log asynchronously via setImmediate (tokens already correct).
-            if (body.stream) {
+            if (result.policyBlock) {
+                buildAndLog();
+            } else if (body.stream) {
                 result.logWhenDone = buildAndLog;
             } else {
                 setImmediate(buildAndLog);
@@ -1338,7 +1356,9 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
                     promptCacheKey,
                 });
             };
-            if (wantsStream) {
+            if (result.policyBlock) {
+                buildAndLog();
+            } else if (wantsStream) {
                 result.logWhenDone = buildAndLog;
             } else {
                 setImmediate(buildAndLog);

@@ -282,13 +282,24 @@ session/account hashes, slot indexes, estimates, and timestamps.
 The Codex cache-miss breaker is enabled by default with
 `CODEX_CACHE_BREAKER_ENABLED=true`. It blocks before upstream when the same
 prompt-cache key, model, account, slot, and tool schema repeatedly return low
-provider cache on large expected-hit requests. Defaults are
+provider cache on large expected-hit requests. Healthy same-key cache results
+at or above the low-cache ratio reset the breaker even when the request is a
+new user-turn baseline, because OpenAI prompt caching is best-effort and may
+only reuse part of a stable prefix. Defaults are
 `CODEX_CACHE_BREAKER_MIN_INPUT_TOKENS=20000`,
 `CODEX_CACHE_BREAKER_LOW_CACHE_RATIO=0.20`,
 `CODEX_CACHE_BREAKER_CONSECUTIVE_MISSES=2`,
-`CODEX_CACHE_BREAKER_WINDOW_MISSES=3`,
+`CODEX_CACHE_BREAKER_UNCACHED_BUDGET_TOKENS=300000`,
 `CODEX_CACHE_BREAKER_WINDOW_REQUESTS=5`, and
-`CODEX_CACHE_BREAKER_APPROVAL_TTL_MINUTES=15`. The authenticated
+`CODEX_CACHE_BREAKER_APPROVAL_TTL_MINUTES=15`.
+`CODEX_CACHE_BREAKER_WINDOW_REQUESTS` controls recent diagnostic history in
+the breaker payload; it is not a blocking threshold. The legacy
+`CODEX_CACHE_BREAKER_WINDOW_MISSES` setting may still appear in settings
+payloads for compatibility, but blocking is driven by consecutive expected-hit
+misses or the uncached-token budget since the last healthy same-key cache
+result. Breaker-blocked preflight attempts are logged to `routing_log` as
+zero-token policy rows with policy metadata in `context_info`, so Codex
+analysis can distinguish prevented spend from provider usage. The authenticated
 `/api/codex/cache-breaker` route reports active breaker state. Operators can
 temporarily continue a matching session with
 `POST /api/codex/cache-breaker/:id/approve` or remove the blocker with

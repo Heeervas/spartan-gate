@@ -164,6 +164,15 @@ export interface ExecutionResult {
     selectedCodexSlotIndex?: number | null;
     /** Stable hashed Codex account key for the final upstream attempt */
     selectedCodexAccountKey?: string | null;
+    /** ClawRoute policy block metadata for preflight-denied requests */
+    policyBlock?: {
+        policy: string;
+        breakerId?: string | null;
+        blockReason?: string | null;
+        promptCacheKeyHash?: string | null;
+        toolSchemaFingerprint?: string | null;
+        estimatedInputTokens?: number | null;
+    };
     /**
      * For streaming responses: called by executor after stream completes
      * with final token counts already written back to this result object.
@@ -583,6 +592,15 @@ export interface RecentDecision {
         toolSchemaRoughTokens?: number;
         topToolSchemaGroups?: CodexToolSchemaGroup[];
         bloatAlerts?: string[];
+        policyBlock?: {
+            policy: string;
+            breakerId: string | null;
+            blockReason: string | null;
+            cacheKeyHash: string | null;
+            toolSchemaFingerprint: string | null;
+            estimatedInputTokens: number | null;
+            source: string | null;
+        };
     } | null;
     /** Execution or streaming error */
     error: string | null;

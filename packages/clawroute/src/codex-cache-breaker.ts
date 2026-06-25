@@ -16,10 +16,12 @@ type CacheBreakerOutcome = {
     turnId: string | null;
     inputTokens: number;
     cachedInputTokens: number;
+    uncachedInputTokens: number;
     outputTokens: number;
     cachedRatio: number;
     expectedHit: boolean;
     lowCache: boolean;
+    recovery: boolean;
     phase: string | null;
     comparison: string | null;
 };
@@ -30,8 +32,10 @@ type CacheBreakerRecord = {
     startedAt: string;
     updatedAt: string;
     blockedAt: string | null;
+    blockReason: 'consecutive_misses' | 'uncached_budget' | null;
     approvalExpiresAt: string | null;
     consecutiveMisses: number;
+    uncachedTokensSinceRecovery: number;
     outcomes: CacheBreakerOutcome[];
 };
 
@@ -50,8 +54,10 @@ export type CodexCacheBreakerBlock = {
     policy: typeof CODEX_CACHE_BREAKER_POLICY;
     key: CacheBreakerKey;
     blockedAt: string;
+    blockReason: 'consecutive_misses' | 'uncached_budget' | null;
     approvalExpiresAt: string | null;
     consecutiveMisses: number;
+    uncachedTokensSinceRecovery: number;
     recent: CacheBreakerOutcome[];
     settings: CodexCacheBreakerSettings;
 };
@@ -61,6 +67,7 @@ export type CodexCacheBreakerSettings = {
     minInputTokens: number;
     lowCacheRatio: number;
     consecutiveMisses: number;
+    uncachedBudgetTokens: number;
     windowMisses: number;
     windowRequests: number;
     approvalTtlMinutes: number;
@@ -98,6 +105,7 @@ export function getCodexCacheBreakerSettings(): CodexCacheBreakerSettings {
         minInputTokens: parseInteger(process.env['CODEX_CACHE_BREAKER_MIN_INPUT_TOKENS'], 20_000, 1, 10_000_000),
         lowCacheRatio: parseNumber(process.env['CODEX_CACHE_BREAKER_LOW_CACHE_RATIO'], 0.20, 0, 1),
         consecutiveMisses: parseInteger(process.env['CODEX_CACHE_BREAKER_CONSECUTIVE_MISSES'], 2, 1, 100),
+        uncachedBudgetTokens: parseInteger(process.env['CODEX_CACHE_BREAKER_UNCACHED_BUDGET_TOKENS'], 300_000, 1, 100_000_000),
         windowMisses: parseInteger(process.env['CODEX_CACHE_BREAKER_WINDOW_MISSES'], 3, 1, 100),
         windowRequests: parseInteger(process.env['CODEX_CACHE_BREAKER_WINDOW_REQUESTS'], 5, 1, 100),
         approvalTtlMinutes: parseInteger(process.env['CODEX_CACHE_BREAKER_APPROVAL_TTL_MINUTES'], 15, 1, maxApprovalTtlMinutes),
@@ -127,8 +135,10 @@ function serializeRecord(record: CacheBreakerRecord): CodexCacheBreakerBlock {
         policy: CODEX_CACHE_BREAKER_POLICY,
         key: record.key,
         blockedAt: record.blockedAt ?? record.updatedAt,
+        blockReason: record.blockReason,
         approvalExpiresAt: record.approvalExpiresAt,
         consecutiveMisses: record.consecutiveMisses,
+        uncachedTokensSinceRecovery: record.uncachedTokensSinceRecovery,
         recent: record.outcomes.slice(-getCodexCacheBreakerSettings().windowRequests),
         settings: getCodexCacheBreakerSettings(),
     };
@@ -150,6 +160,12 @@ function isLowCache(input: CodexCacheBreakerOutcomeInput, settings: CodexCacheBr
     return ratio < settings.lowCacheRatio;
 }
 
+function isRecovery(input: CodexCacheBreakerOutcomeInput, settings: CodexCacheBreakerSettings): boolean {
+    if (!settings.enabled) return false;
+    if (input.inputTokens < settings.minInputTokens) return false;
+    return !isLowCache(input, settings);
+}
+
 export function recordCodexCacheBreakerOutcome(input: CodexCacheBreakerOutcomeInput): CodexCacheBreakerBlock | null {
     const settings = getCodexCacheBreakerSettings();
     if (!settings.enabled) return null;
@@ -168,36 +184,49 @@ export function recordCodexCacheBreakerOutcome(input: CodexCacheBreakerOutcomeIn
         startedAt: timestamp,
         updatedAt: timestamp,
         blockedAt: null,
+        blockReason: null,
         approvalExpiresAt: null,
         consecutiveMisses: 0,
+        uncachedTokensSinceRecovery: 0,
         outcomes: [],
     };
 
     const expectedHit = shouldEvaluate(input, settings);
     const lowCache = expectedHit && isLowCache(input, settings);
+    const recovery = isRecovery(input, settings);
     const cachedRatio = input.inputTokens > 0 ? input.cachedInputTokens / input.inputTokens : 0;
+    const uncachedInputTokens = Math.max(0, input.inputTokens - input.cachedInputTokens);
     record.outcomes.push({
         timestamp,
         requestId: input.requestId ?? null,
         turnId: input.turnId ?? null,
         inputTokens: input.inputTokens,
         cachedInputTokens: input.cachedInputTokens,
+        uncachedInputTokens,
         outputTokens: input.outputTokens,
         cachedRatio,
         expectedHit,
         lowCache,
+        recovery,
         phase: input.phase ?? null,
         comparison: input.comparison ?? null,
     });
     record.outcomes = record.outcomes.slice(-Math.max(settings.windowRequests, settings.consecutiveMisses, 1));
-    record.consecutiveMisses = lowCache ? record.consecutiveMisses + 1 : 0;
+    if (recovery) {
+        record.consecutiveMisses = 0;
+        record.uncachedTokensSinceRecovery = 0;
+    } else if (lowCache) {
+        record.consecutiveMisses += 1;
+        record.uncachedTokensSinceRecovery += uncachedInputTokens;
+    }
     record.updatedAt = timestamp;
 
-    const recent = record.outcomes.slice(-settings.windowRequests);
-    const recentMisses = recent.filter((outcome) => outcome.lowCache).length;
-    if (lowCache
-        && (record.consecutiveMisses >= settings.consecutiveMisses || recentMisses >= settings.windowMisses)) {
+    if (lowCache && record.consecutiveMisses >= settings.consecutiveMisses) {
         record.blockedAt ??= timestamp;
+        record.blockReason ??= 'consecutive_misses';
+    } else if (lowCache && record.uncachedTokensSinceRecovery >= settings.uncachedBudgetTokens) {
+        record.blockedAt ??= timestamp;
+        record.blockReason ??= 'uncached_budget';
     }
 
     records.set(id, record);

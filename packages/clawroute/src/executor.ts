@@ -51,6 +51,19 @@ function copyClawRoutePolicyHeaders(from: Response, to: Headers): void {
     if (retryable) to.set('X-ClawRoute-Retryable', retryable);
 }
 
+function extractPolicyBlock(response: Response, estimatedInputTokens: number): ExecutionResult['policyBlock'] | undefined {
+    const policy = response.headers.get('X-ClawRoute-Policy-Block');
+    if (!policy) return undefined;
+    return {
+        policy,
+        breakerId: response.headers.get('X-ClawRoute-Breaker-Id'),
+        blockReason: response.headers.get('X-ClawRoute-Breaker-Reason'),
+        promptCacheKeyHash: response.headers.get('X-ClawRoute-Cache-Key-Hash'),
+        toolSchemaFingerprint: response.headers.get('X-ClawRoute-Tool-Schema-Fingerprint'),
+        estimatedInputTokens,
+    };
+}
+
 /**
  * Execute a request through the routing layer.
  *
@@ -340,7 +353,7 @@ export async function executeRequest(
             statusText: response!.statusText,
             headers: errHeaders,
         });
-        return attachCodexSelection(buildExecutionResult(
+        const streamErrorResult = attachCodexSelection(buildExecutionResult(
             wrappedStreamError,
             routingDecision,
             currentModel,
@@ -353,6 +366,8 @@ export async function executeRequest(
             config,
             modelCatalog
         ));
+        streamErrorResult.policyBlock = extractPolicyBlock(response!, inputTokens);
+        return streamErrorResult;
     } else {
         // NON-STREAMING REQUEST
         // We can fully validate and retry since nothing has been sent to the client
@@ -530,6 +545,7 @@ export async function executeRequest(
             modelCatalog
         ));
         executionResult.cachedInputTokens = cachedInputTokens;
+        executionResult.policyBlock = extractPolicyBlock(response!, inputTokens);
         return executionResult;
     }
 }
