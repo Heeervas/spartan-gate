@@ -411,6 +411,22 @@ describe('Codex cache-miss breaker', () => {
         expect(context).toMatchObject({
             cacheKeyPresent: true,
             cacheKeyHash: promptCacheKeyHash,
+            sameSessionCacheTrace: {
+                cacheKeyHash: promptCacheKeyHash,
+                parentRequestId: null,
+                comparison: 'baseline',
+                previousMessageCount: null,
+                currentMessageCount: 1,
+            },
+            requestShapeHashes: {
+                version: 1,
+                stableHash: expect.stringMatching(/^[a-f0-9]{16}$/),
+                serializedPrefixCharHashes: {
+                    first256: expect.stringMatching(/^[a-f0-9]{16}$/),
+                    first1024: expect.stringMatching(/^[a-f0-9]{16}$/),
+                    first4096: expect.stringMatching(/^[a-f0-9]{16}$/),
+                },
+            },
             policyBlock: {
                 policy: 'codex_cache_miss_breaker',
                 blockReason: 'consecutive_misses',

@@ -36,6 +36,7 @@ import {
     getCodexPromptCacheUsage,
     getPendingCodexColdMigrationDecisions,
     getLiveRoutingSessions,
+    getRecentSessionTraceCandidates,
     getRecentTurnTraceCandidates,
     getTurnRequests,
     logRouting,
@@ -69,7 +70,9 @@ import {
 import { executeImageEdit, executeImageGeneration } from './image-generation.js';
 import {
     buildRequestTraceSnapshot,
+    buildRequestShapeDiagnostics,
     finalizeRequestTrace,
+    finalizeSameSessionCacheTrace,
     resolveSessionIdentity,
     sanitizeLoggedPreview,
     SessionIdentity,
@@ -334,9 +337,17 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             input.session,
             config.logging.logContent,
         );
+        const cacheKeyHash = input.promptCacheKey
+            ? createHash('sha256').update(input.promptCacheKey).digest('hex').slice(0, 12)
+            : null;
         const requestTrace = finalizeRequestTrace(
             traceSnapshot,
             traceSnapshot.turnId ? getRecentTurnTraceCandidates(traceSnapshot.turnId) : [],
+        );
+        const sameSessionCacheTrace = finalizeSameSessionCacheTrace(
+            traceSnapshot,
+            getRecentSessionTraceCandidates(input.session.id, cacheKeyHash),
+            cacheKeyHash,
         );
         const policyBlock = input.result.policyBlock ?? null;
         const contextInfo = JSON.stringify({
@@ -345,9 +356,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             tool_count: (input.body.tools ?? []).length,
             last_role: (input.body.messages ?? []).at(-1)?.role ?? null,
             cache_key_present: Boolean(input.promptCacheKey),
-            cache_key_hash: input.promptCacheKey
-                ? createHash('sha256').update(input.promptCacheKey).digest('hex').slice(0, 12)
-                : null,
+            cache_key_hash: cacheKeyHash,
             request_api_kind: input.requestApiKind,
             requested_reasoning_effort: reasoningEffort,
             message_chars: bloat.messageChars,
@@ -357,6 +366,8 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             bloat_alerts: bloat.bloatAlerts,
             tool_schema_fingerprint: traceSnapshot.toolSchemaFingerprint,
             request_trace: requestTrace,
+            same_session_cache_trace: sameSessionCacheTrace,
+            request_shape_hashes: buildRequestShapeDiagnostics(input.body),
             ...(policyBlock ? {
                 policy_block: {
                     policy: policyBlock.policy,

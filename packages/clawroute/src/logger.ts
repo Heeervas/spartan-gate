@@ -138,6 +138,22 @@ function policyBlockFromContext(context: Record<string, unknown> | null): NonNul
     };
 }
 
+function sameSessionCacheTraceFromContext(context: Record<string, unknown> | null): NonNullable<RecentDecision['context']>['sameSessionCacheTrace'] | undefined {
+    const value = context?.['same_session_cache_trace'];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const raw = value as Record<string, unknown>;
+    if (raw['version'] !== 1 || typeof raw['comparison'] !== 'string') return undefined;
+    return raw as unknown as NonNullable<RecentDecision['context']>['sameSessionCacheTrace'];
+}
+
+function requestShapeHashesFromContext(context: Record<string, unknown> | null): NonNullable<RecentDecision['context']>['requestShapeHashes'] | undefined {
+    const value = context?.['request_shape_hashes'];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const raw = value as Record<string, unknown>;
+    if (raw['version'] !== 1 || typeof raw['stableHash'] !== 'string') return undefined;
+    return raw as unknown as NonNullable<RecentDecision['context']>['requestShapeHashes'];
+}
+
 const ROUTING_LOG_SCHEMA = `
     CREATE TABLE IF NOT EXISTS routing_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -808,6 +824,8 @@ function recentDecisionFromRow(row: Record<string, unknown>): RecentDecision {
         toolSchemaRoughTokens: numberFromContext(parsed, 'tool_schema_rough_tokens'),
         topToolSchemaGroups: toolSchemaGroupsFromContext(parsed),
         bloatAlerts: stringArrayFromContext(parsed, 'bloat_alerts'),
+        sameSessionCacheTrace: sameSessionCacheTraceFromContext(parsed),
+        requestShapeHashes: requestShapeHashesFromContext(parsed),
         policyBlock: policyBlockFromContext(parsed),
     } : null;
     return {
@@ -886,6 +904,51 @@ export function getRecentTurnTraceCandidates(turnId: string, limit = 200): Reque
         return candidates;
     } catch (error) {
         console.warn('Failed to read recent turn trace candidates:', error);
+        return [];
+    }
+}
+
+export function getRecentSessionTraceCandidates(
+    sessionId: string | null,
+    cacheKeyHash: string | null,
+    limit = 200,
+): RequestTraceCandidate[] {
+    if (!db || !sessionId || !cacheKeyHash) return [];
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    try {
+        const stmt = db.prepare(`
+            SELECT request_id, context_info
+            FROM routing_log
+            WHERE session_id = ? AND request_id IS NOT NULL
+              AND NOT (
+                  json_valid(context_info)
+                  AND json_type(context_info, '$.policy_block') IS NOT NULL
+              )
+            ORDER BY id DESC
+            LIMIT ?
+        `);
+        stmt.bind([sessionId, safeLimit]);
+        const candidates: RequestTraceCandidate[] = [];
+        while (stmt.step()) {
+            const row = stmt.getAsObject() as Record<string, unknown>;
+            const context = parseContextInfo(row['context_info']);
+            if (context?.['cache_key_hash'] !== cacheKeyHash) continue;
+            const trace = requestTraceFromContext(context);
+            if (!trace || typeof row['request_id'] !== 'string') continue;
+            candidates.push({
+                requestId: row['request_id'],
+                requestFingerprint: trace.requestFingerprint,
+                messageFingerprints: trace.messageFingerprints.filter((value): value is string => typeof value === 'string'),
+                messageCount: trace.messageFingerprints.length,
+                toolSchemaFingerprint: typeof context?.['tool_schema_fingerprint'] === 'string'
+                    ? context['tool_schema_fingerprint']
+                    : null,
+            });
+        }
+        stmt.free();
+        return candidates;
+    } catch (error) {
+        console.warn('Failed to read recent session trace candidates:', error);
         return [];
     }
 }

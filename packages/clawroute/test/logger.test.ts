@@ -18,6 +18,7 @@ import {
     getCodexUsageSnapshots,
     getLiveRoutingSessions,
     getRecentDecisions,
+    getRecentSessionTraceCandidates,
     getRecentTurnTraceCandidates,
     getTurnRequests,
     initDb,
@@ -434,6 +435,81 @@ describe('logger debounced persistence', () => {
                 },
             },
         });
+    });
+
+    it('returns bounded same-session trace candidates for the same cache key only', async () => {
+        await initDb(createTestConfig(':memory:'));
+        const trace = (fingerprint: string, messageCount: number, cacheKeyHash: string, policyBlock = false) => JSON.stringify({
+            cache_key_hash: cacheKeyHash,
+            tool_schema_fingerprint: 'tools-v1',
+            request_trace: {
+                version: 1,
+                sessionSource: 'prompt_cache_key',
+                requestFingerprint: fingerprint,
+                messageFingerprints: Array.from({ length: messageCount }, (_, index) => `prefix-${index + 1}`),
+                parentRequestId: null,
+                phase: 'tool_results',
+                delta: {
+                    comparison: 'prefix',
+                    addedMessageCount: 1,
+                    removedMessageCount: 0,
+                    addedChars: 10,
+                    roleCounts: { tool: 1 },
+                    toolCallCount: 0,
+                    toolResultCount: 1,
+                    items: [],
+                    omittedItems: 0,
+                    toolSchemas: { status: 'unchanged', count: 0, chars: 2 },
+                },
+            },
+            ...(policyBlock ? {
+                policy_block: {
+                    policy: 'codex_cache_miss_breaker',
+                    breaker_id: 'breaker-a',
+                    source: 'preflight',
+                },
+            } : {}),
+        });
+
+        logRouting({
+            ...createLogEntry(),
+            request_id: 'request-other-cache',
+            session_id: 'session-a',
+            turn_id: 'turn-a',
+            context_info: trace('prefix-other-cache', 2, 'cache-b'),
+        });
+        logRouting({
+            ...createLogEntry(),
+            request_id: 'request-ok',
+            session_id: 'session-a',
+            turn_id: 'turn-a',
+            context_info: trace('prefix-ok', 3, 'cache-a'),
+        });
+        logRouting({
+            ...createLogEntry(),
+            request_id: 'request-blocked',
+            session_id: 'session-a',
+            turn_id: 'turn-b',
+            input_tokens: 0,
+            output_tokens: 0,
+            error: 'codex_cache_miss_breaker',
+            context_info: trace('prefix-blocked', 4, 'cache-a', true),
+        });
+        logRouting({
+            ...createLogEntry(),
+            request_id: 'request-other-session',
+            session_id: 'session-b',
+            turn_id: 'turn-c',
+            context_info: trace('prefix-other-session', 5, 'cache-a'),
+        });
+
+        expect(getRecentSessionTraceCandidates('session-a', 'cache-a')).toEqual([
+            expect.objectContaining({
+                requestId: 'request-ok',
+                requestFingerprint: 'prefix-ok',
+                messageCount: 3,
+            }),
+        ]);
     });
 
     it('excludes non-Codex requests from the quota-estimation token basis', async () => {

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { buildCodexRequestBody, codexResponseToStream } from '../src/codex-transport.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildCodexRequestBody, buildCodexUsageDebugPayload, codexResponseToStream } from '../src/codex-transport.js';
 
 function createSseStream(events: Array<{ event: string; data: Record<string, unknown> }>): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
@@ -34,6 +34,11 @@ function parseSsePayloads(body: string): Array<Record<string, unknown>> {
         .filter((chunk) => chunk.startsWith('data: ') && chunk !== 'data: [DONE]')
         .map((chunk) => JSON.parse(chunk.slice(6)) as Record<string, unknown>);
 }
+
+afterEach(() => {
+    delete process.env['CLAWROUTE_DEBUG_CODEX_USAGE'];
+    vi.restoreAllMocks();
+});
 
 describe('codexResponseToStream error handling', () => {
     it('forwards upstream object errors with real code and slot metadata only', async () => {
@@ -171,5 +176,55 @@ describe('Codex prompt caching', () => {
             usage?: { prompt_tokens_details?: { cached_tokens?: number } };
         };
         expect(parsed.usage?.prompt_tokens_details?.cached_tokens).toBe(80);
+    });
+
+    it('emits only numeric Codex usage diagnostics when explicitly enabled', async () => {
+        const payload = buildCodexUsageDebugPayload('response.completed', {
+            input_tokens: 100,
+            output_tokens: 5,
+            total_tokens: 105,
+            input_tokens_details: { cached_tokens: 80, text: 'hidden' },
+            output_tokens_details: { reasoning_tokens: 7, secret: 'hidden' },
+            raw_text: 'hidden',
+        });
+        expect(payload).toEqual({
+            event: 'response.completed',
+            input_tokens: 100,
+            output_tokens: 5,
+            total_tokens: 105,
+            cached_tokens: 80,
+            reasoning_tokens: 7,
+        });
+
+        process.env['CLAWROUTE_DEBUG_CODEX_USAGE'] = '1';
+        const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+        const upstreamBody = createSseStream([
+            {
+                event: 'response.completed',
+                data: {
+                    response: {
+                        status: 'completed',
+                        output: [],
+                        usage: {
+                            input_tokens: 100,
+                            output_tokens: 5,
+                            input_tokens_details: { cached_tokens: 80 },
+                        },
+                    },
+                },
+            },
+        ]);
+
+        await readStream(codexResponseToStream(upstreamBody, 'gpt-5.4', false));
+
+        expect(debug).toHaveBeenCalledWith(
+            '[clawroute:codex-usage]',
+            JSON.stringify({
+                event: 'response.completed',
+                input_tokens: 100,
+                output_tokens: 5,
+                cached_tokens: 80,
+            }),
+        );
     });
 });

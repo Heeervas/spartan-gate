@@ -566,7 +566,10 @@
 
         function fmtMtokens(value) {
             const number = Number(value) || 0;
-            return `${(number / 1_000_000).toFixed(number >= 1_000_000 ? 2 : 3)}M`;
+            if (Math.abs(number) < 1_000_000) {
+                return `${(number / 1_000).toFixed(Math.abs(number) >= 100_000 ? 0 : 1)}k`;
+            }
+            return `${(number / 1_000_000).toFixed(2)}M`;
         }
 
         function relativeTime(value) {

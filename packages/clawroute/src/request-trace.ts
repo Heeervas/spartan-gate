@@ -1,5 +1,13 @@
 import { createHash } from 'crypto';
-import { ChatCompletionRequest, ChatMessage, RequestTrace, RequestTraceCandidate, RequestTraceDeltaItem } from './types.js';
+import {
+    ChatCompletionRequest,
+    ChatMessage,
+    RequestShapeDiagnostics,
+    RequestTrace,
+    RequestTraceCandidate,
+    RequestTraceDeltaItem,
+    SameSessionCacheTrace,
+} from './types.js';
 import { stripMetadataPreamble } from './utils.js';
 
 const TRACE_VERSION = 1;
@@ -28,7 +36,7 @@ function hash(value: string, length = 16): string {
     return createHash('sha256').update(value).digest('hex').slice(0, length);
 }
 
-function stableJson(value: unknown): string {
+export function stableJson(value: unknown): string {
     if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
     if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
     const record = value as Record<string, unknown>;
@@ -159,15 +167,63 @@ function commonPrefixLength(left: string[], right: string[]): number {
     return index;
 }
 
+function selectTraceParent(
+    snapshot: RequestTraceSnapshot,
+    candidates: RequestTraceCandidate[],
+): {
+    exact: RequestTraceCandidate | null;
+    parent: RequestTraceCandidate | null;
+    commonPrefixCount: number;
+    comparison: RequestTrace['delta']['comparison'];
+} {
+    const exact = candidates.find((candidate) => candidate.requestFingerprint === snapshot.requestFingerprint) ?? null;
+    const prefixParent = exact ?? candidates
+        .filter((candidate) => snapshot.messageFingerprints.includes(candidate.requestFingerprint))
+        .sort((a, b) => b.messageCount - a.messageCount)[0] ?? null;
+
+    if (exact) {
+        return {
+            exact,
+            parent: exact,
+            commonPrefixCount: exact.messageCount,
+            comparison: 'retry',
+        };
+    }
+    if (prefixParent) {
+        return {
+            exact: null,
+            parent: prefixParent,
+            commonPrefixCount: prefixParent.messageCount,
+            comparison: 'prefix',
+        };
+    }
+    if (candidates.length > 0) {
+        const parent = candidates[0] ?? null;
+        if (parent) {
+            return {
+                exact: null,
+                parent,
+                commonPrefixCount: commonPrefixLength(parent.messageFingerprints, snapshot.messageFingerprints),
+                comparison: 'history_rewrite',
+            };
+        }
+    }
+    return {
+        exact: null,
+        parent: null,
+        commonPrefixCount: 0,
+        comparison: 'baseline',
+    };
+}
+
 export function finalizeRequestTrace(
     snapshot: RequestTraceSnapshot,
     candidates: RequestTraceCandidate[],
 ): RequestTrace {
-    const exact = candidates.find((candidate) => candidate.requestFingerprint === snapshot.requestFingerprint);
-    let parent = exact ?? candidates
-        .filter((candidate) => snapshot.messageFingerprints.includes(candidate.requestFingerprint))
-        .sort((a, b) => b.messageCount - a.messageCount)[0] ?? null;
-    let comparison: RequestTrace['delta']['comparison'] = exact ? 'retry' : parent ? 'prefix' : 'baseline';
+    const selected = selectTraceParent(snapshot, candidates);
+    const exact = selected.exact;
+    let parent = selected.parent;
+    let comparison = selected.comparison;
     let lastUserIndex = -1;
     for (let index = snapshot.messages.length - 1; index >= 0; index -= 1) {
         if (snapshot.messages[index]?.role === 'user') {
@@ -178,13 +234,9 @@ export function finalizeRequestTrace(
     let startIndex = parent?.messageCount ?? Math.max(0, lastUserIndex);
     let removedMessageCount = 0;
 
-    if (!exact && !parent && candidates.length > 0) {
-        parent = candidates[0] ?? null;
-        if (parent) {
-            startIndex = commonPrefixLength(parent.messageFingerprints, snapshot.messageFingerprints);
-            removedMessageCount = Math.max(0, parent.messageCount - startIndex);
-            comparison = 'history_rewrite';
-        }
+    if (!exact && parent && comparison === 'history_rewrite') {
+        startIndex = selected.commonPrefixCount;
+        removedMessageCount = Math.max(0, parent.messageCount - startIndex);
     }
 
     const addedMessages = exact ? [] : snapshot.messages.slice(startIndex);
@@ -232,6 +284,57 @@ export function finalizeRequestTrace(
                 count: snapshot.toolCount,
                 chars: snapshot.toolSchemaChars,
             },
+        },
+    };
+}
+
+export function finalizeSameSessionCacheTrace(
+    snapshot: RequestTraceSnapshot,
+    candidates: RequestTraceCandidate[],
+    cacheKeyHash: string | null,
+): SameSessionCacheTrace {
+    const selected = selectTraceParent(snapshot, candidates);
+    const parent = selected.parent;
+    const parentToolSchemaFingerprint = parent?.toolSchemaFingerprint ?? null;
+    const toolSchemaChanged = Boolean(parent && parentToolSchemaFingerprint !== snapshot.toolSchemaFingerprint);
+    const comparison: SameSessionCacheTrace['comparison'] = toolSchemaChanged
+        ? 'tool_schema_changed'
+        : selected.comparison;
+    const commonPrefixCount = parent ? selected.commonPrefixCount : 0;
+
+    return {
+        version: TRACE_VERSION,
+        cacheKeyHash,
+        parentRequestId: parent?.requestId ?? null,
+        comparison,
+        commonPrefixMessageCount: commonPrefixCount,
+        previousMessageCount: parent?.messageCount ?? null,
+        currentMessageCount: snapshot.messageFingerprints.length,
+        addedMessageCount: Math.max(0, snapshot.messageFingerprints.length - commonPrefixCount),
+        removedMessageCount: parent ? Math.max(0, parent.messageCount - commonPrefixCount) : 0,
+        previousToolSchemaFingerprint: parentToolSchemaFingerprint,
+        currentToolSchemaFingerprint: snapshot.toolSchemaFingerprint,
+    };
+}
+
+export function buildRequestShapeDiagnostics(body: ChatCompletionRequest): RequestShapeDiagnostics {
+    const providerVisibleShape = {
+        model: body.model,
+        messages: body.messages ?? [],
+        tools: body.tools ?? [],
+        tool_choice: body.tool_choice ?? null,
+        parallel_tool_calls: body.parallel_tool_calls ?? null,
+        reasoning_effort: body.reasoning_effort ?? null,
+    };
+    const serialized = stableJson(providerVisibleShape);
+    return {
+        version: TRACE_VERSION,
+        stableHash: hash(serialized),
+        serializedChars: serialized.length,
+        serializedPrefixCharHashes: {
+            first256: hash(serialized.slice(0, 256)),
+            first1024: hash(serialized.slice(0, 1024)),
+            first4096: hash(serialized.slice(0, 4096)),
         },
     };
 }

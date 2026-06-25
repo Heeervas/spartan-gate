@@ -99,6 +99,31 @@ interface CodexErrorContext {
     path?: string;
 }
 
+export function buildCodexUsageDebugPayload(
+    eventType: string,
+    usage: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+    const inputDetails = usage?.['input_tokens_details'] as Record<string, unknown> | undefined;
+    const outputDetails = usage?.['output_tokens_details'] as Record<string, unknown> | undefined;
+    const payload: Record<string, unknown> = { event: eventType };
+    const numericFields: Array<[string, unknown]> = [
+        ['input_tokens', usage?.['input_tokens']],
+        ['output_tokens', usage?.['output_tokens']],
+        ['total_tokens', usage?.['total_tokens']],
+        ['cached_tokens', inputDetails?.['cached_tokens']],
+        ['reasoning_tokens', outputDetails?.['reasoning_tokens']],
+    ];
+    for (const [key, value] of numericFields) {
+        if (typeof value === 'number' && Number.isFinite(value)) payload[key] = value;
+    }
+    return payload;
+}
+
+function maybeLogCodexUsageDebug(eventType: string, usage: Record<string, unknown> | undefined): void {
+    if (process.env['CLAWROUTE_DEBUG_CODEX_USAGE'] !== '1') return;
+    console.debug('[clawroute:codex-usage]', JSON.stringify(buildCodexUsageDebugPayload(eventType, usage)));
+}
+
 type CodexSelectionLease = {
     accountKey: string | null;
     slotIndex: number;
@@ -2576,6 +2601,7 @@ export function codexResponseToStream(
                             const response = parsed['response'] as Record<string, unknown> | undefined;
                             const usage = response?.['usage'] as Record<string, unknown> | undefined;
                             const output = response?.['output'];
+                            maybeLogCodexUsageDebug(sse.event, usage);
 
                             if (Array.isArray(output)) {
                                 for (const item of output) {

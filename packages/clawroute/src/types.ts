@@ -592,6 +592,8 @@ export interface RecentDecision {
         toolSchemaRoughTokens?: number;
         topToolSchemaGroups?: CodexToolSchemaGroup[];
         bloatAlerts?: string[];
+        sameSessionCacheTrace?: SameSessionCacheTrace;
+        requestShapeHashes?: RequestShapeDiagnostics;
         policyBlock?: {
             policy: string;
             breakerId: string | null;
@@ -659,6 +661,31 @@ export interface RequestTraceCandidate {
     messageFingerprints: string[];
     messageCount: number;
     toolSchemaFingerprint: string | null;
+}
+
+export interface SameSessionCacheTrace {
+    version: 1;
+    cacheKeyHash: string | null;
+    parentRequestId: string | null;
+    comparison: 'baseline' | 'prefix' | 'retry' | 'history_rewrite' | 'tool_schema_changed';
+    commonPrefixMessageCount: number;
+    previousMessageCount: number | null;
+    currentMessageCount: number;
+    addedMessageCount: number;
+    removedMessageCount: number;
+    previousToolSchemaFingerprint: string | null;
+    currentToolSchemaFingerprint: string;
+}
+
+export interface RequestShapeDiagnostics {
+    version: 1;
+    stableHash: string;
+    serializedChars: number;
+    serializedPrefixCharHashes: {
+        first256: string;
+        first1024: string;
+        first4096: string;
+    };
 }
 
 export interface RoutingTokenMetrics {
