@@ -263,13 +263,6 @@ function getCodexRequestTimeoutMs(): number {
     return envMilliseconds('CODEX_REQUEST_TIMEOUT_MS', 180_000, 10_000, 900_000);
 }
 
-function getPromptCacheRetention(modelName: string): '24h' | null {
-    if (modelName !== 'gpt-5.5') return null;
-    const value = (process.env['CODEX_PROMPT_CACHE_RETENTION'] ?? '24h').trim().toLowerCase();
-    if (value === '' || value === 'unset' || value === 'off' || value === 'none') return null;
-    return value === '24h' ? '24h' : null;
-}
-
 function isCacheLeaseUsable(lease: ActiveCodexCacheLease, now: number): boolean {
     if (now >= lease.maxExpiresAt) return false;
     const inGrace = now >= lease.nominalExpiresAt;
@@ -1540,11 +1533,9 @@ export function buildCodexRequestBody(
         store: false,
     };
     if (promptCacheKey) body['prompt_cache_key'] = promptCacheKey;
-    const promptCacheRetention = getPromptCacheRetention(modelName);
-    if (promptCacheKey && promptCacheRetention) body['prompt_cache_retention'] = promptCacheRetention;
 
     // Forward compatible parameters
-    // Note: temperature is intentionally omitted — Codex endpoint rejects it as unsupported.
+    // Note: temperature and prompt_cache_retention are intentionally omitted — Codex endpoint rejects them as unsupported.
     if (request['top_p'] !== undefined) body['top_p'] = request['top_p'];
     if (request['tools']) {
         // Translate Chat Completions tool format → Responses API format.

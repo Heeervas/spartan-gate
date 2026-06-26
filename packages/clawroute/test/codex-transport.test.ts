@@ -154,14 +154,15 @@ describe('Codex prompt caching', () => {
         expect(body['prompt_cache_retention']).toBeUndefined();
     });
 
-    it('requests extended prompt cache retention when a cache key is present', () => {
+    it('omits unsupported extended prompt cache retention for the Codex endpoint', () => {
         const body = buildCodexRequestBody(
             { messages: [{ role: 'user', content: 'hello' }] },
             'gpt-5.5',
             'clawroute:stable-key',
         );
 
-        expect(body['prompt_cache_retention']).toBe('24h');
+        expect(body['prompt_cache_key']).toBe('clawroute:stable-key');
+        expect(body['prompt_cache_retention']).toBeUndefined();
     });
 
     it('preserves cached input token usage in the Chat Completions response', async () => {
