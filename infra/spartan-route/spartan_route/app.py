@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 from aiohttp import ClientSession, ClientTimeout, FormData, web
 from aiohttp.web_request import FileField
 
-from .codex import CodexCallResult, CodexRouter, resolve_prompt_cache_key, session_id_from_request, sse
+from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
 from .config import ModelEntry, SpartanRouteConfig, load_config
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import json_error, now_iso, sanitize_preview, sha, stable_json, text_content, token_count_estimate
@@ -42,6 +42,8 @@ class ExecutionResult:
     cached_input_tokens: int = 0
     output_tokens: int = 0
     error: str | None = None
+    usage_seen: bool = False
+    usage_event_type: str | None = None
 
 
 @dataclass
@@ -52,9 +54,14 @@ class SpartanRouteState:
     session: ClientSession | None = None
     codex: CodexRouter | None = None
     recent_session_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
+    cache_guard: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 STATE_KEY = web.AppKey("spartan_route_state", SpartanRouteState)
+CACHE_GUARD_EXPECTED_MIN_TOKENS = 1024
+CACHE_GUARD_LOW_MIN_TOKENS = 20_000
+CACHE_GUARD_LOW_RATIO = 0.20
+CACHE_GUARD_CONSECUTIVE_LOW = 2
 
 
 def provider_for_model(model_id: str) -> str:
@@ -316,6 +323,8 @@ async def execute_chat(
             cached_input_tokens=codex_result.cached_input_tokens,
             output_tokens=codex_result.output_tokens,
             error=codex_result.error,
+            usage_seen=codex_result.usage_seen,
+            usage_event_type=codex_result.usage_event_type,
         )
     return await execute_provider_chat(state, body, route, wants_stream)
 
@@ -323,6 +332,20 @@ async def execute_chat(
 def request_prompt_cache_key(body: dict[str, Any]) -> str | None:
     value = body.get("prompt_cache_key") or body.get("user")
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def request_prompt_cache_key_source(body: dict[str, Any], session_id: str | None) -> str:
+    prompt_cache_key = body.get("prompt_cache_key")
+    if isinstance(prompt_cache_key, str) and prompt_cache_key.strip():
+        return "prompt_cache_key"
+    user = body.get("user")
+    if isinstance(user, str) and user.strip():
+        return "user"
+    if build_content_prompt_cache_key(body):
+        return "content_prompt_cache_key"
+    if session_id:
+        return "session_id"
+    return "none"
 
 
 def resolve_turn_id(body: dict[str, Any], session_id: str | None, request_id: str) -> str:
@@ -403,6 +426,55 @@ def compare_session_trace(current: dict[str, Any], previous: dict[str, Any] | No
     }
 
 
+def cache_guard_key(
+    actual_model: str,
+    cache_key_hash: str | None,
+    slot_index: int | None,
+    account_key: str | None,
+    tool_schema_fingerprint: str | None,
+) -> str:
+    return stable_json({
+        "model": actual_model,
+        "cache": cache_key_hash,
+        "slot": slot_index,
+        "account": account_key,
+        "tools": tool_schema_fingerprint,
+    })
+
+
+def update_cache_guard(
+    state: SpartanRouteState,
+    route: RoutedRequest,
+    result: ExecutionResult,
+    input_tokens: int,
+    cache_key_hash: str | None,
+    tool_schema_fingerprint: str | None,
+    expected_cache_hit: bool,
+    cache_hit_ratio: float,
+) -> bool:
+    if not cache_key_hash:
+        return False
+    key = cache_guard_key(
+        route.actual_model,
+        cache_key_hash,
+        result.slot_index,
+        result.account_key,
+        tool_schema_fingerprint,
+    )
+    entry = state.cache_guard.setdefault(key, {"consecutiveLow": 0})
+    if not expected_cache_hit or not result.usage_seen or input_tokens < CACHE_GUARD_LOW_MIN_TOKENS:
+        entry["consecutiveLow"] = 0
+        return False
+    if cache_hit_ratio < CACHE_GUARD_LOW_RATIO:
+        entry["consecutiveLow"] = int(entry.get("consecutiveLow") or 0) + 1
+    else:
+        entry["consecutiveLow"] = 0
+    if len(state.cache_guard) > 512:
+        oldest_key = next(iter(state.cache_guard))
+        state.cache_guard.pop(oldest_key, None)
+    return int(entry.get("consecutiveLow") or 0) >= CACHE_GUARD_CONSECUTIVE_LOW
+
+
 def estimate_shape_sizes(body: dict[str, Any]) -> tuple[int, int]:
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     tools = body.get("tools") if isinstance(body.get("tools"), list) else []
@@ -436,8 +508,10 @@ def log_request(
     explicit_cache_key = request_prompt_cache_key(body)
     upstream_cache_key = resolve_prompt_cache_key(body, session_id, explicit_cache_key)
     cache_key_hash = sha(upstream_cache_key, 12) if upstream_cache_key else None
+    cache_key_source = request_prompt_cache_key_source(body, session_id)
     message_chars, tool_schema_chars = estimate_shape_sizes(body)
     shape_snapshot = request_shape_snapshot(body)
+    tool_schema_fp = shape_snapshot.get("toolSchemaFingerprint")
     trace_key = f"{session_id or 'none'}:{cache_key_hash or 'none'}"
     previous_trace = state.recent_session_traces.get(trace_key)
     same_session_trace = compare_session_trace(shape_snapshot, previous_trace)
@@ -445,6 +519,19 @@ def log_request(
     if len(state.recent_session_traces) > 512:
         oldest_key = next(iter(state.recent_session_traces))
         state.recent_session_traces.pop(oldest_key, None)
+    comparison = same_session_trace.get("comparison")
+    expected_cache_hit = bool(upstream_cache_key and input_tokens >= CACHE_GUARD_EXPECTED_MIN_TOKENS and comparison in {"prefix", "retry"})
+    cache_hit_ratio = (result.cached_input_tokens / input_tokens) if input_tokens > 0 else 0.0
+    cache_low = update_cache_guard(
+        state,
+        route,
+        result,
+        input_tokens,
+        cache_key_hash,
+        tool_schema_fp if isinstance(tool_schema_fp, str) else None,
+        expected_cache_hit,
+        cache_hit_ratio,
+    )
     context = {
         "routeReason": route.reason,
         "provider": route.provider,
@@ -455,12 +542,18 @@ def log_request(
         "last_role": messages[-1].get("role") if messages and isinstance(messages[-1], dict) else None,
         "cache_key_present": bool(upstream_cache_key),
         "cache_key_hash": cache_key_hash,
+        "cache_key_source": cache_key_source,
+        "usage_seen": result.usage_seen,
+        "usage_event_type": result.usage_event_type,
+        "expected_cache_hit": expected_cache_hit,
+        "cache_hit_ratio": round(cache_hit_ratio, 4),
+        "cache_low": cache_low,
         "request_api_kind": api_kind,
         "requested_reasoning_effort": body.get("reasoning_effort") if isinstance(body.get("reasoning_effort"), str) else None,
         "message_chars": message_chars,
         "tool_schema_chars": tool_schema_chars,
         "tool_schema_rough_tokens": max(0, tool_schema_chars // 4),
-        "tool_schema_fingerprint": shape_snapshot.get("toolSchemaFingerprint"),
+        "tool_schema_fingerprint": tool_schema_fp,
         "request_trace": {
             "version": 1,
             "requestFingerprint": shape_snapshot.get("requestFingerprint"),

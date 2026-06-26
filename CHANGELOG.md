@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Improved Spartan Route Codex prompt-cache diagnostics by preserving streamed
+  usage metadata, detecting expected low-cache hits, and keeping assistant
+  reasoning replay disabled by default to stabilize prompt prefixes.
 - Added dashboard-only Codex capacity multipliers keyed by account hash, plus
   derived `1x units` in usage, session, and analysis views while preserving raw
   `/wham/usage` percentages and routing behavior.

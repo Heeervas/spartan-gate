@@ -25,8 +25,9 @@ from spartan_route.codex import (
 )
 
 
-def sse_event(event: str, data: dict[str, Any]) -> bytes:
-    return f"event: {event}\ndata: {data_json(data)}\n\n".encode("utf-8")
+def sse_event(event: str | None, data: dict[str, Any]) -> bytes:
+    prefix = f"event: {event}\n" if event else ""
+    return f"{prefix}data: {data_json(data)}\n\n".encode("utf-8")
 
 
 def data_json(value: dict[str, Any]) -> str:
@@ -45,7 +46,7 @@ class FakeContent:
 
 
 class FakeResponse:
-    def __init__(self, events: list[tuple[str, dict[str, Any]]]):
+    def __init__(self, events: list[tuple[str | None, dict[str, Any]]]):
         self.content = FakeContent([sse_event(event, data) for event, data in events])
         self.released = False
 
@@ -218,11 +219,11 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(tool_calls["call_1"]["function"]["name"], "lookup")
         self.assertEqual(tool_calls["call_1"]["function"]["arguments"], "{\"q\":\"x\"}")
 
-    async def collect(self, events: list[tuple[str, dict[str, Any]]]):
+    async def collect(self, events: list[tuple[str | None, dict[str, Any]]]):
         router = CodexRouter.__new__(CodexRouter)
         return await router._collect_codex_response(FakeResponse(events), "codex/gpt-5.5", 2)
 
-    async def collect_stream(self, events: list[tuple[str, dict[str, Any]]]):
+    async def collect_stream(self, events: list[tuple[str | None, dict[str, Any]]]):
         router = CodexRouter.__new__(CodexRouter)
         router.leases = {}
         result = CodexCallResult(status=200)
@@ -247,6 +248,54 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.status, 200)
         self.assertEqual(result.body["choices"][0]["message"]["content"], "fallback text")
         self.assertEqual(result.output_tokens, 3)
+
+    def test_eventless_completed_payload_uses_type_and_usage(self) -> None:
+        result = asyncio_run(self.collect([
+            (None, {
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "output": [{
+                        "id": "msg_1",
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }],
+                    "usage": {
+                        "input_tokens": 100,
+                        "input_tokens_details": {"cached_tokens": 80},
+                        "output_tokens": 12,
+                    },
+                },
+            }),
+        ]))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.input_tokens, 100)
+        self.assertEqual(result.cached_input_tokens, 80)
+        self.assertEqual(result.output_tokens, 12)
+        self.assertTrue(result.usage_seen)
+        self.assertEqual(result.usage_event_type, "response.completed")
+
+    def test_top_level_usage_is_collected_before_terminal_event(self) -> None:
+        result = asyncio_run(self.collect([
+            ("response.output_text.done", {
+                "item_id": "msg_1",
+                "text": "done",
+                "usage": {
+                    "input_tokens": 90,
+                    "input_tokens_details": {"cached_tokens": 45},
+                    "output_tokens": 6,
+                },
+            }),
+            ("response.completed", {"response": {"status": "completed"}}),
+        ]))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.input_tokens, 90)
+        self.assertEqual(result.cached_input_tokens, 45)
+        self.assertEqual(result.output_tokens, 6)
+        self.assertTrue(result.usage_seen)
+        self.assertEqual(result.usage_event_type, "response.output_text.done")
 
     def test_collects_reasoning_text_done(self) -> None:
         result = asyncio_run(self.collect([
@@ -311,14 +360,47 @@ class CodexTests(unittest.TestCase):
                 "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "lookup"},
             }),
             ("response.function_call_arguments.delta", {"item_id": "fc_1", "delta": "{\"q\":\"ok\"}"}),
-            ("response.completed", {"response": {"status": "completed", "usage": {"input_tokens": 5, "output_tokens": 3}}}),
+            ("response.completed", {
+                "response": {
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": 50000,
+                        "input_tokens_details": {"cached_tokens": 30000},
+                        "output_tokens": 3,
+                    },
+                },
+            }),
         ]))
 
         self.assertIn("tool_calls", body)
         self.assertIn("\"arguments\":\"{\\\"q\\\":\\\"ok\\\"}\"", body)
         self.assertIn("data: [DONE]", body)
         self.assertIsNone(result.error)
+        self.assertEqual(result.input_tokens, 50000)
+        self.assertEqual(result.cached_input_tokens, 30000)
+        self.assertEqual(result.output_tokens, 3)
+        self.assertTrue(result.usage_seen)
         self.assertEqual(slot.transient_until, 0)
+
+    def test_assistant_reasoning_is_not_replayed_upstream_by_default(self) -> None:
+        output = chat_messages_to_responses_input([
+            {"role": "assistant", "content": "visible", "reasoning_content": "volatile reasoning"},
+        ])
+
+        self.assertEqual(output, [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "visible"}],
+        }])
+
+    def test_assistant_reasoning_replay_can_be_enabled_for_rollback(self) -> None:
+        with patch.dict(os.environ, {"SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING": "1"}):
+            output = chat_messages_to_responses_input([
+                {"role": "assistant", "content": "visible", "reasoning_content": "reasoning"},
+            ])
+
+        self.assertEqual(output[0], {"type": "reasoning", "summary": [{"type": "summary_text", "text": "reasoning"}]})
+        self.assertEqual(output[1]["type"], "message")
 
     def test_empty_successful_codex_response_is_retryable_502(self) -> None:
         result = asyncio_run(self.collect([

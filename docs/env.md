@@ -243,6 +243,9 @@ and `config/clawroute` runtime profiles. Its parallel-only variables are
 `SPARTAN_ROUTE_DATA_PATH`, `SPARTAN_ROUTE_DB_PATH`, and
 `SPARTAN_ROUTE_EDGE_PORT`. If `SPARTAN_ROUTE_DB_PATH` is not set, the service
 writes `/app/data/spartan-route.db` and does not reuse `clawroute.db`.
+`SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING=1` is a rollback switch that restores
+replay of prior assistant reasoning into upstream Codex requests; leave it
+unset for the default stable-prefix behavior.
 
 Codex subscription routing: `OPENAI_CODEX_TOKEN`, `OPENAI_CODEX_AUTH_PATH`,
 `OPENAI_CODEX_AUTH_PATHS`, `CODEX_HOME`, `CODEX_BALANCE_LOADER_MODE`,

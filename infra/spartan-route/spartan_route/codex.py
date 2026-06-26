@@ -89,6 +89,8 @@ class CodexCallResult:
     output_tokens: int = 0
     error: str | None = None
     completed: bool = False
+    usage_seen: bool = False
+    usage_event_type: str | None = None
 
 
 @dataclass
@@ -102,6 +104,8 @@ class CodexEventState:
     reasoning_part_keys: set[str] = field(default_factory=set)
     reasoning_presence_ids: set[str] = field(default_factory=set)
     usage: dict[str, Any] = field(default_factory=dict)
+    usage_seen: bool = False
+    usage_event_type: str | None = None
     terminal_error: dict[str, Any] | None = None
     finish_reason: str = "stop"
     saw_output_item: bool = False
@@ -232,6 +236,11 @@ def session_id_from_request(request: dict[str, Any], prompt_cache_key: str | Non
     return sha(f"prompt_cache_key\0{content_key}", 16) if content_key else None
 
 
+def replay_assistant_reasoning_enabled(env: dict[str, str] | None = None) -> bool:
+    value = (env or os.environ).get("SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING")
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def chat_messages_to_responses_input(messages: list[dict[str, Any]]) -> list[Any]:
     output: list[Any] = []
     for message in messages:
@@ -254,9 +263,10 @@ def chat_messages_to_responses_input(messages: list[dict[str, Any]]) -> list[Any
             else:
                 output.append({"role": "user", "content": text_content(content)})
         elif role == "assistant":
-            reasoning = message.get("reasoning_content") or message.get("reasoning")
-            if isinstance(reasoning, str) and reasoning:
-                output.append({"type": "reasoning", "summary": [{"type": "summary_text", "text": reasoning}]})
+            if replay_assistant_reasoning_enabled():
+                reasoning = message.get("reasoning_content") or message.get("reasoning")
+                if isinstance(reasoning, str) and reasoning:
+                    output.append({"type": "reasoning", "summary": [{"type": "summary_text", "text": reasoning}]})
             text = text_content(message.get("content"))
             if text:
                 output.append({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]})
@@ -732,6 +742,9 @@ class CodexRouter:
                     return
                 chunks = self._apply_codex_event_state(event, parsed, state, stream=True)
                 if state.terminal_error:
+                    result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
+                    result.usage_seen = state.usage_seen
+                    result.usage_event_type = state.usage_event_type
                     result.error = str(state.terminal_error.get("message") or state.terminal_error.get("code") or "codex_error")
                     self._mark_streaming_error(slot, state.terminal_error)
                     yield sse({"error": state.terminal_error}, event="error")
@@ -748,6 +761,8 @@ class CodexRouter:
                         "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
                     })
             result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
+            result.usage_seen = state.usage_seen
+            result.usage_event_type = state.usage_event_type
             if not state.has_payload():
                 error = self._empty_response_error()
                 result.error = str(error["code"])
@@ -800,6 +815,20 @@ class CodexRouter:
             })
         return deltas
 
+    def _record_usage(self, state: CodexEventState, usage: Any, event: str | None) -> None:
+        if not isinstance(usage, dict):
+            return
+        state.usage.update(usage)
+        state.usage_seen = True
+        if event and not state.usage_event_type:
+            state.usage_event_type = event
+
+    def _capture_usage(self, event: str | None, parsed: dict[str, Any], state: CodexEventState) -> None:
+        self._record_usage(state, parsed.get("usage"), event)
+        response = parsed.get("response") if isinstance(parsed.get("response"), dict) else None
+        if response is not None:
+            self._record_usage(state, response.get("usage"), event)
+
     def _usage_values(self, state: CodexEventState) -> tuple[int, int, int]:
         usage = state.usage
         prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
@@ -839,16 +868,28 @@ class CodexRouter:
             return 429
         return 502
 
-    def _error_result(self, error: dict[str, Any]) -> CodexCallResult:
+    def _error_result(self, error: dict[str, Any], state: CodexEventState | None = None) -> CodexCallResult:
+        prompt_tokens = cached = output_tokens = 0
+        usage_seen = False
+        usage_event_type = None
+        if state is not None:
+            prompt_tokens, cached, output_tokens = self._usage_values(state)
+            usage_seen = state.usage_seen
+            usage_event_type = state.usage_event_type
         return CodexCallResult(
             status=self._codex_error_status(error),
             body={"error": error},
+            input_tokens=prompt_tokens,
+            cached_input_tokens=cached,
+            output_tokens=output_tokens,
             error=str(error.get("message") or error.get("code") or "codex_error"),
+            usage_seen=usage_seen,
+            usage_event_type=usage_event_type,
         )
 
     def _chat_completion_result(self, state: CodexEventState, model: str) -> CodexCallResult:
         if state.terminal_error:
-            return self._error_result(state.terminal_error)
+            return self._error_result(state.terminal_error, state)
         prompt_tokens, cached, output_tokens = self._usage_values(state)
         if not state.has_payload():
             return CodexCallResult(
@@ -858,6 +899,8 @@ class CodexRouter:
                 cached_input_tokens=cached,
                 output_tokens=output_tokens,
                 error="codex_empty_response",
+                usage_seen=state.usage_seen,
+                usage_event_type=state.usage_event_type,
             )
         if state.finish_reason == "length" and state.tool_calls:
             return CodexCallResult(
@@ -867,6 +910,8 @@ class CodexRouter:
                 cached_input_tokens=cached,
                 output_tokens=output_tokens,
                 error="codex_incomplete_response",
+                usage_seen=state.usage_seen,
+                usage_event_type=state.usage_event_type,
             )
         text = state.text()
         calls = state.calls()
@@ -891,6 +936,8 @@ class CodexRouter:
             cached_input_tokens=cached,
             output_tokens=output_tokens,
             completed=True,
+            usage_seen=state.usage_seen,
+            usage_event_type=state.usage_event_type,
         )
 
     def _reasoning_key(self, item_id: Any, kind: str, index: Any) -> str:
@@ -1014,6 +1061,10 @@ class CodexRouter:
         state: CodexEventState,
         stream: bool = False,
     ) -> list[dict[str, Any]]:
+        parsed_type = parsed.get("type")
+        if not event and isinstance(parsed_type, str):
+            event = parsed_type
+        self._capture_usage(event, parsed, state)
         deltas: list[dict[str, Any]] = []
         if event in {"response.output_text.delta", "response.output_text.annotation.added"}:
             delta = parsed.get("delta")
@@ -1127,9 +1178,6 @@ class CodexRouter:
                 state.finish_reason = "length"
             else:
                 state.finish_reason = "stop"
-            usage = response.get("usage")
-            if isinstance(usage, dict):
-                state.usage.update(usage)
             for item in response.get("output") or []:
                 deltas.extend(self._process_output_item(state, item, stream))
             if event in {"response.failed", "response.cancelled"} or status in {"failed", "cancelled"}:

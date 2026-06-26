@@ -84,10 +84,14 @@ Reliability contract:
 - Streaming tool-call deltas are buffered and emitted only after a terminal
   successful Codex event, so Hermes never receives partial tool arguments from
   an upstream stream that later becomes incomplete.
-- Cache diagnostics in `context_info` are metadata-only: cache-key hash,
+- Cache diagnostics in `context_info` are metadata-only: cache-key hash, cache
+  key source, usage-event visibility, expected-hit/low-cache flags,
   message/tool counts, request-shape hashes, tool-schema fingerprint, and
-  same-session prefix comparison. Raw prompts, raw tool schemas, and auth values
-  are not added to these diagnostics.
+  same-session prefix comparison. Raw prompts, raw tool schemas, raw cache keys,
+  and auth values are not added to these diagnostics.
+- Prior assistant reasoning is not replayed into the next upstream Codex
+  request by default, which keeps the stable prefix smaller and less volatile.
+  Set `SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING=1` only as a rollback switch.
 
 Cut from v1 on purpose:
 

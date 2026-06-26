@@ -9,9 +9,27 @@ from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from spartan_route.app import build_request_shape_diagnostics, compare_session_trace, create_app, request_shape_snapshot
+from spartan_route.app import (
+    ExecutionResult,
+    RoutedRequest,
+    SpartanRouteState,
+    build_request_shape_diagnostics,
+    compare_session_trace,
+    create_app,
+    log_request,
+    request_prompt_cache_key_source,
+    request_shape_snapshot,
+)
 from spartan_route.config import ModelEntry, SpartanRouteConfig
 from spartan_route.telemetry import TelemetryStore
+
+
+class CaptureQueue:
+    def __init__(self) -> None:
+        self.entries = []
+
+    def log(self, entry) -> None:
+        self.entries.append(entry)
 
 
 def test_config() -> SpartanRouteConfig:
@@ -103,6 +121,93 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
 
         appended = {**body, "messages": [*body["messages"], {"role": "assistant", "content": "new"}]}
         self.assertEqual(compare_session_trace(request_shape_snapshot(appended), snapshot)["comparison"], "prefix")
+
+
+class AppCacheDiagnosticsTests(unittest.TestCase):
+    def route(self) -> RoutedRequest:
+        entry = ModelEntry("codex/gpt-5.5", "codex")
+        return RoutedRequest(
+            original_model="clawroute/auto",
+            routed_model="codex/gpt-5.5",
+            actual_model="codex/gpt-5.5",
+            provider="codex",
+            tier="complex",
+            reason="test",
+            entry=entry,
+        )
+
+    def state(self) -> SpartanRouteState:
+        return SpartanRouteState(test_config(), TelemetryStore(":memory:"), CaptureQueue())
+
+    def test_prompt_cache_key_source_is_metadata_only(self) -> None:
+        self.assertEqual(request_prompt_cache_key_source({"prompt_cache_key": "raw"}, None), "prompt_cache_key")
+        self.assertEqual(request_prompt_cache_key_source({"user": "raw"}, None), "user")
+        self.assertEqual(
+            request_prompt_cache_key_source({"messages": [{"role": "system", "content": "stable"}]}, None),
+            "content_prompt_cache_key",
+        )
+        self.assertEqual(request_prompt_cache_key_source({}, "session"), "session_id")
+        self.assertEqual(request_prompt_cache_key_source({}, None), "none")
+
+    def test_log_request_adds_cache_diagnostics_without_raw_key(self) -> None:
+        state = self.state()
+        body = {
+            "model": "clawroute/auto",
+            "prompt_cache_key": "raw-secret-cache-key",
+            "messages": [{"role": "system", "content": "private system"}, {"role": "user", "content": "hello"}],
+        }
+        result = ExecutionResult(
+            200,
+            input_tokens=25000,
+            cached_input_tokens=12000,
+            output_tokens=300,
+            usage_seen=True,
+            usage_event_type="response.completed",
+        )
+
+        log_request(state, body, self.route(), result, 0, "req", "session", "turn", "chat_completions")
+
+        context = json.loads(state.queue.entries[0].context_info)
+        serialized = json.dumps(context)
+        self.assertEqual(context["cache_key_source"], "prompt_cache_key")
+        self.assertEqual(context["usage_seen"], True)
+        self.assertEqual(context["usage_event_type"], "response.completed")
+        self.assertAlmostEqual(context["cache_hit_ratio"], 0.48)
+        self.assertNotIn("raw-secret-cache-key", serialized)
+        self.assertNotIn("private system", serialized)
+
+    def test_cache_guard_marks_second_consecutive_expected_low_hit(self) -> None:
+        state = self.state()
+        base_messages = [
+            {"role": "system", "content": "stable"},
+            {"role": "user", "content": "first"},
+        ]
+        route = self.route()
+
+        bodies = [
+            {"model": "clawroute/auto", "prompt_cache_key": "session", "messages": base_messages},
+            {"model": "clawroute/auto", "prompt_cache_key": "session", "messages": [*base_messages, {"role": "assistant", "content": "a"}]},
+            {"model": "clawroute/auto", "prompt_cache_key": "session", "messages": [*base_messages, {"role": "assistant", "content": "a"}, {"role": "user", "content": "b"}]},
+        ]
+        for index, body in enumerate(bodies):
+            result = ExecutionResult(
+                200,
+                slot_index=0,
+                account_key="account",
+                input_tokens=25000,
+                cached_input_tokens=0,
+                output_tokens=100,
+                usage_seen=True,
+                usage_event_type="response.completed",
+            )
+            log_request(state, body, route, result, 0, f"req-{index}", "session", f"turn-{index}", "chat_completions")
+
+        contexts = [json.loads(entry.context_info) for entry in state.queue.entries]
+        self.assertFalse(contexts[0]["expected_cache_hit"])
+        self.assertTrue(contexts[1]["expected_cache_hit"])
+        self.assertFalse(contexts[1]["cache_low"])
+        self.assertTrue(contexts[2]["expected_cache_hit"])
+        self.assertTrue(contexts[2]["cache_low"])
 
 
 if __name__ == "__main__":
