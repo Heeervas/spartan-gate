@@ -32,6 +32,7 @@ OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 FIVE_HOURS_SECONDS = 18_000
 SEVEN_DAYS_SECONDS = 604_800
+INLINE_REASONING_PLACEHOLDER = "<think> </think>"
 
 
 @dataclass
@@ -87,6 +88,36 @@ class CodexCallResult:
     cached_input_tokens: int = 0
     output_tokens: int = 0
     error: str | None = None
+    completed: bool = False
+
+
+@dataclass
+class CodexEventState:
+    text_parts: list[str] = field(default_factory=list)
+    reasoning_parts: list[str] = field(default_factory=list)
+    tool_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
+    item_to_call: dict[str, str] = field(default_factory=dict)
+    text_item_ids: set[str] = field(default_factory=set)
+    tool_arg_delta_ids: set[str] = field(default_factory=set)
+    reasoning_part_keys: set[str] = field(default_factory=set)
+    reasoning_presence_ids: set[str] = field(default_factory=set)
+    usage: dict[str, Any] = field(default_factory=dict)
+    terminal_error: dict[str, Any] | None = None
+    finish_reason: str = "stop"
+    saw_output_item: bool = False
+    completed: bool = False
+
+    def text(self) -> str:
+        return "".join(self.text_parts)
+
+    def reasoning(self) -> str:
+        return "".join(self.reasoning_parts)
+
+    def calls(self) -> list[dict[str, Any]]:
+        return list(self.tool_calls.values())
+
+    def has_payload(self) -> bool:
+        return bool(self.text() or self.reasoning() or self.tool_calls)
 
 
 def resolve_auth_path_entry(value: str | None) -> str:
@@ -248,6 +279,16 @@ def chat_messages_to_responses_input(messages: list[dict[str, Any]]) -> list[Any
     return output
 
 
+def normalize_tool_choice(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    if value.get("type") == "function" and isinstance(value.get("function"), dict):
+        name = value["function"].get("name")
+        if isinstance(name, str) and name:
+            return {"type": "function", "name": name}
+    return value
+
+
 def build_codex_request_body(request: dict[str, Any], model_name: str, prompt_cache_key: str | None) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model_name,
@@ -277,7 +318,7 @@ def build_codex_request_body(request: dict[str, Any], model_name: str, prompt_ca
                 converted.append(tool)
         body["tools"] = converted
     if "tool_choice" in request:
-        body["tool_choice"] = request["tool_choice"]
+        body["tool_choice"] = normalize_tool_choice(request["tool_choice"])
     if isinstance(request.get("reasoning_effort"), str):
         body["reasoning"] = {"effort": request["reasoning_effort"]}
     return body
@@ -303,7 +344,7 @@ def should_retry(status: int, text: str) -> bool:
         return error_type == "usage_limit_reached" or code == "usage_limit_reached"
     if status == 502:
         return (
-            code in {"codex_error", "server_error"}
+            code in {"codex_error", "server_error", "codex_empty_response"}
             or error_type in {"server_error", "upstream_error"}
             or any(word in message.lower() for word in ("aborted", "timeout", "timed out", "fetch failed"))
         )
@@ -571,6 +612,8 @@ class CodexRouter:
                         async for chunk in source:
                             yield chunk
                     finally:
+                        if result.completed and not result.error and affinity_key:
+                            self._remember_lease(affinity_key, slot)
                         slot.in_flight = max(0, slot.in_flight - 1)
 
                 result.stream = stream_with_inflight_guard()
@@ -578,7 +621,7 @@ class CodexRouter:
             result.account_key = auth.account_key
             result.input_tokens = token_count_estimate(request)
             if result.status not in {401, 429, 500, 502}:
-                if result.status < 400:
+                if result.status < 400 and result.stream is None and not result.error:
                     self._remember_lease(affinity_key, slot)
                 return result
             text = result.body.decode("utf-8", errors="replace") if isinstance(result.body, bytes) else stable_json(result.body)
@@ -642,71 +685,58 @@ class CodexRouter:
         return collected
 
     async def _collect_codex_response(self, response: Any, model: str, slot_index: int) -> CodexCallResult:
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tool_calls: dict[str, dict[str, Any]] = {}
-        item_to_call: dict[str, str] = {}
-        text_item_ids: set[str] = set()
-        tool_arg_delta_ids: set[str] = set()
-        usage: dict[str, Any] = {}
-        error: dict[str, Any] | None = None
-        async for event, data in parse_sse_response(response):
-            if not data or data == "[DONE]":
-                continue
-            parsed = json.loads(data)
-            if event == "error" or parsed.get("error"):
-                error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
-                break
-            self._apply_codex_event(event, parsed, text_parts, reasoning_parts, tool_calls, usage, item_to_call, text_item_ids, tool_arg_delta_ids)
-        if error:
-            status = 401 if error.get("type") == "auth_error" else 429 if error.get("type") == "usage_limit_reached" else 502
-            return CodexCallResult(status=status, body={"error": error}, error=str(error.get("message") or error.get("code") or "codex_error"))
-        message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
-        if reasoning_parts:
-            message["reasoning_content"] = "".join(reasoning_parts)
-        calls = list(tool_calls.values())
-        if calls:
-            message["tool_calls"] = calls
-        prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-        cached = int((usage.get("input_tokens_details") or {}).get("cached_tokens") or usage.get("cached_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
-        body = {
-            "id": f"chatcmpl_{sha(str(time.time()), 12)}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls" if calls else "stop"}],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": output_tokens,
-                "total_tokens": prompt_tokens + output_tokens,
-                "prompt_tokens_details": {"cached_tokens": cached},
-            },
-        }
-        return CodexCallResult(status=200, body=body, input_tokens=prompt_tokens, cached_input_tokens=cached, output_tokens=output_tokens)
-
-    async def _codex_stream_to_chat(self, response: Any, model: str, result: CodexCallResult, slot: CodexSlot) -> AsyncIterator[bytes]:
-        chat_id = f"chatcmpl_{sha(str(time.time()), 12)}"
-        created = int(time.time())
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tool_calls: dict[str, dict[str, Any]] = {}
-        item_to_call: dict[str, str] = {}
-        text_item_ids: set[str] = set()
-        tool_arg_delta_ids: set[str] = set()
-        usage: dict[str, Any] = {}
+        state = CodexEventState()
         try:
             async for event, data in parse_sse_response(response):
                 if not data or data == "[DONE]":
                     continue
-                parsed = json.loads(data)
+                try:
+                    parsed = json.loads(data)
+                except Exception:
+                    continue
+                if event == "error" or parsed.get("error"):
+                    state.terminal_error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
+                    break
+                self._apply_codex_event_state(event, parsed, state)
+                if state.terminal_error:
+                    break
+        finally:
+            response.release()
+        return self._chat_completion_result(state, model)
+
+    async def _codex_stream_to_chat(self, response: Any, model: str, result: CodexCallResult, slot: CodexSlot) -> AsyncIterator[bytes]:
+        chat_id = f"chatcmpl_{sha(str(time.time()), 12)}"
+        created = int(time.time())
+        state = CodexEventState()
+        try:
+            yield sse({
+                "id": chat_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            })
+            async for event, data in parse_sse_response(response):
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    parsed = json.loads(data)
+                except Exception:
+                    continue
                 if event == "error" or parsed.get("error"):
                     error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
                     result.error = str(error.get("message") or error.get("code") or "codex_error")
                     self._mark_streaming_error(slot, error)
                     yield sse({"error": error}, event="error")
-                    break
-                chunks = self._apply_codex_event(event, parsed, text_parts, reasoning_parts, tool_calls, usage, item_to_call, text_item_ids, tool_arg_delta_ids, stream=True)
+                    yield b"data: [DONE]\n\n"
+                    return
+                chunks = self._apply_codex_event_state(event, parsed, state, stream=True)
+                if state.terminal_error:
+                    result.error = str(state.terminal_error.get("message") or state.terminal_error.get("code") or "codex_error")
+                    self._mark_streaming_error(slot, state.terminal_error)
+                    yield sse({"error": state.terminal_error}, event="error")
+                    yield b"data: [DONE]\n\n"
+                    return
                 for delta in chunks:
                     yield sse({
                         "id": chat_id,
@@ -715,19 +745,351 @@ class CodexRouter:
                         "model": model,
                         "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
                     })
-            result.input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or result.input_tokens)
-            result.cached_input_tokens = int((usage.get("input_tokens_details") or {}).get("cached_tokens") or usage.get("cached_tokens") or 0)
-            result.output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+            result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
+            if not state.has_payload():
+                error = self._empty_response_error()
+                result.error = str(error["code"])
+                self.mark_transient(slot)
+                yield sse({"error": error}, event="error")
+                yield b"data: [DONE]\n\n"
+                return
+            result.completed = True
             yield sse({
                 "id": chat_id,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if tool_calls else "stop"}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if state.tool_calls else state.finish_reason}],
+                "usage": self._usage_payload(*self._usage_values(state)),
             })
             yield b"data: [DONE]\n\n"
         finally:
             response.release()
+
+    def _usage_values(self, state: CodexEventState) -> tuple[int, int, int]:
+        usage = state.usage
+        prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+        details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+        cached = int(details.get("cached_tokens") or usage.get("cached_tokens") or 0) if isinstance(details, dict) else 0
+        output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        return prompt_tokens, cached, output_tokens
+
+    def _usage_payload(self, prompt_tokens: int, cached: int, output_tokens: int) -> dict[str, Any]:
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": prompt_tokens + output_tokens,
+            "prompt_tokens_details": {"cached_tokens": cached},
+        }
+
+    def _empty_response_error(self) -> dict[str, Any]:
+        return {
+            "message": "Codex returned an empty successful response",
+            "type": "upstream_error",
+            "code": "codex_empty_response",
+        }
+
+    def _codex_error_status(self, error: dict[str, Any]) -> int:
+        code = str(error.get("code") or "")
+        error_type = str(error.get("type") or error.get("upstream_type") or "")
+        if error_type == "auth_error" or code in {"invalid_api_key", "invalid_auth", "unauthorized"}:
+            return 401
+        if error_type in {"usage_limit_reached", "rate_limit_error"} or code in {"usage_limit_reached", "rate_limit_exceeded", "codex_429"}:
+            return 429
+        return 502
+
+    def _error_result(self, error: dict[str, Any]) -> CodexCallResult:
+        return CodexCallResult(
+            status=self._codex_error_status(error),
+            body={"error": error},
+            error=str(error.get("message") or error.get("code") or "codex_error"),
+        )
+
+    def _chat_completion_result(self, state: CodexEventState, model: str) -> CodexCallResult:
+        if state.terminal_error:
+            return self._error_result(state.terminal_error)
+        prompt_tokens, cached, output_tokens = self._usage_values(state)
+        if not state.has_payload():
+            return CodexCallResult(
+                status=502,
+                body={"error": self._empty_response_error()},
+                input_tokens=prompt_tokens,
+                cached_input_tokens=cached,
+                output_tokens=output_tokens,
+                error="codex_empty_response",
+            )
+        text = state.text()
+        calls = state.calls()
+        message: dict[str, Any] = {"role": "assistant", "content": text if text else None}
+        reasoning = state.reasoning()
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if calls:
+            message["tool_calls"] = calls
+        body = {
+            "id": f"chatcmpl_{sha(str(time.time()), 12)}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls" if calls else state.finish_reason}],
+            "usage": self._usage_payload(prompt_tokens, cached, output_tokens),
+        }
+        return CodexCallResult(
+            status=200,
+            body=body,
+            input_tokens=prompt_tokens,
+            cached_input_tokens=cached,
+            output_tokens=output_tokens,
+            completed=True,
+        )
+
+    def _reasoning_key(self, item_id: Any, kind: str, index: Any) -> str:
+        return f"{item_id if isinstance(item_id, str) else '__no_item__'}:{kind}:{index if isinstance(index, int) else 0}"
+
+    def _collect_reasoning_presence(self, state: CodexEventState, item_id: Any, stream: bool) -> list[dict[str, Any]]:
+        key = item_id if isinstance(item_id, str) else "__reasoning_without_id__"
+        if key in state.reasoning_presence_ids:
+            return []
+        state.reasoning_presence_ids.add(key)
+        state.reasoning_parts.append(" ")
+        if not state.text_parts:
+            state.text_parts.append(INLINE_REASONING_PLACEHOLDER)
+            return [{"reasoning_content": " "}, {"content": INLINE_REASONING_PLACEHOLDER}] if stream else []
+        return [{"reasoning_content": " "}] if stream else []
+
+    def _append_text_once(self, state: CodexEventState, item_id: Any, text: Any, stream: bool) -> list[dict[str, Any]]:
+        if not isinstance(text, str) or not text:
+            return []
+        already_seen = isinstance(item_id, str) and item_id in state.text_item_ids
+        if already_seen:
+            return []
+        if isinstance(item_id, str):
+            state.text_item_ids.add(item_id)
+        state.text_parts.append(text)
+        return [{"content": text}] if stream else []
+
+    def _append_reasoning_once(
+        self,
+        state: CodexEventState,
+        item_id: Any,
+        part_key: str,
+        text: Any,
+        stream: bool,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(text, str) or not text:
+            return []
+        if part_key in state.reasoning_part_keys:
+            return []
+        state.reasoning_part_keys.add(part_key)
+        if isinstance(item_id, str):
+            state.reasoning_presence_ids.add(item_id)
+        state.reasoning_parts.append(text)
+        return [{"reasoning_content": text}] if stream else []
+
+    def _ensure_tool_call(self, state: CodexEventState, item: dict[str, Any]) -> tuple[str, dict[str, Any], int] | None:
+        call_id = item.get("call_id") or item.get("id")
+        name = item.get("name")
+        if not isinstance(call_id, str) or not isinstance(name, str):
+            return None
+        item_id = item.get("id")
+        if isinstance(item_id, str):
+            state.item_to_call[item_id] = call_id
+        created = call_id not in state.tool_calls
+        call = state.tool_calls.setdefault(call_id, {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": ""},
+        })
+        call["function"]["name"] = name
+        index = list(state.tool_calls).index(call_id)
+        if created:
+            state.saw_output_item = True
+        return call_id, call, index
+
+    def _process_output_item(self, state: CodexEventState, item: Any, stream: bool) -> list[dict[str, Any]]:
+        if not isinstance(item, dict):
+            return []
+        state.saw_output_item = True
+        item_type = item.get("type")
+        deltas: list[dict[str, Any]] = []
+        if item_type == "message":
+            item_id = item.get("id")
+            for content in item.get("content") or []:
+                if isinstance(content, dict) and content.get("type") == "output_text":
+                    deltas.extend(self._append_text_once(state, item_id, content.get("text"), stream))
+        elif item_type == "reasoning":
+            item_id = item.get("id")
+            texts: list[str] = []
+            for part in item.get("summary") or []:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    texts.append(part["text"])
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "reasoning_text" and isinstance(part.get("text"), str):
+                    texts.append(part["text"])
+            if texts:
+                deltas.extend(self._append_reasoning_once(
+                    state,
+                    item_id,
+                    self._reasoning_key(item_id, "output_item", 0),
+                    "\n\n".join(texts),
+                    stream,
+                ))
+            else:
+                deltas.extend(self._collect_reasoning_presence(state, item_id, stream))
+        elif item_type == "function_call":
+            ensured = self._ensure_tool_call(state, item)
+            if ensured:
+                call_id, call, index = ensured
+                args = item.get("arguments")
+                if isinstance(args, str) and call_id not in state.tool_arg_delta_ids:
+                    call["function"]["arguments"] = args
+                if stream:
+                    deltas.append({
+                        "tool_calls": [{
+                            "index": index,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": call["function"]["name"],
+                                "arguments": call["function"]["arguments"],
+                            },
+                        }],
+                    })
+        return deltas
+
+    def _apply_codex_event_state(
+        self,
+        event: str | None,
+        parsed: dict[str, Any],
+        state: CodexEventState,
+        stream: bool = False,
+    ) -> list[dict[str, Any]]:
+        deltas: list[dict[str, Any]] = []
+        if event in {"response.output_text.delta", "response.output_text.annotation.added"}:
+            delta = parsed.get("delta")
+            if isinstance(delta, str):
+                item_id = parsed.get("item_id")
+                if isinstance(item_id, str):
+                    state.text_item_ids.add(item_id)
+                state.text_parts.append(delta)
+                if stream:
+                    deltas.append({"content": delta})
+        elif event == "response.output_text.done":
+            deltas.extend(self._append_text_once(state, parsed.get("item_id"), parsed.get("text"), stream))
+        elif event == "response.reasoning_text.delta":
+            item_id = parsed.get("item_id")
+            key = self._reasoning_key(item_id, "content", parsed.get("content_index"))
+            if isinstance(parsed.get("delta"), str):
+                state.reasoning_part_keys.add(key)
+                if isinstance(item_id, str):
+                    state.reasoning_presence_ids.add(item_id)
+                state.reasoning_parts.append(parsed["delta"])
+                if stream:
+                    deltas.append({"reasoning_content": parsed["delta"]})
+        elif event == "response.reasoning_text.done":
+            deltas.extend(self._append_reasoning_once(
+                state,
+                parsed.get("item_id"),
+                self._reasoning_key(parsed.get("item_id"), "content", parsed.get("content_index")),
+                parsed.get("text"),
+                stream,
+            ))
+        elif event == "response.reasoning_summary_text.delta":
+            item_id = parsed.get("item_id")
+            key = self._reasoning_key(item_id, "summary", parsed.get("summary_index"))
+            if isinstance(parsed.get("delta"), str):
+                state.reasoning_part_keys.add(key)
+                if isinstance(item_id, str):
+                    state.reasoning_presence_ids.add(item_id)
+                state.reasoning_parts.append(parsed["delta"])
+                if stream:
+                    deltas.append({"reasoning_content": parsed["delta"]})
+        elif event == "response.reasoning_summary_text.done":
+            deltas.extend(self._append_reasoning_once(
+                state,
+                parsed.get("item_id"),
+                self._reasoning_key(parsed.get("item_id"), "summary", parsed.get("summary_index")),
+                parsed.get("text"),
+                stream,
+            ))
+        elif event == "response.output_item.added":
+            item = parsed.get("item") if isinstance(parsed.get("item"), dict) else {}
+            if item.get("type") == "function_call":
+                ensured = self._ensure_tool_call(state, item)
+                if ensured and stream:
+                    call_id, call, index = ensured
+                    deltas.append({
+                        "tool_calls": [{
+                            "index": index,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": call["function"]["name"], "arguments": ""},
+                        }],
+                    })
+        elif event == "response.output_item.done":
+            deltas.extend(self._process_output_item(state, parsed.get("item"), stream))
+        elif event == "response.function_call_arguments.delta":
+            item_id = parsed.get("item_id")
+            delta = parsed.get("delta")
+            if isinstance(item_id, str) and isinstance(delta, str):
+                call_id = state.item_to_call.get(item_id, item_id)
+                call = state.tool_calls.setdefault(call_id, {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                })
+                state.tool_arg_delta_ids.add(call_id)
+                state.tool_arg_delta_ids.add(item_id)
+                call["function"]["arguments"] += delta
+                if stream:
+                    index = list(state.tool_calls).index(call_id)
+                    deltas.append({"tool_calls": [{"index": index, "function": {"arguments": delta}}]})
+        elif event == "response.function_call_arguments.done":
+            item_id = parsed.get("item_id")
+            name = parsed.get("name")
+            args = parsed.get("arguments")
+            if isinstance(item_id, str):
+                call_id = state.item_to_call.get(item_id, item_id)
+                call = state.tool_calls.setdefault(call_id, {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name if isinstance(name, str) else "", "arguments": ""},
+                })
+                if isinstance(name, str):
+                    call["function"]["name"] = name
+                if isinstance(args, str) and call_id not in state.tool_arg_delta_ids and item_id not in state.tool_arg_delta_ids:
+                    call["function"]["arguments"] = args
+                    if stream:
+                        index = list(state.tool_calls).index(call_id)
+                        deltas.append({
+                            "tool_calls": [{
+                                "index": index,
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": call["function"]["name"], "arguments": args},
+                            }],
+                        })
+        elif event in {"response.completed", "response.incomplete", "response.failed", "response.cancelled"}:
+            response = parsed.get("response") if isinstance(parsed.get("response"), dict) else parsed
+            state.completed = event == "response.completed"
+            status = response.get("status")
+            if event == "response.incomplete" or status == "incomplete":
+                state.finish_reason = "length"
+            else:
+                state.finish_reason = "stop"
+            usage = response.get("usage")
+            if isinstance(usage, dict):
+                state.usage.update(usage)
+            for item in response.get("output") or []:
+                deltas.extend(self._process_output_item(state, item, stream))
+            if event in {"response.failed", "response.cancelled"} or status in {"failed", "cancelled"}:
+                error = response.get("error") if isinstance(response.get("error"), dict) else {}
+                state.terminal_error = {
+                    "message": error.get("message") or f"Codex response {status or event.removeprefix('response.')}",
+                    "type": error.get("type") or "upstream_error",
+                    "code": error.get("code") or f"codex_{status or event.removeprefix('response.')}",
+                }
+        return deltas
 
     def _mark_streaming_error(self, slot: CodexSlot, error: dict[str, Any]) -> None:
         code = str(error.get("code") or "")
@@ -755,119 +1117,16 @@ class CodexRouter:
         tool_arg_delta_ids: set[str] | None = None,
         stream: bool = False,
     ) -> list[dict[str, Any]]:
-        item_to_call = item_to_call if item_to_call is not None else {}
-        text_item_ids = text_item_ids if text_item_ids is not None else set()
-        tool_arg_delta_ids = tool_arg_delta_ids if tool_arg_delta_ids is not None else set()
-        deltas: list[dict[str, Any]] = []
-        if event in {"response.output_text.delta", "response.output_text.annotation.added"}:
-            delta = parsed.get("delta")
-            if isinstance(delta, str):
-                item_id = parsed.get("item_id")
-                if isinstance(item_id, str):
-                    text_item_ids.add(item_id)
-                text_parts.append(delta)
-                if stream:
-                    deltas.append({"content": delta})
-        elif event == "response.output_text.done":
-            text = parsed.get("text")
-            item_id = parsed.get("item_id")
-            already_seen = isinstance(item_id, str) and item_id in text_item_ids
-            if isinstance(text, str) and text and not already_seen:
-                if isinstance(item_id, str):
-                    text_item_ids.add(item_id)
-                text_parts.append(text)
-                if stream:
-                    deltas.append({"content": text})
-        elif event == "response.reasoning_summary_text.delta":
-            delta = parsed.get("delta")
-            if isinstance(delta, str):
-                reasoning_parts.append(delta)
-                if stream:
-                    deltas.append({"reasoning_content": delta})
-        elif event in {"response.function_call_arguments.delta", "response.output_item.added", "response.output_item.done"}:
-            item = parsed.get("item") if isinstance(parsed.get("item"), dict) else parsed
-            if item.get("type") == "function_call":
-                call_id = str(item.get("call_id") or item.get("id") or f"call_{len(tool_calls)}")
-                item_id = item.get("id")
-                if isinstance(item_id, str):
-                    item_to_call[item_id] = call_id
-                call = tool_calls.setdefault(call_id, {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": item.get("name") or "", "arguments": ""},
-                })
-                if isinstance(item.get("name"), str):
-                    call["function"]["name"] = item["name"]
-                args = parsed.get("delta") or item.get("arguments")
-                if isinstance(args, str):
-                    if event == "response.output_item.done" and call_id not in tool_arg_delta_ids:
-                        call["function"]["arguments"] = args
-                    elif event != "response.output_item.done":
-                        tool_arg_delta_ids.add(call_id)
-                        call["function"]["arguments"] += args
-            elif event == "response.function_call_arguments.delta":
-                item_id = parsed.get("item_id")
-                delta = parsed.get("delta")
-                if isinstance(item_id, str) and isinstance(delta, str):
-                    call_id = item_to_call.get(item_id, item_id)
-                    call = tool_calls.setdefault(call_id, {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": "", "arguments": ""},
-                    })
-                    tool_arg_delta_ids.add(call_id)
-                    tool_arg_delta_ids.add(item_id)
-                    call["function"]["arguments"] += delta
-        elif event == "response.function_call_arguments.done":
-            item_id = parsed.get("item_id")
-            name = parsed.get("name")
-            args = parsed.get("arguments")
-            if isinstance(item_id, str):
-                call_id = item_to_call.get(item_id, item_id)
-                call = tool_calls.setdefault(call_id, {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": name if isinstance(name, str) else "", "arguments": ""},
-                })
-                if isinstance(name, str):
-                    call["function"]["name"] = name
-                if isinstance(args, str) and call_id not in tool_arg_delta_ids and item_id not in tool_arg_delta_ids:
-                    call["function"]["arguments"] = args
-        elif event == "response.completed":
-            response = parsed.get("response") if isinstance(parsed.get("response"), dict) else parsed
-            usage.update(response.get("usage") or {})
-            for item in response.get("output") or []:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "message":
-                    item_id = item.get("id")
-                    for content in item.get("content") or []:
-                        if isinstance(content, dict) and content.get("type") == "output_text" and isinstance(content.get("text"), str):
-                            already_seen = isinstance(item_id, str) and item_id in text_item_ids
-                            if not already_seen and (item_id or not text_parts):
-                                if isinstance(item_id, str):
-                                    text_item_ids.add(item_id)
-                                text_parts.append(content["text"])
-                elif item.get("type") == "reasoning":
-                    summary = item.get("summary") or []
-                    for part in summary:
-                        if isinstance(part, dict) and isinstance(part.get("text"), str):
-                            reasoning_parts.append(part["text"])
-                elif item.get("type") == "function_call":
-                    call_id = str(item.get("call_id") or item.get("id") or f"call_{len(tool_calls)}")
-                    item_id = item.get("id")
-                    if isinstance(item_id, str):
-                        item_to_call[item_id] = call_id
-                    call = tool_calls.setdefault(call_id, {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": item.get("name") or "", "arguments": ""},
-                    })
-                    if isinstance(item.get("name"), str):
-                        call["function"]["name"] = item["name"]
-                    if isinstance(item.get("arguments"), str) and call_id not in tool_arg_delta_ids:
-                        call["function"]["arguments"] = item["arguments"]
-        return deltas
+        state = CodexEventState(
+            text_parts=text_parts,
+            reasoning_parts=reasoning_parts,
+            tool_calls=tool_calls,
+            usage=usage,
+            item_to_call=item_to_call if item_to_call is not None else {},
+            text_item_ids=text_item_ids if text_item_ids is not None else set(),
+            tool_arg_delta_ids=tool_arg_delta_ids if tool_arg_delta_ids is not None else set(),
+        )
+        return self._apply_codex_event_state(event, parsed, state, stream=stream)
 
     async def execute_image(self, request: dict[str, Any]) -> CodexCallResult:
         chosen = await self.choose_slot(None, set(), set())

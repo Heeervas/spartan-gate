@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from spartan_route.app import create_app
+from spartan_route.app import build_request_shape_diagnostics, compare_session_trace, create_app, request_shape_snapshot
 from spartan_route.config import ModelEntry, SpartanRouteConfig
 from spartan_route.telemetry import TelemetryStore
 
@@ -80,6 +81,28 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 503)
         payload = await response.json()
         self.assertEqual(payload["error"]["code"], "provider_not_supported")
+
+    async def test_request_shape_diagnostics_are_metadata_only(self) -> None:
+        body = {
+            "messages": [
+                {"role": "system", "content": "private system prompt"},
+                {"role": "user", "content": "private user text"},
+            ],
+            "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        }
+        snapshot = request_shape_snapshot(body)
+        diagnostics = build_request_shape_diagnostics(snapshot)
+        serialized = json.dumps(diagnostics)
+
+        self.assertNotIn("private system prompt", serialized)
+        self.assertNotIn("private user text", serialized)
+        self.assertEqual(compare_session_trace(snapshot, None)["comparison"], "baseline")
+
+        retry = request_shape_snapshot(body)
+        self.assertEqual(compare_session_trace(retry, snapshot)["comparison"], "retry")
+
+        appended = {**body, "messages": [*body["messages"], {"role": "assistant", "content": "new"}]}
+        self.assertEqual(compare_session_trace(request_shape_snapshot(appended), snapshot)["comparison"], "prefix")
 
 
 if __name__ == "__main__":

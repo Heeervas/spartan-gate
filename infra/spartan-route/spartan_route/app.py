@@ -6,14 +6,14 @@ import json
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from aiohttp import ClientSession, ClientTimeout, FormData, web
 from aiohttp.web_request import FileField
 
-from .codex import CodexCallResult, CodexRouter, session_id_from_request, sse
+from .codex import CodexCallResult, CodexRouter, resolve_prompt_cache_key, session_id_from_request, sse
 from .config import ModelEntry, SpartanRouteConfig, load_config
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import json_error, now_iso, sanitize_preview, sha, stable_json, text_content, token_count_estimate
@@ -51,6 +51,7 @@ class SpartanRouteState:
     queue: TelemetryQueue
     session: ClientSession | None = None
     codex: CodexRouter | None = None
+    recent_session_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 STATE_KEY = web.AppKey("spartan_route_state", SpartanRouteState)
@@ -341,6 +342,83 @@ def resolve_turn_id(body: dict[str, Any], session_id: str | None, request_id: st
     return request_id
 
 
+def tool_name(tool: Any) -> str:
+    if not isinstance(tool, dict):
+        return ""
+    if isinstance(tool.get("function"), dict) and isinstance(tool["function"].get("name"), str):
+        return tool["function"]["name"]
+    return str(tool.get("name") or tool.get("type") or "")
+
+
+def tool_schema_fingerprint(tools: Any) -> str | None:
+    if not isinstance(tools, list) or not tools:
+        return None
+    shaped = [tool for tool in tools if isinstance(tool, dict)]
+    shaped.sort(key=tool_name)
+    return sha(stable_json(shaped), 16)
+
+
+def request_shape_snapshot(body: dict[str, Any]) -> dict[str, Any]:
+    messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+    tools = body.get("tools") if isinstance(body.get("tools"), list) else []
+    message_fingerprints: list[str] = []
+    message_roles: list[str | None] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_roles.append(message.get("role") if isinstance(message.get("role"), str) else None)
+        message_fingerprints.append(sha(stable_json(message), 16))
+    tool_fp = tool_schema_fingerprint(tools)
+    request_fp = sha(stable_json({"messages": message_fingerprints, "toolSchema": tool_fp}), 16)
+    return {
+        "requestFingerprint": request_fp,
+        "messageFingerprints": message_fingerprints,
+        "messageRoles": message_roles,
+        "toolSchemaFingerprint": tool_fp,
+    }
+
+
+def compare_session_trace(current: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
+    if not previous:
+        return {"comparison": "baseline", "commonPrefixMessages": 0, "previousMessageCount": 0}
+    current_messages = current.get("messageFingerprints") if isinstance(current.get("messageFingerprints"), list) else []
+    previous_messages = previous.get("messageFingerprints") if isinstance(previous.get("messageFingerprints"), list) else []
+    common = 0
+    for left, right in zip(previous_messages, current_messages):
+        if left != right:
+            break
+        common += 1
+    if current.get("toolSchemaFingerprint") != previous.get("toolSchemaFingerprint"):
+        comparison = "tool_schema_changed"
+    elif current.get("requestFingerprint") == previous.get("requestFingerprint"):
+        comparison = "retry"
+    elif common == len(previous_messages) and len(current_messages) >= len(previous_messages):
+        comparison = "prefix"
+    else:
+        comparison = "history_rewrite"
+    return {
+        "comparison": comparison,
+        "commonPrefixMessages": common,
+        "previousMessageCount": len(previous_messages),
+    }
+
+
+def estimate_shape_sizes(body: dict[str, Any]) -> tuple[int, int]:
+    messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+    tools = body.get("tools") if isinstance(body.get("tools"), list) else []
+    return len(stable_json(messages)), len(stable_json(tools))
+
+
+def build_request_shape_diagnostics(snapshot: dict[str, Any]) -> dict[str, Any]:
+    message_fps = snapshot.get("messageFingerprints") if isinstance(snapshot.get("messageFingerprints"), list) else []
+    return {
+        "request": snapshot.get("requestFingerprint"),
+        "messagesHead": message_fps[:8],
+        "messagesTail": message_fps[-8:] if len(message_fps) > 8 else [],
+        "toolSchema": snapshot.get("toolSchemaFingerprint"),
+    }
+
+
 def log_request(
     state: SpartanRouteState,
     body: dict[str, Any],
@@ -353,10 +431,43 @@ def log_request(
     api_kind: str,
 ) -> None:
     input_tokens = result.input_tokens or token_count_estimate(body)
+    messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+    tools = body.get("tools") if isinstance(body.get("tools"), list) else []
+    explicit_cache_key = request_prompt_cache_key(body)
+    upstream_cache_key = resolve_prompt_cache_key(body, session_id, explicit_cache_key)
+    cache_key_hash = sha(upstream_cache_key, 12) if upstream_cache_key else None
+    message_chars, tool_schema_chars = estimate_shape_sizes(body)
+    shape_snapshot = request_shape_snapshot(body)
+    trace_key = f"{session_id or 'none'}:{cache_key_hash or 'none'}"
+    previous_trace = state.recent_session_traces.get(trace_key)
+    same_session_trace = compare_session_trace(shape_snapshot, previous_trace)
+    state.recent_session_traces[trace_key] = shape_snapshot
+    if len(state.recent_session_traces) > 512:
+        oldest_key = next(iter(state.recent_session_traces))
+        state.recent_session_traces.pop(oldest_key, None)
     context = {
         "routeReason": route.reason,
         "provider": route.provider,
         "status": result.status,
+        "msg_count": len(messages),
+        "has_system": any(isinstance(message, dict) and message.get("role") == "system" for message in messages),
+        "tool_count": len(tools),
+        "last_role": messages[-1].get("role") if messages and isinstance(messages[-1], dict) else None,
+        "cache_key_present": bool(upstream_cache_key),
+        "cache_key_hash": cache_key_hash,
+        "request_api_kind": api_kind,
+        "requested_reasoning_effort": body.get("reasoning_effort") if isinstance(body.get("reasoning_effort"), str) else None,
+        "message_chars": message_chars,
+        "tool_schema_chars": tool_schema_chars,
+        "tool_schema_rough_tokens": max(0, tool_schema_chars // 4),
+        "tool_schema_fingerprint": shape_snapshot.get("toolSchemaFingerprint"),
+        "request_trace": {
+            "version": 1,
+            "requestFingerprint": shape_snapshot.get("requestFingerprint"),
+            "messageCount": len(shape_snapshot.get("messageFingerprints") or []),
+        },
+        "same_session_cache_trace": same_session_trace,
+        "request_shape_hashes": build_request_shape_diagnostics(shape_snapshot),
     }
     state.queue.log(
         RoutingLogEntry(

@@ -68,6 +68,21 @@ Kept in v1:
   reset-credit metadata; it never redeems credits.
 - Daily cache hit rows from `routing_log`.
 
+Reliability contract:
+
+- Codex Responses streams are converted to Chat Completions with explicit
+  handling for text, tool calls, structured reasoning, raw/encrypted reasoning,
+  incomplete responses, and terminal upstream errors.
+- A successful upstream Codex response with no usable text, tool call, or
+  reasoning payload is not returned to Hermes as `200` empty content. Spartan
+  Route classifies it as retryable `502 codex_empty_response`, rotates to the
+  next eligible slot/account, and only returns that error after slot retry is
+  exhausted.
+- Cache diagnostics in `context_info` are metadata-only: cache-key hash,
+  message/tool counts, request-shape hashes, tool-schema fingerprint, and
+  same-session prefix comparison. Raw prompts, raw tool schemas, and auth values
+  are not added to these diagnostics.
+
 Cut from v1 on purpose:
 
 - Balance-loader scheduling, early activation, manual slot activation, capacity
