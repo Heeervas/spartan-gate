@@ -73,6 +73,9 @@ sg-tier doctor    # validate selected Compose config
 sg-status
 ```
 
+For a full-stack Spartan Route trial, use `sg route up -d`; this keeps
+`sg up -d` on the normal ClawRoute path.
+
 Layer selection is stored in `private/env/local.env`:
 
 - `SPARTAN_TIER`: `L0`, `L1`, `L2`, `L3`, or `L4`.
@@ -144,4 +147,3 @@ Validate a selected layer without starting services:
 ```sh
 sg-tier doctor
 ```
-

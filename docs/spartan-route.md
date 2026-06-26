@@ -93,16 +93,20 @@ docker compose \
 Full-stack side-by-side overlay:
 
 ```sh
-docker compose \
-  -f infra/compose/compose.yml \
-  -f infra/compose/compose.spartan-route.yml \
-  --env-file private/env/local.env \
-  up -d spartan-route
+source scripts/aliases.sh
+sg route up -d
 ```
 
+This uses the normal full-stack private Compose path plus
+`infra/compose/compose.spartan-route.yml` and optional
+`private/compose.spartan-route.local.yml` overrides. Hermes points at
+`http://spartan-route:18790/v1` in this mode. Plain `sg up -d` remains the
+normal ClawRoute path and does not load Spartan Route-only private overrides.
+
 The service publishes directly on `SPARTAN_ROUTE_EDGE_PORT`, default `18791`.
-Its internal API is still `http://spartan-route:18790/v1`. The existing
-ClawRoute service and `packages/clawroute/` remain untouched.
+For local private stacks that still reserve legacy Mission Control port
+`18791`, set `SPARTAN_ROUTE_EDGE_PORT=18792`. The existing ClawRoute service
+and `packages/clawroute/` remain untouched.
 
 ## Validation
 

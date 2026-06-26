@@ -180,7 +180,7 @@ validate_private_env() {
     fail "private env still contains placeholder values: $env_file"
   fi
 
-  for key in SPARTAN_HERMES_DATA_PATH SPARTAN_CLAWROUTE_DATA_PATH SPARTAN_GOGCLI_DATA_PATH SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CAMOFOX_ADDONS_PATH; do
+  for key in SPARTAN_HERMES_DATA_PATH SPARTAN_CLAWROUTE_DATA_PATH SPARTAN_ROUTE_DATA_PATH SPARTAN_GOGCLI_DATA_PATH SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CAMOFOX_ADDONS_PATH; do
     case "$key" in
       SPARTAN_CAMOFOX_*) test -n "$camofox_enabled" || continue ;;
     esac
@@ -215,6 +215,7 @@ need_dir() {
 
 need_dir apps/hermes-agent
 need_dir packages/clawroute
+need_dir infra/spartan-route
 need_dir infra/compose
 need_dir infra/caddy
 need_dir infra/dns

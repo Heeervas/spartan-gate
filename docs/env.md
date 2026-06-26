@@ -10,7 +10,8 @@ Public env docs describe names and behavior only. Real values and machine-specif
 - `SPARTAN_GATE_PORT`: Caddy edge port for the Hermes API.
 - `CLAWROUTE_EDGE_PORT`: Caddy edge port for ClawRoute.
 - `SPARTAN_ROUTE_EDGE_PORT`: direct local edge port for the parallel
-  Spartan Route service, default `18791`.
+  Spartan Route service, default `18791`. Private stacks can set `18792` when
+  legacy local tooling already reserves `18791`.
 - `BROWSERLESS_DEBUG_PORT`: Caddy edge port for Browserless debugging.
 - `HERMES_DASHBOARD_PORT`: Caddy edge port for the Hermes dashboard.
 - `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`,

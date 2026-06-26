@@ -18,7 +18,7 @@ fi
 # Clear aliases from older versions before defining functions with the same
 # command names. This makes repeated `source scripts/aliases.sh` predictable.
 for alias_name in \
-    sg sg-help sg-tier sg-hermes sg-browser sg-meet sg-disk \
+    sg sg-help sg-tier sg-route sg-hermes sg-browser sg-meet sg-disk \
     sg-priv sg-up sg-build-up sg-down sg-status sg-ps sg-health sg-logs \
     sg-exec sg-config sg-doctor sg-up-core sg-up-hermes \
     sg-up-private-hermes sg-up-full sg-restart-hermes sg-restart-caddy \
@@ -84,6 +84,32 @@ sg_compose() {
 
     if [[ -f "$private_compose" ]]; then
         args+=(-f "$private_compose")
+    fi
+
+    if [[ -f "$env_file" ]]; then
+        args+=(--env-file "$env_file")
+    elif [[ -f "$SPARTAN_GATE_DIR/.env" ]]; then
+        args+=(--env-file "$SPARTAN_GATE_DIR/.env")
+    fi
+
+    docker compose "${args[@]}" "$@"
+}
+
+sg_route_compose() {
+    local private_compose="$SPARTAN_GATE_DIR/private/compose.local.yml"
+    local private_route_compose="$SPARTAN_GATE_DIR/private/compose.spartan-route.local.yml"
+    local env_file
+    env_file="$(sg_default_env_file)"
+    local args=(
+        -f "$SPARTAN_GATE_DIR/infra/compose/compose.yml"
+        -f "$SPARTAN_GATE_DIR/infra/compose/compose.spartan-route.yml"
+    )
+
+    if [[ -f "$private_compose" ]]; then
+        args+=(-f "$private_compose")
+    fi
+    if [[ -f "$private_route_compose" ]]; then
+        args+=(-f "$private_route_compose")
     fi
 
     if [[ -f "$env_file" ]]; then
@@ -256,11 +282,13 @@ Spartan Gate helpers
 Usage:
   sg                         cd to the Spartan Gate checkout
   sg <compose-args...>        run docker compose with public + private config
+  sg route <compose-args...>  run private Compose with Spartan Route enabled
   sg-tier <command>           select and operate L0-L4 install tiers
   sg -h | sg-help             show this help
 
 Groups:
   sg-hermes -h                Hermes shell, profiles, gateway, and doctor
+  sg route -h                 Spartan Route private-stack compose helper
   sg-tier list                show tier descriptions
   sg-browser -h               Browserless/Camofox mode and profile helpers
   sg-meet -h                  Google Meet and host Chrome CDP helpers
@@ -268,6 +296,7 @@ Groups:
 
 Common commands:
   sg-up                       start the selected tier
+  sg route up -d              start private stack with Spartan Route
   sg-status | sg-health       container status and basic Hermes health
   sg-logs-hermes              follow Hermes logs
   sg-logs-clawroute           follow ClawRoute logs
@@ -279,8 +308,30 @@ Common commands:
 
 Examples:
   sg up -d hermes
+  sg route up -d
   sg logs -f proxy dns
   sg-disk top /var 2 30
+EOF
+}
+
+sg_route_help() {
+    cat <<'EOF'
+Spartan Route helpers
+
+Usage:
+  sg route <compose-args...>   run docker compose with Spartan Route overlay
+  sg-route <compose-args...>   same as `sg route`
+
+Examples:
+  sg route config --quiet
+  sg route up -d
+  sg route ps
+  sg route logs -f spartan-route
+
+Behavior:
+  Uses compose.yml + compose.spartan-route.yml + private overrides.
+  Hermes points at http://spartan-route:18790/v1 in this mode.
+  Plain `sg up -d` is unchanged and keeps the normal ClawRoute path.
 EOF
 }
 
@@ -399,8 +450,19 @@ sg() {
         sg_help
     elif [[ "$#" -eq 0 ]]; then
         sg_cd
+    elif [[ "${1:-}" == "route" ]]; then
+        shift
+        sg_route "$@"
     else
         sg_compose "$@"
+    fi
+}
+
+sg_route() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" || "$#" -eq 0 ]]; then
+        sg_route_help
+    else
+        sg_route_compose "$@"
     fi
 }
 
@@ -1500,11 +1562,12 @@ sg_browserless_debug_origins() {
 }
 
 sg_urls() {
-    local scheme host gate claw browserless dashboard camofox_vnc camofox_enabled
+    local scheme host gate claw spartan_route browserless dashboard camofox_vnc camofox_enabled
     scheme="$(sg_edge_scheme)"
     host="$(sg_remote_host)"
     gate="$(sg_env_value SPARTAN_GATE_PORT 18789)"
     claw="$(sg_env_value CLAWROUTE_EDGE_PORT 18790)"
+    spartan_route="$(sg_env_value SPARTAN_ROUTE_EDGE_PORT "")"
     browserless="$(sg_env_value BROWSERLESS_DEBUG_PORT 3005)"
     dashboard="$(sg_env_value HERMES_DASHBOARD_PORT 9119)"
     camofox_vnc="$(sg_env_value CAMOFOX_NOVNC_PORT 26080)"
@@ -1512,12 +1575,14 @@ sg_urls() {
     if [[ "$scheme" == "http" ]]; then
         printf 'Spartan Gate local:      http://localhost:%s\n' "$gate"
         printf 'ClawRoute local:         http://localhost:%s\n' "$claw"
+        [[ -n "$spartan_route" ]] && printf 'Spartan Route local:     http://localhost:%s\n' "$spartan_route"
         printf 'Browserless local:       http://localhost:%s\n' "$browserless"
         printf 'Hermes dashboard local:  http://localhost:%s\n' "$dashboard"
     fi
     if [[ "$host" != "localhost" || "$scheme" != "http" ]]; then
         printf 'Spartan Gate remote:     %s://%s:%s\n' "$scheme" "$host" "$gate"
         printf 'ClawRoute remote:        %s://%s:%s\n' "$scheme" "$host" "$claw"
+        [[ -n "$spartan_route" ]] && printf 'Spartan Route remote:    %s://%s:%s\n' "$scheme" "$host" "$spartan_route"
         printf 'Browserless remote:      %s://%s:%s\n' "$scheme" "$host" "$browserless"
         printf 'Hermes dashboard remote: %s://%s:%s\n' "$scheme" "$host" "$dashboard"
     fi
@@ -1540,7 +1605,15 @@ sg_health() {
 # intentionally removes known Hermes cache directories and npm transient files.
 
 sg_caddy_validate() { sg_compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile; }
-sg_ports() { ss -H -ltn '( sport = :18789 or sport = :18790 or sport = :3005 or sport = :9119 )' 2>/dev/null || sg_compose ps; }
+sg_ports() {
+    local spartan_route
+    spartan_route="$(sg_env_value SPARTAN_ROUTE_EDGE_PORT "")"
+    if [[ -n "$spartan_route" ]]; then
+        ss -H -ltn "( sport = :18789 or sport = :18790 or sport = :$spartan_route or sport = :3005 or sport = :9119 )" 2>/dev/null || sg_compose ps
+    else
+        ss -H -ltn '( sport = :18789 or sport = :18790 or sport = :3005 or sport = :9119 )' 2>/dev/null || sg_compose ps
+    fi
+}
 sg_docker_root() {
     docker info --format '{{.DockerRootDir}}' 2>/dev/null || true
 }
@@ -1760,6 +1833,7 @@ sg_meet() {
 
 sg-help() { sg_help "$@"; }
 sg-tier() { sg_tier "$@"; }
+sg-route() { sg_route "$@"; }
 sg-hermes() { sg_hermes "$@"; }
 sg-browser() { sg_browser "$@"; }
 sg-meet() { sg_meet "$@"; }

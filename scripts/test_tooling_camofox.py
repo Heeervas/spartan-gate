@@ -106,6 +106,11 @@ class CamofoxContractTests(unittest.TestCase):
         self.assertIn('SPARTAN_CAMOFOX_*) test -n "$camofox_enabled" || continue', source)
         self.assertIn('key ~ /^SPARTAN_CAMOFOX_/', source)
 
+    def test_doctor_knows_spartan_route_package_and_data_path(self):
+        source = (ROOT / "scripts" / "doctor.sh").read_text()
+        self.assertIn("SPARTAN_ROUTE_DATA_PATH", source)
+        self.assertIn("need_dir infra/spartan-route", source)
+
     def test_novnc_https_has_no_raw_ip_fallback_and_checks_reachability(self):
         source = (ROOT / "scripts" / "aliases.sh").read_text()
         start = source.index("sg_camofox_novnc_url()")
@@ -147,6 +152,8 @@ class AliasHelpTests(unittest.TestCase):
             ("sg -h", "Spartan Gate helpers"),
             ("sg-help", "Spartan Gate helpers"),
             ("sg-tier -h", "Tier helpers"),
+            ("sg route -h", "Spartan Route helpers"),
+            ("sg-route -h", "Spartan Route helpers"),
             ("sg-hermes -h", "Hermes helpers"),
             ("sg-browser -h", "Browser helpers"),
             ("sg-meet -h", "Meet helpers"),
@@ -214,6 +221,49 @@ class AliasHelpTests(unittest.TestCase):
         self.assertIn(f"-f {self.root / 'infra' / 'compose' / 'compose.yml'}", calls)
         self.assertIn(f"-f {private_compose}", calls)
         self.assertIn(" ps", calls)
+
+    def test_spartan_route_compose_helper_includes_overlay_private_and_env(self):
+        bin_dir, log = self.write_docker_stub("1000:1000")
+        (self.root / "private" / "env").mkdir(parents=True)
+        env_file = self.root / "private" / "env" / "local.env"
+        env_file.write_text("SPARTAN_ROUTE_EDGE_PORT=18792\n", encoding="utf-8")
+        private_compose = self.root / "private" / "compose.local.yml"
+        private_compose.write_text("services: {}\n", encoding="utf-8")
+        private_route_compose = self.root / "private" / "compose.spartan-route.local.yml"
+        private_route_compose.write_text("services: {}\n", encoding="utf-8")
+
+        result = self.run_sourced_with_path("sg route up -d", bin_dir)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = log.read_text(encoding="utf-8")
+        compose_file = self.root / "infra" / "compose" / "compose.yml"
+        route_file = self.root / "infra" / "compose" / "compose.spartan-route.yml"
+        self.assertIn(
+            f"docker compose -f {compose_file} -f {route_file} -f {private_compose} -f {private_route_compose} --env-file {env_file} up -d",
+            calls,
+        )
+
+    def test_spartan_route_flat_alias_uses_same_compose_overlay(self):
+        bin_dir, log = self.write_docker_stub("1000:1000")
+
+        result = self.run_sourced_with_path("sg-route ps", bin_dir)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = log.read_text(encoding="utf-8")
+        self.assertIn(f"-f {self.root / 'infra' / 'compose' / 'compose.spartan-route.yml'}", calls)
+        self.assertIn(" ps", calls)
+
+    def test_urls_include_spartan_route_when_port_is_configured(self):
+        (self.root / "private" / "env").mkdir(parents=True)
+        (self.root / "private" / "env" / "local.env").write_text(
+            "SPARTAN_ROUTE_EDGE_PORT=18792\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_sourced("sg-urls")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Spartan Route local:     http://localhost:18792", result.stdout)
 
     def test_public_helpers_do_not_default_to_old_custom_claw_path(self):
         for path in (

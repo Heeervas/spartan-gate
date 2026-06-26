@@ -57,6 +57,9 @@ services:
 
   hermes:
     depends_on:
+      clawroute:
+        condition: service_started
+        required: false
       spartan-route:
         condition: service_healthy
     environment:

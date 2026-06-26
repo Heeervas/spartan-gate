@@ -72,16 +72,16 @@ docker compose \
 Parallel Spartan Route start:
 
 ```sh
-docker compose \
-  -f infra/compose/compose.yml \
-  -f infra/compose/compose.spartan-route.yml \
-  --env-file private/env/local.env \
-  up -d spartan-route
+source scripts/aliases.sh
+sg route up -d
 ```
 
-This keeps the existing `clawroute` service in place and publishes Spartan
-Route on `SPARTAN_ROUTE_EDGE_PORT`, default `18791`. The Codex dashboard is
-`/dashboard-codex` on that port and includes reset-credit telemetry.
+This keeps the existing `clawroute` service in place, adds `spartan-route`, and
+points Hermes at `http://spartan-route:18790/v1`. Plain `sg up -d` keeps the
+normal ClawRoute path and does not load `private/compose.spartan-route.local.yml`.
+Spartan Route publishes on `SPARTAN_ROUTE_EDGE_PORT`, default `18791`; use
+`18792` if legacy local tooling already reserves `18791`. The Codex dashboard
+is `/dashboard-codex` on that port and includes reset-credit telemetry.
 
 Do not use private commands against old stack data paths unless you are intentionally migrating data. The provided private override should use isolated Spartan Gate paths.
 
