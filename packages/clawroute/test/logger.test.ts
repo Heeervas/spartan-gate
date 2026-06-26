@@ -10,6 +10,8 @@ import {
     getCodexColdMigrationDecision,
     getCodexAnalysis,
     getCodexActivationCheckpoints,
+    getCodexAccountCapacityMultiplier,
+    getCodexAccountCapacityOverrides,
     getCodexBalancerSettings,
     getCodexBalancerSlotOverrides,
     getCodexAccountSchedule,
@@ -25,6 +27,7 @@ import {
     logRouting,
     upsertCodexColdMigrationDecision,
     seedCodexAccountSchedule,
+    setCodexAccountCapacityOverride,
     setCodexBalancerSettings,
     setCodexActivationCheckpoint,
     setCodexBalancerSlotOverride,
@@ -716,6 +719,76 @@ describe('logger debounced persistence', () => {
         ]);
     });
 
+    it('reports Codex quota raw percentages and capacity-aware 1x units separately', async () => {
+        await initDb(createTestConfig(':memory:'));
+        setCodexAccountCapacityOverride('acct-5x', 5);
+        logRouting({
+            ...createLogEntry(),
+            timestamp: '2026-06-11T08:00:00.000Z',
+            actual_model: 'codex/gpt-5.5',
+            input_tokens: 100,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            selected_codex_slot_index: 0,
+            selected_codex_account_key: 'acct-1x',
+        });
+        logRouting({
+            ...createLogEntry(),
+            timestamp: '2026-06-11T08:00:00.000Z',
+            actual_model: 'codex/gpt-5.5',
+            input_tokens: 100,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            selected_codex_slot_index: 1,
+            selected_codex_account_key: 'acct-5x',
+        });
+        upsertCodexUsageSnapshots([
+            {
+                accountKey: 'acct-1x',
+                slotIndex: 0,
+                window: 'weekly',
+                usedPercent: 50,
+                resetAt: '2026-06-18T08:00:00.000Z',
+                windowMinutes: 10080,
+                updatedAt: '2026-06-11T08:05:00.000Z',
+            },
+            {
+                accountKey: 'acct-5x',
+                slotIndex: 1,
+                window: 'weekly',
+                usedPercent: 20,
+                resetAt: '2026-06-18T08:00:00.000Z',
+                windowMinutes: 10080,
+                updatedAt: '2026-06-11T08:05:00.000Z',
+            },
+        ]);
+
+        const analysis = getCodexAnalysis({
+            periodKey: 'custom',
+            start: '2026-06-11T00:00:00.000Z',
+            end: '2026-06-12T00:00:00.000Z',
+        });
+
+        expect(analysis.quotaCalibration).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                window: 'weekly',
+                observedQuotaDelta: 70,
+                observedQuotaUnits: 150,
+            }),
+        ]));
+        expect(analysis.quotaSnapshots).toEqual(expect.arrayContaining([
+            expect.objectContaining({ accountKey: 'acct-1x', usedPercent: 50, capacityMultiplier: 1, usedCapacityUnits: 50 }),
+            expect.objectContaining({ accountKey: 'acct-5x', usedPercent: 20, capacityMultiplier: 5, usedCapacityUnits: 100, remainingCapacityUnits: 400 }),
+        ]));
+        expect(analysis.slotUsageEstimates).toEqual(expect.arrayContaining([
+            expect.objectContaining({ slotIndex: 0, actualQuotaDelta: 50, capacityMultiplier: 1, actualQuotaUnits: 50 }),
+            expect.objectContaining({ slotIndex: 1, actualQuotaDelta: 20, capacityMultiplier: 5, actualQuotaUnits: 100 }),
+        ]));
+        expect(analysis.dailySlotUsage).toEqual(expect.arrayContaining([
+            expect.objectContaining({ slotIndex: 1, weeklyActualQuotaDelta: 20, weeklyActualQuotaUnits: 100 }),
+        ]));
+    });
+
     it('excludes ISO timestamps outside the requested cache window', async () => {
         await initDb(createTestConfig(':memory:'));
         logRouting({
@@ -971,6 +1044,35 @@ describe('Codex account schedule persistence', () => {
         expect(getCodexBalancerSlotOverrides()).toMatchObject([
             { slotIndex: 2, enabled: false },
         ]);
+    });
+
+    it('persists Codex account capacity overrides independently of balancer reset state', async () => {
+        await initDb(createTestConfig(':memory:'));
+
+        setCodexAccountCapacityOverride('acct-5x', 5);
+        expect(getCodexAccountCapacityMultiplier('acct-5x')).toBe(5);
+        expect(getCodexAccountCapacityOverrides()).toMatchObject([
+            { accountKey: 'acct-5x', capacityMultiplier: 5 },
+        ]);
+
+        setCodexAccountCapacityOverride('acct-5x', 7);
+        expect(getCodexAccountCapacityMultiplier('acct-5x')).toBe(7);
+        expect(getCodexAccountCapacityOverrides()).toMatchObject([
+            { accountKey: 'acct-5x', capacityMultiplier: 7 },
+        ]);
+
+        setCodexAccountCapacityOverride('acct-5x', 1);
+        expect(getCodexAccountCapacityMultiplier('acct-5x')).toBe(1);
+        expect(getCodexAccountCapacityOverrides()).toEqual([]);
+
+        setCodexAccountCapacityOverride('acct-5x', 5);
+        setCodexAccountCapacityOverride('acct-5x', null);
+        expect(getCodexAccountCapacityMultiplier('acct-5x')).toBe(1);
+        expect(getCodexAccountCapacityOverrides()).toEqual([]);
+
+        expect(() => setCodexAccountCapacityOverride('acct-bad', 0.5)).toThrow(/between 1 and 100/);
+        expect(() => setCodexAccountCapacityOverride('acct-bad', 101)).toThrow(/between 1 and 100/);
+        expect(() => setCodexAccountCapacityOverride('acct-bad', Number.NaN)).toThrow(/between 1 and 100/);
     });
 
     it('persists and resolves Codex cold migration decisions', async () => {

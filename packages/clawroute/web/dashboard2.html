@@ -375,26 +375,30 @@
       return number < 0.01 ? number.toFixed(4) : number < 1 ? number.toFixed(3) : number.toFixed(2);
     }
 
-    function estimateQuota(tokens, windowKey) {
+    function estimateQuota(tokens, windowKey, capacityMultiplier = 1) {
       const calibration = state.quotaCalibration?.[windowKey];
-      const rate = Number(calibration?.quotaPctPerMillionTotalTokens);
+      const rate = Number(calibration?.quotaUnitsPerMillionTotalTokens || calibration?.quotaPctPerMillionTotalTokens);
+      const capacity = Math.max(1, Number(capacityMultiplier) || 1);
       if (!(Number(tokens) > 0) || !(rate > 0)) return null;
+      const units = (Number(tokens) / 1_000_000) * rate;
       return {
-        percent: (Number(tokens) / 1_000_000) * rate,
+        rawPercent: units / capacity,
+        units,
         rate,
+        capacityMultiplier: capacity,
         sampleTokens: Number(calibration.totalTokens) || 0,
       };
     }
 
-    function quotaEstimatePills(tokens, coveragePercent, showUnavailable = false) {
-      const fiveHour = estimateQuota(tokens, 'fiveHour');
-      const weekly = estimateQuota(tokens, 'weekly');
+    function quotaEstimatePills(tokens, coveragePercent, showUnavailable = false, capacityMultiplier = 1, serverEstimates = null) {
+      const fiveHour = serverEstimates?.fiveHour || estimateQuota(tokens, 'fiveHour', capacityMultiplier);
+      const weekly = serverEstimates?.weekly || estimateQuota(tokens, 'weekly', capacityMultiplier);
       if (!fiveHour && !weekly) {
         return showUnavailable ? '<span class="meta-pill">quota estimate unavailable</span>' : '';
       }
       const coverage = Math.max(0, Math.min(100, Number(coveragePercent) || 0));
       const pill = (label, estimate, burstSensitive = false) => estimate
-        ? `<span class="meta-pill" title="${escapeHtml(`${quotaPercent(estimate.rate)} quota points per 1M tokens • ${compactNumber(estimate.sampleTokens)} calibration tokens • ${quotaPercent(coverage)}% attribution coverage${burstSensitive ? ' • burst-sensitive estimate' : ''}`)}">~${quotaPercent(estimate.percent)}% ${label} equiv.</span>`
+        ? `<span class="meta-pill" title="${escapeHtml(`${quotaPercent(estimate.rate || estimate.quotaUnitsPerMillionTotalTokens)} 1x units per 1M tokens • ${compactNumber(estimate.sampleTokens)} calibration tokens • ${quotaPercent(coverage)}% attribution coverage • ${quotaPercent(estimate.units)} 1x ${label} units • ${quotaPercent(estimate.rawPercent)}% of this account${estimate.capacityMultiplier ? ` • ${estimate.capacityMultiplier}x account capacity` : ''}${burstSensitive ? ' • burst-sensitive estimate' : ''}`)}">~${quotaPercent(estimate.rawPercent)}% ${label} raw · ${quotaPercent(estimate.units)}u 1x</span>`
         : `<span class="meta-pill" title="No valid ${escapeHtml(label)} calibration sample">${escapeHtml(label)} unavailable</span>`;
       return pill('5h', fiveHour, true) + pill('weekly', weekly);
     }
@@ -443,6 +447,7 @@
         isAttributedCodex ? inputTokens + (Number(decision.outputTokens) || 0) : 0,
         isAttributedCodex ? 100 : 0,
         String(decision.actualModel || '').startsWith('codex/'),
+        Number(decision.codexCapacityMultiplier) || 1,
       );
       return `
         <details class="decision${decision.error ? ' error' : ''}" data-open-key="decision:${escapeHtml(decisionKey(decision))}">
@@ -513,7 +518,7 @@
               <span class="meta-pill">${escapeHtml(turn.initialTier || 'unknown')}</span>
               <span class="meta-pill">${escapeHtml(turn.initialModel || 'unknown')}</span>
               <span class="meta-pill">${escapeHtml(metricSummary(turn.metrics))}</span>
-              ${quotaEstimatePills(turn.metrics.attributedCodexTokens, turn.metrics.quotaCoveragePercent, Number(turn.metrics.codexTokens) > 0)}
+              ${quotaEstimatePills(turn.metrics.attributedCodexTokens, turn.metrics.quotaCoveragePercent, Number(turn.metrics.codexTokens) > 0, 1, turn.metrics.quotaEstimates)}
               <span class="meta-pill">avg ${Number(turn.metrics.averageResponseMs) || 0}ms</span>
               <span class="meta-pill">${Number(turn.metrics.toolCalls) || 0} calls / ${Number(turn.metrics.toolResults) || 0} results</span>
               ${turn.models.length > 1 ? `<span class="meta-pill">${turn.models.length} models</span>` : ''}
@@ -529,6 +534,8 @@
         session.metrics.attributedCodexTokens,
         session.metrics.quotaCoveragePercent,
         Number(session.metrics.codexTokens) > 0,
+        1,
+        session.metrics.quotaEstimates,
       );
       return `<details class="decision-group session-group" data-open-key="session:${escapeHtml(session.id)}">
         <summary title="Session ${escapeHtml(session.id)}">

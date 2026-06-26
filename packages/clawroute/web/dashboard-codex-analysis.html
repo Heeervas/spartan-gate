@@ -478,7 +478,7 @@
                         <thead>
                             <tr>
                                 <th>Slot</th><th>Window</th><th class="num">Req</th><th class="num">Tokens</th>
-                                <th class="num">Expected used</th><th class="num">Actual used</th><th class="num">Variance</th>
+                                <th class="num">Actual raw %</th><th class="num">Expected 1x units</th><th class="num">Actual 1x units</th><th class="num">Variance 1x units</th>
                                 <th class="num">API cost</th><th class="num">Sub cost</th><th class="num">Savings</th>
                             </tr>
                         </thead>
@@ -517,7 +517,7 @@
                     <div>
                         <h2>Current quota</h2>
                         <table>
-                            <thead><tr><th>Slot</th><th>Window</th><th class="num">Used</th><th>Reset</th><th>Updated</th></tr></thead>
+                            <thead><tr><th>Slot</th><th>Window</th><th class="num">Raw %</th><th class="num">1x units</th><th>Reset</th><th>Updated</th></tr></thead>
                             <tbody id="quota"></tbody>
                         </table>
                     </div>
@@ -624,9 +624,9 @@
         function renderHeadline(body) {
             const weekly = weeklyRows(body).filter((row) => row.requests > 0);
             const five = fiveHourRows(body).filter((row) => row.requests > 0);
-            const weeklyExpected = weekly.reduce((sum, row) => sum + (row.expectedQuotaDelta || 0), 0);
-            const weeklyActual = weekly.reduce((sum, row) => sum + (row.actualQuotaDelta || 0), 0);
-            const fiveActualMax = Math.max(0, ...five.map((row) => row.actualQuotaDelta || 0));
+            const weeklyExpected = weekly.reduce((sum, row) => sum + (row.expectedQuotaUnits || 0), 0);
+            const weeklyActual = weekly.reduce((sum, row) => sum + (row.actualQuotaUnits || 0), 0);
+            const fiveActualMax = Math.max(0, ...five.map((row) => row.actualQuotaUnits || 0));
             const apiCost = Number(body.summary?.apiCostUsd || 0);
             const fx = Number(fxInput.value) || 0;
             const subCost = weekly.reduce((sum, row) => sum + slotCost(row.slotIndex), 0);
@@ -640,11 +640,11 @@
                     : 'Quota is tracking close to token-based expectation';
             document.getElementById('headline-title').textContent = title;
             document.getElementById('headline-copy').textContent =
-                `Across selected agent-attributed slots, current weekly quota is ${pct2.format(weeklyActual)}% versus ${pct2.format(weeklyExpected)}% expected from token volume in each active window. Subscription savings are estimated from the editable per-slot EUR costs.`;
+                `Across selected agent-attributed slots, current weekly quota is ${pct2.format(weeklyActual)} 1x units versus ${pct2.format(weeklyExpected)} expected 1x units from token volume in each active window. Raw upstream percentages remain visible per slot.`;
             document.getElementById('headline-metrics').innerHTML = [
-                ['Weekly expected', `${pct2.format(weeklyExpected)}%`, `${variance >= 0 ? '+' : ''}${pct2.format(variance)} pts vs actual`],
-                ['Weekly actual used', `${pct2.format(weeklyActual)}%`, `${weekly.length} active slot windows`],
-                ['Max 5h used', `${pct2.format(fiveActualMax)}%`, 'largest burst pressure'],
+                ['Weekly expected', `${pct2.format(weeklyExpected)}u`, `${variance >= 0 ? '+' : ''}${pct2.format(variance)}u vs actual`],
+                ['Weekly actual used', `${pct2.format(weeklyActual)}u`, `${weekly.length} active slot windows`],
+                ['Max 5h used', `${pct2.format(fiveActualMax)}u`, 'largest burst pressure in 1x units'],
                 ['API vs sub', moneyEur.format(savings), `${moneyUsd.format(apiCost)} API estimate`],
             ].map(([label, value, sub]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-sub">${sub}</div></div>`).join('');
         }
@@ -652,25 +652,25 @@
         function renderInsights(body) {
             const weekly = weeklyRows(body);
             const active = weekly.filter((row) => row.requests > 0);
-            const worst = [...active].sort((a, b) => Math.abs((b.actualQuotaDelta || 0) - (b.expectedQuotaDelta || 0)) - Math.abs((a.actualQuotaDelta || 0) - (a.expectedQuotaDelta || 0)))[0];
-            const hottestFive = [...fiveHourRows(body)].sort((a, b) => (b.actualQuotaDelta || 0) - (a.actualQuotaDelta || 0))[0];
+            const worst = [...active].sort((a, b) => Math.abs((b.actualQuotaUnits || 0) - (b.expectedQuotaUnits || 0)) - Math.abs((a.actualQuotaUnits || 0) - (a.expectedQuotaUnits || 0)))[0];
+            const hottestFive = [...fiveHourRows(body)].sort((a, b) => (b.actualQuotaUnits || 0) - (a.actualQuotaUnits || 0))[0];
             const apiCost = Number(body.summary?.apiCostUsd || 0);
             const fx = Number(fxInput.value) || 0;
             const subCost = active.reduce((sum, row) => sum + slotCost(row.slotIndex), 0);
             const savings = apiCost * fx - subCost;
             const items = [
                 {
-                    tone: worst && worst.actualQuotaDelta > worst.expectedQuotaDelta + 2 ? 'warn' : 'good',
+                    tone: worst && worst.actualQuotaUnits > worst.expectedQuotaUnits + 2 ? 'warn' : 'good',
                     title: worst ? `Slot ${worst.slotIndex} attribution check` : 'Attribution check',
                     detail: worst
-                        ? `${pct2.format(worst.actualQuotaDelta)}% current weekly quota vs ${pct2.format(worst.expectedQuotaDelta)}% expected from attributed tokens. External Codex use on a slot will appear here as positive variance.`
+                        ? `${pct2.format(worst.actualQuotaUnits)}u current weekly quota vs ${pct2.format(worst.expectedQuotaUnits)}u expected from attributed tokens (${pct2.format(worst.actualQuotaDelta)}% raw on slot). External Codex use on a slot will appear here as positive variance.`
                         : 'No attributed weekly usage in this period.',
                 },
                 {
-                    tone: hottestFive && hottestFive.actualQuotaDelta > 70 ? 'bad' : 'warn',
+                    tone: hottestFive && hottestFive.actualQuotaUnits > 70 ? 'bad' : 'warn',
                     title: hottestFive ? `Five-hour pressure: slot ${hottestFive.slotIndex}` : 'Five-hour pressure',
                     detail: hottestFive
-                        ? `${pct2.format(hottestFive.actualQuotaDelta)}% current five-hour quota. This is the operational burst limiter.`
+                        ? `${pct2.format(hottestFive.actualQuotaUnits)}u current five-hour quota (${pct2.format(hottestFive.actualQuotaDelta)}% raw on slot). This is the operational burst limiter.`
                         : 'No five-hour movement in this period.',
                 },
                 {
@@ -704,9 +704,9 @@
                 const apiEur = Number(weekly.apiCostUsd || 0) * fx;
                 const sub = slotCost(slot);
                 const savings = apiEur - sub;
-                const weeklyDelta = (weekly.actualQuotaDelta || 0) - (weekly.expectedQuotaDelta || 0);
-                const fiveDelta = (five.actualQuotaDelta || 0) - (five.expectedQuotaDelta || 0);
-                const maxBar = Math.max(1, weekly.actualQuotaDelta || 0, weekly.expectedQuotaDelta || 0, five.actualQuotaDelta || 0, five.expectedQuotaDelta || 0);
+                const weeklyDelta = (weekly.actualQuotaUnits || 0) - (weekly.expectedQuotaUnits || 0);
+                const fiveDelta = (five.actualQuotaUnits || 0) - (five.expectedQuotaUnits || 0);
+                const maxBar = Math.max(1, weekly.actualQuotaUnits || 0, weekly.expectedQuotaUnits || 0, five.actualQuotaUnits || 0, five.expectedQuotaUnits || 0);
                 return `<article class="slot-card">
                     <div class="slot-head">
                         <div class="slot-title">Slot ${slot}</div>
@@ -718,8 +718,8 @@
                         <div class="mini-stat"><strong class="${savings >= 0 ? 'delta-good' : 'delta-bad'}">${moneyEur.format(savings)}</strong><span>savings</span></div>
                     </div>
                     <div class="comparison">
-                        ${compareRow('Weekly', weekly.expectedQuotaDelta || 0, weekly.actualQuotaDelta || 0, weeklyDelta, maxBar)}
-                        ${compareRow('Five-hour', five.expectedQuotaDelta || 0, five.actualQuotaDelta || 0, fiveDelta, maxBar)}
+                        ${compareRow('Weekly 1x units', weekly.expectedQuotaUnits || 0, weekly.actualQuotaUnits || 0, weeklyDelta, maxBar)}
+                        ${compareRow('Five-hour 1x units', five.expectedQuotaUnits || 0, five.actualQuotaUnits || 0, fiveDelta, maxBar)}
                     </div>
                 </article>`;
             }).join('');
@@ -737,10 +737,10 @@
             return `<div class="compare-row">
                 <div class="muted">${label}</div>
                 <div class="dual-track">
-                    <div class="track" title="Expected ${pct2.format(expected)}%"><div class="bar" style="width:${expectedW}%"></div></div>
-                    <div class="track" title="Actual used ${pct2.format(actual)}%"><div class="bar actual" style="width:${actualW}%"></div></div>
+                    <div class="track" title="Expected ${pct2.format(expected)} 1x units"><div class="bar" style="width:${expectedW}%"></div></div>
+                    <div class="track" title="Actual used ${pct2.format(actual)} 1x units"><div class="bar actual" style="width:${actualW}%"></div></div>
                 </div>
-                <div class="${varianceClass(delta)}">${pct2.format(expected)}% / ${pct2.format(actual)}%</div>
+                <div class="${varianceClass(delta)}">${pct2.format(expected)}u / ${pct2.format(actual)}u</div>
             </div>`;
         }
 
@@ -761,7 +761,7 @@
                 <line class="axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}"></line>
                 <polyline class="line-expected" points="${points('expected')}"></polyline>
                 <polyline class="line-actual" points="${points('actual')}"></polyline>
-                ${grouped.map((row, i) => `<circle class="point-expected" cx="${x(i)}" cy="${y(row.expected)}" r="3"><title>${escapeHtml(row.bucket)} expected ${pct2.format(row.expected)}%</title></circle><circle class="point-actual" cx="${x(i)}" cy="${y(row.actual)}" r="3"><title>${escapeHtml(row.bucket)} actual ${pct2.format(row.actual)}%</title></circle>`).join('')}
+                ${grouped.map((row, i) => `<circle class="point-expected" cx="${x(i)}" cy="${y(row.expected)}" r="3"><title>${escapeHtml(row.bucket)} expected ${pct2.format(row.expected)} 1x units</title></circle><circle class="point-actual" cx="${x(i)}" cy="${y(row.actual)}" r="3"><title>${escapeHtml(row.bucket)} actual ${pct2.format(row.actual)} 1x units</title></circle>`).join('')}
             `;
             labels.innerHTML = grouped.length > 0
                 ? `<span>${grouped[0].bucket}</span><span>${grouped[grouped.length - 1].bucket}</span>`
@@ -774,11 +774,11 @@
                 const current = map.get(row.bucket) || { bucket: row.bucket, expected: 0, actual: 0, totalTokens: 0 };
                 current.totalTokens += row.totalTokens || 0;
                 if (windowKey === 'weekly') {
-                    current.expected += row.weeklyExpectedQuotaDelta || 0;
-                    current.actual += row.weeklyActualQuotaDelta || 0;
+                    current.expected += row.weeklyExpectedQuotaUnits || 0;
+                    current.actual += row.weeklyActualQuotaUnits || 0;
                 } else {
-                    current.expected += row.fiveHourExpectedQuotaDelta || 0;
-                    current.actual += row.fiveHourActualQuotaDelta || 0;
+                    current.expected += row.fiveHourExpectedQuotaUnits || 0;
+                    current.actual += row.fiveHourActualQuotaUnits || 0;
                 }
                 map.set(row.bucket, current);
             }
@@ -787,19 +787,19 @@
 
         function renderUsageBars(id, rows, windowKey) {
             const max = Math.max(1, ...rows.map((row) => Math.max(
-                windowKey === 'weekly' ? row.weeklyActualQuotaDelta : row.fiveHourActualQuotaDelta,
-                windowKey === 'weekly' ? row.weeklyExpectedQuotaDelta : row.fiveHourExpectedQuotaDelta,
+                windowKey === 'weekly' ? row.weeklyActualQuotaUnits : row.fiveHourActualQuotaUnits,
+                windowKey === 'weekly' ? row.weeklyExpectedQuotaUnits : row.fiveHourExpectedQuotaUnits,
             )));
             document.getElementById(id).innerHTML = rows.map((row) => {
-                const actual = windowKey === 'weekly' ? row.weeklyActualQuotaDelta : row.fiveHourActualQuotaDelta;
-                const expected = windowKey === 'weekly' ? row.weeklyExpectedQuotaDelta : row.fiveHourExpectedQuotaDelta;
+                const actual = windowKey === 'weekly' ? row.weeklyActualQuotaUnits : row.fiveHourActualQuotaUnits;
+                const expected = windowKey === 'weekly' ? row.weeklyExpectedQuotaUnits : row.fiveHourExpectedQuotaUnits;
                 return `<div class="bar-row">
                     <div class="bar-name">${escapeHtml(row.bucket)} · slot ${escapeHtml(row.slotIndex)}</div>
                     <div class="dual-track">
                         <div class="track"><div class="bar" style="width:${Math.min(100, expected / max * 100)}%"></div></div>
                         <div class="track"><div class="bar actual" style="width:${Math.min(100, actual / max * 100)}%"></div></div>
                     </div>
-                    <div class="${varianceClass(actual - expected)}">${pct2.format(expected)}% / ${pct2.format(actual)}%</div>
+                    <div class="${varianceClass(actual - expected)}">${pct2.format(expected)}u / ${pct2.format(actual)}u</div>
                 </div>`;
             }).join('');
         }
@@ -810,15 +810,16 @@
                 const subCost = row.window === 'weekly' ? slotCost(row.slotIndex) : 0;
                 const apiEur = Number(row.apiCostUsd || 0) * fx;
                 const savings = row.window === 'weekly' ? apiEur - subCost : apiEur;
-                const delta = (row.actualQuotaDelta || 0) - (row.expectedQuotaDelta || 0);
+                const delta = (row.actualQuotaUnits || 0) - (row.expectedQuotaUnits || 0);
                 return `<tr>${
                     cell(row.slotIndex)
                     + cell(row.window)
                     + cell(fmt.format(row.requests || 0), 'num')
                     + cell(compact.format(row.totalTokens || 0), 'num')
-                    + cell(`${pct2.format(row.expectedQuotaDelta || 0)}%`, 'num')
                     + cell(`${pct2.format(row.actualQuotaDelta || 0)}%`, 'num')
-                    + cell(`<span class="${varianceClass(delta)}">${delta >= 0 ? '+' : ''}${pct2.format(delta)}%</span>`, 'num', true)
+                    + cell(`${pct2.format(row.expectedQuotaUnits || 0)}u`, 'num')
+                    + cell(`${pct2.format(row.actualQuotaUnits || 0)}u`, 'num')
+                    + cell(`<span class="${varianceClass(delta)}">${delta >= 0 ? '+' : ''}${pct2.format(delta)}u</span>`, 'num', true)
                     + cell(moneyUsd.format(row.apiCostUsd || 0), 'num')
                     + cell(row.window === 'weekly' ? moneyEur.format(subCost) : '-', 'num')
                     + cell(row.window === 'weekly' ? `<span class="${savings >= 0 ? 'delta-good' : 'delta-bad'}">${moneyEur.format(savings)}</span>` : '-', 'num', true)
@@ -838,6 +839,7 @@
                 cell(row.slotIndex)
                 + cell(row.window)
                 + cell(`${pct2.format(row.usedPercent || 0)}%`, 'num')
+                + cell(`${pct2.format(row.usedCapacityUnits || 0)}u`, 'num')
                 + cell(row.resetAt || '')
                 + cell(row.updatedAt || '')
             }</tr>`).join('');

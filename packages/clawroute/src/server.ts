@@ -40,6 +40,8 @@ import {
     getRecentTurnTraceCandidates,
     getTurnRequests,
     logRouting,
+    setCodexAccountCapacityOverride,
+    withCodexCapacityAccountFields,
 } from './logger.js';
 import { getStatsResponse } from './stats.js';
 import { getRedactedConfig, persistModelRegistryEntry, persistModelRemoval, persistTierSelection } from './config.js';
@@ -265,6 +267,13 @@ function resolveCodexAnalysisPeriod(query: {
         start: new Date(now.getTime() - hours * 60 * 60 * 1000).toISOString(),
         end: now.toISOString(),
     };
+}
+
+function decorateCodexUsageBody<T extends { accounts?: unknown }>(body: T): T {
+    const accounts = Array.isArray(body.accounts)
+        ? body.accounts.map((account) => withCodexCapacityAccountFields(account as Parameters<typeof withCodexCapacityAccountFields>[0]))
+        : body.accounts;
+    return { ...body, accounts };
 }
 
 export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {}): Hono {
@@ -664,7 +673,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
                 slotIndexes: await getCodexAutomaticUsageSlotIndexes(),
             });
             return c.json({
-                ...result.body,
+                ...decorateCodexUsageBody(result.body),
                 cacheUsage: getCodexPromptCacheUsage(24),
                 cacheUsageRecent: getCodexPromptCacheUsage(1 / 6),
             }, result.status as 200 | 502);
@@ -734,7 +743,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             }
             const result = await getCodexUsage({ slotIndexes: [slotIndex], force: true });
             const body = {
-                ...result.body,
+                ...decorateCodexUsageBody(result.body),
                 cacheUsage: getCodexPromptCacheUsage(24),
                 cacheUsageRecent: getCodexPromptCacheUsage(1 / 6),
             };
@@ -877,6 +886,38 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
                 error: {
                     message: error instanceof Error ? error.message : 'Failed to update slot',
                     code: 'balancer_slot_failed',
+                },
+            }, 400);
+        }
+    });
+
+    app.patch('/api/codex/balancer/accounts/:accountKey/capacity', async (c) => {
+        try {
+            const accountKey = c.req.param('accountKey');
+            if (!accountKey.trim()) {
+                return c.json({ error: { message: 'accountKey is required', code: 'invalid_account_key' } }, 400);
+            }
+            const body = await c.req.json() as { capacityMultiplier?: unknown };
+            if (body.capacityMultiplier !== null
+                && body.capacityMultiplier !== undefined
+                && (typeof body.capacityMultiplier !== 'number'
+                    || !Number.isFinite(body.capacityMultiplier)
+                    || body.capacityMultiplier < 1
+                    || body.capacityMultiplier > 100)) {
+                return c.json({ error: { message: 'capacityMultiplier must be between 1 and 100', code: 'invalid_capacity_multiplier' } }, 400);
+            }
+            setCodexAccountCapacityOverride(
+                accountKey,
+                body.capacityMultiplier === null || body.capacityMultiplier === undefined
+                    ? null
+                    : body.capacityMultiplier,
+            );
+            return c.json(await getCodexBalancerState());
+        } catch (error) {
+            return c.json({
+                error: {
+                    message: error instanceof Error ? error.message : 'Failed to update account capacity',
+                    code: 'capacity_update_failed',
                 },
             }, 400);
         }

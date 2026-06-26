@@ -20,6 +20,7 @@ import {
     CodexAnalysisSummary,
     CodexApiPricingModel,
     CodexBloatConversationRow,
+    CodexAccountCapacityOverride,
     CodexAccountScheduleRow,
     CodexBalancerAuditRow,
     CodexBalancerDecision,
@@ -29,6 +30,7 @@ import {
     CodexColdMigrationDecisionStatus,
     CodexResetCreditsSnapshot,
     CodexToolSchemaGroup,
+    CodexUsageAccountRow,
     CodexUsageSnapshotRecord,
     CodexUsageSnapshotHistoryRecord,
     CodexQuotaCalibrationRow,
@@ -292,6 +294,14 @@ const CODEX_ACCOUNT_SCHEDULE_SCHEMA = `
     )
 `;
 
+const CODEX_ACCOUNT_CAPACITY_SCHEMA = `
+    CREATE TABLE IF NOT EXISTS codex_account_capacity_overrides (
+        account_key TEXT PRIMARY KEY,
+        capacity_multiplier REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+`;
+
 const CODEX_BALANCER_SETTINGS_SCHEMA = `
     CREATE TABLE IF NOT EXISTS codex_balancer_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -418,6 +428,7 @@ function initializeSchema(database: Database): void {
     database.run(CODEX_RESET_CREDIT_ITEMS_SCHEMA);
     database.run(ROUTING_DAILY_ROLLUPS_SCHEMA);
     database.run(CODEX_ACCOUNT_SCHEDULE_SCHEMA);
+    database.run(CODEX_ACCOUNT_CAPACITY_SCHEMA);
     database.run(CODEX_BALANCER_SETTINGS_SCHEMA);
     database.run(CODEX_BALANCER_SLOT_OVERRIDES_SCHEMA);
     database.run(CODEX_ACTIVATION_CHECKPOINT_SCHEMA);
@@ -789,8 +800,11 @@ export function getRecentDecisions(limit: number = 50): RecentDecision[] {
                     is_dry_run, is_override, prompt_preview, context_info, error,
                     request_api_kind, requested_reasoning_effort,
                     selected_codex_slot_index, selected_codex_account_key,
+                    COALESCE(cap.capacity_multiplier, 1) AS codex_capacity_multiplier,
                     request_id, session_id, turn_id
              FROM routing_log
+             LEFT JOIN codex_account_capacity_overrides cap
+               ON cap.account_key = routing_log.selected_codex_account_key
              ORDER BY id DESC
              LIMIT ?`
         );
@@ -852,6 +866,9 @@ function recentDecisionFromRow(row: Record<string, unknown>): RecentDecision {
         requestedReasoningEffort: normalizeReasoningEffort(row['requested_reasoning_effort']),
         selectedCodexSlotIndex: row['selected_codex_slot_index'] === null ? null : Number(row['selected_codex_slot_index']),
         selectedCodexAccountKey: typeof row['selected_codex_account_key'] === 'string' ? row['selected_codex_account_key'] : null,
+        codexCapacityMultiplier: row['codex_capacity_multiplier'] === null || row['codex_capacity_multiplier'] === undefined
+            ? null
+            : Number(row['codex_capacity_multiplier']),
         requestId: typeof row['request_id'] === 'string' ? row['request_id'] : null,
         sessionId: typeof row['session_id'] === 'string' ? row['session_id'] : null,
         turnId: typeof row['turn_id'] === 'string' ? row['turn_id'] : null,
@@ -959,7 +976,25 @@ function csvStrings(value: unknown): string[] {
         : [];
 }
 
-function routingMetricsFromRow(row: Record<string, unknown>): RoutingTokenMetrics {
+function buildCapacityQuotaEstimate(
+    tokens: number,
+    capacityWeightedTokens: number,
+    calibration: CodexQuotaCalibrationRow | null | undefined,
+) {
+    const rate = calibration?.quotaUnitsPerMillionTotalTokens ?? calibration?.quotaPctPerMillionTotalTokens ?? 0;
+    if (!(tokens > 0) || !(rate > 0)) return null;
+    return {
+        units: (tokens / 1_000_000) * rate,
+        rawPercent: (capacityWeightedTokens / 1_000_000) * rate,
+        quotaUnitsPerMillionTotalTokens: rate,
+        sampleTokens: calibration?.totalTokens ?? 0,
+    };
+}
+
+function routingMetricsFromRow(
+    row: Record<string, unknown>,
+    quotaCalibration?: LiveQuotaCalibration,
+): RoutingTokenMetrics {
     const requests = Number(row['requests']) || 0;
     const inputTokens = Number(row['input_tokens']) || 0;
     const cachedInputTokens = Math.min(inputTokens, Number(row['cached_input_tokens']) || 0);
@@ -967,7 +1002,11 @@ function routingMetricsFromRow(row: Record<string, unknown>): RoutingTokenMetric
     const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
     const codexTokens = Number(row['codex_tokens']) || 0;
     const attributedCodexTokens = Math.min(codexTokens, Number(row['attributed_codex_tokens']) || 0);
-    return {
+    const attributedCodexCapacityWeightedTokens = Math.min(
+        attributedCodexTokens,
+        Number(row['attributed_codex_capacity_weighted_tokens']) || attributedCodexTokens,
+    );
+    const metrics: RoutingTokenMetrics = {
         requests,
         inputTokens,
         cachedInputTokens,
@@ -982,6 +1021,21 @@ function routingMetricsFromRow(row: Record<string, unknown>): RoutingTokenMetric
         attributedCodexTokens,
         quotaCoveragePercent: codexTokens > 0 ? (attributedCodexTokens / codexTokens) * 100 : 0,
     };
+    if (quotaCalibration) {
+        metrics.quotaEstimates = {
+            fiveHour: buildCapacityQuotaEstimate(
+                attributedCodexTokens,
+                attributedCodexCapacityWeightedTokens,
+                quotaCalibration.fiveHour,
+            ),
+            weekly: buildCapacityQuotaEstimate(
+                attributedCodexTokens,
+                attributedCodexCapacityWeightedTokens,
+                quotaCalibration.weekly,
+            ),
+        };
+    }
+    return metrics;
 }
 
 function liveQuotaCalibration(now: Date): LiveQuotaCalibration {
@@ -1034,6 +1088,9 @@ export function getLiveRoutingSessions(
                        THEN input_tokens + output_tokens ELSE 0 END), 0) AS codex_tokens,
                    COALESCE(SUM(CASE WHEN actual_model LIKE 'codex/%' AND selected_codex_slot_index IS NOT NULL
                        THEN input_tokens + output_tokens ELSE 0 END), 0) AS attributed_codex_tokens,
+                   COALESCE(SUM(CASE WHEN actual_model LIKE 'codex/%' AND selected_codex_slot_index IS NOT NULL
+                       THEN (input_tokens + output_tokens) / COALESCE(cap.capacity_multiplier, 1)
+                       ELSE 0 END), 0) AS attributed_codex_capacity_weighted_tokens,
                    COALESCE(AVG(response_time_ms), 0) AS average_response_ms,
                    GROUP_CONCAT(DISTINCT actual_model) AS models,
                    GROUP_CONCAT(DISTINCT tier) AS tiers,
@@ -1041,6 +1098,8 @@ export function getLiveRoutingSessions(
                    ${TRACE_TOOL_RESULTS_SQL} AS tool_results,
                    MAX(id) AS last_id
             FROM routing_log
+            LEFT JOIN codex_account_capacity_overrides cap
+              ON cap.account_key = routing_log.selected_codex_account_key
             WHERE session_id IS NOT NULL AND turn_id IS NOT NULL
             GROUP BY session_id
             ORDER BY last_id DESC
@@ -1062,6 +1121,9 @@ export function getLiveRoutingSessions(
                            THEN input_tokens + output_tokens ELSE 0 END), 0) AS codex_tokens,
                        COALESCE(SUM(CASE WHEN actual_model LIKE 'codex/%' AND selected_codex_slot_index IS NOT NULL
                            THEN input_tokens + output_tokens ELSE 0 END), 0) AS attributed_codex_tokens,
+                       COALESCE(SUM(CASE WHEN actual_model LIKE 'codex/%' AND selected_codex_slot_index IS NOT NULL
+                           THEN (input_tokens + output_tokens) / COALESCE(cap.capacity_multiplier, 1)
+                           ELSE 0 END), 0) AS attributed_codex_capacity_weighted_tokens,
                        COALESCE(AVG(response_time_ms), 0) AS average_response_ms,
                        GROUP_CONCAT(DISTINCT actual_model) AS models,
                        GROUP_CONCAT(DISTINCT tier) AS tiers,
@@ -1075,6 +1137,8 @@ export function getLiveRoutingSessions(
                         WHERE first.turn_id = routing_log.turn_id ORDER BY first.id ASC LIMIT 1) AS initial_model,
                        MAX(id) AS last_id
                 FROM routing_log
+                LEFT JOIN codex_account_capacity_overrides cap
+                  ON cap.account_key = routing_log.selected_codex_account_key
                 WHERE session_id = ? AND turn_id IS NOT NULL
                 GROUP BY turn_id
                 ORDER BY last_id DESC
@@ -1096,7 +1160,7 @@ export function getLiveRoutingSessions(
                     initialModel: String(turnRow['initial_model'] ?? ''),
                     models: csvStrings(turnRow['models']),
                     tiers: csvStrings(turnRow['tiers']),
-                    metrics: routingMetricsFromRow(turnRow),
+                    metrics: routingMetricsFromRow(turnRow, quotaCalibration),
                 });
             }
             turnStmt.free();
@@ -1111,7 +1175,7 @@ export function getLiveRoutingSessions(
                 turnCount,
                 models: csvStrings(sessionRow['models']),
                 tiers: csvStrings(sessionRow['tiers']),
-                metrics: routingMetricsFromRow(sessionRow),
+                metrics: routingMetricsFromRow(sessionRow, quotaCalibration),
                 turns,
                 hasMoreTurns: turnCount > turns.length,
             });
@@ -1140,8 +1204,11 @@ export function getTurnRequests(turnId: string, limit = 200): TurnRequestsRespon
                    is_dry_run, is_override, prompt_preview, context_info, error,
                    request_api_kind, requested_reasoning_effort,
                    selected_codex_slot_index, selected_codex_account_key,
+                   COALESCE(cap.capacity_multiplier, 1) AS codex_capacity_multiplier,
                    request_id, session_id, turn_id
             FROM routing_log
+            LEFT JOIN codex_account_capacity_overrides cap
+              ON cap.account_key = routing_log.selected_codex_account_key
             WHERE turn_id = ?
             ORDER BY id ASC
             LIMIT ?
@@ -1220,7 +1287,7 @@ export function getCodexUsageSnapshots(): CodexUsageSnapshotRecord[] {
         }
 
         stmt.free();
-        return snapshots;
+        return snapshots.map(withCodexCapacitySnapshotFields);
     } catch (error) {
         console.warn('Failed to load Codex usage snapshots:', error);
         return [];
@@ -1547,7 +1614,7 @@ function readQuotaHistory(start: string, end: string): CodexUsageSnapshotHistory
     const rows: CodexUsageSnapshotHistoryRecord[] = [];
     while (stmt.step()) {
         const row = stmt.getAsObject() as Record<string, unknown>;
-        rows.push({
+        const record: CodexUsageSnapshotHistoryRecord = {
             observedAt: String(row['observed_at']),
             accountKey: String(row['account_key']),
             slotIndex: Number(row['slot_index']),
@@ -1556,7 +1623,8 @@ function readQuotaHistory(start: string, end: string): CodexUsageSnapshotHistory
             resetAt: String(row['reset_at']),
             windowMinutes: Number(row['window_minutes']),
             updatedAt: String(row['observed_at']),
-        });
+        };
+        rows.push(withCodexCapacitySnapshotFields(record) as CodexUsageSnapshotHistoryRecord);
     }
     stmt.free();
     return rows;
@@ -1603,6 +1671,7 @@ function readDailyRollups(startDay: string, endDay: string): RoutingDailyRollupR
 
 type SlotWindowRequestTotals = {
     slotIndex: number;
+    accountKey: string;
     window: 'fiveHour' | 'weekly';
     observedAt: string;
     resetAt: string;
@@ -1616,6 +1685,8 @@ type SlotWindowRequestTotals = {
     uncachedPlusOutputTokens: number;
     apiCostUsd: number;
     actualQuotaDelta: number;
+    capacityMultiplier: number;
+    actualQuotaUnits: number;
 };
 
 function readSlotWindowRequestTotals(start: string, end: string): SlotWindowRequestTotals[] {
@@ -1624,6 +1695,7 @@ function readSlotWindowRequestTotals(start: string, end: string): SlotWindowRequ
         WITH latest AS (
             SELECT
                 slot_index,
+                account_key,
                 window,
                 observed_at,
                 reset_at,
@@ -1639,6 +1711,7 @@ function readSlotWindowRequestTotals(start: string, end: string): SlotWindowRequ
         )
         SELECT
             latest.slot_index,
+            latest.account_key,
             latest.window,
             latest.observed_at,
             latest.reset_at,
@@ -1666,6 +1739,7 @@ function readSlotWindowRequestTotals(start: string, end: string): SlotWindowRequ
         WHERE latest.rn = 1
         GROUP BY
             latest.slot_index,
+            latest.account_key,
             latest.window,
             latest.observed_at,
             latest.reset_at,
@@ -1681,8 +1755,12 @@ function readSlotWindowRequestTotals(start: string, end: string): SlotWindowRequ
         const inputTokens = Number(row['input_tokens']) || 0;
         const cachedInputTokens = Number(row['cached_input_tokens']) || 0;
         const outputTokens = Number(row['output_tokens']) || 0;
+        const accountKey = String(row['account_key']);
+        const capacityMultiplier = getCodexAccountCapacityMultiplier(accountKey);
+        const actualQuotaDelta = Number(row['actual_quota_delta']) || 0;
         rows.push({
             slotIndex: Number(row['slot_index']),
+            accountKey,
             window: row['window'] as 'fiveHour' | 'weekly',
             observedAt: String(row['observed_at']),
             resetAt: String(row['reset_at']),
@@ -1695,7 +1773,9 @@ function readSlotWindowRequestTotals(start: string, end: string): SlotWindowRequ
             totalTokens: inputTokens + outputTokens,
             uncachedPlusOutputTokens: Math.max(0, inputTokens - cachedInputTokens) + outputTokens,
             apiCostUsd: Number(row['api_cost_usd']) || 0,
-            actualQuotaDelta: Number(row['actual_quota_delta']) || 0,
+            actualQuotaDelta,
+            capacityMultiplier,
+            actualQuotaUnits: actualQuotaDelta * capacityMultiplier,
         });
     }
     stmt.free();
@@ -1822,6 +1902,7 @@ function readQuotaCalibration(start: string, end: string): CodexQuotaCalibration
     for (const row of totals) {
         const current = byWindow.get(row.window) ?? {
             slotIndex: -1,
+            accountKey: '',
             window: row.window,
             observedAt: '',
             resetAt: '',
@@ -1835,6 +1916,8 @@ function readQuotaCalibration(start: string, end: string): CodexQuotaCalibration
             uncachedPlusOutputTokens: 0,
             apiCostUsd: 0,
             actualQuotaDelta: 0,
+            capacityMultiplier: 1,
+            actualQuotaUnits: 0,
         };
         current.requests += row.requests;
         current.inputTokens += row.inputTokens;
@@ -1844,11 +1927,13 @@ function readQuotaCalibration(start: string, end: string): CodexQuotaCalibration
         current.uncachedPlusOutputTokens += row.uncachedPlusOutputTokens;
         current.apiCostUsd += row.apiCostUsd;
         current.actualQuotaDelta += row.actualQuotaDelta;
+        current.actualQuotaUnits += row.actualQuotaUnits;
         byWindow.set(row.window, current);
     }
     return Array.from(byWindow.values()).map((row) => ({
         window: row.window,
         observedQuotaDelta: row.actualQuotaDelta,
+        observedQuotaUnits: row.actualQuotaUnits,
         totalTokens: row.totalTokens,
         uncachedPlusOutputTokens: row.uncachedPlusOutputTokens,
         quotaPctPerMillionTotalTokens: row.totalTokens > 0
@@ -1857,16 +1942,25 @@ function readQuotaCalibration(start: string, end: string): CodexQuotaCalibration
         quotaPctPerMillionUncachedPlusOutput: row.uncachedPlusOutputTokens > 0
             ? (row.actualQuotaDelta * 1_000_000) / row.uncachedPlusOutputTokens
             : 0,
+        quotaUnitsPerMillionTotalTokens: row.totalTokens > 0
+            ? (row.actualQuotaUnits * 1_000_000) / row.totalTokens
+            : 0,
+        quotaUnitsPerMillionUncachedPlusOutput: row.uncachedPlusOutputTokens > 0
+            ? (row.actualQuotaUnits * 1_000_000) / row.uncachedPlusOutputTokens
+            : 0,
     }));
 }
 
 function readSlotUsageEstimates(start: string, end: string): CodexSlotUsageEstimate[] {
     const calibration = new Map(
-        readQuotaCalibration(start, end).map((row) => [row.window, row.quotaPctPerMillionTotalTokens]),
+        readQuotaCalibration(start, end).map((row) => [row.window, row.quotaUnitsPerMillionTotalTokens]),
     );
     return readSlotWindowRequestTotals(start, end).map((row) => {
         const rate = calibration.get(row.window) ?? 0;
-        const expectedQuotaDelta = (row.totalTokens / 1_000_000) * rate;
+        const expectedQuotaUnits = (row.totalTokens / 1_000_000) * rate;
+        const expectedQuotaDelta = row.capacityMultiplier > 0
+            ? expectedQuotaUnits / row.capacityMultiplier
+            : expectedQuotaUnits;
         return {
             slotIndex: row.slotIndex,
             window: row.window,
@@ -1879,6 +1973,10 @@ function readSlotUsageEstimates(start: string, end: string): CodexSlotUsageEstim
             actualQuotaDelta: row.actualQuotaDelta,
             expectedQuotaDelta,
             varianceQuotaDelta: row.actualQuotaDelta - expectedQuotaDelta,
+            capacityMultiplier: row.capacityMultiplier,
+            actualQuotaUnits: row.actualQuotaUnits,
+            expectedQuotaUnits,
+            varianceQuotaUnits: row.actualQuotaUnits - expectedQuotaUnits,
             expectedSource: 'calibrated_total_tokens',
             apiCostUsd: row.apiCostUsd,
         };
@@ -1888,9 +1986,9 @@ function readSlotUsageEstimates(start: string, end: string): CodexSlotUsageEstim
 function readSlotUsageChart(start: string, end: string, bucketFormat: 'day' | 'week'): CodexUsageChartPoint[] {
     if (!db) return [];
     const weeklyRate = readQuotaCalibration(start, end)
-        .find((row) => row.window === 'weekly')?.quotaPctPerMillionTotalTokens ?? 0;
+        .find((row) => row.window === 'weekly')?.quotaUnitsPerMillionTotalTokens ?? 0;
     const fiveHourRate = readQuotaCalibration(start, end)
-        .find((row) => row.window === 'fiveHour')?.quotaPctPerMillionTotalTokens ?? 0;
+        .find((row) => row.window === 'fiveHour')?.quotaUnitsPerMillionTotalTokens ?? 0;
     const bucketExpr = bucketFormat === 'week'
         ? "strftime('%Y-W%W', i.observed_at)"
         : "substr(i.observed_at, 1, 10)";
@@ -1901,6 +1999,7 @@ function readSlotUsageChart(start: string, end: string, bucketFormat: 'day' | 'w
         WITH snapshots AS (
             SELECT
                 slot_index,
+                account_key,
                 window,
                 observed_at,
                 ${bucketExpr} AS bucket,
@@ -1916,6 +2015,7 @@ function readSlotUsageChart(start: string, end: string, bucketFormat: 'day' | 'w
             SELECT
                 bucket,
                 slot_index,
+                account_key,
                 window,
                 used_percent
             FROM snapshots
@@ -1949,7 +2049,9 @@ function readSlotUsageChart(start: string, end: string, bucketFormat: 'day' | 'w
             rb.total_tokens,
             rb.api_cost_usd,
             COALESCE(MAX(CASE WHEN lbs.window = 'weekly' THEN lbs.used_percent END), 0) AS weekly_actual,
-            COALESCE(MAX(CASE WHEN lbs.window = 'fiveHour' THEN lbs.used_percent END), 0) AS five_hour_actual
+            MAX(CASE WHEN lbs.window = 'weekly' THEN lbs.account_key END) AS weekly_account_key,
+            COALESCE(MAX(CASE WHEN lbs.window = 'fiveHour' THEN lbs.used_percent END), 0) AS five_hour_actual,
+            MAX(CASE WHEN lbs.window = 'fiveHour' THEN lbs.account_key END) AS five_hour_account_key
         FROM request_buckets rb
         LEFT JOIN latest_bucket_snapshots lbs
             ON lbs.bucket = rb.bucket
@@ -1962,16 +2064,30 @@ function readSlotUsageChart(start: string, end: string, bucketFormat: 'day' | 'w
     while (stmt.step()) {
         const row = stmt.getAsObject() as Record<string, unknown>;
         const totalTokens = Number(row['total_tokens']) || 0;
+        const weeklyCapacity = getCodexAccountCapacityMultiplier(
+            typeof row['weekly_account_key'] === 'string' ? row['weekly_account_key'] : null,
+        );
+        const fiveHourCapacity = getCodexAccountCapacityMultiplier(
+            typeof row['five_hour_account_key'] === 'string' ? row['five_hour_account_key'] : null,
+        );
+        const weeklyExpectedQuotaUnits = (totalTokens / 1_000_000) * weeklyRate;
+        const fiveHourExpectedQuotaUnits = (totalTokens / 1_000_000) * fiveHourRate;
+        const weeklyActualQuotaDelta = Number(row['weekly_actual']) || 0;
+        const fiveHourActualQuotaDelta = Number(row['five_hour_actual']) || 0;
         rows.push({
             bucket: String(row['bucket']),
             slotIndex: Number(row['slot_index']),
             requests: Number(row['requests']) || 0,
             totalTokens,
             apiCostUsd: Number(row['api_cost_usd']) || 0,
-            weeklyActualQuotaDelta: Number(row['weekly_actual']) || 0,
-            weeklyExpectedQuotaDelta: (totalTokens / 1_000_000) * weeklyRate,
-            fiveHourActualQuotaDelta: Number(row['five_hour_actual']) || 0,
-            fiveHourExpectedQuotaDelta: (totalTokens / 1_000_000) * fiveHourRate,
+            weeklyActualQuotaDelta,
+            weeklyExpectedQuotaDelta: weeklyCapacity > 0 ? weeklyExpectedQuotaUnits / weeklyCapacity : weeklyExpectedQuotaUnits,
+            weeklyActualQuotaUnits: weeklyActualQuotaDelta * weeklyCapacity,
+            weeklyExpectedQuotaUnits,
+            fiveHourActualQuotaDelta,
+            fiveHourExpectedQuotaDelta: fiveHourCapacity > 0 ? fiveHourExpectedQuotaUnits / fiveHourCapacity : fiveHourExpectedQuotaUnits,
+            fiveHourActualQuotaUnits: fiveHourActualQuotaDelta * fiveHourCapacity,
+            fiveHourExpectedQuotaUnits,
         });
     }
     stmt.free();
@@ -2200,6 +2316,95 @@ export function seedCodexAccountSchedule(
         console.warn('Failed to seed Codex account schedule:', error);
         return getCodexAccountSchedule();
     }
+}
+
+function normalizeCodexCapacityMultiplier(value: number | null | undefined): number | null {
+    if (value === null || value === undefined || value === 1) return null;
+    if (!Number.isFinite(value) || value < 1 || value > 100) {
+        throw new Error('capacityMultiplier must be between 1 and 100');
+    }
+    return value;
+}
+
+export function getCodexAccountCapacityOverrides(): CodexAccountCapacityOverride[] {
+    if (!db) return [];
+    const result = db.exec(
+        `SELECT account_key, capacity_multiplier, updated_at
+         FROM codex_account_capacity_overrides
+         ORDER BY account_key`,
+    )[0];
+    return (result?.values ?? []).map((row) => ({
+        accountKey: String(row[0]),
+        capacityMultiplier: Number(row[1]),
+        updatedAt: String(row[2]),
+    }));
+}
+
+function getCodexAccountCapacityMap(): Map<string, number> {
+    return new Map(
+        getCodexAccountCapacityOverrides()
+            .map((row) => [row.accountKey, row.capacityMultiplier]),
+    );
+}
+
+export function getCodexAccountCapacityMultiplier(accountKey: string | null | undefined): number {
+    if (!accountKey) return 1;
+    return getCodexAccountCapacityMap().get(accountKey) ?? 1;
+}
+
+export function setCodexAccountCapacityOverride(accountKey: string, capacityMultiplier: number | null): void {
+    if (!db) return;
+    if (!accountKey.trim()) throw new Error('accountKey is required');
+    const normalized = normalizeCodexCapacityMultiplier(capacityMultiplier);
+    if (normalized === null) {
+        db.run('DELETE FROM codex_account_capacity_overrides WHERE account_key = ?', [accountKey]);
+        schedulePersistDb();
+        return;
+    }
+    db.run(
+        `INSERT INTO codex_account_capacity_overrides (
+            account_key, capacity_multiplier, updated_at
+        ) VALUES (?, ?, ?)
+        ON CONFLICT(account_key) DO UPDATE SET
+            capacity_multiplier = excluded.capacity_multiplier,
+            updated_at = excluded.updated_at`,
+        [accountKey, normalized, new Date().toISOString()],
+    );
+    schedulePersistDb();
+}
+
+function usedCapacityUnits(usedPercent: number | null | undefined, capacityMultiplier: number): number | null {
+    return typeof usedPercent === 'number' && Number.isFinite(usedPercent)
+        ? usedPercent * capacityMultiplier
+        : null;
+}
+
+function remainingCapacityUnits(usedPercent: number | null | undefined, capacityMultiplier: number): number | null {
+    return typeof usedPercent === 'number' && Number.isFinite(usedPercent)
+        ? Math.max(0, 100 - usedPercent) * capacityMultiplier
+        : null;
+}
+
+export function withCodexCapacitySnapshotFields(record: CodexUsageSnapshotRecord): CodexUsageSnapshotRecord {
+    const capacityMultiplier = getCodexAccountCapacityMultiplier(record.accountKey);
+    return {
+        ...record,
+        capacityMultiplier,
+        usedCapacityUnits: usedCapacityUnits(record.usedPercent, capacityMultiplier) ?? 0,
+        remainingCapacityUnits: remainingCapacityUnits(record.usedPercent, capacityMultiplier) ?? 0,
+    };
+}
+
+export function withCodexCapacityAccountFields(account: CodexUsageAccountRow): CodexUsageAccountRow {
+    const capacityMultiplier = getCodexAccountCapacityMultiplier(account.accountKey);
+    return {
+        ...account,
+        capacityMultiplier,
+        fiveHourUsedCapacityUnits: usedCapacityUnits(account.fiveHour?.usedPercent, capacityMultiplier),
+        fiveHourRemainingCapacityUnits: remainingCapacityUnits(account.fiveHour?.usedPercent, capacityMultiplier),
+        weeklyUsedCapacityUnits: usedCapacityUnits(account.weekly?.usedPercent, capacityMultiplier),
+        weeklyRemainingCapacityUnits: remainingCapacityUnits(account.weekly?.usedPercent, capacityMultiplier),
+    };
 }
 
 export function getCodexBalancerSettings(): Partial<CodexBalancerSettings> | null {

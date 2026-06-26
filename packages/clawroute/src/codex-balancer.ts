@@ -1,6 +1,7 @@
 import {
     clearCodexBalancerOverrides,
     getCodexActivationCheckpoints,
+    getCodexAccountCapacityMultiplier,
     getCodexBalancerAudit,
     getCodexBalancerSettings,
     getCodexBalancerSlotOverrides,
@@ -319,6 +320,7 @@ export function buildCodexBalancerState(input: {
         const account = accountsBySlot.get(slot.slotIndex);
         const row = rowsBySlot.get(slot.slotIndex);
         const checkpoint = checkpoints.get(slot.slotIndex);
+        const capacityMultiplier = getCodexAccountCapacityMultiplier(slot.accountKey);
         return {
             slotIndex: slot.slotIndex,
             path: slot.slotPath,
@@ -333,10 +335,23 @@ export function buildCodexBalancerState(input: {
             scheduledDay: WEEKDAY_NAMES[row?.anchorWeekday ?? (input.startWeekday + slot.slotIndex) % 7] ?? 'Unknown',
             rateLimitedUntil: slot.rateLimitedUntil > input.now ? new Date(slot.rateLimitedUntil).toISOString() : null,
             telemetryFresh: isFreshWeekly(account, input.now),
+            capacityMultiplier,
             fiveHourUsedPercent: account?.fiveHour?.usedPercent ?? null,
             fiveHourResetAt: account?.fiveHour?.resetAt ?? null,
+            fiveHourUsedCapacityUnits: account?.fiveHour
+                ? account.fiveHour.usedPercent * capacityMultiplier
+                : null,
+            fiveHourRemainingCapacityUnits: account?.fiveHour
+                ? Math.max(0, 100 - account.fiveHour.usedPercent) * capacityMultiplier
+                : null,
             weeklyUsedPercent: account?.weekly?.usedPercent ?? null,
             weeklyResetAt: account?.weekly?.resetAt ?? null,
+            weeklyUsedCapacityUnits: account?.weekly
+                ? account.weekly.usedPercent * capacityMultiplier
+                : null,
+            weeklyRemainingCapacityUnits: account?.weekly
+                ? Math.max(0, 100 - account.weekly.usedPercent) * capacityMultiplier
+                : null,
             expectedWeeklyResetAt: checkpoint?.expectedWeeklyResetAt ?? null,
             lastUsageCheckAt: checkpoint?.lastUsageCheckAt ?? null,
             exhausted: (account?.weekly?.usedPercent ?? 0) >= 100,

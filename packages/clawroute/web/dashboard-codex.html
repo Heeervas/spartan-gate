@@ -738,6 +738,12 @@
 
         function renderWindow(label, window) {
             const value = Math.max(0, Math.min(100, Number(window.usedPercent) || 0));
+            const capacity = Math.max(1, Number(window.capacityMultiplier) || 1);
+            const usedUnits = Number(window.usedCapacityUnits);
+            const remainingUnits = Number(window.remainingCapacityUnits);
+            const capacityMeta = Number.isFinite(usedUnits) && Number.isFinite(remainingUnits)
+                ? `<p class="usage-reset">${fmtPercent(value)} raw · ${fmtPercent(usedUnits)}u used / ${fmtPercent(remainingUnits)}u left · ${capacity}x</p>`
+                : '';
             const reset = window.resetAt ? `Reset ${countdownText(window.resetAt)}` : `${escapeHtml(String(window.windowMinutes))} min`;
             return `
                 <div class="usage-window" title="Resets ${escapeHtml(fmtDate(window.resetAt))}">
@@ -745,6 +751,7 @@
                     <div class="usage-gauge" style="--value:${value};--tone:${gaugeTone(value)}">
                         <span class="usage-percent">${fmtPercent(value)}</span>
                     </div>
+                    ${capacityMeta}
                     <p class="usage-reset"${window.resetAt ? ` data-countdown-prefix="Reset " data-countdown="${escapeHtml(window.resetAt)}"` : ''}>${reset}</p>
                 </div>`;
         }
@@ -850,10 +857,31 @@
                 </div>`;
         }
 
+        function renderCapacityControl(account) {
+            const value = Math.max(1, Number(account.capacityMultiplier) || 1);
+            return `
+                <div class="reset-control">
+                    <label>Capacity multiplier
+                        <input class="capacity-multiplier" type="number" min="1" max="100" step="0.5" data-account="${escapeHtml(account.accountKey)}" value="${escapeHtml(String(value))}">
+                    </label>
+                    <button class="save-capacity" type="button" data-account="${escapeHtml(account.accountKey)}">Save capacity</button>
+                </div>`;
+        }
+
         function renderAccount(account, errorsBySlot) {
             const windows = [];
-            if (account.fiveHour) windows.push(renderWindow('5h', account.fiveHour));
-            if (account.weekly) windows.push(renderWindow('Weekly', account.weekly));
+            if (account.fiveHour) windows.push(renderWindow('5h', {
+                ...account.fiveHour,
+                capacityMultiplier: account.capacityMultiplier,
+                usedCapacityUnits: account.fiveHourUsedCapacityUnits,
+                remainingCapacityUnits: account.fiveHourRemainingCapacityUnits,
+            }));
+            if (account.weekly) windows.push(renderWindow('Weekly', {
+                ...account.weekly,
+                capacityMultiplier: account.capacityMultiplier,
+                usedCapacityUnits: account.weeklyUsedCapacityUnits,
+                remainingCapacityUnits: account.weeklyRemainingCapacityUnits,
+            }));
             const secondary = `Slot${account.slotIndexes.length > 1 ? 's' : ''} ${account.slotIndexes.join(', ')}`;
             const pathMeta = account.slotPaths?.length
                 ? `Path${account.slotPaths.length > 1 ? 's' : ''} ${account.slotPaths.join(', ')}`
@@ -902,6 +930,7 @@
                     ${renderCacheStrip(account.accountKey)}
                     ${renderResetCreditStrip(account.resetCredits)}
                     ${renderSlotErrors(slotErrors)}
+                    ${renderCapacityControl(account)}
                     ${controls}
                 </article>`;
         }
@@ -912,6 +941,9 @@
             if (slot.fiveHourUsedPercent !== null && slot.fiveHourUsedPercent !== undefined) {
                 windows.push(renderWindow('5h', {
                     usedPercent: slot.fiveHourUsedPercent,
+                    capacityMultiplier: slot.capacityMultiplier,
+                    usedCapacityUnits: slot.fiveHourUsedCapacityUnits,
+                    remainingCapacityUnits: slot.fiveHourRemainingCapacityUnits,
                     resetAt: slot.fiveHourResetAt || null,
                     windowMinutes: 300,
                 }));
@@ -919,6 +951,9 @@
             if (slot.weeklyUsedPercent !== null && slot.weeklyUsedPercent !== undefined) {
                 windows.push(renderWindow('Weekly', {
                     usedPercent: slot.weeklyUsedPercent,
+                    capacityMultiplier: slot.capacityMultiplier,
+                    usedCapacityUnits: slot.weeklyUsedCapacityUnits,
+                    remainingCapacityUnits: slot.weeklyRemainingCapacityUnits,
                     resetAt: slot.weeklyResetAt || null,
                     windowMinutes: 10080,
                 }));
@@ -1230,6 +1265,22 @@
                 await mutateBalancer(`/api/codex/balancer/slots/${slot}`, {
                     method: 'PATCH',
                     body: JSON.stringify({ expectedWeeklyResetAt }),
+                });
+                return;
+            }
+            if (target.classList.contains('save-capacity')) {
+                const accountKey = target.dataset.account;
+                const input = Array.from(accountsBody.querySelectorAll('.capacity-multiplier'))
+                    .find((candidate) => candidate.dataset.account === accountKey);
+                const capacityMultiplier = Number(input?.value);
+                if (!Number.isFinite(capacityMultiplier) || capacityMultiplier < 1 || capacityMultiplier > 100) {
+                    alert('Capacity multiplier must be between 1 and 100.');
+                    await loadUsage();
+                    return;
+                }
+                await mutateBalancer(`/api/codex/balancer/accounts/${encodeURIComponent(accountKey)}/capacity`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ capacityMultiplier }),
                 });
             }
         });

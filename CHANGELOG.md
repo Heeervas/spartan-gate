@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Added dashboard-only Codex capacity multipliers keyed by account hash, plus
+  derived `1x units` in usage, session, and analysis views while preserving raw
+  `/wham/usage` percentages and routing behavior.
 - Kept Codex prompt-cache leases sticky across balance-loader de-scoring and
   transient 502 retries, while preserving hard-block invalidation, and fixed
   Hermes profile-path prompt cache key plus reasoning effort forwarding.

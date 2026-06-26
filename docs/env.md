@@ -330,6 +330,14 @@ ChatGPT reset-credit endpoint returns them. ClawRoute displays sanitized
 available counts plus grant and expiry dates where available, persists only
 hashed account/credit identifiers as latest-known telemetry, and never redeems
 or consumes a reset credit.
+The same dashboard can persist a per-account Codex capacity multiplier for
+analysis and display only. The multiplier is keyed by the stable hashed
+`accountKey`, defaults to `1`, accepts finite values from `1` to `100`, and is
+removed again when set to `1`. It does not change slot activation, routing,
+cooldowns, leases, retry policy, or hard-exhaustion decisions. Raw upstream
+`/wham/usage` percentages remain visible as percentages of that specific
+account; derived `1x units` multiply those percentages by the configured
+capacity so 20% on a 5x account is shown as 100 used units with 400 remaining.
 
 Codex usage analysis is available from `/dashboard-codex-analysis` and
 `/api/codex/analysis`. The analysis view compares logged request/token/cache
@@ -337,8 +345,10 @@ activity with current Codex quota state, model mix, tier mix, API kind, and
 requested reasoning effort. `routing_log` is still the raw request source of
 truth. `codex_usage_snapshots` remains a latest-known quota-state table, while
 `codex_usage_snapshot_history` stores append-only observations for trend
-checks. `routing_daily_rollups` is rebuildable from `routing_log` and exists to
-make repeated operator comparisons cheap.
+checks. Capacity-aware aggregate cards, tables, and charts use derived `1x
+units`, while slot diagnostics keep the raw upstream percentages available.
+`routing_daily_rollups` is rebuildable from `routing_log` and exists to make
+repeated operator comparisons cheap.
 
 The main `/dashboard` groups new routing rows as session → user turn → request.
 Hermes supplies its stable session through `prompt_cache_key`; ClawRoute stores
@@ -354,11 +364,15 @@ removes them.
 Session, turn, and attributed Codex request rows also show quota-equivalent
 estimates. `/api/routing/live` reuses the seven-day total-token calibration from
 Codex Analysis and returns compact 5h/weekly rates plus their sample sizes; the
-dashboard applies those rates only to Codex tokens with a selected slot. The
-weekly estimate is the stable reference. The 5h estimate is explicitly marked
-burst-sensitive, and neither value is presented as an observed quota delta.
-Mixed-provider and unattributed rows expose coverage instead of being counted
-as zero-cost Codex traffic.
+dashboard applies those rates only to Codex tokens with a selected slot/account.
+For Codex rows with a configured capacity multiplier, the pill shows both the
+raw account percentage and equivalent `1x units`; for example, the same weekly
+usage can appear as `~2.00% weekly raw · 2.00u 1x` on a 1x account or
+`~0.40% weekly raw · 2.00u 1x` on a 5x account. The weekly estimate is the
+stable reference. The 5h estimate is explicitly marked burst-sensitive, and
+neither value is presented as an observed quota delta. Mixed-provider and
+unattributed rows expose coverage instead of being counted as zero-cost Codex
+traffic.
 
 Personal integrations such as Telegram, Discord, GitHub, Raindrop, GogCLI,
 Google MCP project IDs, Codex auth paths, and autostart profiles are

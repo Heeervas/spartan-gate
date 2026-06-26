@@ -614,6 +614,8 @@ export interface RecentDecision {
     selectedCodexSlotIndex?: number | null;
     /** Stable hashed Codex account key, when applicable */
     selectedCodexAccountKey?: string | null;
+    /** Configured capacity multiplier for the selected Codex account. */
+    codexCapacityMultiplier?: number | null;
     requestTrace?: RequestTrace | null;
 }
 
@@ -702,6 +704,19 @@ export interface RoutingTokenMetrics {
     codexTokens: number;
     attributedCodexTokens: number;
     quotaCoveragePercent: number;
+    quotaEstimates?: CodexCapacityQuotaEstimateSet;
+}
+
+export interface CodexCapacityQuotaEstimate {
+    rawPercent: number;
+    units: number;
+    quotaUnitsPerMillionTotalTokens: number;
+    sampleTokens: number;
+}
+
+export interface CodexCapacityQuotaEstimateSet {
+    fiveHour: CodexCapacityQuotaEstimate | null;
+    weekly: CodexCapacityQuotaEstimate | null;
 }
 
 export interface LiveQuotaCalibration {
@@ -838,6 +853,12 @@ export interface CodexUsageSnapshotHistoryRecord extends CodexUsageSnapshotRecor
     observedAt: string;
 }
 
+export interface CodexAccountCapacityOverride {
+    accountKey: string;
+    capacityMultiplier: number;
+    updatedAt: string;
+}
+
 export interface RoutingDailyRollupRecord extends CodexAnalysisSummary {
     day: string;
     actualModel: string;
@@ -849,10 +870,13 @@ export interface RoutingDailyRollupRecord extends CodexAnalysisSummary {
 export interface CodexQuotaCalibrationRow {
     window: CodexUsageWindowKey;
     observedQuotaDelta: number;
+    observedQuotaUnits: number;
     totalTokens: number;
     uncachedPlusOutputTokens: number;
     quotaPctPerMillionTotalTokens: number;
     quotaPctPerMillionUncachedPlusOutput: number;
+    quotaUnitsPerMillionTotalTokens: number;
+    quotaUnitsPerMillionUncachedPlusOutput: number;
 }
 
 export interface CodexSlotUsageEstimate {
@@ -867,6 +891,10 @@ export interface CodexSlotUsageEstimate {
     actualQuotaDelta: number;
     expectedQuotaDelta: number;
     varianceQuotaDelta: number;
+    capacityMultiplier: number;
+    actualQuotaUnits: number;
+    expectedQuotaUnits: number;
+    varianceQuotaUnits: number;
     expectedSource: 'calibrated_total_tokens';
     apiCostUsd: number;
 }
@@ -879,8 +907,12 @@ export interface CodexUsageChartPoint {
     apiCostUsd: number;
     weeklyActualQuotaDelta: number;
     weeklyExpectedQuotaDelta: number;
+    weeklyActualQuotaUnits: number;
+    weeklyExpectedQuotaUnits: number;
     fiveHourActualQuotaDelta: number;
     fiveHourExpectedQuotaDelta: number;
+    fiveHourActualQuotaUnits: number;
+    fiveHourExpectedQuotaUnits: number;
 }
 
 export interface CodexToolSchemaGroup {
@@ -1046,8 +1078,13 @@ export interface CodexUsageAccountRow {
     cooldownUntil: string | null;
     lastFetchedAt: string | null;
     updatedAt: string | null;
+    capacityMultiplier?: number;
     fiveHour: CodexUsageWindowSnapshot | null;
     weekly: CodexUsageWindowSnapshot | null;
+    fiveHourUsedCapacityUnits?: number | null;
+    fiveHourRemainingCapacityUnits?: number | null;
+    weeklyUsedCapacityUnits?: number | null;
+    weeklyRemainingCapacityUnits?: number | null;
     resetCredits: CodexResetCreditsSnapshot | null;
 }
 
@@ -1056,6 +1093,9 @@ export interface CodexUsageSnapshotRecord {
     slotIndex: number;
     window: CodexUsageWindowKey;
     usedPercent: number;
+    capacityMultiplier?: number;
+    usedCapacityUnits?: number;
+    remainingCapacityUnits?: number;
     resetAt: string;
     windowMinutes: number;
     updatedAt: string;
@@ -1214,10 +1254,15 @@ export interface CodexBalancerSlotState {
     scheduledDay: string;
     rateLimitedUntil: string | null;
     telemetryFresh: boolean;
+    capacityMultiplier: number;
     fiveHourUsedPercent: number | null;
     fiveHourResetAt: string | null;
+    fiveHourUsedCapacityUnits: number | null;
+    fiveHourRemainingCapacityUnits: number | null;
     weeklyUsedPercent: number | null;
     weeklyResetAt: string | null;
+    weeklyUsedCapacityUnits: number | null;
+    weeklyRemainingCapacityUnits: number | null;
     expectedWeeklyResetAt: string | null;
     lastUsageCheckAt: string | null;
     exhausted: boolean;

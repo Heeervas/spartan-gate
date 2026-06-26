@@ -10,6 +10,7 @@ import {
     closeDb,
     initDb,
     logRouting,
+    setCodexAccountCapacityOverride,
     setCodexActivationCheckpoint,
     upsertCodexUsageSnapshots,
 } from '../src/logger.js';
@@ -454,6 +455,73 @@ describe('GET /api/codex/usage', () => {
             settingSources: { coldMigrationFiveHourThresholdPercent: 'persisted' },
         });
     });
+
+    it('updates account capacity overrides from the balancer API and keeps them across balancer reset', async () => {
+        const dir = makeTempDir();
+        const authPath = writeAuth(dir, 'auth.json', 'token-capacity', 'acct-capacity');
+        const accountKey = hashAccountKey('acct-capacity');
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', authPath);
+        const app = await createTestApp();
+
+        const missing = await app.request(`/api/codex/balancer/accounts/${accountKey}/capacity`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ capacityMultiplier: 5 }),
+        });
+        expect(missing.status).toBe(401);
+
+        const invalid = await app.request(`/api/codex/balancer/accounts/${accountKey}/capacity`, {
+            method: 'PATCH',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ capacityMultiplier: 0.5 }),
+        });
+        expect(invalid.status).toBe(400);
+        expect(await invalid.json()).toMatchObject({ error: { code: 'invalid_capacity_multiplier' } });
+
+        const invalidString = await app.request(`/api/codex/balancer/accounts/${accountKey}/capacity`, {
+            method: 'PATCH',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ capacityMultiplier: '5' }),
+        });
+        expect(invalidString.status).toBe(400);
+        expect(await invalidString.json()).toMatchObject({ error: { code: 'invalid_capacity_multiplier' } });
+
+        const invalidJson = await app.request(`/api/codex/balancer/accounts/${accountKey}/capacity`, {
+            method: 'PATCH',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: '{"capacityMultiplier":',
+        });
+        expect(invalidJson.status).toBe(400);
+
+        const response = await app.request(`/api/codex/balancer/accounts/${accountKey}/capacity`, {
+            method: 'PATCH',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ capacityMultiplier: 5 }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            slots: [expect.objectContaining({ accountKey, capacityMultiplier: 5 })],
+        });
+
+        const reset = await app.request('/api/codex/balancer/reset', {
+            method: 'POST',
+            headers: authHeaders(),
+        });
+        expect(reset.status).toBe(200);
+        expect(await reset.json()).toMatchObject({
+            slots: [expect.objectContaining({ accountKey, capacityMultiplier: 5 })],
+        });
+
+        const cleared = await app.request(`/api/codex/balancer/accounts/${accountKey}/capacity`, {
+            method: 'PATCH',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ capacityMultiplier: null }),
+        });
+        expect(cleared.status).toBe(200);
+        expect(await cleared.json()).toMatchObject({
+            slots: [expect.objectContaining({ accountKey, capacityMultiplier: 1 })],
+        });
+    });
 });
 
 describe('GET /api/codex/analysis', () => {
@@ -488,6 +556,7 @@ describe('GET /api/codex/analysis', () => {
             selected_codex_slot_index: 0,
             selected_codex_account_key: 'acct-analysis',
         });
+        setCodexAccountCapacityOverride('acct-analysis', 5);
         upsertCodexUsageSnapshots([{
             accountKey: 'acct-analysis',
             slotIndex: 0,
@@ -530,6 +599,17 @@ describe('GET /api/codex/analysis', () => {
                 hasSelectedCodexAttribution: true,
                 hasReasoningEffort: true,
             },
+            quotaSnapshots: [expect.objectContaining({
+                accountKey: 'acct-analysis',
+                usedPercent: 12,
+                capacityMultiplier: 5,
+                usedCapacityUnits: 60,
+            })],
+            slotUsageEstimates: [expect.objectContaining({
+                actualQuotaDelta: 12,
+                capacityMultiplier: 5,
+                actualQuotaUnits: 60,
+            })],
         });
     });
 });
@@ -574,6 +654,10 @@ describe('GET /dashboard-codex', () => {
         expect(html).toContain('has-error');
         expect(html).toContain('renderSlotErrors');
         expect(html).toContain('cacheUsageRecent');
+        expect(html).toContain('Capacity multiplier');
+        expect(html).toContain('/api/codex/balancer/accounts/');
+        expect(html).toContain('raw ·');
+        expect(html).toContain('u used');
         expect(html).toContain('Path ${slot.path}');
         expect(html).toContain('Telemetry pending');
         expect(html).toContain('Last usage check');
@@ -600,6 +684,8 @@ describe('GET /dashboard-codex-analysis', () => {
         expect(html).toContain('Daily quota trend');
         expect(html).toContain('Weekly quota trend');
         expect(html).toContain('Detailed per-slot table');
+        expect(html).toContain('Actual raw %');
+        expect(html).toContain('Actual 1x units');
         expect(html).toContain('Raw tables');
         expect(html).toMatch(/Codex Analysis/i);
         expect(html).toMatch(/href=["'][^"']*\/dashboard-codex["']/i);
@@ -631,6 +717,8 @@ describe('dashboard routes', () => {
         expect(html).toContain('requestTrace');
         expect(html).toContain('estimateQuota');
         expect(html).toContain('quotaEstimatePills');
+        expect(html).toContain('raw ·');
+        expect(html).toContain('u 1x');
         expect(html).toContain("pill('weekly', weekly)");
         expect(html).toContain('class="summary-quota">${quotaEstimate}</span>');
         expect(html).toContain('burst-sensitive estimate');
