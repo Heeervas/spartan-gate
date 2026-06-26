@@ -52,6 +52,7 @@ import {
     setLastCodexBalancerDecision,
     upsertCodexColdMigrationDecision,
 } from './logger.js';
+import { writeDebugCodexFinalRequestCapture } from './debug-capture.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -178,6 +179,8 @@ type ActiveCodexCacheLease = {
 const activeCacheLeases = new Map<string, ActiveCodexCacheLease>();
 const authRefreshPromises = new Map<string, Promise<Awaited<ReturnType<typeof refreshTokens>>>>();
 const authRefreshRetryAt = new Map<string, number>();
+const transientServerErrorRetryAtBySlotIndex = new Map<number, number>();
+const transientServerErrorRetryAtByAccountKey = new Map<string, number>();
 type AuthFileSnapshot = {
     data: Record<string, unknown>;
     fingerprint: string;
@@ -264,6 +267,10 @@ function getCacheLeaseMode(): 'keyed' | 'global' | 'off' {
 
 function getCodexRequestTimeoutMs(): number {
     return envMilliseconds('CODEX_REQUEST_TIMEOUT_MS', 180_000, 10_000, 900_000);
+}
+
+function getCodexTransientServerErrorCooldownMs(): number {
+    return envMilliseconds('CODEX_TRANSIENT_5XX_COOLDOWN_MS', 120_000, 0, 900_000);
 }
 
 function isCacheLeaseUsable(lease: ActiveCodexCacheLease, now: number): boolean {
@@ -356,6 +363,7 @@ function applyCacheLease(selection: BalanceLoaderSelection, now: number, affinit
         const hardBlocked = !slot
             || slotAccountKey !== lease.accountKey
             || slot.rateLimitedUntil > now
+            || isSlotOrAccountTransientServerBlocked(lease.slotIndex, lease.accountKey, now)
             || Boolean(selection.hardBlockedAccountKeys?.has(lease.accountKey))
             || Boolean(selection.hardBlockedSlotIndexes?.has(lease.slotIndex));
         if (hardBlocked) {
@@ -386,6 +394,60 @@ export function invalidateCodexCacheLeaseForSlot(slotIndex: number): void {
     for (const [key, lease] of activeCacheLeases.entries()) {
         if (lease.slotIndex === slotIndex) activeCacheLeases.delete(key);
     }
+}
+
+function invalidateCodexCacheLeaseForAccount(accountKey: string | null): void {
+    if (!accountKey) return;
+    for (const [key, lease] of activeCacheLeases.entries()) {
+        if (lease.accountKey === accountKey) activeCacheLeases.delete(key);
+    }
+}
+
+function clearExpiredTransientServerErrors(now: number): void {
+    for (const [slotIndex, retryAt] of transientServerErrorRetryAtBySlotIndex.entries()) {
+        if (retryAt <= now) transientServerErrorRetryAtBySlotIndex.delete(slotIndex);
+    }
+    for (const [accountKey, retryAt] of transientServerErrorRetryAtByAccountKey.entries()) {
+        if (retryAt <= now) transientServerErrorRetryAtByAccountKey.delete(accountKey);
+    }
+}
+
+function getAccountTransientServerRetryAt(accountKey: string | null, now: number): number | null {
+    if (!accountKey) return null;
+    clearExpiredTransientServerErrors(now);
+    const retryAt = transientServerErrorRetryAtByAccountKey.get(accountKey) ?? 0;
+    return retryAt > now ? retryAt : null;
+}
+
+function getSlotTransientServerRetryAt(slotIndex: number, accountKey: string | null, now: number): number | null {
+    clearExpiredTransientServerErrors(now);
+    const retryAt = Math.max(
+        transientServerErrorRetryAtBySlotIndex.get(slotIndex) ?? 0,
+        accountKey ? transientServerErrorRetryAtByAccountKey.get(accountKey) ?? 0 : 0,
+    );
+    return retryAt > now ? retryAt : null;
+}
+
+function isAccountTransientServerBlocked(accountKey: string | null, now: number): boolean {
+    return getAccountTransientServerRetryAt(accountKey, now) !== null;
+}
+
+function isSlotOrAccountTransientServerBlocked(slotIndex: number, accountKey: string | null, now: number): boolean {
+    return getSlotTransientServerRetryAt(slotIndex, accountKey, now) !== null;
+}
+
+function markSlotTransientServerError(slotIndex: number, accountKey: string | null, status: number): void {
+    const cooldownMs = getCodexTransientServerErrorCooldownMs();
+    if (cooldownMs <= 0) return;
+    const retryAt = Date.now() + cooldownMs;
+    transientServerErrorRetryAtBySlotIndex.set(slotIndex, retryAt);
+    if (accountKey) transientServerErrorRetryAtByAccountKey.set(accountKey, retryAt);
+    invalidateCodexCacheLeaseForSlot(slotIndex);
+    invalidateCodexCacheLeaseForAccount(accountKey);
+    console.warn(
+        `[codex-rotation] Slot ${slotIndex} marked transient-unavailable for `
+        + `${Math.ceil(cooldownMs / 1000)}s after ${status}`,
+    );
 }
 
 function getBalanceLoaderMode(): CodexBalanceLoaderMode {
@@ -710,6 +772,7 @@ function getLegacyFirstEligibleSlot(input: {
         const slot = authSlots[slotIndex]!;
         if (slot.rateLimitedUntil > input.now) continue;
         const accountKey = getSlotAccountKey(slot);
+        if (isSlotOrAccountTransientServerBlocked(slotIndex, accountKey, input.now)) continue;
         if (accountKey && input.excludedAccountKeys.has(accountKey)) continue;
         return { slotIndex, accountKey };
     }
@@ -776,6 +839,12 @@ async function getBalanceLoaderSelection(input: {
         slots: slotIdentities,
         allowBackgroundRefresh: false,
     });
+    const transientBlockedSlotIndexes = new Set(slotIdentities
+        .filter((slot) => isSlotOrAccountTransientServerBlocked(slot.slotIndex, slot.accountKey, input.now))
+        .map((slot) => slot.slotIndex));
+    const transientBlockedAccountKeys = new Set(slotIdentities
+        .map((slot) => slot.accountKey)
+        .filter((accountKey): accountKey is string => Boolean(accountKey) && isAccountTransientServerBlocked(accountKey, input.now)));
     const activation = resolveCodexActivatedSlots({
         now: input.now,
         startWeekday: getCodexScheduleStartWeekday(),
@@ -785,6 +854,7 @@ async function getBalanceLoaderSelection(input: {
     });
     const hardBlockedAccountKeys = new Set([
         ...input.excludedAccountKeys,
+        ...transientBlockedAccountKeys,
         ...selectorSnapshot.accounts
             .filter((account) => (account.weekly?.usedPercent ?? 0) >= 100)
             .map((account) => account.accountKey),
@@ -793,6 +863,7 @@ async function getBalanceLoaderSelection(input: {
         ...slotIdentities
             .filter((slot) => !isSlotAuthSelectable(slot)
                 || slot.rateLimitedUntil > input.now
+                || transientBlockedSlotIndexes.has(slot.slotIndex)
                 || !activation.enabledSlotIndexes.has(slot.slotIndex))
             .map((slot) => slot.slotIndex),
         ...slotIdentities
@@ -804,6 +875,7 @@ async function getBalanceLoaderSelection(input: {
         ...slotIdentities
             .filter((slot) => !isSlotAuthSelectable(slot))
             .map((slot) => slot.slotIndex),
+        ...transientBlockedSlotIndexes,
         ...slotIdentities
             .filter((slot) => !activation.enabledSlotIndexes.has(slot.slotIndex)
                 || !activation.activatedSlotIndexes.has(slot.slotIndex))
@@ -1315,6 +1387,8 @@ export function resetRotationState(): void {
     slotLastSelectedAtByIndex.clear();
     authRefreshPromises.clear();
     authRefreshRetryAt.clear();
+    transientServerErrorRetryAtBySlotIndex.clear();
+    transientServerErrorRetryAtByAccountKey.clear();
     resetCodexCacheBreakerState();
     rotationIntervalMs = -1;
     rotationIdleMs = -1;
@@ -1402,7 +1476,7 @@ function advanceSlot(): void {
 
 type AuthResult =
     | { ok: true; auth: CodexAuth }
-    | { ok: false; reason: 'all_rate_limited' | 'auth_missing' };
+    | { ok: false; reason: 'all_rate_limited' | 'all_transient_unavailable' | 'auth_missing' };
 
 /**
  * Get the active Codex auth, handling slot rotation and fallback.
@@ -1445,6 +1519,7 @@ export async function getActiveCodexAuth(
     // Try current slot, then rotate through others on failure
     const now = Date.now();
     let sawRateLimitedSlot = false;
+    let sawTransientServerErrorSlot = false;
     for (let attempt = 0; attempt < authSlots.length; attempt++) {
         const slotIndex = (currentSlotIndex + attempt) % authSlots.length;
         if (excludedSlotIndexes.has(slotIndex)) continue;
@@ -1458,6 +1533,14 @@ export async function getActiveCodexAuth(
             sawRateLimitedSlot = true;
             const remainMin = Math.ceil((slot.rateLimitedUntil - now) / 60_000);
             console.log(`[codex-rotation] Slot ${slotIndex} rate-limited for ${remainMin}m, skipping`);
+            continue;
+        }
+
+        const transientRetryAt = getSlotTransientServerRetryAt(slotIndex, slotAccountKey, now);
+        if (transientRetryAt) {
+            sawTransientServerErrorSlot = true;
+            const remainSec = Math.ceil((transientRetryAt - now) / 1000);
+            console.log(`[codex-rotation] Slot ${slotIndex} transient-unavailable for ${remainSec}s, skipping`);
             continue;
         }
 
@@ -1489,6 +1572,7 @@ export async function getActiveCodexAuth(
 
     // All slots failed
     activeRequests--;
+    if (sawTransientServerErrorSlot) return { ok: false, reason: 'all_transient_unavailable' };
     return { ok: false, reason: sawRateLimitedSlot ? 'all_rate_limited' : 'auth_missing' };
 }
 
@@ -2122,6 +2206,8 @@ function applyCodexTerminalErrorSideEffects(errorPayload: Record<string, unknown
         type === 'upstream_error' ||
         code?.startsWith('codex_5')
     ) {
+        const accountKey = authSlots[slot] ? getSlotAccountKey(authSlots[slot]!) : null;
+        markSlotTransientServerError(slot, accountKey, status);
         console.warn(`[codex-rotation] Slot ${slot} returned streaming ${code ?? type ?? 'server error'}, advancing`);
         if (slot === currentSlotIndex) {
             advanceSlot();
@@ -3138,6 +3224,40 @@ function getEarliestRateLimitInfo(): { resetsAt: number; resetsInSeconds: number
     };
 }
 
+function getEarliestTransientServerErrorInfo(): { retryAt: string; retryAfterSeconds: number } | null {
+    const now = Date.now();
+    clearExpiredTransientServerErrors(now);
+    const retryTimes = [
+        ...transientServerErrorRetryAtBySlotIndex.values(),
+        ...transientServerErrorRetryAtByAccountKey.values(),
+    ].filter((retryAt) => retryAt > now);
+    if (retryTimes.length === 0) return null;
+    const earliestRetryAt = Math.min(...retryTimes);
+    return {
+        retryAt: new Date(earliestRetryAt).toISOString(),
+        retryAfterSeconds: Math.ceil((earliestRetryAt - now) / 1000),
+    };
+}
+
+function transientServerUnavailableResponse(lastErrorResponse: Response | null): Response {
+    if (lastErrorResponse) return lastErrorResponse;
+    const retryInfo = getEarliestTransientServerErrorInfo();
+    return new Response(
+        JSON.stringify({
+            error: {
+                message: 'All Codex auth slots are temporarily unavailable after upstream server errors. Try again shortly.',
+                type: 'upstream_error',
+                code: 'codex_transient_unavailable',
+                ...(retryInfo ? {
+                    retry_at: retryInfo.retryAt,
+                    retry_after_seconds: retryInfo.retryAfterSeconds,
+                } : {}),
+            },
+        }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } },
+    );
+}
+
 async function readStreamToString(stream: ReadableStream<Uint8Array>): Promise<string> {
     const reader = stream.getReader();
     const chunks: Uint8Array[] = [];
@@ -3359,6 +3479,9 @@ export async function makeCodexRequest(
                     { status: 429, headers: { 'Content-Type': 'application/json' } },
                 );
             }
+            if (result.reason === 'all_transient_unavailable') {
+                return transientServerUnavailableResponse(lastErrorResponse);
+            }
             return lastErrorResponse ?? new Response(
                 JSON.stringify({
                     error: {
@@ -3408,6 +3531,19 @@ export async function makeCodexRequest(
 
         // Success or non-retriable error → return immediately
         if (response.status !== 401 && response.status !== 429 && response.status !== 500 && response.status !== 502) {
+            writeDebugCodexFinalRequestCapture({
+                requestId: executionContext.requestId ?? null,
+                sessionId,
+                promptCacheKeyHash: hashPromptCacheKey(promptCacheKey),
+                modelId,
+                modelName,
+                slotIndex: slotUsed,
+                accountKey: accountKeyUsed,
+                attempt: attempt + 1,
+                responseStatus: response.status,
+                estimatedInputTokens: estimateCodexRequestInputTokens(request),
+                body,
+            });
             const cacheLease = affinityKey ? activeCacheLeases.get(getLeaseMapKey(affinityKey)) : null;
             if (response.ok && cacheLease?.slotIndex === slotUsed) {
                 cacheLease.lastUsedAt = Date.now();
@@ -3421,6 +3557,20 @@ export async function makeCodexRequest(
 
         // Retryable auth/rate-limit/server errors → advance to the next slot and retry
         const errBody = await response.text();
+        writeDebugCodexFinalRequestCapture({
+            requestId: executionContext.requestId ?? null,
+            sessionId,
+            promptCacheKeyHash: hashPromptCacheKey(promptCacheKey),
+            modelId,
+            modelName,
+            slotIndex: slotUsed,
+            accountKey: accountKeyUsed,
+            attempt: attempt + 1,
+            responseStatus: response.status,
+            responseBodyExcerpt: errBody.slice(0, 4000),
+            estimatedInputTokens: estimateCodexRequestInputTokens(request),
+            body,
+        });
         releaseSelectionLease(lease, affinityKey, false);
         if (!shouldRetryCodexError(response.status, errBody)) {
             return new Response(
@@ -3451,6 +3601,8 @@ export async function makeCodexRequest(
             if (accountKeyUsed) excludedAccountKeys.add(accountKeyUsed);
         } else {
             // Transient server error, may be account-specific; try next slot without rate-limit penalty.
+            markSlotTransientServerError(slotUsed, accountKeyUsed, response.status);
+            if (accountKeyUsed) excludedAccountKeys.add(accountKeyUsed);
             console.warn(
                 `[codex-rotation] Slot ${slotUsed} returned ${response.status}, trying next slot...`
                 + (attempt + 1 < slotCount ? ` (attempt ${attempt + 1}/${slotCount})` : ' (no more slots)'),
@@ -3520,6 +3672,9 @@ export async function makeCodexImageRequest(
                     { status: 429, headers: { 'Content-Type': 'application/json' } },
                 );
             }
+            if (result.reason === 'all_transient_unavailable') {
+                return transientServerUnavailableResponse(lastErrorResponse);
+            }
 
             return lastErrorResponse ?? new Response(
                 JSON.stringify({
@@ -3534,6 +3689,9 @@ export async function makeCodexImageRequest(
         }
 
         const slotUsed = currentSlotIndex;
+        const accountKeyUsed = result.auth.accountId
+            ? hashAccountKey(result.auth.accountId)
+            : (authSlots[slotUsed] ? getSlotAccountKey(authSlots[slotUsed]!) : null);
         const response = await executeCodexImageCall(
             result.auth,
             request,
@@ -3565,6 +3723,7 @@ export async function makeCodexImageRequest(
         } else if (response.status === 429) {
             markSlotRateLimited(slotUsed, errBody);
         } else {
+            markSlotTransientServerError(slotUsed, accountKeyUsed, response.status);
             advanceSlot();
         }
 

@@ -808,7 +808,7 @@ describe('makeCodexRequest regressions', () => {
         ]);
     });
 
-    it('does not replace a cache lease after a transient 502 retry succeeds on another slot', async () => {
+    it('invalidates a cache lease after a transient 502 retry succeeds on another slot', async () => {
         const dir = makeTempDir();
         const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
         const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
@@ -882,7 +882,7 @@ describe('makeCodexRequest regressions', () => {
             'Bearer token-second',
             'Bearer token-second',
             'Bearer token-first',
-            'Bearer token-second',
+            'Bearer token-first',
         ]);
     });
 

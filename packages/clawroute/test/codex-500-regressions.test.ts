@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,6 +32,10 @@ function createSseResponse(events: Array<{ event: string; data: Record<string, u
 
 function authHeader(init?: RequestInit): string {
     return String((init?.headers as Record<string, string> | undefined)?.Authorization ?? '');
+}
+
+function hashAccountKey(accountId: string): string {
+    return createHash('sha256').update(accountId).digest('hex').slice(0, 16);
 }
 
 function successResponse(text: string): Response {
@@ -239,6 +244,167 @@ describe('makeCodexRequest 500 regressions', () => {
         ]);
         expect(response.status).toBe(200);
         expect(message['content']).toBe('slot 1 recovered after slot 0 aborted');
+    });
+
+    it('keeps a transient 502 slot out of selector-picked traffic until cooldown expires', async () => {
+        const dir = makeTempDir();
+        const firstPath = join(dir, 'first.json');
+        const secondPath = join(dir, 'second.json');
+        const firstAccountKey = hashAccountKey('acct-first');
+        writeAuth(firstPath, { access_token: 'token-first', account_id: 'acct-first' });
+        writeAuth(secondPath, { access_token: 'token-second', account_id: 'acct-second' });
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+        vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
+        vi.stubEnv('CODEX_TRANSIENT_5XX_COOLDOWN_MS', '120000');
+
+        const { transport, selectCodexBalanceCandidate } = await importTransportWithBalanceLoaderMocks({
+            selectorSnapshot: { fallbackReason: null, accounts: [] },
+            selectorResult: {
+                fallbackReason: null,
+                selectedAccountKey: firstAccountKey,
+                selectedSlotIndex: 0,
+                affinityApplied: false,
+                scores: [{ accountKey: firstAccountKey, slotIndexes: [0] }],
+            },
+        });
+        transport.resetRotationState();
+
+        let firstCalls = 0;
+        const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+            const authorization = authHeader(init);
+            if (authorization === 'Bearer token-first') {
+                firstCalls += 1;
+                if (firstCalls === 1) {
+                    return new Response(JSON.stringify({
+                        error: {
+                            message: 'This operation was aborted',
+                            code: 'codex_error',
+                            type: 'server_error',
+                        },
+                    }), {
+                        status: 502,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                return successResponse('slot 0 should stay cooling down');
+            }
+            if (authorization === 'Bearer token-second') {
+                return successResponse('slot 1 handled traffic while slot 0 cooled down');
+            }
+            throw new Error(`Unexpected Authorization header: ${authorization}`);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const firstResponse = await transport.makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        const secondResponse = await transport.makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        const secondBody = await secondResponse.json() as Record<string, unknown>;
+        const choices = secondBody['choices'] as Array<Record<string, unknown>>;
+        const message = choices[0]?.['message'] as Record<string, unknown>;
+
+        expect(firstResponse.status).toBe(200);
+        expect(secondResponse.status).toBe(200);
+        expect(selectCodexBalanceCandidate).toHaveBeenCalled();
+        expect(fetchMock.mock.calls.map(([, init]) => authHeader(init))).toEqual([
+            'Bearer token-first',
+            'Bearer token-second',
+            'Bearer token-second',
+        ]);
+        expect(message['content']).toBe('slot 1 handled traffic while slot 0 cooled down');
+    });
+
+    it('returns 503 without an upstream call while every slot is in transient 5xx cooldown', async () => {
+        const dir = makeTempDir();
+        const firstPath = join(dir, 'first.json');
+        const secondPath = join(dir, 'second.json');
+        writeAuth(firstPath, { access_token: 'token-first', account_id: 'acct-first' });
+        writeAuth(secondPath, { access_token: 'token-second', account_id: 'acct-second' });
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+        vi.stubEnv('CODEX_TRANSIENT_5XX_COOLDOWN_MS', '120000');
+
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+            error: {
+                message: 'This operation was aborted',
+                code: 'codex_error',
+                type: 'server_error',
+            },
+        }), {
+            status: 502,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        vi.stubGlobal('fetch', fetchMock);
+
+        const exhaustedResponse = await makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        const coolingResponse = await makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        const coolingBody = await coolingResponse.json() as { error: Record<string, unknown> };
+
+        expect(exhaustedResponse.status).toBe(502);
+        expect(coolingResponse.status).toBe(503);
+        expect(coolingBody.error['code']).toBe('codex_transient_unavailable');
+        expect(coolingBody.error['retry_after_seconds']).toBeGreaterThan(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries a transient 5xx slot after its cooldown expires', async () => {
+        const dir = makeTempDir();
+        const firstPath = join(dir, 'first.json');
+        const secondPath = join(dir, 'second.json');
+        const firstAccountKey = hashAccountKey('acct-first');
+        const startedAt = Date.parse('2026-06-26T12:00:00.000Z');
+        let now = startedAt;
+        vi.spyOn(Date, 'now').mockImplementation(() => now);
+        writeAuth(firstPath, { access_token: 'token-first', account_id: 'acct-first' });
+        writeAuth(secondPath, { access_token: 'token-second', account_id: 'acct-second' });
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+        vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
+        vi.stubEnv('CODEX_TRANSIENT_5XX_COOLDOWN_MS', '1000');
+
+        const { transport } = await importTransportWithBalanceLoaderMocks({
+            selectorSnapshot: { fallbackReason: null, accounts: [] },
+            selectorResult: {
+                fallbackReason: null,
+                selectedAccountKey: firstAccountKey,
+                selectedSlotIndex: 0,
+                affinityApplied: false,
+                scores: [{ accountKey: firstAccountKey, slotIndexes: [0] }],
+            },
+        });
+        transport.resetRotationState();
+
+        let firstCalls = 0;
+        const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+            const authorization = authHeader(init);
+            if (authorization === 'Bearer token-first') {
+                firstCalls += 1;
+                if (firstCalls === 1) {
+                    return new Response(JSON.stringify({ error: { message: 'temporary upstream abort', code: 'codex_error' } }), {
+                        status: 502,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                return successResponse('slot 0 recovered after transient cooldown');
+            }
+            if (authorization === 'Bearer token-second') {
+                return successResponse('slot 1 handled the cooldown window');
+            }
+            throw new Error(`Unexpected Authorization header: ${authorization}`);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const firstResponse = await transport.makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        now = startedAt + 1_001;
+        const recoveredResponse = await transport.makeCodexRequest(baseRequest, 'codex/gpt-5.4-mini', null);
+        const recoveredBody = await recoveredResponse.json() as Record<string, unknown>;
+        const choices = recoveredBody['choices'] as Array<Record<string, unknown>>;
+        const message = choices[0]?.['message'] as Record<string, unknown>;
+
+        expect(firstResponse.status).toBe(200);
+        expect(recoveredResponse.status).toBe(200);
+        expect(fetchMock.mock.calls.map(([, init]) => authHeader(init))).toEqual([
+            'Bearer token-first',
+            'Bearer token-second',
+            'Bearer token-first',
+        ]);
+        expect(message['content']).toBe('slot 0 recovered after transient cooldown');
     });
 
     it('reloads the auth file after a 401 auth error so a refreshed token works without restart', async () => {

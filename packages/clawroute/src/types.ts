@@ -183,6 +183,7 @@ export interface ExecutionResult {
 
 export interface RequestExecutionContext {
     sessionId: string | null;
+    requestId?: string | null;
     promptCacheKey?: string | null;
     codexSelection?: {
         slotIndex: number;

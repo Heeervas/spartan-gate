@@ -26,6 +26,7 @@ services:
       OPENAI_CODEX_AUTH_PATH: ${OPENAI_CODEX_AUTH_PATH:-}
       OPENAI_CODEX_AUTH_PATHS: ${OPENAI_CODEX_AUTH_PATHS:-}
       CODEX_HOME: ${CODEX_HOME:-/codex-home}
+      CODEX_TRANSIENT_5XX_COOLDOWN_MS: ${CODEX_TRANSIENT_5XX_COOLDOWN_MS:-120000}
       NO_PROXY: localhost,127.0.0.1,::1,hermes,clawroute,camofox
       no_proxy: localhost,127.0.0.1,::1,hermes,clawroute,camofox
     ports:

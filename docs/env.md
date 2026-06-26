@@ -240,7 +240,8 @@ Codex subscription routing: `OPENAI_CODEX_TOKEN`, `OPENAI_CODEX_AUTH_PATH`,
 `CODEX_EARLY_ACTIVATION_WEEKLY_PERCENT`,
 `CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT`,
 `CODEX_COLD_MIGRATION_DECISION_TTL_HOURS`, `CODEX_ROTATION_INTERVAL_HOURS`,
-`CODEX_ROTATION_IDLE_MINUTES`, and `CODEX_REQUEST_TIMEOUT_MS`. For
+`CODEX_ROTATION_IDLE_MINUTES`, `CODEX_REQUEST_TIMEOUT_MS`, and
+`CODEX_TRANSIENT_5XX_COOLDOWN_MS`. For
 multi-account Codex pools,
 `CODEX_BALANCE_LOADER_MODE=shadow` computes the recommendation while keeping
 legacy slot choice. With `on`, UTC weekday lanes are used only while one or more
@@ -281,6 +282,10 @@ request-local failures instead of account exhaustion.
 `CODEX_REQUEST_TIMEOUT_MS` bounds how long ClawRoute waits for Codex response
 headers before aborting a request; it defaults to `180000` so long Hermes
 sessions have more room than the older 60-second cutoff.
+`CODEX_TRANSIENT_5XX_COOLDOWN_MS` defaults to `120000`; after retryable
+Codex 500/502 failures, ClawRoute invalidates that slot's prompt-cache lease
+and temporarily skips the affected slot/account so concurrent sessions do not
+keep selecting the same failing auth profile.
 Prompt-cache leases default to `CODEX_CACHE_LEASE_MODE=keyed`, which keeps a
 bounded independent lease per prompt-cache key/affinity instead of a
 single global lease. `global` restores the old one-lease behavior and `off`

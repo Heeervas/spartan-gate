@@ -64,6 +64,7 @@ import {
     hashPromptCacheKey,
     recordCodexCacheBreakerOutcome,
 } from './codex-cache-breaker.js';
+import { writeDebugRequestCapture } from './debug-capture.js';
 import {
     resetCodexBalancerToEnvironment,
     updateCodexBalancerSettings,
@@ -458,6 +459,11 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
         logRouting(logEntry);
 
         const promptCacheKeyHash = hashPromptCacheKey(input.promptCacheKey);
+        writeDebugRequestCapture({
+            ...input,
+            promptCacheKeyHash,
+            contextInfo,
+        });
         if (!policyBlock
             && input.result.actualModel.startsWith('codex/')
             && promptCacheKeyHash
@@ -1312,6 +1318,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
 
             // Execute the request
             const result = await executeRequest(body, routing, classification, runtimeConfig, runtimeSnapshot.modelCatalog, {
+                requestId,
                 sessionId,
                 promptCacheKey,
             });
@@ -1438,6 +1445,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             const classification = classifyRequest(ccRequest, runtimeConfig);
             const routing = routeRequest(ccRequest, classification, runtimeConfig, runtimeSnapshot.modelCatalog);
             const result = await executeRequest(ccRequest, routing, classification, runtimeConfig, runtimeSnapshot.modelCatalog, {
+                requestId,
                 sessionId,
                 promptCacheKey,
             });
