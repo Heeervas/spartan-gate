@@ -327,10 +327,13 @@ Examples:
   sg route up -d
   sg route ps
   sg route logs -f spartan-route
+  sg route logs -f spartan_route
 
 Behavior:
   Uses compose.yml + compose.spartan-route.yml + private overrides.
   Hermes points at http://spartan-route:18790/v1 in this mode.
+  Spartan Route is exposed through the Caddy edge on SPARTAN_ROUTE_EDGE_PORT.
+  The service alias spartan_route is accepted for spartan-route.
   Plain `sg up -d` is unchanged and keeps the normal ClawRoute path.
 EOF
 }
@@ -462,7 +465,16 @@ sg_route() {
     if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" || "$#" -eq 0 ]]; then
         sg_route_help
     else
-        sg_route_compose "$@"
+        local normalized=()
+        local arg
+        for arg in "$@"; do
+            if [[ "$arg" == "spartan_route" ]]; then
+                normalized+=("spartan-route")
+            else
+                normalized+=("$arg")
+            fi
+        done
+        sg_route_compose "${normalized[@]}"
     fi
 }
 

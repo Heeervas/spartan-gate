@@ -253,6 +253,16 @@ class AliasHelpTests(unittest.TestCase):
         self.assertIn(f"-f {self.root / 'infra' / 'compose' / 'compose.spartan-route.yml'}", calls)
         self.assertIn(" ps", calls)
 
+    def test_spartan_route_helper_accepts_underscore_service_alias(self):
+        bin_dir, log = self.write_docker_stub("1000:1000")
+
+        result = self.run_sourced_with_path("sg route logs -f spartan_route", bin_dir)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = log.read_text(encoding="utf-8")
+        self.assertIn(" logs -f spartan-route", calls)
+        self.assertNotIn("spartan_route", calls)
+
     def test_urls_include_spartan_route_when_port_is_configured(self):
         (self.root / "private" / "env").mkdir(parents=True)
         (self.root / "private" / "env" / "local.env").write_text(

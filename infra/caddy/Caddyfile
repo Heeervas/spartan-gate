@@ -27,6 +27,16 @@
 	}
 }
 
+:18791 {
+	basic_auth {
+		{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
+	}
+
+	reverse_proxy http://spartan-route:18790 {
+		header_up Authorization "Bearer {$CLAWROUTE_TOKEN}"
+	}
+}
+
 :3005 {
 	@browserless_websocket {
 		header Connection *Upgrade*

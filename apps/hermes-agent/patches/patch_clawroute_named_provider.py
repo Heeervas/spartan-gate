@@ -13,6 +13,10 @@ MIGRATED_PROVIDER = "custom-1"
 BASE_URL_MARKER = "${OPENAI_BASE_URL}"
 KEY_ENV_MARKER = "CUSTOM_1_API_KEY"
 DEFAULT_CLAWROUTE_BASE_URL = "http://clawroute:18790/v1"
+ROUTE_BASE_URLS = {
+    DEFAULT_CLAWROUTE_BASE_URL,
+    "http://spartan-route:18790/v1",
+}
 
 
 def get_targets() -> list[Path]:
@@ -42,10 +46,6 @@ def model_block_range(lines: list[str]) -> tuple[int | None, int | None]:
             end = index
             break
     return start, end
-
-
-def resolved_clawroute_base_url() -> str:
-    return os.environ.get("OPENAI_BASE_URL", "").strip() or DEFAULT_CLAWROUTE_BASE_URL
 
 
 def patch_lines(lines: list[str]) -> tuple[list[str], bool, bool]:
@@ -84,13 +84,13 @@ def patch_lines(lines: list[str]) -> tuple[list[str], bool, bool]:
     already_patched = (
         current_default == MIGRATED_DEFAULT_MODEL
         and current_provider == MIGRATED_PROVIDER
-        and current_base_url != BASE_URL_MARKER
+        and current_base_url == BASE_URL_MARKER
     )
     if already_patched:
         return lines, False, True
 
     should_patch = (
-        has_base_url
+        (has_base_url or current_base_url in ROUTE_BASE_URLS)
         and has_key_hint
         and current_default in {LEGACY_DEFAULT_MODEL, MIGRATED_DEFAULT_MODEL}
         and current_provider in {LEGACY_PROVIDER, MIGRATED_PROVIDER}
@@ -103,9 +103,9 @@ def patch_lines(lines: list[str]) -> tuple[list[str], bool, bool]:
     provider_indent = lines[provider_index][: len(lines[provider_index]) - len(lines[provider_index].lstrip())]
     updated[default_index] = f"{default_indent}default: {MIGRATED_DEFAULT_MODEL}"
     updated[provider_index] = f"{provider_indent}provider: {MIGRATED_PROVIDER}"
-    if base_url_index is not None and current_base_url == BASE_URL_MARKER:
+    if base_url_index is not None and current_base_url != BASE_URL_MARKER:
         base_url_indent = lines[base_url_index][: len(lines[base_url_index]) - len(lines[base_url_index].lstrip())]
-        updated[base_url_index] = f"{base_url_indent}base_url: {resolved_clawroute_base_url()}"
+        updated[base_url_index] = f"{base_url_indent}base_url: {BASE_URL_MARKER}"
     changed = updated != lines
     return updated, changed, False
 

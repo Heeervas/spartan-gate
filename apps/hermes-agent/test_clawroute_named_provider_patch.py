@@ -76,10 +76,9 @@ class ClawrouteNamedProviderPatchTests(unittest.TestCase):
             text = path.read_text(encoding='utf-8')
             self.assertIn('default: custom-1/clawroute/auto', text)
             self.assertIn('provider: custom-1', text)
-            self.assertIn('base_url: http://clawroute:18790/v1', text)
+            self.assertIn('base_url: ${OPENAI_BASE_URL}', text)
             self.assertNotIn('default: clawroute/auto', text)
             self.assertNotIn('provider: custom\n', text)
-            self.assertNotIn('${OPENAI_BASE_URL}', text)
 
     def test_skips_unrelated_custom_provider_config(self):
         module = load_module()
@@ -118,7 +117,7 @@ class ClawrouteNamedProviderPatchTests(unittest.TestCase):
         self.assertIn('Already patched:', module.patch_file(path))
         self.assertEqual(first, path.read_text(encoding='utf-8'))
 
-    def test_materializes_base_url_for_already_named_provider(self):
+    def test_keeps_base_url_marker_for_already_named_provider(self):
         module = load_module()
         path = self.write_config(
             'config.yaml',
@@ -133,10 +132,29 @@ class ClawrouteNamedProviderPatchTests(unittest.TestCase):
             ]),
         )
 
+        self.assertIn('Already patched:', module.patch_file(path))
+        text = path.read_text(encoding='utf-8')
+        self.assertIn('base_url: ${OPENAI_BASE_URL}', text)
+
+    def test_replaces_materialized_route_base_url_with_marker(self):
+        module = load_module()
+        path = self.write_config(
+            'config.yaml',
+            '\n'.join([
+                'model:',
+                '  default: custom-1/clawroute/auto',
+                '  provider: custom-1',
+                '  base_url: http://clawroute:18790/v1',
+                '  context_length: 256000',
+                '  api_key_env: CUSTOM_1_API_KEY',
+                '',
+            ]),
+        )
+
         self.assertIn('Patched:', module.patch_file(path))
         text = path.read_text(encoding='utf-8')
-        self.assertIn('base_url: http://clawroute:18790/v1', text)
-        self.assertNotIn('${OPENAI_BASE_URL}', text)
+        self.assertIn('base_url: ${OPENAI_BASE_URL}', text)
+        self.assertNotIn('base_url: http://clawroute:18790/v1', text)
 
     def test_main_applies_patch_to_all_targets(self):
         module = load_module()

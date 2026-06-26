@@ -79,9 +79,11 @@ sg route up -d
 This keeps the existing `clawroute` service in place, adds `spartan-route`, and
 points Hermes at `http://spartan-route:18790/v1`. Plain `sg up -d` keeps the
 normal ClawRoute path and does not load `private/compose.spartan-route.local.yml`.
-Spartan Route publishes on `SPARTAN_ROUTE_EDGE_PORT`, default `18791`; use
-`18792` if legacy local tooling already reserves `18791`. The Codex dashboard
-is `/dashboard-codex` on that port and includes reset-credit telemetry.
+Spartan Route is exposed through Caddy on `SPARTAN_ROUTE_EDGE_PORT`, default
+`18791`; use `18792` if legacy local tooling already reserves `18791`. Private
+HTTPS stacks should use the Spartan Route URL printed by `sg-urls`; plain HTTP
+stacks use `http://localhost:<SPARTAN_ROUTE_EDGE_PORT>/dashboard-codex`. The
+Codex dashboard includes reset-credit telemetry.
 
 Do not use private commands against old stack data paths unless you are intentionally migrating data. The provided private override should use isolated Spartan Gate paths.
 

@@ -37,8 +37,6 @@ services:
       HTTPS_PROXY: http://proxy:8888
       NO_PROXY: localhost,127.0.0.1,::1,hermes,clawroute,spartan-route,proxy,caddy,searxng,reader,browserless,camofox
       no_proxy: localhost,127.0.0.1,::1,hermes,clawroute,spartan-route,proxy,caddy,searxng,reader,browserless,camofox
-    ports:
-      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_ROUTE_EDGE_PORT:-18791}:18790"
     volumes:
       - ${SPARTAN_ROUTE_DATA_PATH:-../../runtime/spartan-route}:/app/data
       - ../../config/clawroute:/app/config:ro
@@ -68,3 +66,10 @@ services:
       CUSTOM_1_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       NO_PROXY: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,spartan-route,ollama,browserless,camofox
       no_proxy: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,spartan-route,ollama,browserless,camofox
+
+  caddy:
+    ports:
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_ROUTE_EDGE_PORT:-18791}:18791"
+    depends_on:
+      spartan-route:
+        condition: service_healthy

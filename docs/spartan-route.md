@@ -103,10 +103,12 @@ This uses the normal full-stack private Compose path plus
 `http://spartan-route:18790/v1` in this mode. Plain `sg up -d` remains the
 normal ClawRoute path and does not load Spartan Route-only private overrides.
 
-The service publishes directly on `SPARTAN_ROUTE_EDGE_PORT`, default `18791`.
-For local private stacks that still reserve legacy Mission Control port
-`18791`, set `SPARTAN_ROUTE_EDGE_PORT=18792`. The existing ClawRoute service
-and `packages/clawroute/` remain untouched.
+Spartan Route is exposed through Caddy on `SPARTAN_ROUTE_EDGE_PORT`, default
+`18791`. For local private stacks that still reserve legacy Mission Control
+port `18791`, set `SPARTAN_ROUTE_EDGE_PORT=18792`. Private HTTPS stacks should
+use the Spartan Route URL printed by `sg-urls`; plain HTTP stacks use
+`http://localhost:<SPARTAN_ROUTE_EDGE_PORT>/dashboard-codex`. The existing
+ClawRoute service and `packages/clawroute/` remain untouched.
 
 ## Validation
 
