@@ -270,7 +270,9 @@ automatic activation filter for testing or recovery. Disabled slots remain
 visible in the balancer view, but background usage polling skips them while
 balance-loader mode is `on`. The dashboard also reports sanitized per-slot auth
 availability so an expired or refresh-failed auth file can be distinguished
-from quota cooldown. These controls use the dashboard's existing bearer token.
+from quota cooldown. If every live usage check times out, the dashboard keeps
+serving a partial diagnostic payload with per-slot errors instead of failing
+the whole view. These controls use the dashboard's existing bearer token.
 Low five-hour or weekly `/wham/usage` percentages do not guarantee immediate
 slot eligibility: upstream can still return a temporary rate limit. ClawRoute
 keeps long slot cooldowns for explicit `usage_limit_reached` responses with

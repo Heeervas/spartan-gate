@@ -205,6 +205,43 @@ describe('GET /api/codex/usage', () => {
         });
     });
 
+    it('keeps the dashboard API partial when every live usage check times out', async () => {
+        const dir = makeTempDir();
+        const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
+        const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+        mockFetch.mockImplementation(async (url: string) => {
+            if (isUsageUrl(url)) throw new Error('codex usage timed out after 10000ms');
+            if (isResetCreditsUrl(url)) return resetCreditsResponse();
+            throw new Error(`Unexpected URL: ${url}`);
+        });
+        const app = await createTestApp();
+
+        const response = await app.request('/api/codex/usage', { headers: authHeaders() });
+
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body).toMatchObject({
+            partial: true,
+            accounts: [],
+            slotErrors: [
+                expect.objectContaining({ slotIndex: 0, message: expect.stringMatching(/timed out after 10000ms/i) }),
+                expect.objectContaining({ slotIndex: 1, message: expect.stringMatching(/timed out after 10000ms/i) }),
+            ],
+            cacheUsage: expect.objectContaining({ periodHours: 24 }),
+            cacheUsageRecent: expect.objectContaining({ periodHours: 1 / 6 }),
+        });
+
+        const balancer = await app.request('/api/codex/balancer', { headers: authHeaders() });
+        expect(balancer.status).toBe(200);
+        expect(await balancer.json()).toMatchObject({
+            slots: [
+                expect.objectContaining({ slotIndex: 0, accountKey: hashAccountKey('acct-first') }),
+                expect.objectContaining({ slotIndex: 1, accountKey: hashAccountKey('acct-second') }),
+            ],
+        });
+    });
+
     it('keeps an expired non-primary slot dormant in balancer mode on', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-06-08T10:00:00.000Z'));

@@ -672,11 +672,15 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             const result = await getCodexUsage({
                 slotIndexes: await getCodexAutomaticUsageSlotIndexes(),
             });
+            const degradedUsageUnavailable = result.status === 502
+                && result.body.accounts.length === 0
+                && result.body.slotErrors.length > 0;
             return c.json({
                 ...decorateCodexUsageBody(result.body),
+                partial: result.body.partial || degradedUsageUnavailable,
                 cacheUsage: getCodexPromptCacheUsage(24),
                 cacheUsageRecent: getCodexPromptCacheUsage(1 / 6),
-            }, result.status as 200 | 502);
+            }, (degradedUsageUnavailable ? 200 : result.status) as 200 | 502);
         } catch (error) {
             return c.json({
                 partial: false,

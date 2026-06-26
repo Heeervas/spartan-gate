@@ -1134,8 +1134,12 @@
                     renderPayload(result.body, 401);
                     return;
                 }
-                const balancer = await requestApi('/api/codex/balancer', token.trim());
-                renderBalancer(balancer);
+                try {
+                    const balancer = await requestApi('/api/codex/balancer', token.trim());
+                    renderBalancer(balancer);
+                } catch (balancerError) {
+                    console.warn('Failed to load Codex balancer state', balancerError);
+                }
                 document.getElementById('build-revision').textContent = health.buildRevision || 'unknown';
                 setAuthState(false, '');
                 renderPayload(result.body, result.status);
