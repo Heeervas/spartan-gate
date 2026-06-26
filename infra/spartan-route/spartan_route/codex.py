@@ -645,6 +645,9 @@ class CodexRouter:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: dict[str, dict[str, Any]] = {}
+        item_to_call: dict[str, str] = {}
+        text_item_ids: set[str] = set()
+        tool_arg_delta_ids: set[str] = set()
         usage: dict[str, Any] = {}
         error: dict[str, Any] | None = None
         async for event, data in parse_sse_response(response):
@@ -654,7 +657,7 @@ class CodexRouter:
             if event == "error" or parsed.get("error"):
                 error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
                 break
-            self._apply_codex_event(event, parsed, text_parts, reasoning_parts, tool_calls, usage)
+            self._apply_codex_event(event, parsed, text_parts, reasoning_parts, tool_calls, usage, item_to_call, text_item_ids, tool_arg_delta_ids)
         if error:
             status = 401 if error.get("type") == "auth_error" else 429 if error.get("type") == "usage_limit_reached" else 502
             return CodexCallResult(status=status, body={"error": error}, error=str(error.get("message") or error.get("code") or "codex_error"))
@@ -688,6 +691,9 @@ class CodexRouter:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: dict[str, dict[str, Any]] = {}
+        item_to_call: dict[str, str] = {}
+        text_item_ids: set[str] = set()
+        tool_arg_delta_ids: set[str] = set()
         usage: dict[str, Any] = {}
         try:
             async for event, data in parse_sse_response(response):
@@ -700,7 +706,7 @@ class CodexRouter:
                     self._mark_streaming_error(slot, error)
                     yield sse({"error": error}, event="error")
                     break
-                chunks = self._apply_codex_event(event, parsed, text_parts, reasoning_parts, tool_calls, usage, stream=True)
+                chunks = self._apply_codex_event(event, parsed, text_parts, reasoning_parts, tool_calls, usage, item_to_call, text_item_ids, tool_arg_delta_ids, stream=True)
                 for delta in chunks:
                     yield sse({
                         "id": chat_id,
@@ -744,15 +750,34 @@ class CodexRouter:
         reasoning_parts: list[str],
         tool_calls: dict[str, dict[str, Any]],
         usage: dict[str, Any],
+        item_to_call: dict[str, str] | None = None,
+        text_item_ids: set[str] | None = None,
+        tool_arg_delta_ids: set[str] | None = None,
         stream: bool = False,
     ) -> list[dict[str, Any]]:
+        item_to_call = item_to_call if item_to_call is not None else {}
+        text_item_ids = text_item_ids if text_item_ids is not None else set()
+        tool_arg_delta_ids = tool_arg_delta_ids if tool_arg_delta_ids is not None else set()
         deltas: list[dict[str, Any]] = []
         if event in {"response.output_text.delta", "response.output_text.annotation.added"}:
             delta = parsed.get("delta")
             if isinstance(delta, str):
+                item_id = parsed.get("item_id")
+                if isinstance(item_id, str):
+                    text_item_ids.add(item_id)
                 text_parts.append(delta)
                 if stream:
                     deltas.append({"content": delta})
+        elif event == "response.output_text.done":
+            text = parsed.get("text")
+            item_id = parsed.get("item_id")
+            already_seen = isinstance(item_id, str) and item_id in text_item_ids
+            if isinstance(text, str) and text and not already_seen:
+                if isinstance(item_id, str):
+                    text_item_ids.add(item_id)
+                text_parts.append(text)
+                if stream:
+                    deltas.append({"content": text})
         elif event == "response.reasoning_summary_text.delta":
             delta = parsed.get("delta")
             if isinstance(delta, str):
@@ -763,6 +788,9 @@ class CodexRouter:
             item = parsed.get("item") if isinstance(parsed.get("item"), dict) else parsed
             if item.get("type") == "function_call":
                 call_id = str(item.get("call_id") or item.get("id") or f"call_{len(tool_calls)}")
+                item_id = item.get("id")
+                if isinstance(item_id, str):
+                    item_to_call[item_id] = call_id
                 call = tool_calls.setdefault(call_id, {
                     "id": call_id,
                     "type": "function",
@@ -772,7 +800,39 @@ class CodexRouter:
                     call["function"]["name"] = item["name"]
                 args = parsed.get("delta") or item.get("arguments")
                 if isinstance(args, str):
-                    call["function"]["arguments"] += args
+                    if event == "response.output_item.done" and call_id not in tool_arg_delta_ids:
+                        call["function"]["arguments"] = args
+                    elif event != "response.output_item.done":
+                        tool_arg_delta_ids.add(call_id)
+                        call["function"]["arguments"] += args
+            elif event == "response.function_call_arguments.delta":
+                item_id = parsed.get("item_id")
+                delta = parsed.get("delta")
+                if isinstance(item_id, str) and isinstance(delta, str):
+                    call_id = item_to_call.get(item_id, item_id)
+                    call = tool_calls.setdefault(call_id, {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    })
+                    tool_arg_delta_ids.add(call_id)
+                    tool_arg_delta_ids.add(item_id)
+                    call["function"]["arguments"] += delta
+        elif event == "response.function_call_arguments.done":
+            item_id = parsed.get("item_id")
+            name = parsed.get("name")
+            args = parsed.get("arguments")
+            if isinstance(item_id, str):
+                call_id = item_to_call.get(item_id, item_id)
+                call = tool_calls.setdefault(call_id, {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name if isinstance(name, str) else "", "arguments": ""},
+                })
+                if isinstance(name, str):
+                    call["function"]["name"] = name
+                if isinstance(args, str) and call_id not in tool_arg_delta_ids and item_id not in tool_arg_delta_ids:
+                    call["function"]["arguments"] = args
         elif event == "response.completed":
             response = parsed.get("response") if isinstance(parsed.get("response"), dict) else parsed
             usage.update(response.get("usage") or {})
@@ -780,9 +840,13 @@ class CodexRouter:
                 if not isinstance(item, dict):
                     continue
                 if item.get("type") == "message":
+                    item_id = item.get("id")
                     for content in item.get("content") or []:
                         if isinstance(content, dict) and content.get("type") == "output_text" and isinstance(content.get("text"), str):
-                            if not text_parts:
+                            already_seen = isinstance(item_id, str) and item_id in text_item_ids
+                            if not already_seen and (item_id or not text_parts):
+                                if isinstance(item_id, str):
+                                    text_item_ids.add(item_id)
                                 text_parts.append(content["text"])
                 elif item.get("type") == "reasoning":
                     summary = item.get("summary") or []
@@ -791,11 +855,18 @@ class CodexRouter:
                             reasoning_parts.append(part["text"])
                 elif item.get("type") == "function_call":
                     call_id = str(item.get("call_id") or item.get("id") or f"call_{len(tool_calls)}")
-                    tool_calls[call_id] = {
+                    item_id = item.get("id")
+                    if isinstance(item_id, str):
+                        item_to_call[item_id] = call_id
+                    call = tool_calls.setdefault(call_id, {
                         "id": call_id,
                         "type": "function",
-                        "function": {"name": item.get("name") or "", "arguments": item.get("arguments") or "{}"},
-                    }
+                        "function": {"name": item.get("name") or "", "arguments": ""},
+                    })
+                    if isinstance(item.get("name"), str):
+                        call["function"]["name"] = item["name"]
+                    if isinstance(item.get("arguments"), str) and call_id not in tool_arg_delta_ids:
+                        call["function"]["arguments"] = item["arguments"]
         return deltas
 
     async def execute_image(self, request: dict[str, Any]) -> CodexCallResult:

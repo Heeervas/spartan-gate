@@ -93,6 +93,58 @@ class CodexTests(unittest.TestCase):
         router._mark_streaming_error(slot, {"type": "usage_limit_reached", "resets_in_seconds": 60})
         self.assertGreater(slot.rate_limited_until, time.time())
 
+    def test_codex_event_parser_collects_done_text_without_delta(self) -> None:
+        router = CodexRouter.__new__(CodexRouter)
+        text_parts: list[str] = []
+        chunks = router._apply_codex_event(
+            "response.output_text.done",
+            {"item_id": "msg_1", "text": "final"},
+            text_parts,
+            [],
+            {},
+            {},
+            {},
+            set(),
+            set(),
+            stream=True,
+        )
+
+        self.assertEqual(text_parts, ["final"])
+        self.assertEqual(chunks, [{"content": "final"}])
+
+    def test_codex_event_parser_maps_item_id_argument_done_to_call_id(self) -> None:
+        router = CodexRouter.__new__(CodexRouter)
+        tool_calls: dict[str, dict] = {}
+        item_to_call: dict[str, str] = {}
+        arg_delta_ids: set[str] = set()
+
+        router._apply_codex_event(
+            "response.output_item.added",
+            {"item": {"id": "item_1", "type": "function_call", "call_id": "call_1", "name": "lookup"}},
+            [],
+            [],
+            tool_calls,
+            {},
+            item_to_call,
+            set(),
+            arg_delta_ids,
+        )
+        router._apply_codex_event(
+            "response.function_call_arguments.done",
+            {"item_id": "item_1", "name": "lookup", "arguments": "{\"q\":\"x\"}"},
+            [],
+            [],
+            tool_calls,
+            {},
+            item_to_call,
+            set(),
+            arg_delta_ids,
+        )
+
+        self.assertEqual(item_to_call["item_1"], "call_1")
+        self.assertEqual(tool_calls["call_1"]["function"]["name"], "lookup")
+        self.assertEqual(tool_calls["call_1"]["function"]["arguments"], "{\"q\":\"x\"}")
+
 
 if __name__ == "__main__":
     unittest.main()
