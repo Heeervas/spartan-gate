@@ -69,6 +69,20 @@ docker compose \
   up -d
 ```
 
+Parallel Spartan Route start:
+
+```sh
+docker compose \
+  -f infra/compose/compose.yml \
+  -f infra/compose/compose.spartan-route.yml \
+  --env-file private/env/local.env \
+  up -d spartan-route
+```
+
+This keeps the existing `clawroute` service in place and publishes Spartan
+Route on `SPARTAN_ROUTE_EDGE_PORT`, default `18791`. The Codex dashboard is
+`/dashboard-codex` on that port and includes reset-credit telemetry.
+
 Do not use private commands against old stack data paths unless you are intentionally migrating data. The provided private override should use isolated Spartan Gate paths.
 
 ## Logs
@@ -241,6 +255,7 @@ Raw checks:
 ```sh
 sg-status
 docker compose -f infra/compose/compose.yml exec clawroute node -e "fetch('http://127.0.0.1:18790/health').then(r=>r.text()).then(console.log)"
+docker compose -f infra/compose/compose.yml -f infra/compose/compose.spartan-route.yml exec spartan-route python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:18790/health').read().decode())"
 ```
 
 Reader check:

@@ -1,0 +1,67 @@
+services:
+  spartan-route:
+    build:
+      context: ../spartan-route
+    container_name: spartan_gate_spartan_route
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      CLAWROUTE_HOST: 0.0.0.0
+      CLAWROUTE_PORT: 18790
+      CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      CLAWROUTE_ENABLED: ${CLAWROUTE_ENABLED:-true}
+      CLAWROUTE_BASELINE_MODEL: ${CLAWROUTE_BASELINE_MODEL:-openrouter/anthropic/claude-sonnet-4.6}
+      CLAWROUTE_DEBUG: ${CLAWROUTE_DEBUG:-false}
+      CLAWROUTE_DRY_RUN: ${CLAWROUTE_DRY_RUN:-false}
+      CLAWROUTE_LOG_CONTENT: ${CLAWROUTE_LOG_CONTENT:-false}
+      CLAWROUTE_PROVIDER: ${CLAWROUTE_PROVIDER:-}
+      SPARTAN_ROUTE_DB_PATH: ${SPARTAN_ROUTE_DB_PATH:-/app/data/spartan-route.db}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      STEPFUN_API_KEY: ${STEPFUN_API_KEY:-}
+      OPENAI_CODEX_TOKEN: ${OPENAI_CODEX_TOKEN:-}
+      OPENAI_CODEX_AUTH_PATH: ${OPENAI_CODEX_AUTH_PATH:-}
+      OPENAI_CODEX_AUTH_PATHS: ${OPENAI_CODEX_AUTH_PATHS:-}
+      CODEX_HOME: ${CODEX_HOME:-/codex-home}
+      CODEX_CACHE_LEASE_MODE: ${CODEX_CACHE_LEASE_MODE:-keyed}
+      CODEX_CACHE_LEASE_MINUTES: ${CODEX_CACHE_LEASE_MINUTES:-60}
+      CODEX_CACHE_LEASE_IDLE_GRACE_MINUTES: ${CODEX_CACHE_LEASE_IDLE_GRACE_MINUTES:-10}
+      CODEX_TRANSIENT_5XX_COOLDOWN_MS: ${CODEX_TRANSIENT_5XX_COOLDOWN_MS:-120000}
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1,hermes,clawroute,spartan-route,proxy,caddy,searxng,reader,browserless,camofox
+      no_proxy: localhost,127.0.0.1,::1,hermes,clawroute,spartan-route,proxy,caddy,searxng,reader,browserless,camofox
+    ports:
+      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_ROUTE_EDGE_PORT:-18791}:18790"
+    volumes:
+      - ${SPARTAN_ROUTE_DATA_PATH:-../../runtime/spartan-route}:/app/data
+      - ../../config/clawroute:/app/config:ro
+      - ${SPARTAN_CODEX_HOME_PATH:-../../private/codex-home}:/codex-home:ro
+    networks:
+      - spartan_internal
+    depends_on:
+      proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18790/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  hermes:
+    depends_on:
+      spartan-route:
+        condition: service_healthy
+    environment:
+      OPENAI_BASE_URL: http://spartan-route:18790/v1
+      OPENAI_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      CUSTOM_1_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      NO_PROXY: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,spartan-route,ollama,browserless,camofox
+      no_proxy: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,spartan-route,ollama,browserless,camofox

@@ -9,6 +9,8 @@ Public env docs describe names and behavior only. Real values and machine-specif
 - `SPARTAN_BIND_LOCALHOST`: public host bind, default `127.0.0.1`.
 - `SPARTAN_GATE_PORT`: Caddy edge port for the Hermes API.
 - `CLAWROUTE_EDGE_PORT`: Caddy edge port for ClawRoute.
+- `SPARTAN_ROUTE_EDGE_PORT`: direct local edge port for the parallel
+  Spartan Route service, default `18791`.
 - `BROWSERLESS_DEBUG_PORT`: Caddy edge port for Browserless debugging.
 - `HERMES_DASHBOARD_PORT`: Caddy edge port for the Hermes dashboard.
 - `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`,
@@ -234,6 +236,13 @@ DevTools MCP, and Browserless profile seeding. See `infra/camofox/README.md`.
 
 Provider keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, and `OPENROUTER_API_KEY`.
 Additional providers: `XAI_API_KEY` and `STEPFUN_API_KEY`.
+
+Spartan Route uses the same bearer token, provider keys, Codex auth variables,
+and `config/clawroute` runtime profiles. Its parallel-only variables are
+`SPARTAN_ROUTE_DATA_PATH`, `SPARTAN_ROUTE_DB_PATH`, and
+`SPARTAN_ROUTE_EDGE_PORT`. If `SPARTAN_ROUTE_DB_PATH` is not set, the service
+writes `/app/data/spartan-route.db` and does not reuse `clawroute.db`.
+
 Codex subscription routing: `OPENAI_CODEX_TOKEN`, `OPENAI_CODEX_AUTH_PATH`,
 `OPENAI_CODEX_AUTH_PATHS`, `CODEX_HOME`, `CODEX_BALANCE_LOADER_MODE`,
 `CODEX_SCHEDULE_START_DAY`, `CODEX_EARLY_ACTIVATION_ENABLED`,

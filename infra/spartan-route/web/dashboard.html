@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spartan Route</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f4;
+      --panel: #ffffff;
+      --text: #202124;
+      --muted: #646866;
+      --line: #d8ddd8;
+      --accent: #1f7a68;
+      --warn: #9a5b00;
+      --bad: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #151716;
+        --panel: #202321;
+        --text: #eff2ef;
+        --muted: #a9b0ab;
+        --line: #383d3a;
+        --accent: #56c2a8;
+        --warn: #e5ad4f;
+        --bad: #ff897d;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .wrap {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+    }
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 0;
+      flex-wrap: wrap;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    nav {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    nav a, button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 8px 10px;
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    nav a.current, button.primary {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    main {
+      padding: 22px 0 40px;
+    }
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) auto auto;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    input {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 9px 10px;
+      font: inherit;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .metric, .session {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .metric .label, .muted {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .metric .value {
+      margin-top: 4px;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .session {
+      margin-bottom: 10px;
+    }
+    .session-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      border-top: 1px solid var(--line);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    @media (max-width: 780px) {
+      .toolbar { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      th:nth-child(3), td:nth-child(3) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap top">
+      <h1>Spartan Route</h1>
+      <nav>
+        <a class="current" href="/dashboard">Routing</a>
+        <a href="/dashboard-codex">Codex</a>
+        <a href="/stats">Stats JSON</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="toolbar">
+      <input id="token" type="password" autocomplete="off" placeholder="Bearer token">
+      <button id="save">Save</button>
+      <button id="refresh" class="primary">Refresh</button>
+    </div>
+    <section class="grid" id="metrics"></section>
+    <section id="sessions"></section>
+  </main>
+  <script>
+    const tokenInput = document.getElementById('token');
+    const metricsEl = document.getElementById('metrics');
+    const sessionsEl = document.getElementById('sessions');
+    const stored = sessionStorage.getItem('spartanRouteToken') || new URLSearchParams(location.search).get('token') || '';
+    tokenInput.value = stored;
+    if (stored) sessionStorage.setItem('spartanRouteToken', stored);
+
+    document.getElementById('save').onclick = () => {
+      sessionStorage.setItem('spartanRouteToken', tokenInput.value.trim());
+      load();
+    };
+    document.getElementById('refresh').onclick = () => load();
+
+    function headers() {
+      const token = tokenInput.value.trim();
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]));
+    }
+    function pct(cached, input) {
+      return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : '0.0%';
+    }
+    function metric(label, value, extra = '') {
+      return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(extra)}</div></div>`;
+    }
+    async function getJson(path) {
+      const response = await fetch(path, { headers: headers() });
+      if (!response.ok) throw new Error(`${path} HTTP ${response.status}`);
+      return await response.json();
+    }
+    function render(payload) {
+      const sessions = payload.sessions || [];
+      const totals = sessions.reduce((acc, session) => {
+        const m = session.metrics || {};
+        acc.requests += Number(m.requests) || 0;
+        acc.input += Number(m.inputTokens) || 0;
+        acc.cached += Number(m.cachedInputTokens) || 0;
+        acc.output += Number(m.outputTokens) || 0;
+        return acc;
+      }, { requests: 0, input: 0, cached: 0, output: 0 });
+      metricsEl.innerHTML = [
+        metric('Requests', totals.requests),
+        metric('Input tokens', totals.input.toLocaleString()),
+        metric('Cached input', totals.cached.toLocaleString(), pct(totals.cached, totals.input)),
+        metric('Output tokens', totals.output.toLocaleString()),
+      ].join('');
+      sessionsEl.innerHTML = sessions.map(session => {
+        const turns = session.turns || [];
+        const rows = turns.flatMap(turn => (turn.requests || []).map(row => ({ ...row, turnId: turn.id })));
+        return `<article class="session">
+          <div class="session-head">
+            <strong>${esc(session.id)}</strong>
+            <span class="muted">${esc(session.lastAt)} - ${esc((session.metrics || {}).requests || 0)} requests - ${pct((session.metrics || {}).cachedInputTokens || 0, (session.metrics || {}).inputTokens || 0)} cache</span>
+          </div>
+          <table>
+            <thead><tr><th>Time</th><th>Model</th><th>Turn</th><th>Tokens</th><th>Status</th></tr></thead>
+            <tbody>${rows.map(row => `<tr>
+              <td>${esc(row.timestamp)}</td>
+              <td>${esc(row.actualModel)}</td>
+              <td>${esc(row.turnId)}</td>
+              <td>${esc(row.inputTokens || 0)} in - ${esc(row.cachedInputTokens || 0)} cached - ${esc(row.outputTokens || 0)} out</td>
+              <td class="${row.error ? 'bad' : ''}">${esc(row.error || 'ok')}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </article>`;
+      }).join('') || '<p class="muted">No routing rows yet.</p>';
+    }
+    async function load() {
+      try {
+        sessionsEl.innerHTML = '<p class="muted">Loading...</p>';
+        render(await getJson('/api/routing/live'));
+      } catch (error) {
+        sessionsEl.innerHTML = `<p class="bad">${esc(error.message)}</p>`;
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

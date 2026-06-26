@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from spartan_route.config import load_config
+
+
+class ConfigTests(unittest.TestCase):
+    def test_parallel_default_db_path_does_not_reuse_clawroute_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            (config_dir / "default.json").write_text(
+                json.dumps({
+                    "providerProfile": "codex",
+                    "baselineModel": "codex/gpt-5.5",
+                    "logging": {"dbPath": "./data/clawroute.db"},
+                }),
+                encoding="utf-8",
+            )
+            (config_dir / "clawroute.json").write_text("{}", encoding="utf-8")
+            (config_dir / "providers").mkdir()
+            (config_dir / "providers" / "codex.json").write_text("{}", encoding="utf-8")
+
+            config = load_config({"SPARTAN_ROUTE_CONFIG_DIR": str(config_dir), "CLAWROUTE_TOKEN": "secret"})
+
+        self.assertEqual(config.db_path, "./data/spartan-route.db")
+        self.assertEqual(config.baseline_model, "codex/gpt-5.5")
+        self.assertEqual(config.token, "secret")
+
+    def test_explicit_spartan_route_db_path_wins(self) -> None:
+        config = load_config({
+            "SPARTAN_ROUTE_CONFIG_DIR": "/missing",
+            "SPARTAN_ROUTE_DB_PATH": "/tmp/custom.db",
+        })
+        self.assertEqual(config.db_path, "/tmp/custom.db")
+
+
+if __name__ == "__main__":
+    unittest.main()

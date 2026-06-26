@@ -1,0 +1,454 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sqlite3
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .util import now_iso, parse_float
+
+
+@dataclass(frozen=True)
+class RoutingLogEntry:
+    timestamp: str
+    original_model: str
+    routed_model: str
+    actual_model: str
+    tier: str
+    classification_reason: str = ""
+    confidence: float = 0.0
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    output_tokens: int = 0
+    original_cost_usd: float = 0.0
+    actual_cost_usd: float = 0.0
+    savings_usd: float = 0.0
+    escalated: bool = False
+    escalation_chain: str = "[]"
+    response_time_ms: int = 0
+    had_tool_calls: bool = False
+    is_dry_run: bool = False
+    is_override: bool = False
+    session_id: str | None = None
+    error: str | None = None
+    prompt_preview: str | None = None
+    context_info: str | None = None
+    request_api_kind: str = "chat_completions"
+    requested_reasoning_effort: str | None = None
+    selected_codex_slot_index: int | None = None
+    selected_codex_account_key: str | None = None
+    request_id: str | None = None
+    turn_id: str | None = None
+
+
+class TelemetryStore:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        if db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
+        self._init_schema()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            self._conn.executescript(
+                """
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS routing_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    original_model TEXT NOT NULL,
+                    routed_model TEXT NOT NULL,
+                    actual_model TEXT NOT NULL,
+                    tier TEXT NOT NULL,
+                    classification_reason TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    original_cost_usd REAL NOT NULL DEFAULT 0,
+                    actual_cost_usd REAL NOT NULL DEFAULT 0,
+                    savings_usd REAL NOT NULL DEFAULT 0,
+                    escalated INTEGER NOT NULL DEFAULT 0,
+                    escalation_chain TEXT NOT NULL DEFAULT '[]',
+                    response_time_ms INTEGER NOT NULL DEFAULT 0,
+                    had_tool_calls INTEGER NOT NULL DEFAULT 0,
+                    is_dry_run INTEGER NOT NULL DEFAULT 0,
+                    is_override INTEGER NOT NULL DEFAULT 0,
+                    session_id TEXT,
+                    error TEXT,
+                    prompt_preview TEXT,
+                    context_info TEXT,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    request_api_kind TEXT NOT NULL DEFAULT 'chat_completions',
+                    requested_reasoning_effort TEXT,
+                    selected_codex_slot_index INTEGER,
+                    selected_codex_account_key TEXT,
+                    request_id TEXT,
+                    turn_id TEXT
+                );
+                CREATE TABLE IF NOT EXISTS routing_daily_rollups (
+                    day TEXT NOT NULL,
+                    actual_model TEXT NOT NULL,
+                    tier TEXT NOT NULL,
+                    request_api_kind TEXT NOT NULL DEFAULT 'chat_completions',
+                    requested_reasoning_effort TEXT NOT NULL DEFAULT '',
+                    requests INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(day, actual_model, tier, request_api_kind, requested_reasoning_effort)
+                );
+                CREATE TABLE IF NOT EXISTS codex_usage_snapshots (
+                    account_key TEXT NOT NULL,
+                    slot_index INTEGER NOT NULL,
+                    window TEXT NOT NULL,
+                    used_percent REAL NOT NULL,
+                    reset_at TEXT NOT NULL,
+                    window_minutes INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(account_key, window)
+                );
+                CREATE TABLE IF NOT EXISTS codex_usage_snapshot_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_key TEXT NOT NULL,
+                    slot_index INTEGER NOT NULL,
+                    window TEXT NOT NULL,
+                    used_percent REAL NOT NULL,
+                    reset_at TEXT NOT NULL,
+                    window_minutes INTEGER NOT NULL,
+                    observed_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS codex_reset_credit_summaries (
+                    account_key TEXT PRIMARY KEY,
+                    slot_index INTEGER NOT NULL,
+                    available_count INTEGER,
+                    details_available INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS codex_reset_credit_items (
+                    account_key TEXT NOT NULL,
+                    credit_key TEXT NOT NULL,
+                    slot_index INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    reset_type TEXT,
+                    title TEXT,
+                    granted_at TEXT,
+                    expires_at TEXT,
+                    redeemed_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(account_key, credit_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_routing_log_session ON routing_log(session_id, id);
+                CREATE INDEX IF NOT EXISTS idx_routing_log_turn ON routing_log(turn_id, id);
+                CREATE INDEX IF NOT EXISTS idx_routing_log_time ON routing_log(timestamp);
+                """
+            )
+            self._conn.commit()
+
+    def log_routing(self, entry: RoutingLogEntry) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO routing_log (
+                    timestamp, original_model, routed_model, actual_model, tier,
+                    classification_reason, confidence, input_tokens, cached_input_tokens,
+                    output_tokens, original_cost_usd, actual_cost_usd, savings_usd,
+                    escalated, escalation_chain, response_time_ms, had_tool_calls,
+                    is_dry_run, is_override, session_id, error, prompt_preview,
+                    context_info, request_api_kind, requested_reasoning_effort,
+                    selected_codex_slot_index, selected_codex_account_key, request_id, turn_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.timestamp, entry.original_model, entry.routed_model, entry.actual_model, entry.tier,
+                    entry.classification_reason, entry.confidence, entry.input_tokens, entry.cached_input_tokens,
+                    entry.output_tokens, entry.original_cost_usd, entry.actual_cost_usd, entry.savings_usd,
+                    int(entry.escalated), entry.escalation_chain, entry.response_time_ms, int(entry.had_tool_calls),
+                    int(entry.is_dry_run), int(entry.is_override), entry.session_id, entry.error, entry.prompt_preview,
+                    entry.context_info, entry.request_api_kind, entry.requested_reasoning_effort,
+                    entry.selected_codex_slot_index, entry.selected_codex_account_key, entry.request_id, entry.turn_id,
+                ),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO routing_daily_rollups (
+                    day, actual_model, tier, request_api_kind, requested_reasoning_effort,
+                    requests, input_tokens, cached_input_tokens, output_tokens
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(day, actual_model, tier, request_api_kind, requested_reasoning_effort)
+                DO UPDATE SET
+                    requests = requests + 1,
+                    input_tokens = input_tokens + excluded.input_tokens,
+                    cached_input_tokens = cached_input_tokens + excluded.cached_input_tokens,
+                    output_tokens = output_tokens + excluded.output_tokens
+                """,
+                (
+                    entry.timestamp[:10],
+                    entry.actual_model,
+                    entry.tier,
+                    entry.request_api_kind,
+                    entry.requested_reasoning_effort or "",
+                    entry.input_tokens,
+                    entry.cached_input_tokens,
+                    entry.output_tokens,
+                ),
+            )
+            self._conn.commit()
+
+    def daily_cache_rows(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT date(timestamp) AS day,
+                       count(*) AS requests,
+                       coalesce(sum(input_tokens), 0) AS input_tokens,
+                       coalesce(sum(cached_input_tokens), 0) AS cached_input_tokens,
+                       sum(CASE WHEN coalesce(error, '') <> '' THEN 1 ELSE 0 END) AS errors,
+                       avg(response_time_ms) AS avg_response_time_ms,
+                       max(response_time_ms) AS max_response_time_ms
+                FROM routing_log
+                WHERE actual_model LIKE 'codex/%'
+                GROUP BY date(timestamp)
+                ORDER BY day
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def live_sessions(self, limit: int = 30) -> dict[str, Any]:
+        safe_limit = max(1, min(100, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM routing_log
+                WHERE session_id IS NOT NULL
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (safe_limit * 20,),
+            ).fetchall()
+        sessions: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            item = dict(row)
+            sid = item.get("session_id") or "unknown"
+            turn_id = item.get("turn_id") or item.get("request_id") or "unknown"
+            session = sessions.setdefault(sid, {
+                "id": sid,
+                "startedAt": item["timestamp"],
+                "lastAt": item["timestamp"],
+                "metrics": {"requests": 0, "inputTokens": 0, "cachedInputTokens": 0, "outputTokens": 0},
+                "turns": {},
+            })
+            session["startedAt"] = min(session["startedAt"], item["timestamp"])
+            session["lastAt"] = max(session["lastAt"], item["timestamp"])
+            metrics = session["metrics"]
+            metrics["requests"] += 1
+            metrics["inputTokens"] += item["input_tokens"]
+            metrics["cachedInputTokens"] += item["cached_input_tokens"]
+            metrics["outputTokens"] += item["output_tokens"]
+            turn = session["turns"].setdefault(turn_id, {
+                "id": turn_id,
+                "startedAt": item["timestamp"],
+                "lastAt": item["timestamp"],
+                "requests": [],
+            })
+            turn["startedAt"] = min(turn["startedAt"], item["timestamp"])
+            turn["lastAt"] = max(turn["lastAt"], item["timestamp"])
+            turn["requests"].append(self._decision_from_row(item))
+        values = list(sessions.values())[:safe_limit]
+        for session in values:
+            session["turns"] = list(session["turns"].values())
+        return {"sessions": values, "hasMoreSessions": len(sessions) > safe_limit, "retentionDays": 30}
+
+    def turn_requests(self, turn_id: str, limit: int = 200) -> dict[str, Any]:
+        safe_limit = max(1, min(200, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM routing_log WHERE turn_id = ? ORDER BY id ASC LIMIT ?",
+                (turn_id, safe_limit + 1),
+            ).fetchall()
+        items = [self._decision_from_row(dict(row)) for row in rows]
+        return {"turnId": turn_id, "requests": items[:safe_limit], "truncated": len(items) > safe_limit}
+
+    def upsert_usage_snapshots(self, records: list[dict[str, Any]]) -> None:
+        if not records:
+            return
+        observed_at = now_iso()
+        with self._lock:
+            for record in records:
+                self._conn.execute(
+                    """
+                    INSERT INTO codex_usage_snapshots (
+                        account_key, slot_index, window, used_percent, reset_at, window_minutes, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_key, window) DO UPDATE SET
+                        slot_index = excluded.slot_index,
+                        used_percent = excluded.used_percent,
+                        reset_at = excluded.reset_at,
+                        window_minutes = excluded.window_minutes,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        record["account_key"], record["slot_index"], record["window"],
+                        record["used_percent"], record["reset_at"], record["window_minutes"], observed_at,
+                    ),
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO codex_usage_snapshot_history (
+                        account_key, slot_index, window, used_percent, reset_at, window_minutes, observed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record["account_key"], record["slot_index"], record["window"],
+                        record["used_percent"], record["reset_at"], record["window_minutes"], observed_at,
+                    ),
+                )
+            self._conn.commit()
+
+    def usage_snapshots(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM codex_usage_snapshots ORDER BY slot_index, window").fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_reset_credits(self, summaries: list[dict[str, Any]]) -> None:
+        updated_at = now_iso()
+        with self._lock:
+            for summary in summaries:
+                account_key = summary["account_key"]
+                slot_index = int(summary["slot_index"])
+                credits = summary.get("credits") if isinstance(summary.get("credits"), list) else []
+                self._conn.execute(
+                    """
+                    INSERT INTO codex_reset_credit_summaries (
+                        account_key, slot_index, available_count, details_available, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(account_key) DO UPDATE SET
+                        slot_index = excluded.slot_index,
+                        available_count = excluded.available_count,
+                        details_available = excluded.details_available,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        account_key,
+                        slot_index,
+                        summary.get("available_count"),
+                        int(bool(summary.get("details_available"))),
+                        updated_at,
+                    ),
+                )
+                self._conn.execute("DELETE FROM codex_reset_credit_items WHERE account_key = ?", (account_key,))
+                for credit in credits:
+                    self._conn.execute(
+                        """
+                        INSERT INTO codex_reset_credit_items (
+                            account_key, credit_key, slot_index, status, reset_type, title,
+                            granted_at, expires_at, redeemed_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            account_key,
+                            credit["credit_key"],
+                            slot_index,
+                            credit.get("status") or "available",
+                            credit.get("reset_type"),
+                            credit.get("title"),
+                            credit.get("granted_at"),
+                            credit.get("expires_at"),
+                            credit.get("redeemed_at"),
+                            updated_at,
+                        ),
+                    )
+            self._conn.commit()
+
+    def reset_credit_snapshots(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            summaries = self._conn.execute("SELECT * FROM codex_reset_credit_summaries").fetchall()
+            items = self._conn.execute("SELECT * FROM codex_reset_credit_items ORDER BY expires_at").fetchall()
+        by_account: dict[str, dict[str, Any]] = {}
+        for row in summaries:
+            data = dict(row)
+            by_account[data["account_key"]] = {
+                "accountKey": data["account_key"],
+                "slotIndex": data["slot_index"],
+                "availableCount": data["available_count"],
+                "detailsAvailable": bool(data["details_available"]),
+                "source": "persisted",
+                "updatedAt": data["updated_at"],
+                "credits": [],
+            }
+        for row in items:
+            data = dict(row)
+            parent = by_account.get(data["account_key"])
+            if parent is not None:
+                parent["credits"].append({
+                    "creditKey": data["credit_key"],
+                    "status": data["status"],
+                    "resetType": data["reset_type"],
+                    "title": data["title"],
+                    "grantedAt": data["granted_at"],
+                    "expiresAt": data["expires_at"],
+                    "redeemedAt": data["redeemed_at"],
+                })
+        return by_account
+
+    def _decision_from_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        context: Any = None
+        if row.get("context_info"):
+            try:
+                context = json.loads(row["context_info"])
+            except json.JSONDecodeError:
+                context = None
+        return {
+            "timestamp": row["timestamp"],
+            "tier": row["tier"],
+            "originalModel": row["original_model"],
+            "routedModel": row["routed_model"],
+            "actualModel": row["actual_model"],
+            "inputTokens": row["input_tokens"],
+            "cachedInputTokens": row["cached_input_tokens"],
+            "outputTokens": row["output_tokens"],
+            "responseTimeMs": row["response_time_ms"],
+            "error": row["error"],
+            "requestId": row["request_id"],
+            "sessionId": row["session_id"],
+            "turnId": row["turn_id"],
+            "selectedCodexSlotIndex": row["selected_codex_slot_index"],
+            "selectedCodexAccountKey": row["selected_codex_account_key"],
+            "context": context,
+        }
+
+
+class TelemetryQueue:
+    def __init__(self, store: TelemetryStore):
+        self.store = store
+        self.queue: asyncio.Queue[RoutingLogEntry | None] = asyncio.Queue()
+        self.task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        self.task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        await self.queue.put(None)
+        if self.task:
+            await self.task
+
+    def log(self, entry: RoutingLogEntry) -> None:
+        self.queue.put_nowait(entry)
+
+    async def _run(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            entry = await self.queue.get()
+            if entry is None:
+                return
+            await loop.run_in_executor(None, self.store.log_routing, entry)

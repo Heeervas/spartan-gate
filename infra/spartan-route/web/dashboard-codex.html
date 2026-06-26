@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spartan Route Codex</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f4;
+      --panel: #ffffff;
+      --text: #202124;
+      --muted: #646866;
+      --line: #d8ddd8;
+      --accent: #1f7a68;
+      --warn: #9a5b00;
+      --bad: #b3261e;
+      --good: #237b3b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #151716;
+        --panel: #202321;
+        --text: #eff2ef;
+        --muted: #a9b0ab;
+        --line: #383d3a;
+        --accent: #56c2a8;
+        --warn: #e5ad4f;
+        --bad: #ff897d;
+        --good: #7bd88f;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .wrap {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+    }
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 0;
+      flex-wrap: wrap;
+    }
+    h1, h2 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+    h1 { font-size: 22px; }
+    h2 { font-size: 16px; }
+    nav, .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    nav a, button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 8px 10px;
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    nav a.current, button.primary {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    main {
+      padding: 22px 0 40px;
+    }
+    input {
+      min-width: 220px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 9px 10px;
+      font: inherit;
+    }
+    section {
+      margin-top: 18px;
+    }
+    .section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      min-width: 0;
+    }
+    .label, .muted {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .value {
+      margin-top: 4px;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      margin: 4px 4px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      border-top: 1px solid var(--line);
+      padding: 9px 8px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+      border-top: 0;
+    }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .good { color: var(--good); }
+    @media (max-width: 860px) {
+      .grid { grid-template-columns: 1fr; }
+      input { min-width: 0; width: 100%; }
+      .toolbar { display: grid; grid-template-columns: 1fr auto auto; }
+      th:nth-child(4), td:nth-child(4) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap top">
+      <h1>Spartan Route Codex</h1>
+      <nav>
+        <a href="/dashboard">Routing</a>
+        <a class="current" href="/dashboard-codex">Codex</a>
+        <a href="/api/codex/usage">Usage JSON</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="toolbar">
+      <input id="token" type="password" autocomplete="off" placeholder="Bearer token">
+      <button id="save">Save</button>
+      <button id="refresh" class="primary">Refresh</button>
+    </div>
+
+    <section>
+      <div class="section-head">
+        <h2>Reset Credits</h2>
+        <span class="muted" id="reset-summary"></span>
+      </div>
+      <div class="grid" id="reset-grid"></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Usage Windows</h2>
+        <span class="muted" id="usage-status"></span>
+      </div>
+      <div class="grid" id="usage-grid"></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Slots</h2>
+      </div>
+      <table>
+        <thead><tr><th>Slot</th><th>Account</th><th>Auth</th><th>Cooldown</th><th>In flight</th></tr></thead>
+        <tbody id="slots"></tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Daily Cache</h2>
+      </div>
+      <table>
+        <thead><tr><th>Day</th><th>Requests</th><th>Input</th><th>Cached</th><th>Hit rate</th><th>Errors</th></tr></thead>
+        <tbody id="cache"></tbody>
+      </table>
+    </section>
+
+    <section id="errors"></section>
+  </main>
+  <script>
+    const tokenInput = document.getElementById('token');
+    const resetGrid = document.getElementById('reset-grid');
+    const resetSummary = document.getElementById('reset-summary');
+    const usageGrid = document.getElementById('usage-grid');
+    const usageStatus = document.getElementById('usage-status');
+    const slotsEl = document.getElementById('slots');
+    const cacheEl = document.getElementById('cache');
+    const errorsEl = document.getElementById('errors');
+    const stored = sessionStorage.getItem('spartanRouteToken') || new URLSearchParams(location.search).get('token') || '';
+    tokenInput.value = stored;
+    if (stored) sessionStorage.setItem('spartanRouteToken', stored);
+
+    document.getElementById('save').onclick = () => {
+      sessionStorage.setItem('spartanRouteToken', tokenInput.value.trim());
+      load();
+    };
+    document.getElementById('refresh').onclick = () => load();
+
+    function headers() {
+      const token = tokenInput.value.trim();
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]));
+    }
+    function pct(cached, input) {
+      return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : '0.0%';
+    }
+    function fmtTime(value) {
+      if (!value) return '-';
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
+    }
+    function cooldown(until) {
+      if (!until) return '-';
+      const ms = Number(until) * 1000 - Date.now();
+      return ms > 0 ? `${Math.ceil(ms / 1000)}s` : '-';
+    }
+    function card(label, value, detail = '') {
+      return `<div class="card"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(detail)}</div></div>`;
+    }
+    function renderResetCredits(accounts) {
+      const rows = accounts.map(a => a.resetCredits).filter(Boolean);
+      const total = rows.reduce((sum, item) => sum + (Number(item.availableCount) || 0), 0);
+      resetSummary.textContent = `${rows.length} account(s), ${total} available`;
+      resetGrid.innerHTML = rows.map(item => {
+        const credits = Array.isArray(item.credits) ? item.credits : [];
+        const detail = credits.length
+          ? credits.slice(0, 4).map(c => `<span class="pill">${esc(c.status || 'available')} - expires ${esc(fmtTime(c.expiresAt))}</span>`).join('')
+          : `<span class="pill">${item.detailsAvailable ? 'No item rows returned' : 'Details unavailable'}</span>`;
+        return `<div class="card">
+          <div class="label">Account ${esc(item.accountKey)} - slot ${esc(item.slotIndex)}</div>
+          <div class="value">${esc(item.availableCount ?? '-')}</div>
+          <div class="muted">${esc(item.source || 'unknown')} - ${esc(fmtTime(item.updatedAt))}</div>
+          <div>${detail}</div>
+        </div>`;
+      }).join('') || '<div class="card"><div class="value">0</div><div class="muted">No reset-credit telemetry yet.</div></div>';
+    }
+    function renderUsage(accounts, partial) {
+      usageStatus.textContent = partial ? 'partial payload' : 'live payload';
+      usageGrid.innerHTML = accounts.flatMap(account => ['fiveHour', 'weekly'].map(windowName => {
+        const row = account[windowName];
+        const label = `${account.accountKey || 'unknown'} - ${windowName}`;
+        return card(label, row ? `${Number(row.usedPercent || 0).toFixed(1)}%` : '-', row ? `resets ${fmtTime(row.resetAt)}` : 'no live data');
+      })).join('') || '<div class="card"><div class="value">-</div><div class="muted">No usage telemetry yet.</div></div>';
+    }
+    function renderSlots(slots) {
+      slotsEl.innerHTML = (slots || []).map(slot => `<tr>
+        <td>${esc(slot.slotIndex)}</td>
+        <td>${esc(slot.accountKey || '-')}</td>
+        <td class="${slot.authAvailable ? 'good' : 'warn'}">${esc(slot.authAvailable ? 'ready' : (slot.authUnavailableReason || 'unavailable'))}</td>
+        <td>${esc(cooldown(slot.rateLimitedUntil) !== '-' ? `rate ${cooldown(slot.rateLimitedUntil)}` : cooldown(slot.transientUntil))}</td>
+        <td>${esc(slot.inFlight || 0)}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="muted">No slots configured.</td></tr>';
+    }
+    function renderCache(days) {
+      cacheEl.innerHTML = (days || []).map(row => `<tr>
+        <td>${esc(row.day)}</td>
+        <td>${esc(row.requests || 0)}</td>
+        <td>${esc(Number(row.input_tokens || 0).toLocaleString())}</td>
+        <td>${esc(Number(row.cached_input_tokens || 0).toLocaleString())}</td>
+        <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}</td>
+        <td class="${Number(row.errors || 0) ? 'bad' : ''}">${esc(row.errors || 0)}</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="muted">No Codex cache rows yet.</td></tr>';
+    }
+    function renderErrors(payload) {
+      const errors = [...(payload.slotErrors || []), ...(payload.resetCreditErrors || [])];
+      errorsEl.innerHTML = errors.length ? `<div class="card bad">${errors.map(e => `slot ${esc(e.slotIndex)}: ${esc(e.message)}`).join('<br>')}</div>` : '';
+    }
+    async function load() {
+      try {
+        usageStatus.textContent = 'Loading...';
+        const response = await fetch('/api/codex/usage', { headers: headers() });
+        if (!response.ok) throw new Error(`/api/codex/usage HTTP ${response.status}`);
+        const payload = await response.json();
+        const accounts = payload.accounts || [];
+        renderResetCredits(accounts);
+        renderUsage(accounts, Boolean(payload.partial));
+        renderSlots(payload.slots || []);
+        renderCache(payload.cacheDaily || []);
+        renderErrors(payload);
+      } catch (error) {
+        usageStatus.textContent = '';
+        errorsEl.innerHTML = `<div class="card bad">${esc(error.message)}</div>`;
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

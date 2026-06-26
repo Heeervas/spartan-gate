@@ -7,6 +7,11 @@ Spartan Gate has two ClawRoute directories on purpose:
 - `config/clawroute/`: runtime routing configuration mounted into the running
   container by Compose.
 
+Spartan Route is a separate parallel rebuild under `infra/spartan-route/`.
+It reads the same publishable runtime config but writes its own
+`spartan-route.db` and uses separate Compose overlays. See
+[spartan-route.md](spartan-route.md).
+
 ## Source Package
 
 Use `packages/clawroute/` when you are changing ClawRoute itself:
@@ -38,6 +43,7 @@ tokens in `.env` or `private/env/local.env`, not in JSON config files.
 ## Quick Rule
 
 - Code change: edit `packages/clawroute/`.
+- Parallel rebuild code change: edit `infra/spartan-route/`.
 - Runtime model/provider policy: edit `config/clawroute/`.
 - Secret or host-specific auth: edit `private/env/local.env` or
   `private/compose.local.yml`.
