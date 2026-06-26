@@ -1,5 +1,12 @@
+import { createHash } from 'crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildCodexRequestBody, buildCodexUsageDebugPayload, codexResponseToStream } from '../src/codex-transport.js';
+import {
+    buildCodexRequestBody,
+    buildCodexUsageDebugPayload,
+    buildContentPromptCacheKey,
+    codexResponseToStream,
+    resolveCodexPromptCacheKey,
+} from '../src/codex-transport.js';
 
 function createSseStream(events: Array<{ event: string; data: Record<string, unknown> }>): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
@@ -143,6 +150,69 @@ describe('codexResponseToStream error handling', () => {
 });
 
 describe('Codex prompt caching', () => {
+    it('builds a content-addressed fallback cache key from system prompt and sorted tools', () => {
+        const system = 'You are the recurring research profile.';
+        const betaTool = {
+            type: 'function',
+            function: {
+                name: 'beta',
+                description: 'Beta tool',
+                parameters: { type: 'object', properties: { value: { type: 'string' } } },
+            },
+        };
+        const alphaTool = {
+            type: 'function',
+            function: {
+                name: 'alpha',
+                description: 'Alpha tool',
+                parameters: { type: 'object' },
+            },
+        };
+        const first = buildContentPromptCacheKey({
+            messages: [{ role: 'system', content: system }, { role: 'user', content: 'run now' }],
+            tools: [betaTool, alphaTool],
+        });
+        const second = buildContentPromptCacheKey({
+            messages: [{ role: 'system', content: system }, { role: 'user', content: 'run later' }],
+            tools: [alphaTool, betaTool],
+        });
+
+        expect(first).toMatch(/^pck_[a-f0-9]{24}$/);
+        expect(first).toBe(second);
+    });
+
+    it('uses the content-addressed key before volatile session fallbacks', () => {
+        const request = {
+            messages: [
+                { role: 'system', content: 'Static cron instructions' },
+                { role: 'user', content: 'first run' },
+            ],
+            tools: [
+                {
+                    type: 'function',
+                    function: {
+                        name: 'lookup',
+                        parameters: { type: 'object' },
+                    },
+                },
+            ],
+        };
+        const expected = buildContentPromptCacheKey(request);
+
+        expect(resolveCodexPromptCacheKey(request, { sessionId: 'cron_job_20260626T120000Z' })).toBe(expected);
+        expect(resolveCodexPromptCacheKey(request, { sessionId: 'cron_job_20260627T120000Z' })).toBe(expected);
+    });
+
+    it('keeps explicit prompt_cache_key precedence and namespacing', () => {
+        const explicit = 'hermes:session-123';
+        const expected = `clawroute:${createHash('sha256').update(explicit).digest('hex').slice(0, 32)}`;
+
+        expect(resolveCodexPromptCacheKey({
+            prompt_cache_key: explicit,
+            messages: [{ role: 'system', content: 'Static prompt' }],
+        }, { sessionId: 'cron_job_20260626T120000Z' })).toBe(expected);
+    });
+
     it('forwards the stable prompt cache key in the Responses request', () => {
         const body = buildCodexRequestBody(
             { messages: [{ role: 'user', content: 'hello' }] },

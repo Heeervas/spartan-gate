@@ -280,12 +280,14 @@ request-local failures instead of account exhaustion.
 headers before aborting a request; it defaults to `180000` so long Hermes
 sessions have more room than the older 60-second cutoff.
 Prompt-cache leases default to `CODEX_CACHE_LEASE_MODE=keyed`, which keeps a
-bounded independent lease per Hermes `prompt_cache_key`/affinity instead of a
+bounded independent lease per prompt-cache key/affinity instead of a
 single global lease. `global` restores the old one-lease behavior and `off`
 disables cache leases. `CODEX_CACHE_LEASE_MAX_ENTRIES` defaults to `256`;
-oldest leases are evicted first. ClawRoute forwards `prompt_cache_key` but does
-not send `prompt_cache_retention` because the Codex subscription endpoint
-rejects that field even though the public OpenAI Responses API supports it.
+oldest leases are evicted first. ClawRoute forwards an explicit
+`prompt_cache_key` when present, otherwise it derives a content-addressed key
+from the system prompt and sorted tool schema. It does not send
+`prompt_cache_retention` because the Codex subscription endpoint rejects that
+field even though the public OpenAI Responses API supports it.
 Cold prompt-cache migrations are blocked before upstream when an old session
 would move to a different Codex account and the calibrated estimated impact is
 at or above `CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT`, which defaults
@@ -351,9 +353,9 @@ units`, while slot diagnostics keep the raw upstream percentages available.
 repeated operator comparisons cheap.
 
 The main `/dashboard` groups new routing rows as session → user turn → request.
-Hermes supplies its stable session through `prompt_cache_key`; ClawRoute stores
-only a namespaced hash and falls back to the legacy hashed `sender_id` contract
-for other callers. `/api/routing/live` returns retained session and turn
+When callers supply `prompt_cache_key`, ClawRoute stores only a namespaced hash
+and falls back to the legacy hashed `sender_id` contract for session grouping
+when no explicit key exists. `/api/routing/live` returns retained session and turn
 summaries, while `/api/routing/turns/:turnId` loads request deltas on demand.
 Both routes use the existing dashboard bearer token. Token metrics are sums of
 provider-reported request usage: input therefore includes replayed context and

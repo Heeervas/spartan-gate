@@ -25,7 +25,7 @@ import {
     hashPromptCacheKey,
     resetCodexCacheBreakerState,
 } from './codex-cache-breaker.js';
-import { buildToolSchemaFingerprint } from './request-trace.js';
+import { buildToolSchemaFingerprint, stableJson } from './request-trace.js';
 import {
     CodexAccountScheduleRow,
     CodexAuthUnavailableReason,
@@ -443,15 +443,75 @@ function extractSessionIdFromRequest(request: Record<string, unknown>): string |
     return senderId ? createHash('sha256').update(senderId).digest('hex').slice(0, 8) : null;
 }
 
-function resolvePromptCacheKey(
+function systemPromptContent(request: Record<string, unknown>): string {
+    const messages = Array.isArray(request['messages']) ? request['messages'] as Array<Record<string, unknown>> : [];
+    const systemMessage = messages.find((message) => message['role'] === 'system');
+    const content = systemMessage?.['content'];
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    return content
+        .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === 'object')
+        .filter((part) => part['type'] === 'text' && typeof part['text'] === 'string')
+        .map((part) => part['text'])
+        .join(' ');
+}
+
+function codexPromptCacheToolShape(tool: Record<string, unknown>): Record<string, unknown> {
+    if (tool['type'] === 'function' && tool['function'] && typeof tool['function'] === 'object') {
+        const fn = tool['function'] as Record<string, unknown>;
+        return {
+            type: 'function',
+            name: fn['name'],
+            ...(fn['description'] !== undefined ? { description: fn['description'] } : {}),
+            ...(fn['parameters'] !== undefined ? { parameters: fn['parameters'] } : {}),
+            ...(fn['strict'] !== undefined ? { strict: fn['strict'] } : {}),
+        };
+    }
+    return tool;
+}
+
+function promptCacheToolSortKey(tool: Record<string, unknown>): string {
+    const fn = tool['function'];
+    if (typeof tool['name'] === 'string') return tool['name'];
+    if (fn && typeof fn === 'object' && typeof (fn as Record<string, unknown>)['name'] === 'string') {
+        return String((fn as Record<string, unknown>)['name']);
+    }
+    return String(tool['type'] ?? '');
+}
+
+export function buildContentPromptCacheKey(request: Record<string, unknown>): string | null {
+    const instructions = systemPromptContent(request);
+    const rawTools = Array.isArray(request['tools']) ? request['tools'] : [];
+    const tools = rawTools
+        .filter((tool): tool is Record<string, unknown> => Boolean(tool) && typeof tool === 'object' && !Array.isArray(tool))
+        .map(codexPromptCacheToolShape)
+        .sort((left, right) => promptCacheToolSortKey(left).localeCompare(promptCacheToolSortKey(right)));
+
+    if (!instructions && tools.length === 0) return null;
+
+    const toolsPart = tools.length > 0 ? stableJson(tools) : '';
+    const digest = createHash('sha256')
+        .update(`${instructions}\0${toolsPart}`, 'utf8')
+        .digest('hex')
+        .slice(0, 24);
+    return `pck_${digest}`;
+}
+
+export function resolveCodexPromptCacheKey(
     request: Record<string, unknown>,
     executionContext: RequestExecutionContext,
 ): string | null {
-    const raw = executionContext.promptCacheKey
+    const explicitRaw = executionContext.promptCacheKey
         ?? (typeof request['prompt_cache_key'] === 'string' ? request['prompt_cache_key'] : null)
-        ?? (typeof request['user'] === 'string' ? request['user'] : null)
-        ?? executionContext.sessionId
-        ?? extractSessionIdFromRequest(request);
+        ?? (typeof request['user'] === 'string' ? request['user'] : null);
+    if (explicitRaw?.trim()) {
+        return `clawroute:${createHash('sha256').update(explicitRaw.trim()).digest('hex').slice(0, 32)}`;
+    }
+
+    const contentPromptCacheKey = buildContentPromptCacheKey(request);
+    if (contentPromptCacheKey) return contentPromptCacheKey;
+
+    const raw = executionContext.sessionId ?? extractSessionIdFromRequest(request);
     if (!raw?.trim()) return null;
     return `clawroute:${createHash('sha256').update(raw.trim()).digest('hex').slice(0, 32)}`;
 }
@@ -460,9 +520,11 @@ function resolveCacheBreakerPromptCacheKey(
     request: Record<string, unknown>,
     executionContext: RequestExecutionContext,
 ): string | null {
-    return executionContext.promptCacheKey
+    const explicitRaw = executionContext.promptCacheKey
         ?? (typeof request['prompt_cache_key'] === 'string' ? request['prompt_cache_key'] : null)
-        ?? (typeof request['user'] === 'string' ? request['user'] : null)
+        ?? (typeof request['user'] === 'string' ? request['user'] : null);
+    if (explicitRaw?.trim()) return explicitRaw;
+    return buildContentPromptCacheKey(request)
         ?? executionContext.sessionId
         ?? extractSessionIdFromRequest(request);
 }
@@ -3200,7 +3262,7 @@ export async function makeCodexRequest(
     // 1. Extract model name (strip codex/ prefix)
     const modelName = modelId.includes('/') ? modelId.split('/').slice(1).join('/') : modelId;
     const sessionId = executionContext.sessionId ?? extractSessionIdFromRequest(request);
-    const promptCacheKey = resolvePromptCacheKey(request, executionContext);
+    const promptCacheKey = resolveCodexPromptCacheKey(request, executionContext);
     const cacheBreakerPromptCacheKey = resolveCacheBreakerPromptCacheKey(request, executionContext);
     const affinityKey = promptCacheKey ?? sessionId;
     const balanceLoaderMode = getBalanceLoaderMode();
