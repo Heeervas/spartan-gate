@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -15,6 +16,15 @@ GATEWAY_LOCK_MARKER = "# Spartan Gate patch: writable gateway lock state"
 RUNTIME_IDENTITY_MARKER = "# Spartan Gate patch: runtime Hermes identity"
 AS_HERMES_MARKER = "# Spartan Gate patch: run as Hermes runtime identity"
 MIGRATION_ANCHOR = "# --- Sync bundled skills ---"
+MANAGED_DIR_CORE_ENTRIES = (
+    "cron",
+    "sessions",
+    "logs",
+    "profiles",
+    "pairing",
+    "platforms/pairing",
+)
+MANAGED_DIR_REQUIRED_ENTRIES = ("kanban", ".local/state/hermes")
 
 
 NEW_BLOCK = '''# Spartan Gate patch: immutable install tree
@@ -59,6 +69,44 @@ PUID=""
 PGID=""
 
 '''
+
+
+def patch_managed_dir_allowlist(source: str) -> str:
+    """Add Spartan-owned runtime dirs to Hermes' managed data dir allowlist."""
+
+    found_managed_loop = False
+
+    def replace_loop(match: re.Match[str]) -> str:
+        nonlocal found_managed_loop
+
+        original = match.group(0)
+        if found_managed_loop:
+            return original
+
+        entries = (
+            match.group("entries")
+            .replace("\\\n", " ")
+            .replace("\n", " ")
+            .replace("\\", " ")
+            .split()
+        )
+        if not all(entry in entries for entry in MANAGED_DIR_CORE_ENTRIES):
+            return original
+
+        found_managed_loop = True
+        updated_entries = list(entries)
+        for entry in MANAGED_DIR_REQUIRED_ENTRIES:
+            if entry not in updated_entries:
+                updated_entries.append(entry)
+
+        if updated_entries == entries:
+            return original
+        return f"for sub in {' '.join(updated_entries)}; do"
+
+    patched = re.sub(r"for sub in (?P<entries>.*?); do", replace_loop, source, flags=re.DOTALL)
+    if not found_managed_loop:
+        raise ValueError("managed data directory allowlist anchor not found")
+    return patched
 
 
 def patch_source(source: str) -> str:
@@ -142,15 +190,7 @@ def patch_source(source: str) -> str:
             raise ValueError("gateway lock state creation anchor not found")
         patched = patched.replace(lock_state_anchor, lock_state_replacement, 1)
 
-    managed_dir_anchor = "for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing; do"
-    managed_dir_replacement = (
-        "for sub in cron sessions logs hooks memories skills skins plans workspace home profiles "
-        "pairing platforms/pairing kanban .local/state/hermes; do"
-    )
-    if managed_dir_replacement not in patched:
-        if managed_dir_anchor not in patched:
-            raise ValueError("managed data directory allowlist anchor not found")
-        patched = patched.replace(managed_dir_anchor, managed_dir_replacement, 1)
+    patched = patch_managed_dir_allowlist(patched)
 
     return patched
 

@@ -363,6 +363,51 @@ describe('Integration Tests', () => {
             expect(executionContext).toMatchObject({ sessionId: null });
         });
 
+        it('uses content-addressed fallback for sessions without sending it as an explicit upstream key', async () => {
+            vi.resetModules();
+            const executeRequestMock = vi.fn(async () => createMockExecutionResult('codex/gpt-5.4-mini'));
+            vi.doMock('../src/executor.js', () => ({
+                executeRequest: executeRequestMock,
+                executePassthrough: vi.fn(async () => new Response('passthrough', { status: 200 })),
+            }));
+
+            const { buildContentPromptCacheKey } = await import('../src/codex-transport.js');
+            const { createApp } = await import('../src/server.js');
+            const localApp = createApp(createTestConfig());
+            const requestBody = {
+                model: 'codex/gpt-5.4-mini',
+                messages: [
+                    { role: 'system', content: 'Static cron instructions' },
+                    { role: 'user', content: 'run now' },
+                ],
+                tools: [{
+                    type: 'function',
+                    function: {
+                        name: 'lookup',
+                        parameters: { type: 'object' },
+                    },
+                }],
+            };
+            const contentPromptCacheKey = buildContentPromptCacheKey(requestBody);
+            expect(contentPromptCacheKey).toMatch(/^pck_[a-f0-9]{24}$/);
+            const expectedSessionId = createHash('sha256')
+                .update(`prompt_cache_key\0${contentPromptCacheKey!}`)
+                .digest('hex')
+                .slice(0, 16);
+
+            const response = await localApp.request('/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody),
+            });
+
+            expect(response.status).toBe(200);
+            expect(executeRequestMock.mock.calls[0]?.[5]).toMatchObject({
+                sessionId: expectedSessionId,
+                promptCacheKey: null,
+            });
+        });
+
         it('uses prompt_cache_key as the hashed Hermes session and does not use generic user metadata', async () => {
             vi.resetModules();
             const executeRequestMock = vi.fn(async () => createMockExecutionResult('codex/gpt-5.4-mini'));

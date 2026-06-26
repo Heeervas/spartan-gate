@@ -51,6 +51,7 @@ import { discoverProviderModels, DiscoveredModelCandidate, getCandidateMissingFi
 import { RuntimeStateManager } from './runtime-state.js';
 import { getCodexUsage } from './codex-usage.js';
 import {
+    buildContentPromptCacheKey,
     forceRotateCodexCacheLease,
     getCodexAutomaticUsageSlotIndexes,
     getCodexBalancerState,
@@ -90,6 +91,36 @@ type CachedDashboard = {
 };
 
 const dashboardCache = new Map<string, CachedDashboard>();
+
+type IncomingPromptCacheIdentity = {
+    upstreamPromptCacheKey: string | null;
+    sessionPromptCacheKey: string | null;
+    sessionPromptCacheKeySource: 'prompt_cache_key' | 'content_prompt_cache_key';
+};
+
+function nonBlankString(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+}
+
+function resolveIncomingPromptCacheIdentity(body: ChatCompletionRequest): IncomingPromptCacheIdentity {
+    const explicitPromptCacheKey = nonBlankString(body['prompt_cache_key']);
+    if (explicitPromptCacheKey) {
+        return {
+            upstreamPromptCacheKey: explicitPromptCacheKey,
+            sessionPromptCacheKey: explicitPromptCacheKey,
+            sessionPromptCacheKeySource: 'prompt_cache_key',
+        };
+    }
+
+    const contentPromptCacheKey = buildContentPromptCacheKey(body as unknown as Record<string, unknown>);
+    return {
+        upstreamPromptCacheKey: nonBlankString(body['user']),
+        sessionPromptCacheKey: contentPromptCacheKey,
+        sessionPromptCacheKeySource: contentPromptCacheKey ? 'content_prompt_cache_key' : 'prompt_cache_key',
+    };
+}
 
 function tryReadCachedHtml(filename: string): string | null {
     const candidates = [
@@ -1241,12 +1272,13 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
             const body = await c.req.json() as ChatCompletionRequest;
             const runtimeSnapshot = getRuntimeSnapshot();
             const runtimeConfig = getRuntimeConfigFromSnapshot(runtimeSnapshot);
-            const explicitPromptCacheKey = typeof body['prompt_cache_key'] === 'string'
-                ? body['prompt_cache_key']
-                : null;
-            const promptCacheKey = explicitPromptCacheKey
-                ?? (typeof body['user'] === 'string' ? body['user'] : null);
-            const session = resolveSessionIdentity(body.messages, explicitPromptCacheKey);
+            const promptCacheIdentity = resolveIncomingPromptCacheIdentity(body);
+            const promptCacheKey = promptCacheIdentity.upstreamPromptCacheKey;
+            const session = resolveSessionIdentity(
+                body.messages,
+                promptCacheIdentity.sessionPromptCacheKey,
+                promptCacheIdentity.sessionPromptCacheKeySource,
+            );
             const sessionId = session.id;
 
             if (config.logging.debugMode) {
@@ -1366,8 +1398,16 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
 
             // Translate Responses API → Chat Completions
             const ccRequest = responsesBodyToChatCompletions(body);
-            const promptCacheKey = typeof body.prompt_cache_key === 'string' ? body.prompt_cache_key : null;
-            const session = resolveSessionIdentity(ccRequest.messages, promptCacheKey);
+            const promptCacheIdentity = resolveIncomingPromptCacheIdentity({
+                ...ccRequest,
+                prompt_cache_key: body.prompt_cache_key,
+            } as ChatCompletionRequest);
+            const promptCacheKey = promptCacheIdentity.upstreamPromptCacheKey;
+            const session = resolveSessionIdentity(
+                ccRequest.messages,
+                promptCacheIdentity.sessionPromptCacheKey,
+                promptCacheIdentity.sessionPromptCacheKeySource,
+            );
             const sessionId = session.id;
 
             ccRequest.stream = wantsStream;

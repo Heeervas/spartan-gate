@@ -17,7 +17,7 @@ const TOOL_PREVIEW_CHARS = 240;
 
 export type SessionIdentity = {
     id: string | null;
-    source: 'prompt_cache_key' | 'sender_id' | 'none';
+    source: 'prompt_cache_key' | 'content_prompt_cache_key' | 'sender_id' | 'none';
 };
 
 export type RequestTraceSnapshot = {
@@ -71,20 +71,26 @@ export function sanitizeLoggedPreview(value: string, maxChars: number): string {
 
 export function resolveSessionIdentity(
     messages: ChatCompletionRequest['messages'] | undefined,
-    explicitPromptCacheKey: string | null,
+    promptCacheKey: string | null,
+    promptCacheKeySource: 'prompt_cache_key' | 'content_prompt_cache_key' = 'prompt_cache_key',
 ): SessionIdentity {
-    if (explicitPromptCacheKey?.trim()) {
+    if (promptCacheKeySource === 'prompt_cache_key' && promptCacheKey?.trim()) {
         return {
-            id: hash(`prompt_cache_key\0${explicitPromptCacheKey.trim()}`),
-            source: 'prompt_cache_key',
+            id: hash(`prompt_cache_key\0${promptCacheKey.trim()}`),
+            source: promptCacheKeySource,
         };
     }
     const systemMessage = (messages ?? []).find((message) => message.role === 'system');
     const systemContent = typeof systemMessage?.content === 'string' ? systemMessage.content : '';
     const senderId = systemContent.match(/"sender_id"\s*:\s*"(\d+)"/)?.[1];
-    return senderId
-        ? { id: hash(senderId, 8), source: 'sender_id' }
-        : { id: null, source: 'none' };
+    if (senderId) return { id: hash(senderId, 8), source: 'sender_id' };
+    if (promptCacheKeySource === 'content_prompt_cache_key' && promptCacheKey?.trim()) {
+        return {
+            id: hash(`prompt_cache_key\0${promptCacheKey.trim()}`),
+            source: promptCacheKeySource,
+        };
+    }
+    return { id: null, source: 'none' };
 }
 
 export function buildRequestTraceSnapshot(

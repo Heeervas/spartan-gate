@@ -49,6 +49,10 @@ describe('request tracing', () => {
             id: expect.stringMatching(/^[a-f0-9]{16}$/),
             source: 'prompt_cache_key',
         });
+        expect(resolveSessionIdentity([], 'pck_content', 'content_prompt_cache_key')).toEqual({
+            id: expect.stringMatching(/^[a-f0-9]{16}$/),
+            source: 'content_prompt_cache_key',
+        });
         expect(resolveSessionIdentity([], null)).toEqual({ id: null, source: 'none' });
         expect(resolveSessionIdentity([
             { role: 'system', content: '{"sender_id":"123456"}' },

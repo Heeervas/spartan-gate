@@ -634,7 +634,7 @@ export interface RequestTraceDeltaItem {
 
 export interface RequestTrace {
     version: 1;
-    sessionSource: 'prompt_cache_key' | 'sender_id' | 'none';
+    sessionSource: 'prompt_cache_key' | 'content_prompt_cache_key' | 'sender_id' | 'none';
     requestFingerprint: string;
     messageFingerprints: string[];
     parentRequestId: string | null;

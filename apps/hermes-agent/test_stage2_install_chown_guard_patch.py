@@ -133,6 +133,23 @@ fi
 
         self.assertEqual(module.patch_source(source), source)
 
+    def test_managed_dir_allowlist_preserves_new_upstream_entries(self):
+        module = load_module()
+        source = (
+            'for sub in cron sessions logs hooks memories skills skins plans workspace home '
+            'profiles pairing platforms/pairing lazy-packages; do\n'
+            '    echo "$sub"\n'
+            'done\n'
+        )
+
+        patched = module.patch_managed_dir_allowlist(source)
+
+        self.assertIn(
+            'platforms/pairing lazy-packages kanban .local/state/hermes; do',
+            patched,
+        )
+        self.assertEqual(module.patch_managed_dir_allowlist(patched), patched)
+
     def test_adds_missing_migration_hook_to_previously_guarded_source(self):
         module = load_module()
         source = f'''before

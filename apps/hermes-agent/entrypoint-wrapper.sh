@@ -81,9 +81,11 @@ runtime_doc_src="$INSTALL_DIR/runtime-docs/package-installs.md"
 runtime_docs_dir="$HERMES_HOME/brain/runtime_docs"
 runtime_doc_dst="$runtime_docs_dir/package-installs.md"
 if [ -f "$runtime_doc_src" ] && [ ! -f "$runtime_doc_dst" ]; then
-    run_as_hermes mkdir -p "$runtime_docs_dir"
-    run_as_hermes cp "$runtime_doc_src" "$runtime_doc_dst"
-    echo "[entrypoint] Runtime package install doc copied to ${runtime_doc_dst}"
+    if run_as_hermes mkdir -p "$runtime_docs_dir" && run_as_hermes cp "$runtime_doc_src" "$runtime_doc_dst"; then
+        echo "[entrypoint] Runtime package install doc copied to ${runtime_doc_dst}"
+    else
+        echo "[entrypoint] Runtime package install doc not copied to ${runtime_doc_dst}; continuing" >&2
+    fi
 fi
 
 # Keep the Meet workspace private and writable by the Hermes runtime user.

@@ -22,7 +22,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn(
             'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:05a1e2ac8293b3a94bdfc1d8068bf495d7bd9e94d0300661bfa773f1e7576488',
+            'sha256:9c7360c541ac61507596409eee333179b55233944f92103087781eafac7fe8ec',
             dockerfile,
         )
 
@@ -120,8 +120,11 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('runtime_docs_dir="$HERMES_HOME/brain/runtime_docs"', entrypoint)
         self.assertIn('runtime_doc_dst="$runtime_docs_dir/package-installs.md"', entrypoint)
         self.assertIn('if [ -f "$runtime_doc_src" ] && [ ! -f "$runtime_doc_dst" ]; then', entrypoint)
-        self.assertIn('run_as_hermes mkdir -p "$runtime_docs_dir"', entrypoint)
-        self.assertIn('run_as_hermes cp "$runtime_doc_src" "$runtime_doc_dst"', entrypoint)
+        self.assertIn(
+            'if run_as_hermes mkdir -p "$runtime_docs_dir" && run_as_hermes cp "$runtime_doc_src" "$runtime_doc_dst"; then',
+            entrypoint,
+        )
+        self.assertIn('Runtime package install doc not copied to ${runtime_doc_dst}; continuing', entrypoint)
         self.assertNotIn('cp -f "$runtime_doc_src" "$runtime_doc_dst"', entrypoint)
         self.assertIn('uv pip install --python .venv/bin/python package==version', package_doc)
         self.assertIn('npm install package@version', package_doc)

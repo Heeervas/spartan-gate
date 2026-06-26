@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS node22
 
-FROM docker.io/nousresearch/hermes-agent:main@sha256:05a1e2ac8293b3a94bdfc1d8068bf495d7bd9e94d0300661bfa773f1e7576488
+FROM docker.io/nousresearch/hermes-agent:main@sha256:9c7360c541ac61507596409eee333179b55233944f92103087781eafac7fe8ec
 
 USER root
 

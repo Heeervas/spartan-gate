@@ -28,7 +28,7 @@ extension points.
 | Patch or adapter | Role |
 | --- | --- |
 | `patch_clawroute_named_provider.py` | Migrates Hermes config to the named `custom-1` ClawRoute provider. |
-| `patch_clawroute_prompt_cache_key.py` | Forwards Hermes `reasoning_effort` metadata to ClawRoute. |
+| `patch_clawroute_prompt_cache_key.py` | Forwards Hermes `session_id` as ClawRoute `prompt_cache_key` plus `reasoning_effort` metadata. |
 | `patch_camofox_access_key.py` | Sends Camofox bearer auth from Hermes browser calls. |
 | `proxy-bootstrap.py` | Routes selected web/search traffic through Spartan Gate controls and logs audited egress. |
 | `browserless-cdp-broker.py` | Shares one persistent Browserless profile session across local CDP clients. |

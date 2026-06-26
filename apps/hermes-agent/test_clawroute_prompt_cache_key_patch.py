@@ -26,7 +26,7 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
         else:
             os.environ["OPENAI_BASE_URL"] = self._old_openai_base_url
 
-    def test_injects_reasoning_effort_into_profile_and_legacy_paths(self):
+    def test_injects_prompt_cache_key_and_reasoning_into_profile_and_legacy_paths(self):
         module = load_module()
         source = "\n".join([
             "import os",
@@ -48,14 +48,14 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
         ])
         patched, changed = module.patch_source(source)
         self.assertTrue(changed)
-        self.assertIn("def _spartan_add_clawroute_reasoning_effort(", patched)
-        self.assertNotIn("prompt_cache_key", patched)
+        self.assertIn("def _spartan_add_clawroute_prompt_cache_key(", patched)
+        self.assertIn('extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")', patched)
         self.assertIn(
-            "return _spartan_add_clawroute_reasoning_effort(profile_kwargs, params, allow_missing_base_url=True)",
+            "return _spartan_add_clawroute_prompt_cache_key(profile_kwargs, params, allow_missing_base_url=True)",
             patched,
         )
         self.assertIn(
-            "return _spartan_add_clawroute_reasoning_effort(api_kwargs, params)",
+            "return _spartan_add_clawroute_prompt_cache_key(api_kwargs, params)",
             patched,
         )
         self.assertIn("allow_missing_base_url=True", patched)
@@ -64,7 +64,7 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
         self.assertFalse(changed_again)
         self.assertEqual(patched, again)
 
-    def test_profile_path_forwards_reasoning_without_base_url(self):
+    def test_profile_path_forwards_cache_key_and_reasoning_without_base_url(self):
         module = load_module()
         source = "\n".join([
             "class ChatCompletionsTransport:",
@@ -94,7 +94,8 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
             reasoning_config={"effort": "high"},
         )
 
-        self.assertNotIn("extra_body", kwargs)
+        self.assertIn("extra_body", kwargs)
+        self.assertEqual(kwargs["extra_body"]["prompt_cache_key"], "hermes:session-123")
         self.assertEqual(kwargs["reasoning_effort"], "high")
 
     def test_legacy_path_does_not_inject_without_clawroute_base_url(self):
@@ -159,10 +160,10 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertIn(module.MARKER, patched)
-        self.assertNotIn("prompt_cache_key", patched)
+        self.assertIn('extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")', patched)
         self.assertNotIn("        # spartan-gate: clawroute prompt cache key\n", patched)
 
-    def test_upgrades_v3_patch_and_removes_cache_key_injection(self):
+    def test_upgrades_v3_patch_and_preserves_cache_key_injection(self):
         module = load_module()
         source = "\n".join([
             "# spartan-gate: clawroute prompt cache key v3",
@@ -209,8 +210,53 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertIn(module.MARKER, patched)
-        self.assertIn("_spartan_add_clawroute_reasoning_effort", patched)
-        self.assertNotIn("prompt_cache_key", patched)
+        self.assertIn("_spartan_add_clawroute_prompt_cache_key", patched)
+        self.assertIn('extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")', patched)
+
+    def test_upgrades_v4_reasoning_only_patch_and_restores_cache_key_injection(self):
+        module = load_module()
+        source = "\n".join([
+            "# spartan-gate: clawroute reasoning effort v4",
+            "def _spartan_add_clawroute_reasoning_effort(api_kwargs, params, allow_missing_base_url=False):",
+            '    request_base_url = str(api_kwargs.get("base_url") or params.get("base_url") or "")',
+            '    clawroute_base_url = __import__("os").environ.get("OPENAI_BASE_URL", "")',
+            "    is_clawroute_request = bool(clawroute_base_url) and (",
+            "        request_base_url.rstrip('/') == clawroute_base_url.rstrip('/')",
+            "        or (allow_missing_base_url and not request_base_url)",
+            "    )",
+            "    if not is_clawroute_request:",
+            "        return api_kwargs",
+            '    reasoning_config = params.get("reasoning_config")',
+            '    if "reasoning_effort" not in api_kwargs and isinstance(reasoning_config, dict):',
+            '        if reasoning_config.get("enabled") is not False:',
+            '            effort = str(reasoning_config.get("effort") or "medium").strip().lower()',
+            "            if effort:",
+            '                api_kwargs["reasoning_effort"] = "low" if effort == "minimal" else effort',
+            "    return api_kwargs",
+            "",
+            "",
+            "class ChatCompletionsTransport:",
+            "    def build_kwargs(self, model, messages, **params):",
+            '        profile = params.get("provider_profile")',
+            "        if profile:",
+            "            profile_kwargs = self._build_kwargs_from_profile(",
+            "                profile, model, messages, None, params",
+            "            )",
+            "            return _spartan_add_clawroute_reasoning_effort(profile_kwargs, params, allow_missing_base_url=True)",
+            "        api_kwargs = dict(params)",
+            "        return _spartan_add_clawroute_reasoning_effort(api_kwargs, params)",
+            "",
+            "    def _build_kwargs_from_profile(self, profile, model, messages, tools, params):",
+            "        return {}",
+            "",
+        ])
+
+        patched, changed = module.patch_source(source)
+
+        self.assertTrue(changed)
+        self.assertIn(module.MARKER, patched)
+        self.assertIn("_spartan_add_clawroute_prompt_cache_key", patched)
+        self.assertIn('extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")', patched)
 
 
 if __name__ == "__main__":
