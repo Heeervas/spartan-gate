@@ -268,6 +268,18 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.body["choices"][0]["finish_reason"], "length")
         self.assertEqual(result.body["choices"][0]["message"]["content"], "partial")
 
+    def test_incomplete_tool_call_is_retryable_502(self) -> None:
+        result = asyncio_run(self.collect([
+            ("response.output_item.added", {
+                "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "lookup"},
+            }),
+            ("response.incomplete", {"response": {"status": "incomplete", "usage": {"input_tokens": 5, "output_tokens": 0}}}),
+        ]))
+
+        self.assertEqual(result.status, 502)
+        self.assertEqual(result.body["error"]["code"], "codex_incomplete_response")
+        self.assertEqual(result.error, "codex_incomplete_response")
+
     def test_empty_successful_codex_response_is_retryable_502(self) -> None:
         result = asyncio_run(self.collect([
             ("response.completed", {"response": {"status": "completed", "usage": {"input_tokens": 155000, "output_tokens": 0}}}),
@@ -289,6 +301,7 @@ class CodexTests(unittest.TestCase):
         from spartan_route.codex import should_retry
 
         self.assertTrue(should_retry(502, data_json({"error": {"type": "upstream_error", "code": "codex_empty_response"}})))
+        self.assertTrue(should_retry(502, data_json({"error": {"type": "upstream_error", "code": "codex_incomplete_response"}})))
 
     def test_execute_chat_retries_empty_response_and_remembers_successful_slot(self) -> None:
         router = RetryRouter()

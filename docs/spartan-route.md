@@ -78,6 +78,9 @@ Reliability contract:
   Route classifies it as retryable `502 codex_empty_response`, rotates to the
   next eligible slot/account, and only returns that error after slot retry is
   exhausted.
+- An incomplete Codex response that contains tool calls is treated as retryable
+  `502 codex_incomplete_response`; Spartan Route must not expose incomplete
+  tool-call arguments to Hermes as a successful `finish_reason="length"` turn.
 - Cache diagnostics in `context_info` are metadata-only: cache-key hash,
   message/tool counts, request-shape hashes, tool-schema fingerprint, and
   same-session prefix comparison. Raw prompts, raw tool schemas, and auth values

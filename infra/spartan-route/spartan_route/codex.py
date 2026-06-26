@@ -344,7 +344,7 @@ def should_retry(status: int, text: str) -> bool:
         return error_type == "usage_limit_reached" or code == "usage_limit_reached"
     if status == 502:
         return (
-            code in {"codex_error", "server_error", "codex_empty_response"}
+            code in {"codex_error", "server_error", "codex_empty_response", "codex_incomplete_response"}
             or error_type in {"server_error", "upstream_error"}
             or any(word in message.lower() for word in ("aborted", "timeout", "timed out", "fetch failed"))
         )
@@ -753,6 +753,13 @@ class CodexRouter:
                 yield sse({"error": error}, event="error")
                 yield b"data: [DONE]\n\n"
                 return
+            if state.finish_reason == "length" and state.tool_calls:
+                error = self._incomplete_tool_response_error()
+                result.error = str(error["code"])
+                self.mark_transient(slot)
+                yield sse({"error": error}, event="error")
+                yield b"data: [DONE]\n\n"
+                return
             result.completed = True
             yield sse({
                 "id": chat_id,
@@ -789,6 +796,13 @@ class CodexRouter:
             "code": "codex_empty_response",
         }
 
+    def _incomplete_tool_response_error(self) -> dict[str, Any]:
+        return {
+            "message": "Codex returned an incomplete tool-call response",
+            "type": "upstream_error",
+            "code": "codex_incomplete_response",
+        }
+
     def _codex_error_status(self, error: dict[str, Any]) -> int:
         code = str(error.get("code") or "")
         error_type = str(error.get("type") or error.get("upstream_type") or "")
@@ -817,6 +831,15 @@ class CodexRouter:
                 cached_input_tokens=cached,
                 output_tokens=output_tokens,
                 error="codex_empty_response",
+            )
+        if state.finish_reason == "length" and state.tool_calls:
+            return CodexCallResult(
+                status=502,
+                body={"error": self._incomplete_tool_response_error()},
+                input_tokens=prompt_tokens,
+                cached_input_tokens=cached,
+                output_tokens=output_tokens,
+                error="codex_incomplete_response",
             )
         text = state.text()
         calls = state.calls()
