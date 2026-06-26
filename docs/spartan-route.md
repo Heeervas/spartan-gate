@@ -81,6 +81,9 @@ Reliability contract:
 - An incomplete Codex response that contains tool calls is treated as retryable
   `502 codex_incomplete_response`; Spartan Route must not expose incomplete
   tool-call arguments to Hermes as a successful `finish_reason="length"` turn.
+- Streaming tool-call deltas are buffered and emitted only after a terminal
+  successful Codex event, so Hermes never receives partial tool arguments from
+  an upstream stream that later becomes incomplete.
 - Cache diagnostics in `context_info` are metadata-only: cache-key hash,
   message/tool counts, request-shape hashes, tool-schema fingerprint, and
   same-session prefix comparison. Raw prompts, raw tool schemas, and auth values

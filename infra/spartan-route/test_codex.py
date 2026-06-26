@@ -222,6 +222,16 @@ class CodexTests(unittest.TestCase):
         router = CodexRouter.__new__(CodexRouter)
         return await router._collect_codex_response(FakeResponse(events), "codex/gpt-5.5", 2)
 
+    async def collect_stream(self, events: list[tuple[str, dict[str, Any]]]):
+        router = CodexRouter.__new__(CodexRouter)
+        router.leases = {}
+        result = CodexCallResult(status=200)
+        slot = CodexSlot(0)
+        chunks = []
+        async for chunk in router._codex_stream_to_chat(FakeResponse(events), "codex/gpt-5.5", result, slot):
+            chunks.append(chunk.decode("utf-8"))
+        return "".join(chunks), result, slot
+
     def test_collects_output_item_done_message_without_delta(self) -> None:
         result = asyncio_run(self.collect([
             ("response.output_item.done", {
@@ -279,6 +289,36 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.status, 502)
         self.assertEqual(result.body["error"]["code"], "codex_incomplete_response")
         self.assertEqual(result.error, "codex_incomplete_response")
+
+    def test_streaming_buffers_incomplete_tool_call_until_terminal_success(self) -> None:
+        body, result, slot = asyncio_run(self.collect_stream([
+            ("response.output_item.added", {
+                "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "lookup"},
+            }),
+            ("response.function_call_arguments.delta", {"item_id": "fc_1", "delta": "{\"q\":\"unterminated"}),
+            ("response.incomplete", {"response": {"status": "incomplete", "usage": {"input_tokens": 5, "output_tokens": 0}}}),
+        ]))
+
+        self.assertNotIn("tool_calls", body)
+        self.assertIn("event: error", body)
+        self.assertIn("codex_incomplete_response", body)
+        self.assertEqual(result.error, "codex_incomplete_response")
+        self.assertGreater(slot.transient_until, time.time())
+
+    def test_streaming_emits_completed_tool_call_after_terminal_success(self) -> None:
+        body, result, slot = asyncio_run(self.collect_stream([
+            ("response.output_item.added", {
+                "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "lookup"},
+            }),
+            ("response.function_call_arguments.delta", {"item_id": "fc_1", "delta": "{\"q\":\"ok\"}"}),
+            ("response.completed", {"response": {"status": "completed", "usage": {"input_tokens": 5, "output_tokens": 3}}}),
+        ]))
+
+        self.assertIn("tool_calls", body)
+        self.assertIn("\"arguments\":\"{\\\"q\\\":\\\"ok\\\"}\"", body)
+        self.assertIn("data: [DONE]", body)
+        self.assertIsNone(result.error)
+        self.assertEqual(slot.transient_until, 0)
 
     def test_empty_successful_codex_response_is_retryable_502(self) -> None:
         result = asyncio_run(self.collect([

@@ -738,6 +738,8 @@ class CodexRouter:
                     yield b"data: [DONE]\n\n"
                     return
                 for delta in chunks:
+                    if "tool_calls" in delta:
+                        continue
                     yield sse({
                         "id": chat_id,
                         "object": "chat.completion.chunk",
@@ -761,6 +763,14 @@ class CodexRouter:
                 yield b"data: [DONE]\n\n"
                 return
             result.completed = True
+            for delta in self._complete_tool_call_deltas(state):
+                yield sse({
+                    "id": chat_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                })
             yield sse({
                 "id": chat_id,
                 "object": "chat.completion.chunk",
@@ -772,6 +782,23 @@ class CodexRouter:
             yield b"data: [DONE]\n\n"
         finally:
             response.release()
+
+    def _complete_tool_call_deltas(self, state: CodexEventState) -> list[dict[str, Any]]:
+        deltas: list[dict[str, Any]] = []
+        for index, call in enumerate(state.calls()):
+            function = call.get("function") if isinstance(call.get("function"), dict) else {}
+            deltas.append({
+                "tool_calls": [{
+                    "index": index,
+                    "id": call.get("id"),
+                    "type": "function",
+                    "function": {
+                        "name": function.get("name") or "",
+                        "arguments": function.get("arguments") or "",
+                    },
+                }],
+            })
+        return deltas
 
     def _usage_values(self, state: CodexEventState) -> tuple[int, int, int]:
         usage = state.usage
