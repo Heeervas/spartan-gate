@@ -149,6 +149,9 @@ type BalanceLoaderSelection = {
     preferredFiveHourResetAt?: string | null;
     eligibleAccountKeys?: Set<string>;
     eligibleSlotIndexes?: Set<number>;
+    hardBlockedAccountKeys?: Set<string>;
+    hardBlockedSlotIndexes?: Set<number>;
+    temporaryBlockedSlotIndexes?: Set<number>;
 };
 
 // ── Rotation State ─────────────────────────────────────────────────
@@ -345,21 +348,32 @@ function applyCacheLease(selection: BalanceLoaderSelection, now: number, affinit
     if (getCacheLeaseMode() === 'off') return selection;
     if (!affinityKey) return selection;
     clearExpiredCacheLeases(now);
-    const lease = activeCacheLeases.get(getLeaseMapKey(affinityKey));
-    if (lease
-        && lease.affinityKey === affinityKey
-        && selection.eligibleAccountKeys?.has(lease.accountKey)
-        && selection.eligibleSlotIndexes?.has(lease.slotIndex)) {
-        return {
-            ...selection,
-            selectedSlotIndex: lease.slotIndex,
-            selectedAccountKey: lease.accountKey,
-            affinityApplied: true,
-            fallbackReason: null,
-            decisionReason: 'cache_lease_reuse',
-        };
+    const mapKey = getLeaseMapKey(affinityKey);
+    const lease = activeCacheLeases.get(mapKey);
+    if (lease && lease.affinityKey === affinityKey) {
+        const slot = authSlots[lease.slotIndex];
+        const slotAccountKey = slot ? getSlotAccountKey(slot) : null;
+        const hardBlocked = !slot
+            || slotAccountKey !== lease.accountKey
+            || slot.rateLimitedUntil > now
+            || Boolean(selection.hardBlockedAccountKeys?.has(lease.accountKey))
+            || Boolean(selection.hardBlockedSlotIndexes?.has(lease.slotIndex));
+        if (hardBlocked) {
+            activeCacheLeases.delete(mapKey);
+        } else if (!selection.temporaryBlockedSlotIndexes?.has(lease.slotIndex)) {
+            return {
+                ...selection,
+                selectedSlotIndex: lease.slotIndex,
+                selectedAccountKey: lease.accountKey,
+                affinityApplied: true,
+                fallbackReason: null,
+                decisionReason: 'cache_lease_reuse',
+            };
+        } else {
+            return selection;
+        }
     }
-    if (lease && getCacheLeaseMode() === 'global') activeCacheLeases.delete(getLeaseMapKey(affinityKey));
+    if (lease && getCacheLeaseMode() === 'global') activeCacheLeases.delete(mapKey);
     if (selection.fallbackReason === null) startCacheLease(selection, now, affinityKey);
     return selection;
 }
@@ -707,6 +721,22 @@ async function getBalanceLoaderSelection(input: {
         scheduleRows,
         accounts: selectorSnapshot.accounts,
     });
+    const hardBlockedAccountKeys = new Set([
+        ...input.excludedAccountKeys,
+        ...selectorSnapshot.accounts
+            .filter((account) => (account.weekly?.usedPercent ?? 0) >= 100)
+            .map((account) => account.accountKey),
+    ]);
+    const hardBlockedSlotIndexes = new Set([
+        ...slotIdentities
+            .filter((slot) => !isSlotAuthSelectable(slot)
+                || slot.rateLimitedUntil > input.now
+                || !activation.enabledSlotIndexes.has(slot.slotIndex))
+            .map((slot) => slot.slotIndex),
+        ...slotIdentities
+            .filter((slot) => slot.accountKey && hardBlockedAccountKeys.has(slot.accountKey))
+            .map((slot) => slot.slotIndex),
+    ]);
     const unavailableSlotIndexes = new Set([
         ...input.excludedSlotIndexes,
         ...slotIdentities
@@ -804,6 +834,9 @@ async function getBalanceLoaderSelection(input: {
             ...(result.selectedSlotIndex !== null ? [result.selectedSlotIndex] : []),
             ...(result.scores ?? []).flatMap((score) => score.slotIndexes ?? []),
         ]),
+        hardBlockedAccountKeys,
+        hardBlockedSlotIndexes,
+        temporaryBlockedSlotIndexes: new Set(input.excludedSlotIndexes),
     };
 }
 
@@ -3326,7 +3359,6 @@ export async function makeCodexRequest(
 
         // Retryable auth/rate-limit/server errors → advance to the next slot and retry
         const errBody = await response.text();
-        invalidateCodexCacheLeaseForSlot(slotUsed);
         releaseSelectionLease(lease, affinityKey, false);
         if (!shouldRetryCodexError(response.status, errBody)) {
             return new Response(
@@ -3341,12 +3373,14 @@ export async function makeCodexRequest(
         }
         triedSlotIndexes.add(slotUsed);
         if (response.status === 401) {
+            invalidateCodexCacheLeaseForSlot(slotUsed);
             invalidateSlotAuth(slotUsed);
             console.warn(
                 `[codex-rotation] Slot ${slotUsed} returned 401 auth error, trying next slot...`
                 + (attempt + 1 < slotCount ? ` (attempt ${attempt + 1}/${slotCount})` : ' (no more slots)'),
             );
         } else if (response.status === 429) {
+            invalidateCodexCacheLeaseForSlot(slotUsed);
             console.warn(
                 `[codex-rotation] Slot ${slotUsed} returned 429, rotating...`
                 + (attempt + 1 < slotCount ? ` (attempt ${attempt + 1}/${slotCount})` : ' (no more slots)'),

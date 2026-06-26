@@ -165,6 +165,16 @@ describe('Codex prompt caching', () => {
         expect(body['prompt_cache_retention']).toBeUndefined();
     });
 
+    it('forwards request reasoning effort as Responses API reasoning', () => {
+        const body = buildCodexRequestBody(
+            { messages: [{ role: 'user', content: 'hello' }], reasoning_effort: 'high' },
+            'gpt-5.5',
+            'clawroute:stable-key',
+        );
+
+        expect(body['reasoning']).toEqual({ effort: 'high' });
+    });
+
     it('preserves cached input token usage in the Chat Completions response', async () => {
         const upstreamBody = createSseStream([
             {

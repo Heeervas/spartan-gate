@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Kept Codex prompt-cache leases sticky across balance-loader de-scoring and
+  transient 502 retries, while preserving hard-block invalidation, and fixed
+  Hermes profile-path prompt cache key plus reasoning effort forwarding.
 - Added an explicit OSS-readiness posture to the public docs and a root
   `llms.txt` entry map plus agent-readability plan for future LLM/code-agent
   orientation.

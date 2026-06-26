@@ -498,6 +498,7 @@ describe('makeCodexRequest regressions', () => {
             selectedSlotIndex: 1,
             affinityApplied: false,
         });
+        transport.forceRotateCodexCacheLease();
 
         const blocked = await transport.makeCodexRequest(
             {
@@ -687,6 +688,8 @@ describe('makeCodexRequest regressions', () => {
         const dir = makeTempDir();
         const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
         const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
+        const firstAccountKey = hashAccountKey('acct-first');
+        const secondAccountKey = hashAccountKey('acct-second');
         vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
         vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
 
@@ -697,34 +700,34 @@ describe('makeCodexRequest regressions', () => {
             },
             selectorResult: {
                 fallbackReason: null,
-                selectedAccountKey: 'acct-second-key',
+                selectedAccountKey: secondAccountKey,
                 selectedSlotIndex: 1,
                 affinityApplied: false,
                 scores: [
-                    { accountKey: 'acct-second-key', slotIndexes: [1] },
-                    { accountKey: 'acct-first-key', slotIndexes: [0] },
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
                 ],
             },
         });
         selectCodexBalanceCandidate
             .mockReturnValueOnce({
                 fallbackReason: null,
-                selectedAccountKey: 'acct-second-key',
+                selectedAccountKey: secondAccountKey,
                 selectedSlotIndex: 1,
                 affinityApplied: false,
                 scores: [
-                    { accountKey: 'acct-second-key', slotIndexes: [1] },
-                    { accountKey: 'acct-first-key', slotIndexes: [0] },
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
                 ],
             })
             .mockReturnValue({
                 fallbackReason: null,
-                selectedAccountKey: 'acct-first-key',
+                selectedAccountKey: firstAccountKey,
                 selectedSlotIndex: 0,
                 affinityApplied: false,
                 scores: [
-                    { accountKey: 'acct-first-key', slotIndexes: [0] },
-                    { accountKey: 'acct-second-key', slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
                 ],
             });
         transport.resetRotationState();
@@ -745,31 +748,244 @@ describe('makeCodexRequest regressions', () => {
         ]);
     });
 
+    it('keeps a cache lease sticky when the balance loader de-scores the account', async () => {
+        const dir = makeTempDir();
+        const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
+        const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
+        const firstAccountKey = hashAccountKey('acct-first');
+        const secondAccountKey = hashAccountKey('acct-second');
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+        vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
+
+        const { transport, selectCodexBalanceCandidate } = await importTransportWithBalanceLoaderMocks({
+            selectorSnapshot: {
+                fallbackReason: null,
+                accounts: [],
+            },
+            selectorResult: {
+                fallbackReason: null,
+                selectedAccountKey: secondAccountKey,
+                selectedSlotIndex: 1,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            },
+        });
+        selectCodexBalanceCandidate
+            .mockReturnValueOnce({
+                fallbackReason: null,
+                selectedAccountKey: secondAccountKey,
+                selectedSlotIndex: 1,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            })
+            .mockReturnValue({
+                fallbackReason: null,
+                selectedAccountKey: firstAccountKey,
+                selectedSlotIndex: 0,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            });
+        transport.resetRotationState();
+
+        const fetchMock = vi.fn(async () => successResponse('ok'));
+        vi.stubGlobal('fetch', fetchMock);
+
+        const cacheRequest = { ...baseRequest, prompt_cache_key: 'lease-test' };
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+
+        expect(fetchMock.mock.calls.map(([, init]) => authHeader(init))).toEqual([
+            'Bearer token-second',
+            'Bearer token-second',
+        ]);
+    });
+
+    it('does not replace a cache lease after a transient 502 retry succeeds on another slot', async () => {
+        const dir = makeTempDir();
+        const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
+        const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
+        const firstAccountKey = hashAccountKey('acct-first');
+        const secondAccountKey = hashAccountKey('acct-second');
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+        vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
+
+        const { transport, selectCodexBalanceCandidate } = await importTransportWithBalanceLoaderMocks({
+            selectorSnapshot: {
+                fallbackReason: null,
+                accounts: [],
+            },
+            selectorResult: {
+                fallbackReason: null,
+                selectedAccountKey: secondAccountKey,
+                selectedSlotIndex: 1,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            },
+        });
+        selectCodexBalanceCandidate
+            .mockReturnValueOnce({
+                fallbackReason: null,
+                selectedAccountKey: secondAccountKey,
+                selectedSlotIndex: 1,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            })
+            .mockReturnValue({
+                fallbackReason: null,
+                selectedAccountKey: firstAccountKey,
+                selectedSlotIndex: 0,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            });
+        transport.resetRotationState();
+
+        let secondCalls = 0;
+        const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+            const authorization = authHeader(init);
+            if (authorization === 'Bearer token-second') {
+                secondCalls++;
+                if (secondCalls === 2) {
+                    return new Response(JSON.stringify({ error: { message: 'temporary upstream abort', code: 'codex_error' } }), {
+                        status: 502,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                return successResponse('leased slot');
+            }
+            if (authorization === 'Bearer token-first') return successResponse('retry slot');
+            throw new Error(`Unexpected Authorization header: ${authorization}`);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const cacheRequest = { ...baseRequest, prompt_cache_key: 'lease-test' };
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+
+        expect(fetchMock.mock.calls.map(([, init]) => authHeader(init))).toEqual([
+            'Bearer token-second',
+            'Bearer token-second',
+            'Bearer token-first',
+            'Bearer token-second',
+        ]);
+    });
+
+    it('replaces a cache lease when the leased account is hard-blocked by a usage limit', async () => {
+        const dir = makeTempDir();
+        const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
+        const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
+        const firstAccountKey = hashAccountKey('acct-first');
+        const secondAccountKey = hashAccountKey('acct-second');
+        vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
+        vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
+
+        const { transport, selectCodexBalanceCandidate } = await importTransportWithBalanceLoaderMocks({
+            selectorSnapshot: {
+                fallbackReason: null,
+                accounts: [],
+            },
+            selectorResult: {
+                fallbackReason: null,
+                selectedAccountKey: secondAccountKey,
+                selectedSlotIndex: 1,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            },
+        });
+        selectCodexBalanceCandidate
+            .mockReturnValueOnce({
+                fallbackReason: null,
+                selectedAccountKey: secondAccountKey,
+                selectedSlotIndex: 1,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: secondAccountKey, slotIndexes: [1] },
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            })
+            .mockReturnValue({
+                fallbackReason: null,
+                selectedAccountKey: firstAccountKey,
+                selectedSlotIndex: 0,
+                affinityApplied: false,
+                scores: [
+                    { accountKey: firstAccountKey, slotIndexes: [0] },
+                ],
+            });
+        transport.resetRotationState();
+
+        let secondCalls = 0;
+        const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+            const authorization = authHeader(init);
+            if (authorization === 'Bearer token-second') {
+                secondCalls++;
+                if (secondCalls === 2) return rateLimitResponse('usage exhausted', { resets_at: Date.now() + 60_000 });
+                return successResponse('leased slot');
+            }
+            if (authorization === 'Bearer token-first') return successResponse('replacement slot');
+            throw new Error(`Unexpected Authorization header: ${authorization}`);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const cacheRequest = { ...baseRequest, prompt_cache_key: 'lease-hard-block-test' };
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+        await transport.makeCodexRequest(cacheRequest, 'codex/gpt-5.4-mini', null);
+
+        expect(fetchMock.mock.calls.map(([, init]) => authHeader(init))).toEqual([
+            'Bearer token-second',
+            'Bearer token-second',
+            'Bearer token-first',
+            'Bearer token-first',
+        ]);
+    });
+
     it('keeps separate cache leases for interleaved prompt cache keys', async () => {
         const dir = makeTempDir();
         const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
         const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
+        const firstAccountKey = hashAccountKey('acct-first');
+        const secondAccountKey = hashAccountKey('acct-second');
         vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
         vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
 
         const firstSelection = {
             fallbackReason: null,
-            selectedAccountKey: 'acct-first-key',
+            selectedAccountKey: firstAccountKey,
             selectedSlotIndex: 0,
             affinityApplied: false,
             scores: [
-                { accountKey: 'acct-first-key', slotIndexes: [0] },
-                { accountKey: 'acct-second-key', slotIndexes: [1] },
+                { accountKey: firstAccountKey, slotIndexes: [0] },
+                { accountKey: secondAccountKey, slotIndexes: [1] },
             ],
         };
         const secondSelection = {
             fallbackReason: null,
-            selectedAccountKey: 'acct-second-key',
+            selectedAccountKey: secondAccountKey,
             selectedSlotIndex: 1,
             affinityApplied: false,
             scores: [
-                { accountKey: 'acct-second-key', slotIndexes: [1] },
-                { accountKey: 'acct-first-key', slotIndexes: [0] },
+                { accountKey: secondAccountKey, slotIndexes: [1] },
+                { accountKey: firstAccountKey, slotIndexes: [0] },
             ],
         };
         const { transport, selectCodexBalanceCandidate } = await importTransportWithBalanceLoaderMocks({
@@ -806,27 +1022,29 @@ describe('makeCodexRequest regressions', () => {
         const dir = makeTempDir();
         const firstPath = writeAuth(dir, 'first.json', 'token-first', 'acct-first');
         const secondPath = writeAuth(dir, 'second.json', 'token-second', 'acct-second');
+        const firstAccountKey = hashAccountKey('acct-first');
+        const secondAccountKey = hashAccountKey('acct-second');
         vi.stubEnv('OPENAI_CODEX_AUTH_PATHS', `${firstPath},${secondPath}`);
         vi.stubEnv('CODEX_BALANCE_LOADER_MODE', 'on');
 
         const firstSelection = {
             fallbackReason: null,
-            selectedAccountKey: 'acct-first-key',
+            selectedAccountKey: firstAccountKey,
             selectedSlotIndex: 0,
             affinityApplied: false,
             scores: [
-                { accountKey: 'acct-first-key', slotIndexes: [0] },
-                { accountKey: 'acct-second-key', slotIndexes: [1] },
+                { accountKey: firstAccountKey, slotIndexes: [0] },
+                { accountKey: secondAccountKey, slotIndexes: [1] },
             ],
         };
         const secondSelection = {
             fallbackReason: null,
-            selectedAccountKey: 'acct-second-key',
+            selectedAccountKey: secondAccountKey,
             selectedSlotIndex: 1,
             affinityApplied: false,
             scores: [
-                { accountKey: 'acct-second-key', slotIndexes: [1] },
-                { accountKey: 'acct-first-key', slotIndexes: [0] },
+                { accountKey: secondAccountKey, slotIndexes: [1] },
+                { accountKey: firstAccountKey, slotIndexes: [0] },
             ],
         };
         const { transport, selectCodexBalanceCandidate } = await importTransportWithBalanceLoaderMocks({
