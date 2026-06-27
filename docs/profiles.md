@@ -12,7 +12,14 @@ root-owned, so newly created profiles get their supervised service slot on the
 next Hermes recreate rather than by mutating s6 service definitions from a
 running `hermes` process.
 
-Manual profiles are not listed in `HERMES_AUTOSTART_PROFILES`. They can be used interactively from the main gateway and should not define `API_SERVER_PORT`.
+Do not start or seed a gateway profile until its `.env` has dedicated messaging
+credentials or explicit blank credentials. Otherwise the profile can inherit the
+default gateway tokens from the container environment and prevent the default
+gateway from starting.
+
+Manual profiles are not listed in `HERMES_AUTOSTART_PROFILES`. They can be used
+interactively from the main gateway, should set `API_SERVER_ENABLED=false`, and
+should not define `API_SERVER_PORT`.
 
 ## Create A Profile
 
@@ -37,7 +44,7 @@ DISCORD_ALLOWED_USERS=${DISCORD_ALLOWED_USERS_COACH}
 DISCORD_HOME_CHANNEL=${DISCORD_HOME_CHANNEL_COACH}
 HERMES_GATEWAY_TOKEN=${HERMES_GATEWAY_TOKEN}
 CUSTOM_1_API_KEY=${CUSTOM_1_API_KEY}
-OPENAI_BASE_URL=http://clawroute:18790/v1
+OPENAI_BASE_URL=${OPENAI_BASE_URL}
 API_SERVER_PORT=8643
 ```
 
@@ -52,9 +59,10 @@ state, but it will not override an existing stopped state.
 DISCORD_BOT_TOKEN=
 DISCORD_ALLOWED_USERS=
 DISCORD_HOME_CHANNEL=
+API_SERVER_ENABLED=false
 HERMES_GATEWAY_TOKEN=${HERMES_GATEWAY_TOKEN}
 CUSTOM_1_API_KEY=${CUSTOM_1_API_KEY}
-OPENAI_BASE_URL=http://clawroute:18790/v1
+OPENAI_BASE_URL=${OPENAI_BASE_URL}
 ```
 
 Do not start manual profiles as gateways.
@@ -66,5 +74,7 @@ Do not start manual profiles as gateways.
 - Do not run two live gateways with the same Telegram or Discord token.
 - Add new profile credential names to your private env file.
 - Expose those names in `private/compose.local.yml` when the profile `.env` references them.
+- Inherit `OPENAI_BASE_URL` from the container so ClawRoute and Spartan Route
+  overlays select the active router consistently.
 - Keep profile API ports explicit and stable; port conflicts should fail visibly
   instead of shifting automatically.

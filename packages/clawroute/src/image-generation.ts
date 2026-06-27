@@ -69,6 +69,92 @@ function createUnsupportedResponse(message: string): Response {
     }, 400);
 }
 
+function createUnsupportedImageSizeResponse(size: unknown): Response {
+    return createJsonResponse({
+        error: {
+            message: `Codex-auth image generation cannot guarantee non-square OpenAI image sizes (${String(size)}). Configure OPENAI_API_KEY for /v1/images/* non-square sizes or request a square size.`,
+            type: 'invalid_request_error',
+            code: 'unsupported_image_size',
+        },
+    }, 400);
+}
+
+function createInvalidImageSizeResponse(size: unknown): Response {
+    return createInvalidRequestResponse(`size must be "auto" or WIDTHxHEIGHT; received ${String(size)}`);
+}
+
+function getImageSizeKind(size: unknown): 'default' | 'auto' | 'square' | 'non_square' | 'invalid' {
+    if (size === undefined || size === null) {
+        return 'default';
+    }
+    if (typeof size !== 'string') {
+        return 'invalid';
+    }
+
+    const normalized = size.trim();
+    if (normalized === 'auto') {
+        return 'auto';
+    }
+
+    const match = /^(\d+)x(\d+)$/.exec(normalized);
+    if (!match) {
+        return 'invalid';
+    }
+
+    return Number(match[1]) === Number(match[2]) ? 'square' : 'non_square';
+}
+
+function validateCodexImageSize(size: unknown): Response | null {
+    const kind = getImageSizeKind(size);
+    if (kind === 'invalid') {
+        return createInvalidImageSizeResponse(size);
+    }
+    if (kind === 'non_square') {
+        return createUnsupportedImageSizeResponse(size);
+    }
+    return null;
+}
+
+function summarizeTextForLog(value: unknown, logContent: boolean): unknown {
+    if (typeof value !== 'string') {
+        return value;
+    }
+    return logContent ? value : `[redacted ${value.length} chars]`;
+}
+
+function summarizeGenerationPayloadForLog(
+    upstreamBody: Record<string, unknown>,
+    logContent: boolean
+): Record<string, unknown> {
+    return {
+        ...upstreamBody,
+        prompt: summarizeTextForLog(upstreamBody['prompt'], logContent),
+    };
+}
+
+function summarizeEditPayloadForLog(
+    request: ImageEditRequest,
+    upstreamModel: string,
+    logContent: boolean
+): Record<string, unknown> {
+    const summary: Record<string, unknown> = {
+        model: upstreamModel,
+        prompt: summarizeTextForLog(request.prompt, logContent),
+        image_count: request.images.length,
+        image_fields: request.images.map((image) => image.fieldName),
+        mask: Boolean(request.mask),
+    };
+
+    for (const field of OPTIONAL_IMAGE_EDIT_FIELDS) {
+        const value = request[field];
+        if (value !== undefined) {
+            summary[field] = value;
+        }
+    }
+
+    return summary;
+}
+
 function extractModelName(modelId: string): string {
     if (modelId.includes('/')) {
         return modelId.split('/').slice(1).join('/');
@@ -269,6 +355,10 @@ export async function executeImageGeneration(
     const { request, normalizedModelId } = validation;
     const apiKey = getApiKey(config, 'openai');
     if (!apiKey) {
+        const sizeError = validateCodexImageSize(request.size);
+        if (sizeError) {
+            return sizeError;
+        }
         return makeCodexImageRequest(request, getProxyAgent());
     }
 
@@ -276,7 +366,7 @@ export async function executeImageGeneration(
 
     if (config.logging.debugMode) {
         console.log(
-            `[images] forwarding image generation ${request.model} -> ${String(upstreamBody.model)}`
+            `[images] forwarding image generation ${JSON.stringify(summarizeGenerationPayloadForLog(upstreamBody, config.logging.logContent))}`
         );
     }
 
@@ -323,14 +413,19 @@ export async function executeImageEdit(
                 'mask is not supported for Codex-auth image edits; configure OPENAI_API_KEY to use /v1/images/edits with mask'
             );
         }
+        const sizeError = validateCodexImageSize(request.size);
+        if (sizeError) {
+            return sizeError;
+        }
         return makeCodexImageRequest(request, getProxyAgent());
     }
 
-    const upstreamBody = buildUpstreamEditForm(request, extractModelName(normalizedModelId));
+    const upstreamModel = extractModelName(normalizedModelId);
+    const upstreamBody = buildUpstreamEditForm(request, upstreamModel);
 
     if (config.logging.debugMode) {
         console.log(
-            `[images] forwarding image edit ${request.model} -> ${extractModelName(normalizedModelId)}`
+            `[images] forwarding image edit ${JSON.stringify(summarizeEditPayloadForLog(request, upstreamModel, config.logging.logContent))}`
         );
     }
 

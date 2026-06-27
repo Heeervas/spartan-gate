@@ -4,6 +4,7 @@ import base64
 import hmac
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -846,6 +847,8 @@ async def proxy_openai_json(state: SpartanRouteState, endpoint: str, body: dict[
     payload = dict(body)
     if isinstance(payload.get("model"), str) and payload["model"].startswith("openai/"):
         payload["model"] = payload["model"][7:]
+    if state.config.debug and endpoint == "/images/generations":
+        print(f"[images] forwarding JSON {endpoint} {stable_json(summarize_image_json_payload(payload, state.config.log_content))}", flush=True)
     async with session.post(
         f"{provider_base_url('openai')}/{endpoint.lstrip('/')}",
         json=payload,
@@ -856,6 +859,62 @@ async def proxy_openai_json(state: SpartanRouteState, endpoint: str, body: dict[
         return ExecutionResult(response.status, body=data, headers={"Content-Type": response.headers.get("Content-Type", "application/json")}, error=sanitize_preview(data.decode("utf-8", "replace")) if response.status >= 400 else None)
 
 
+def image_size_kind(size: Any) -> str:
+    if size is None:
+        return "default"
+    text = str(size).strip()
+    if text == "auto":
+        return "auto"
+    match = re.fullmatch(r"(\d+)x(\d+)", text)
+    if not match:
+        return "invalid"
+    return "square" if int(match.group(1)) == int(match.group(2)) else "non_square"
+
+
+def codex_image_size_error(size: Any) -> web.Response | None:
+    kind = image_size_kind(size)
+    if kind == "invalid":
+        return response_json_error(f'size must be "auto" or WIDTHxHEIGHT; received {size}', 400, "invalid_request", "invalid_request_error")
+    if kind == "non_square":
+        return response_json_error(
+            f"Codex-auth image generation cannot guarantee non-square OpenAI image sizes ({size}). Configure OPENAI_API_KEY for /v1/images/* non-square sizes or request a square size.",
+            400,
+            "unsupported_image_size",
+            "invalid_request_error",
+        )
+    return None
+
+
+def summarize_prompt(value: Any, log_content: bool) -> Any:
+    if not isinstance(value, str):
+        return value
+    return value if log_content else f"[redacted {len(value)} chars]"
+
+
+def summarize_image_json_payload(payload: dict[str, Any], log_content: bool) -> dict[str, Any]:
+    summary = dict(payload)
+    if "prompt" in summary:
+        summary["prompt"] = summarize_prompt(summary["prompt"], log_content)
+    return summary
+
+
+def summarize_image_multipart_payload(fields: Any, log_content: bool) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    image_fields: list[str] = []
+    for name, value in fields.items():
+        if isinstance(value, FileField):
+            if name in {"image", "image[]"}:
+                image_fields.append(name)
+            summary[name] = {"filename": value.filename, "content_type": value.content_type}
+        elif name == "prompt":
+            summary[name] = summarize_prompt(str(value), log_content)
+        else:
+            summary[name] = str(value)
+    summary["image_count"] = len(image_fields)
+    summary["image_fields"] = image_fields
+    return summary
+
+
 async def image_generations(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -863,6 +922,9 @@ async def image_generations(request: web.Request) -> web.StreamResponse:
     state = get_state(request)
     model = normalize_model_id(body.get("model") or "gpt-image-2")
     if model.startswith("codex/") or not state.config.api_key("openai"):
+        size_error = codex_image_size_error(body.get("size"))
+        if size_error is not None:
+            return size_error
         if state.codex is None:
             return response_json_error("Codex router is not ready", 503, "codex_unavailable")
         result = state.codex.execute_image({**body, "model": model})
@@ -895,6 +957,8 @@ async def proxy_openai_multipart(state: SpartanRouteState, endpoint: str, fields
             if name == "model" and text.startswith("openai/"):
                 text = text[7:]
             form.add_field(name, text)
+    if state.config.debug and endpoint == "/images/edits":
+        print(f"[images] forwarding multipart {endpoint} {stable_json(summarize_image_multipart_payload(fields, state.config.log_content))}", flush=True)
     async with session.post(
         f"{provider_base_url('openai')}/{endpoint.lstrip('/')}",
         data=form,
@@ -919,6 +983,9 @@ async def image_edits(request: web.Request) -> web.StreamResponse:
         return response_json_error("Codex router is not ready", 503, "codex_unavailable")
     if fields.get("mask") is not None:
         return response_json_error("Codex image edits in spartan-route v1 do not support mask uploads.", 400, "mask_not_supported", "invalid_request_error")
+    size_error = codex_image_size_error(fields.get("size"))
+    if size_error is not None:
+        return size_error
     images = []
     for name, value in fields.items():
         if name in {"image", "image[]"} and isinstance(value, FileField):

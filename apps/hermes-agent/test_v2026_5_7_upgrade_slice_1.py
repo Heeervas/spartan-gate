@@ -120,10 +120,9 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('runtime_docs_dir="$HERMES_HOME/brain/runtime_docs"', entrypoint)
         self.assertIn('runtime_doc_dst="$runtime_docs_dir/package-installs.md"', entrypoint)
         self.assertIn('if [ -f "$runtime_doc_src" ] && [ ! -f "$runtime_doc_dst" ]; then', entrypoint)
-        self.assertIn(
-            'if run_as_hermes mkdir -p "$runtime_docs_dir" && run_as_hermes cp "$runtime_doc_src" "$runtime_doc_dst"; then',
-            entrypoint,
-        )
+        self.assertIn('if mkdir -p "$runtime_docs_dir"; then', entrypoint)
+        self.assertIn('chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$runtime_docs_dir"', entrypoint)
+        self.assertIn('if run_as_hermes test -w "$runtime_docs_dir" && run_as_hermes cp "$runtime_doc_src" "$runtime_doc_dst"; then', entrypoint)
         self.assertIn('Runtime package install doc not copied to ${runtime_doc_dst}; continuing', entrypoint)
         self.assertNotIn('cp -f "$runtime_doc_src" "$runtime_doc_dst"', entrypoint)
         self.assertIn('uv pip install --python .venv/bin/python package==version', package_doc)

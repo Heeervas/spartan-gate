@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -123,6 +126,40 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
 
         appended = {**body, "messages": [*body["messages"], {"role": "assistant", "content": "new"}]}
         self.assertEqual(compare_session_trace(request_shape_snapshot(appended), snapshot)["comparison"], "prefix")
+
+    async def test_codex_image_generation_rejects_non_square_size(self) -> None:
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            response = await self.client.post(
+                "/v1/images/generations",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "gpt-image-2", "prompt": "draw a guarded gate", "size": "1536x1024"},
+            )
+
+        self.assertEqual(response.status, 400)
+        payload = await response.json()
+        self.assertEqual(payload["error"]["type"], "invalid_request_error")
+        self.assertEqual(payload["error"]["code"], "unsupported_image_size")
+        self.assertIn("OPENAI_API_KEY", payload["error"]["message"])
+
+    async def test_codex_image_edits_reject_non_square_size(self) -> None:
+        form = FormData()
+        form.add_field("model", "gpt-image-2")
+        form.add_field("prompt", "make the red square landscape")
+        form.add_field("size", "1024x1536")
+        form.add_field("image", b"\x89PNG\r\n", filename="red.png", content_type="image/png")
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            response = await self.client.post(
+                "/v1/images/edits",
+                headers={"Authorization": "Bearer secret"},
+                data=form,
+            )
+
+        self.assertEqual(response.status, 400)
+        payload = await response.json()
+        self.assertEqual(payload["error"]["type"], "invalid_request_error")
+        self.assertEqual(payload["error"]["code"], "unsupported_image_size")
+        self.assertIn("OPENAI_API_KEY", payload["error"]["message"])
 
 
 class AppCacheDiagnosticsTests(unittest.TestCase):

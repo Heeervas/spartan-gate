@@ -268,6 +268,36 @@ describe('POST /v1/images/generations', () => {
         });
     });
 
+    it('debug-logs the redacted upstream generation payload including non-square size', async () => {
+        mockFetch.mockResolvedValueOnce(createImageResponse([{ b64_json: 'ZmFrZS1pbWFnZQ==' }]));
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const { createApp } = await import('../src/server.js');
+        const debugConfig = createTestConfig();
+        debugConfig.logging.debugMode = true;
+        const debugApp = createApp(debugConfig);
+
+        try {
+            const response = await debugApp.request('/v1/images/generations', postJson({
+                model: 'gpt-image-2',
+                prompt: 'draw a guarded landscape gate',
+                size: '1536x1024',
+                quality: 'high',
+            }));
+
+            expect(response.status).toBe(200);
+            const fetchCall = getFetchCall();
+            expect(fetchCall.body).toMatchObject({
+                model: 'gpt-image-2',
+                size: '1536x1024',
+                quality: 'high',
+            });
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"size":"1536x1024"'));
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"prompt":"[redacted 29 chars]"'));
+        } finally {
+            logSpy.mockRestore();
+        }
+    });
+
     it('falls back to Codex image generation when no OpenAI API key is configured', async () => {
         vi.stubEnv('OPENAI_CODEX_TOKEN', 'codex-access-token');
         mockFetch.mockResolvedValueOnce(createCodexImageStreamResponse('Y29kZXgtaW1hZ2U='));
@@ -311,6 +341,26 @@ describe('POST /v1/images/generations', () => {
                 },
             ],
         });
+    });
+
+    it('rejects non-square Codex-auth image generations instead of silently returning a square image', async () => {
+        const { createApp } = await import('../src/server.js');
+        const codexConfig = createTestConfig();
+        codexConfig.apiKeys.openai = '';
+        const codexApp = createApp(codexConfig);
+
+        const response = await codexApp.request('/v1/images/generations', postJson({
+            model: 'gpt-image-2',
+            prompt: 'draw a guarded gate',
+            size: '1536x1024',
+        }));
+
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.error.type).toBe('invalid_request_error');
+        expect(body.error.code).toBe('unsupported_image_size');
+        expect(body.error.message).toMatch(/OPENAI_API_KEY.*non-square/i);
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 });
 
@@ -424,6 +474,34 @@ describe('POST /v1/images/edits', () => {
         expect(form.has('steroids_unknown_probe_param')).toBe(false);
     });
 
+    it('debug-logs the redacted upstream edit payload including non-square size', async () => {
+        mockFetch.mockResolvedValueOnce(createImageResponse([{ b64_json: 'ZWRpdGVkLWltYWdl' }]));
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const { createApp } = await import('../src/server.js');
+        const debugConfig = createTestConfig();
+        debugConfig.logging.debugMode = true;
+        const debugApp = createApp(debugConfig);
+
+        try {
+            const response = await debugApp.request('/v1/images/edits', postMultipart((form) => {
+                form.append('model', 'gpt-image-2');
+                form.append('prompt', 'make the red square landscape');
+                form.append('image', createPngFile('red.png'));
+                form.append('size', '1536x1024');
+                form.append('quality', 'high');
+            }));
+
+            expect(response.status).toBe(200);
+            const fetchCall = getRawFetchCall();
+            expect(fetchCall.url).toMatch(/\/images\/edits$/);
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"size":"1536x1024"'));
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"prompt":"[redacted 29 chars]"'));
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"image_count":1'));
+        } finally {
+            logSpy.mockRestore();
+        }
+    });
+
     it('translates Codex-auth image edits into a Responses image edit request', async () => {
         vi.stubEnv('OPENAI_CODEX_TOKEN', 'codex-access-token');
         mockFetch.mockResolvedValueOnce(createCodexImageStreamResponse('Y29kZXgtZWRpdA=='));
@@ -497,6 +575,27 @@ describe('POST /v1/images/edits', () => {
         const body = await response.json();
         expect(body.error.code).toBe('unsupported_endpoint');
         expect(body.error.message).toMatch(/mask.*OPENAI_API_KEY/i);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects non-square Codex-auth image edits instead of silently returning a square image', async () => {
+        const { createApp } = await import('../src/server.js');
+        const codexConfig = createTestConfig();
+        codexConfig.apiKeys.openai = '';
+        const codexApp = createApp(codexConfig);
+
+        const response = await codexApp.request('/v1/images/edits', postMultipart((form) => {
+            form.append('model', 'gpt-image-2');
+            form.append('prompt', 'make the red square landscape');
+            form.append('image', createPngFile('red.png'));
+            form.append('size', '1536x1024');
+        }));
+
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.error.type).toBe('invalid_request_error');
+        expect(body.error.code).toBe('unsupported_image_size');
+        expect(body.error.message).toMatch(/OPENAI_API_KEY.*non-square/i);
         expect(mockFetch).not.toHaveBeenCalled();
     });
 });

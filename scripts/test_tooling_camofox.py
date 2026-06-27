@@ -98,6 +98,36 @@ class HermesProfileNewTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("invalid port", result.stderr)
 
+    def test_manual_profile_disables_api_server(self):
+        result = self.run_script(
+            "manual-profile",
+            "--manual",
+            "--no-telegram",
+            "--no-discord",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile_env = (self.data_dir / "profiles" / "manual-profile" / ".env").read_text()
+        self.assertIn("API_SERVER_ENABLED=false\n", profile_env)
+        self.assertNotIn("API_SERVER_PORT=", profile_env)
+        self.assertIn("OPENAI_BASE_URL=${OPENAI_BASE_URL}\n", profile_env)
+
+    def test_gateway_profile_inherits_container_route(self):
+        result = self.run_script(
+            "gateway-profile",
+            "--gateway",
+            "--port",
+            "8643",
+            "--no-telegram",
+            "--no-discord",
+            "--no-autostart",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile_env = (self.data_dir / "profiles" / "gateway-profile" / ".env").read_text()
+        self.assertIn("API_SERVER_PORT=8643\n", profile_env)
+        self.assertIn("OPENAI_BASE_URL=${OPENAI_BASE_URL}\n", profile_env)
+
 
 class CamofoxContractTests(unittest.TestCase):
     def test_doctor_only_requires_camofox_path_when_enabled(self):

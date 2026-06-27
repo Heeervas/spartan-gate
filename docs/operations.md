@@ -32,10 +32,12 @@ Hermes includes native Pango/Cairo, ffmpeg, and a curated TeX subset for
 creative tools such as Manim, but Python and Node packages should still be
 installed into project-local sandboxes under `/opt/data` or the workspace.
 Hermes seeds `/opt/data/brain/runtime_docs/package-installs.md` on first boot
-with the supported `uv` and npm flows when the brain path is writable; read-only
-brain mounts skip that optional doc without blocking startup. Extra postinstall
-domains remain private policy; add them with `sg-whitelist-domain 15d <domain>`
-after inspecting the failed request.
+with the supported `uv` and npm flows when the brain path is writable. Mount
+private runtime guidance under a child directory such as
+`/opt/data/brain/runtime_docs/local:ro`, not over `runtime_docs` itself, so the
+packaged doc and local docs can coexist. Extra postinstall domains remain
+private policy; add them with `sg-whitelist-domain 15d <domain>` after
+inspecting the failed request.
 
 L4 uses Hermes native SearXNG support for `web_search` through
 `SEARXNG_URL=http://searxng:8080`. Spartan Gate no longer bundles

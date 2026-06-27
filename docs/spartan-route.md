@@ -63,10 +63,16 @@ Kept in v1:
 - Per-key Codex cache leases, rate-limit cooldowns, transient 5xx cooldowns,
   and retry across slots/accounts.
 - Codex image generation and no-mask image edits, with OpenAI image endpoint
-  passthrough when `OPENAI_API_KEY` is available.
+  passthrough when `OPENAI_API_KEY` is available. The Codex-auth image fallback
+  rejects non-square OpenAI image sizes such as `1536x1024` or `1024x1536`;
+  configure `OPENAI_API_KEY` when callers need non-square aspect ratios.
 - Reset-credit telemetry and dashboard display. V1 only reads and persists
   reset-credit metadata; it never redeems credits.
 - Daily cache hit rows from `routing_log`.
+
+With `CLAWROUTE_DEBUG=true`, Spartan Route logs a redacted summary of outbound
+image passthrough payloads. The summary includes fields such as `model`, `size`,
+and `quality`; prompts remain redacted unless `CLAWROUTE_LOG_CONTENT=true`.
 
 Reliability contract:
 

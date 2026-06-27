@@ -67,6 +67,9 @@ Profile-specific variables must be present in your private env file and exposed 
 Named profiles that enable the API server need explicit, non-conflicting
 `API_SERVER_PORT` / `platforms.api_server.port` values. Spartan Gate no longer
 auto-increments occupied ports because s6 profile ports must be stable.
+Manual profiles should set `API_SERVER_ENABLED=false`; otherwise a configured
+profile without an explicit port may be treated as enabled on the default
+gateway port during preflight.
 
 Hermes profiles are not Browserless profiles. Hermes profiles control gateway
 and agent configuration; Browserless profiles control Chromium login state.

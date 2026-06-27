@@ -52,10 +52,17 @@ Multiple references can be sent as repeated `image` fields or as `image[]`.
 ClawRoute normalizes them to upstream `image[]` when using `OPENAI_API_KEY`.
 When no OpenAI API key is configured, ClawRoute translates the same request to
 the Codex Auth image flow and returns the same OpenAI-compatible
-`data[0].b64_json` response shape.
+`data[0].b64_json` response shape. Codex Auth image generation currently
+rejects non-square sizes such as `1536x1024` or `1024x1536` because that
+backend has not proven OpenAI-compatible aspect-ratio handling; configure
+`OPENAI_API_KEY` for non-square image sizes.
 
 `response_format=b64_json` is accepted for compatibility. `input_fidelity` is
 not forwarded for `gpt-image-2`; the upstream model processes image inputs at
 high fidelity automatically. Mask edits are forwarded on the OpenAI API-key
 path; Codex Auth mask edits return a clear unsupported error until that backend
 path is proven.
+
+When `CLAWROUTE_DEBUG=true`, image passthrough requests log a redacted upstream
+payload summary including `model`, `size`, `quality`, and related image
+parameters. Prompts are redacted unless `CLAWROUTE_LOG_CONTENT=true`.

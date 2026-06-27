@@ -224,6 +224,9 @@ write_profile_env() {
         printf 'VISION_TOOLS_DEBUG=false\n'
         printf 'MOA_TOOLS_DEBUG=false\n'
         printf 'IMAGE_TOOLS_DEBUG=false\n'
+        if [[ "$mode" == "manual" ]]; then
+            printf 'API_SERVER_ENABLED=false\n'
+        fi
         if [[ "$telegram" == "yes" ]]; then
             printf 'TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN_%s}\n' "$upper_name"
             printf 'TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS_%s}\n' "$upper_name"
@@ -244,7 +247,7 @@ write_profile_env() {
         printf 'CUSTOM_1_API_KEY=${CUSTOM_1_API_KEY}\n'
         if [[ -n "$port" ]]; then printf 'API_SERVER_PORT=%s\n' "$port"; fi
         printf 'BROWSER_CDP_URL=${BROWSER_CDP_URL}\n'
-        printf 'OPENAI_BASE_URL=http://clawroute:18790/v1\n'
+        printf 'OPENAI_BASE_URL=${OPENAI_BASE_URL}\n'
         printf 'PYTHONPATH=/opt/data/hermes-extra-site:/opt/hermes/bootstrap\n'
         printf 'PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright\n'
     } > "$tmp"
