@@ -39,15 +39,18 @@ def data_json(value: dict[str, Any]) -> str:
 class FakeContent:
     def __init__(self, chunks: list[bytes]):
         self.chunks = chunks
+        self.index = 0
 
     async def iter_chunked(self, _size: int):
-        for chunk in self.chunks:
+        while self.index < len(self.chunks):
+            chunk = self.chunks[self.index]
+            self.index += 1
             yield chunk
 
 
 class FakeResponse:
-    def __init__(self, events: list[tuple[str | None, dict[str, Any]]]):
-        self.content = FakeContent([sse_event(event, data) for event, data in events])
+    def __init__(self, events: list[tuple[str | None, dict[str, Any]]] | None = None, chunks: list[bytes] | None = None):
+        self.content = FakeContent(chunks if chunks is not None else [sse_event(event, data) for event, data in events or []])
         self.released = False
 
     def release(self) -> None:
@@ -82,6 +85,33 @@ class RetryRouter(CodexRouter):
                 error="codex_empty_response",
             )
         return CodexCallResult(status=200, body={"ok": True}, output_tokens=1, completed=True)
+
+
+class StreamingCloseRouter(CodexRouter):
+    def __init__(self):
+        self.slots = [CodexSlot(0, auth=CodexAuth("token", account_id="acct"))]
+        self.leases = {}
+        self.refresh_locks = {}
+
+    async def choose_slot(self, _affinity_key, _excluded_slots, _excluded_accounts):
+        return self.slots[0], self.slots[0].auth
+
+    async def _single_chat_call(self, _body, _model_id, _model_name, _wants_stream, _slot, _auth):
+        result = CodexCallResult(status=200)
+
+        async def stream():
+            try:
+                yield b"data: {}\n\n"
+            finally:
+                result.input_tokens = 1000
+                result.cached_input_tokens = 512
+                result.output_tokens = 7
+                result.usage_seen = True
+                result.usage_event_type = "response.completed"
+                result.completed = True
+
+        result.stream = stream()
+        return result
 
 
 class CodexTests(unittest.TestCase):
@@ -233,6 +263,41 @@ class CodexTests(unittest.TestCase):
             chunks.append(chunk.decode("utf-8"))
         return "".join(chunks), result, slot
 
+    async def close_stream_early(self, events: list[tuple[str | None, dict[str, Any]]]):
+        router = CodexRouter.__new__(CodexRouter)
+        router.leases = {}
+        result = CodexCallResult(status=200)
+        slot = CodexSlot(0)
+        response = FakeResponse(events)
+        stream = router._codex_stream_to_chat(response, "codex/gpt-5.5", result, slot)
+        await stream.__anext__()
+        await stream.aclose()
+        return result, response
+
+    async def close_stream_after_chunk_buffered_terminal(self):
+        router = CodexRouter.__new__(CodexRouter)
+        router.leases = {}
+        result = CodexCallResult(status=200)
+        slot = CodexSlot(0)
+        response = FakeResponse(chunks=[b"".join([
+            sse_event("response.output_text.delta", {"item_id": "msg_1", "delta": "visible"}),
+            sse_event("response.completed", {
+                "response": {
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": 120000,
+                        "input_tokens_details": {"cached_tokens": 90000},
+                        "output_tokens": 20,
+                    },
+                },
+            }),
+        ])])
+        stream = router._codex_stream_to_chat(response, "codex/gpt-5.5", result, slot)
+        await stream.__anext__()
+        await stream.__anext__()
+        await stream.aclose()
+        return result, response
+
     def test_collects_output_item_done_message_without_delta(self) -> None:
         result = asyncio_run(self.collect([
             ("response.output_item.done", {
@@ -382,6 +447,38 @@ class CodexTests(unittest.TestCase):
         self.assertTrue(result.usage_seen)
         self.assertEqual(slot.transient_until, 0)
 
+    def test_streaming_drains_usage_after_client_stops_reading(self) -> None:
+        result, response = asyncio_run(self.close_stream_early([
+            ("response.output_text.delta", {"item_id": "msg_1", "delta": "visible"}),
+            ("response.completed", {
+                "response": {
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": 90000,
+                        "input_tokens_details": {"cached_tokens": 60000},
+                        "output_tokens": 10,
+                    },
+                },
+            }),
+        ]))
+
+        self.assertTrue(response.released)
+        self.assertEqual(result.input_tokens, 90000)
+        self.assertEqual(result.cached_input_tokens, 60000)
+        self.assertEqual(result.output_tokens, 10)
+        self.assertTrue(result.usage_seen)
+        self.assertTrue(result.completed)
+
+    def test_streaming_drains_buffered_terminal_usage_after_client_stops_reading(self) -> None:
+        result, response = asyncio_run(self.close_stream_after_chunk_buffered_terminal())
+
+        self.assertTrue(response.released)
+        self.assertEqual(result.input_tokens, 120000)
+        self.assertEqual(result.cached_input_tokens, 90000)
+        self.assertEqual(result.output_tokens, 20)
+        self.assertTrue(result.usage_seen)
+        self.assertTrue(result.completed)
+
     def test_assistant_reasoning_is_not_replayed_upstream_by_default(self) -> None:
         output = chat_messages_to_responses_input([
             {"role": "assistant", "content": "visible", "reasoning_content": "volatile reasoning"},
@@ -442,6 +539,32 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(len(router.leases), 1)
         self.assertEqual(next(iter(router.leases.values())).slot_index, 1)
         self.assertGreater(router.slots[0].transient_until, time.time())
+
+    def test_execute_chat_stream_close_preserves_usage_from_inner_stream(self) -> None:
+        router = StreamingCloseRouter()
+        result = asyncio_run(router.execute_chat(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            "codex/gpt-5.4-mini",
+            True,
+            "session",
+            "cache",
+            "request",
+        ))
+
+        async def close_after_first_chunk():
+            stream = result.stream
+            self.assertIsNotNone(stream)
+            await stream.__anext__()
+            await stream.aclose()
+
+        asyncio_run(close_after_first_chunk())
+
+        self.assertEqual(result.input_tokens, 1000)
+        self.assertEqual(result.cached_input_tokens, 512)
+        self.assertEqual(result.output_tokens, 7)
+        self.assertTrue(result.usage_seen)
+        self.assertEqual(router.slots[0].in_flight, 0)
+        self.assertEqual(next(iter(router.leases.values())).slot_index, 0)
 
 
 def asyncio_run(coro):

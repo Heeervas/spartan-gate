@@ -33,6 +33,8 @@ OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 FIVE_HOURS_SECONDS = 18_000
 SEVEN_DAYS_SECONDS = 604_800
 INLINE_REASONING_PLACEHOLDER = "<think> </think>"
+TERMINAL_CODEX_EVENTS = {"response.completed", "response.incomplete", "response.failed", "response.cancelled"}
+CODEX_USAGE_DRAIN_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass
@@ -110,6 +112,7 @@ class CodexEventState:
     finish_reason: str = "stop"
     saw_output_item: bool = False
     completed: bool = False
+    terminal_seen: bool = False
 
     def text(self) -> str:
         return "".join(self.text_parts)
@@ -619,9 +622,16 @@ class CodexRouter:
 
                 async def stream_with_inflight_guard() -> AsyncIterator[bytes]:
                     try:
-                        async for chunk in source:
+                        while True:
+                            try:
+                                chunk = await source.__anext__()
+                            except StopAsyncIteration:
+                                break
                             yield chunk
                     finally:
+                        close = getattr(source, "aclose", None)
+                        if callable(close):
+                            await close()
                         if result.completed and not result.error and affinity_key:
                             self._remember_lease(affinity_key, slot)
                         slot.in_flight = max(0, slot.in_flight - 1)
@@ -718,85 +728,147 @@ class CodexRouter:
         chat_id = f"chatcmpl_{sha(str(time.time()), 12)}"
         created = int(time.time())
         state = CodexEventState()
-        try:
-            yield sse({
-                "id": chat_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-            })
-            async for event, data in parse_sse_response(response):
-                if not data or data == "[DONE]":
-                    continue
-                try:
-                    parsed = json.loads(data)
-                except Exception:
-                    continue
-                if event == "error" or parsed.get("error"):
-                    error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
-                    result.error = str(error.get("message") or error.get("code") or "codex_error")
-                    self._mark_streaming_error(slot, error)
-                    yield sse({"error": error}, event="error")
-                    yield b"data: [DONE]\n\n"
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        downstream_open = True
+
+        async def emit(chunk: bytes) -> None:
+            if downstream_open:
+                await queue.put(chunk)
+
+        async def produce() -> None:
+            buffer = ""
+            try:
+                await emit(sse({
+                    "id": chat_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                }))
+                async for chunk in response.content.iter_chunked(8192):
+                    buffer += chunk.decode("utf-8", errors="replace")
+                    while "\n\n" in buffer:
+                        block, buffer = buffer.split("\n\n", 1)
+                        event, data = parse_sse_block(block)
+                        outputs, done = self._codex_chat_outputs_for_event(event, data, state, result, slot, chat_id, created, model)
+                        for output in outputs:
+                            await emit(output)
+                        if done:
+                            return
+                if buffer.strip():
+                    event, data = parse_sse_block(buffer)
+                    outputs, done = self._codex_chat_outputs_for_event(event, data, state, result, slot, chat_id, created, model)
+                    for output in outputs:
+                        await emit(output)
+                    if done:
+                        return
+                result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
+                result.usage_seen = state.usage_seen
+                result.usage_event_type = state.usage_event_type
+                if not state.has_payload():
+                    error = self._empty_response_error()
+                    result.error = str(error["code"])
+                    self.mark_transient(slot)
+                    await emit(sse({"error": error}, event="error"))
+                    await emit(b"data: [DONE]\n\n")
                     return
-                chunks = self._apply_codex_event_state(event, parsed, state, stream=True)
-                if state.terminal_error:
-                    result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
-                    result.usage_seen = state.usage_seen
-                    result.usage_event_type = state.usage_event_type
-                    result.error = str(state.terminal_error.get("message") or state.terminal_error.get("code") or "codex_error")
-                    self._mark_streaming_error(slot, state.terminal_error)
-                    yield sse({"error": state.terminal_error}, event="error")
-                    yield b"data: [DONE]\n\n"
+                if state.finish_reason == "length" and state.tool_calls:
+                    error = self._incomplete_tool_response_error()
+                    result.error = str(error["code"])
+                    self.mark_transient(slot)
+                    await emit(sse({"error": error}, event="error"))
+                    await emit(b"data: [DONE]\n\n")
                     return
-                for delta in chunks:
-                    if "tool_calls" in delta:
-                        continue
-                    yield sse({
+                result.completed = True
+                for delta in self._complete_tool_call_deltas(state):
+                    await emit(sse({
                         "id": chat_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model,
                         "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
-                    })
-            result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
-            result.usage_seen = state.usage_seen
-            result.usage_event_type = state.usage_event_type
-            if not state.has_payload():
-                error = self._empty_response_error()
-                result.error = str(error["code"])
-                self.mark_transient(slot)
-                yield sse({"error": error}, event="error")
-                yield b"data: [DONE]\n\n"
-                return
-            if state.finish_reason == "length" and state.tool_calls:
-                error = self._incomplete_tool_response_error()
-                result.error = str(error["code"])
-                self.mark_transient(slot)
-                yield sse({"error": error}, event="error")
-                yield b"data: [DONE]\n\n"
-                return
-            result.completed = True
-            for delta in self._complete_tool_call_deltas(state):
-                yield sse({
+                    }))
+                await emit(sse({
                     "id": chat_id,
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": model,
-                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
-                })
-            yield sse({
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if state.tool_calls else state.finish_reason}],
+                    "usage": self._usage_payload(*self._usage_values(state)),
+                }))
+                await emit(b"data: [DONE]\n\n")
+            finally:
+                self._copy_usage_to_result(result, state)
+                if state.terminal_seen and state.has_payload() and not result.error and not (state.finish_reason == "length" and state.tool_calls):
+                    result.completed = True
+                if state.terminal_error and not result.error:
+                    result.error = str(state.terminal_error.get("message") or state.terminal_error.get("code") or "codex_error")
+                response.release()
+                await queue.put(None)
+
+        producer = asyncio.create_task(produce())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            downstream_open = False
+            if not producer.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(producer), timeout=CODEX_USAGE_DRAIN_TIMEOUT_SECONDS)
+                except asyncio.TimeoutError:
+                    producer.cancel()
+                except asyncio.CancelledError:
+                    producer.cancel()
+                    raise
+
+    def _codex_chat_outputs_for_event(
+        self,
+        event: str | None,
+        data: str,
+        state: CodexEventState,
+        result: CodexCallResult,
+        slot: CodexSlot,
+        chat_id: str,
+        created: int,
+        model: str,
+    ) -> tuple[list[bytes], bool]:
+        if not data or data == "[DONE]":
+            return [], False
+        try:
+            parsed = json.loads(data)
+        except Exception:
+            return [], False
+        if event == "error" or parsed.get("error"):
+            error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
+            result.error = str(error.get("message") or error.get("code") or "codex_error")
+            self._mark_streaming_error(slot, error)
+            return [sse({"error": error}, event="error"), b"data: [DONE]\n\n"], True
+        chunks = self._apply_codex_event_state(event, parsed, state, stream=True)
+        if state.terminal_error:
+            self._copy_usage_to_result(result, state)
+            result.error = str(state.terminal_error.get("message") or state.terminal_error.get("code") or "codex_error")
+            self._mark_streaming_error(slot, state.terminal_error)
+            return [sse({"error": state.terminal_error}, event="error"), b"data: [DONE]\n\n"], True
+        outputs = []
+        for delta in chunks:
+            if "tool_calls" in delta:
+                continue
+            outputs.append(sse({
                 "id": chat_id,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if state.tool_calls else state.finish_reason}],
-                "usage": self._usage_payload(*self._usage_values(state)),
-            })
-            yield b"data: [DONE]\n\n"
-        finally:
-            response.release()
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            }))
+        return outputs, False
+
+    def _copy_usage_to_result(self, result: CodexCallResult, state: CodexEventState) -> None:
+        result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
+        result.usage_seen = state.usage_seen
+        result.usage_event_type = state.usage_event_type
 
     def _complete_tool_call_deltas(self, state: CodexEventState) -> list[dict[str, Any]]:
         deltas: list[dict[str, Any]] = []
@@ -1064,6 +1136,8 @@ class CodexRouter:
         parsed_type = parsed.get("type")
         if not event and isinstance(parsed_type, str):
             event = parsed_type
+        if event in TERMINAL_CODEX_EVENTS:
+            state.terminal_seen = True
         self._capture_usage(event, parsed, state)
         deltas: list[dict[str, Any]] = []
         if event in {"response.output_text.delta", "response.output_text.annotation.added"}:

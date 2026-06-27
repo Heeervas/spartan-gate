@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from aiohttp import ClientSession, ClientTimeout, FormData, web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.web_request import FileField
 
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
@@ -312,11 +313,10 @@ async def execute_chat(
             prompt_cache_key,
             request_id,
         )
-        return ExecutionResult(
+        execution = ExecutionResult(
             status=codex_result.status,
             body=codex_result.body,
             headers=codex_result.headers,
-            stream=codex_result.stream,
             slot_index=codex_result.slot_index,
             account_key=codex_result.account_key,
             input_tokens=codex_result.input_tokens,
@@ -326,7 +326,32 @@ async def execute_chat(
             usage_seen=codex_result.usage_seen,
             usage_event_type=codex_result.usage_event_type,
         )
+        if codex_result.stream is not None:
+            execution.stream = sync_codex_stream_result(codex_result, execution)
+        return execution
     return await execute_provider_chat(state, body, route, wants_stream)
+
+
+async def sync_codex_stream_result(source_result: CodexCallResult, target: ExecutionResult) -> AsyncIterator[bytes]:
+    source = source_result.stream
+    try:
+        if source is not None:
+            while True:
+                try:
+                    chunk = await source.__anext__()
+                except StopAsyncIteration:
+                    break
+                yield chunk
+    finally:
+        close = getattr(source, "aclose", None)
+        if callable(close):
+            await close()
+        target.input_tokens = source_result.input_tokens
+        target.cached_input_tokens = source_result.cached_input_tokens
+        target.output_tokens = source_result.output_tokens
+        target.error = source_result.error
+        target.usage_seen = source_result.usage_seen
+        target.usage_event_type = source_result.usage_event_type
 
 
 def request_prompt_cache_key(body: dict[str, Any]) -> str | None:
@@ -609,13 +634,25 @@ async def write_execution_response(
             },
         )
         await response.prepare(request)
+        client_disconnected = False
         try:
             async for chunk in source:
-                await response.write(chunk)
+                try:
+                    await response.write(chunk)
+                except (BrokenPipeError, ClientConnectionResetError, ConnectionResetError, RuntimeError):
+                    client_disconnected = True
+                    close = getattr(source, "aclose", None)
+                    if callable(close):
+                        await close()
+                    break
         finally:
             if on_done:
                 on_done()
-            await response.write_eof()
+            if not client_disconnected:
+                try:
+                    await response.write_eof()
+                except (BrokenPipeError, ClientConnectionResetError, ConnectionResetError, RuntimeError):
+                    pass
         return response
 
     if on_done:

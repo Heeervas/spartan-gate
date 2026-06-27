@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Drain Codex streaming responses long enough to preserve terminal usage after
+  early client disconnects, restoring request-level Spartan Route cache
+  metrics for Hermes tool-loop traffic.
 - Kept Hermes private runtime `.env` aligned with Compose `OPENAI_BASE_URL` so
   Spartan Route stays authoritative across recreates, and changed Spartan Route
   cache reporting to exclude log rows without upstream usage metadata.

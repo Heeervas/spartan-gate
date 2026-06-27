@@ -16,11 +16,13 @@ from spartan_route.app import (
     build_request_shape_diagnostics,
     compare_session_trace,
     create_app,
+    execute_chat,
     log_request,
     request_prompt_cache_key_source,
     request_shape_snapshot,
 )
 from spartan_route.config import ModelEntry, SpartanRouteConfig
+from spartan_route.codex import CodexCallResult
 from spartan_route.telemetry import TelemetryStore
 
 
@@ -208,6 +210,52 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
         self.assertFalse(contexts[1]["cache_low"])
         self.assertTrue(contexts[2]["expected_cache_hit"])
         self.assertTrue(contexts[2]["cache_low"])
+
+
+class StreamingCodex:
+    async def execute_chat(self, *_args):
+        result = CodexCallResult(status=200)
+
+        async def stream():
+            try:
+                yield b"data: {}\n\n"
+            finally:
+                result.input_tokens = 1000
+                result.cached_input_tokens = 750
+                result.output_tokens = 20
+                result.usage_seen = True
+                result.usage_event_type = "response.completed"
+
+        result.stream = stream()
+        return result
+
+
+class AppStreamingTelemetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_stream_updates_execution_result_before_logging(self) -> None:
+        state = SpartanRouteState(test_config(), TelemetryStore(":memory:"), CaptureQueue())
+        state.codex = StreamingCodex()
+        route = AppCacheDiagnosticsTests().route()
+
+        result = await execute_chat(
+            state,
+            {"messages": [{"role": "user", "content": "hi"}]},
+            route,
+            True,
+            "session",
+            "cache",
+            "request",
+        )
+
+        stream = result.stream
+        self.assertIsNotNone(stream)
+        await stream.__anext__()
+        await stream.aclose()
+
+        self.assertEqual(result.input_tokens, 1000)
+        self.assertEqual(result.cached_input_tokens, 750)
+        self.assertEqual(result.output_tokens, 20)
+        self.assertTrue(result.usage_seen)
+        self.assertEqual(result.usage_event_type, "response.completed")
 
 
 if __name__ == "__main__":
