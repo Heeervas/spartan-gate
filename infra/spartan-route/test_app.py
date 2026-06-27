@@ -23,13 +23,14 @@ from spartan_route.app import (
     compare_session_trace,
     create_app,
     execute_chat,
+    chat_sse_to_responses_sse,
     log_request,
     prompt_preview_from_request,
     request_prompt_cache_key_source,
     request_shape_snapshot,
 )
 from spartan_route.config import ModelEntry, SpartanRouteConfig
-from spartan_route.codex import CodexAuth, CodexCallResult, CodexSlot
+from spartan_route.codex import CodexAuth, CodexCallResult, CodexSlot, sse
 from spartan_route.telemetry import RoutingLogEntry, TelemetryStore
 
 
@@ -447,6 +448,38 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
         self.assertTrue(contexts[2]["expected_cache_hit"])
         self.assertTrue(contexts[2]["cache_low"])
 
+    def test_stream_stall_guard_records_diagnostic_without_blocking(self) -> None:
+        state = self.state()
+        route = self.route()
+        bodies = [
+            {"model": "clawroute/auto", "prompt_cache_key": "session", "messages": [{"role": "system", "content": "stable"}]},
+            {"model": "clawroute/auto", "prompt_cache_key": "session", "messages": [{"role": "system", "content": "stable"}, {"role": "user", "content": "next"}]},
+        ]
+
+        for index, body in enumerate(bodies):
+            result = ExecutionResult(
+                200,
+                slot_index=0,
+                account_key="account",
+                input_tokens=60000,
+                cached_input_tokens=0,
+                output_tokens=0,
+                error="codex_stream_timeout",
+                usage_seen=False,
+                upstream_response_time_ms=1200,
+                total_response_time_ms=180000,
+            )
+            log_request(state, body, route, result, 0, f"req-{index}", "session", f"turn-{index}", "chat_completions")
+
+        contexts = [json.loads(entry.context_info) for entry in state.queue.entries]
+        self.assertFalse(contexts[0]["cache_low"])
+        self.assertFalse(contexts[1]["cache_low"])
+        self.assertEqual(contexts[0]["cache_stall_diagnostic"]["consecutive_stream_failures"], 1)
+        self.assertEqual(contexts[1]["cache_stall_diagnostic"]["consecutive_stream_failures"], 2)
+        self.assertEqual(contexts[1]["cache_stall_diagnostic"]["last_error"], "codex_stream_timeout")
+        self.assertTrue(contexts[1]["cache_stall_diagnostic"]["diagnostic_only"])
+        self.assertEqual(state.queue.entries[1].error, "codex_stream_timeout")
+
 
 class StreamingCodex:
     async def execute_chat(self, *_args):
@@ -493,8 +526,33 @@ class AppStreamingTelemetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.usage_seen)
         self.assertEqual(result.usage_event_type, "response.completed")
 
+    async def test_responses_sse_error_emits_failed_not_completed(self) -> None:
+        async def source():
+            yield sse({"error": {"message": "timeout", "type": "upstream_error", "code": "codex_stream_timeout"}}, "error")
+            yield b"data: [DONE]\n\n"
+
+        chunks = []
+        async for chunk in chat_sse_to_responses_sse(source(), "resp_test", "codex/gpt-5.5"):
+            chunks.append(chunk.decode("utf-8"))
+        body = "".join(chunks)
+
+        self.assertIn("event: error", body)
+        self.assertIn("event: response.failed", body)
+        self.assertIn("codex_stream_timeout", body)
+        self.assertNotIn("event: response.completed", body)
+
 
 class DashboardStaticTests(unittest.TestCase):
+    def test_routing_dashboard_uses_expandable_request_details(self) -> None:
+        html = (Path(__file__).resolve().parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertNotIn("<th>Content</th>", html)
+        self.assertIn('class="request-list"', html)
+        self.assertIn('class="request', html)
+        self.assertIn('class="request-preview"', html)
+        self.assertIn('class="trace-items"', html)
+        self.assertIn("firstResponseLatencyMs", html)
+
     def test_codex_dashboard_uses_threshold_colored_rings(self) -> None:
         html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
 
@@ -503,6 +561,19 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("value >= 70", html)
         self.assertIn("--tone", html)
         self.assertIn("slotPaths", html)
+
+    def test_codex_dashboard_merges_usage_and_slot_cards_with_countdowns(self) -> None:
+        html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
+
+        self.assertIn("function renderAccountCards", html)
+        self.assertIn("function latencyCell", html)
+        self.assertIn("split_latency_requests", html)
+        self.assertIn("function countdownText", html)
+        self.assertIn("data-countdown", html)
+        self.assertIn("resetTitle", html)
+        self.assertIn("slot-only", html)
+        self.assertIn("active-lease-strip", html)
+        self.assertNotIn("<h2>Slots</h2>", html)
 
 
 if __name__ == "__main__":

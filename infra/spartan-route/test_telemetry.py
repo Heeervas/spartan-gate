@@ -58,6 +58,7 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(rows[0]["usage_missing_requests"], 1)
             self.assertEqual(rows[0]["avg_response_time_ms"], 185)
             self.assertEqual(rows[0]["max_response_time_ms"], 250)
+            self.assertEqual(rows[0]["split_latency_requests"], 2)
             self.assertEqual(rows[0]["avg_total_response_time_ms"], 1050)
             self.assertEqual(rows[0]["max_total_response_time_ms"], 1200)
 
@@ -98,6 +99,123 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(rows[0]["avg_response_time_ms"], 1300)
             self.assertEqual(rows[0]["avg_total_response_time_ms"], 1300)
             self.assertEqual(rows[0]["legacy_latency_requests"], 1)
+            self.assertEqual(rows[0]["split_latency_requests"], 0)
+            today = store.today_summary("2026-06-25")
+            self.assertEqual(today["splitLatencyRequests"], 0)
+            self.assertEqual(today["firstResponseLatencyMs"], today["latencyMs"])
+        finally:
+            store.close()
+
+    def test_split_first_response_latency_ignores_legacy_rows_when_available(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-06-27T09:00:00.000Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.5",
+                actual_model="codex/gpt-5.5",
+                tier="complex",
+                input_tokens=1000,
+                cached_input_tokens=500,
+                response_time_ms=13000,
+                context_info='{"usage_seen":true}',
+            ))
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-06-27T10:00:00.000Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.5",
+                actual_model="codex/gpt-5.5",
+                tier="complex",
+                input_tokens=1000,
+                cached_input_tokens=800,
+                response_time_ms=120,
+                upstream_response_time_ms=120,
+                total_response_time_ms=900,
+                session_id="session",
+                turn_id="turn",
+                request_id="request-a",
+                context_info='{"usage_seen":true}',
+            ))
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-06-27T11:00:00.000Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.5",
+                actual_model="codex/gpt-5.5",
+                tier="complex",
+                input_tokens=1000,
+                cached_input_tokens=900,
+                response_time_ms=250,
+                upstream_response_time_ms=250,
+                total_response_time_ms=1200,
+                session_id="session",
+                turn_id="turn",
+                request_id="request-b",
+                context_info='{"usage_seen":true}',
+            ))
+
+            rows = store.daily_cache_rows()
+            self.assertEqual(rows[0]["avg_response_time_ms"], 185)
+            self.assertEqual(rows[0]["max_response_time_ms"], 250)
+            self.assertEqual(rows[0]["split_latency_requests"], 2)
+            self.assertEqual(rows[0]["legacy_latency_requests"], 1)
+
+            today = store.today_summary("2026-06-27")
+            self.assertEqual(today["legacyLatencyRequests"], 1)
+            self.assertEqual(today["splitLatencyRequests"], 2)
+            self.assertEqual(today["firstResponseLatencyMs"]["avg"], 185)
+            self.assertEqual(today["firstResponseLatencyMs"]["p50"], 120)
+            self.assertEqual(today["firstResponseLatencyMs"]["p90"], 250)
+            self.assertGreater(today["latencyMs"]["avg"], today["firstResponseLatencyMs"]["avg"])
+
+            live = store.live_sessions()
+            metrics = live["sessions"][0]["metrics"]
+            self.assertEqual(metrics["splitLatencyRequests"], 2)
+            self.assertEqual(metrics["firstResponseLatencyMs"]["avg"], 185)
+        finally:
+            store.close()
+
+    def test_stream_error_only_day_is_visible_without_usage_tokens(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-06-28T09:00:00.000Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.5",
+                actual_model="codex/gpt-5.5",
+                tier="complex",
+                input_tokens=60000,
+                cached_input_tokens=0,
+                output_tokens=0,
+                response_time_ms=1200,
+                upstream_response_time_ms=1200,
+                total_response_time_ms=180000,
+                session_id="session-stream",
+                request_id="request-stream",
+                turn_id="turn-stream",
+                error="codex_stream_timeout",
+                context_info='{"usage_seen":false}',
+            ))
+
+            rows = store.daily_cache_rows()
+            self.assertEqual(rows[0]["day"], "2026-06-28")
+            self.assertEqual(rows[0]["requests"], 0)
+            self.assertEqual(rows[0]["logged_requests"], 1)
+            self.assertEqual(rows[0]["input_tokens"], 0)
+            self.assertEqual(rows[0]["cached_input_tokens"], 0)
+            self.assertEqual(rows[0]["errors"], 1)
+            self.assertEqual(rows[0]["usage_missing_requests"], 1)
+            self.assertEqual(rows[0]["split_latency_requests"], 1)
+
+            live = store.live_sessions()
+            metrics = live["sessions"][0]["metrics"]
+            self.assertEqual(metrics["requests"], 1)
+            self.assertEqual(metrics["errors"], 1)
+            self.assertEqual(metrics["usageSeenRequests"], 0)
+            self.assertEqual(metrics["usageMissingRequests"], 1)
+            self.assertEqual(metrics["inputTokens"], 0)
+            self.assertEqual(metrics["cachedInputTokens"], 0)
+            self.assertEqual(metrics["latencyMs"]["avg"], 1200)
+            self.assertEqual(metrics["totalLatencyMs"]["avg"], 180000)
         finally:
             store.close()
 

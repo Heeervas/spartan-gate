@@ -37,6 +37,8 @@ INLINE_REASONING_PLACEHOLDER = "<think> </think>"
 TERMINAL_CODEX_EVENTS = {"response.completed", "response.incomplete", "response.failed", "response.cancelled"}
 CODEX_USAGE_DRAIN_TIMEOUT_SECONDS = 15.0
 CODEX_USAGE_CACHE_TTL_SECONDS = 60.0
+CODEX_STREAM_TIMEOUT_CODE = "codex_stream_timeout"
+CODEX_STREAM_ERROR_CODE = "codex_stream_error"
 
 
 @dataclass
@@ -361,7 +363,14 @@ def should_retry(status: int, text: str) -> bool:
         return error_type == "usage_limit_reached" or code == "usage_limit_reached"
     if status == 502:
         return (
-            code in {"codex_error", "server_error", "codex_empty_response", "codex_incomplete_response"}
+            code in {
+                "codex_error",
+                "server_error",
+                "codex_empty_response",
+                "codex_incomplete_response",
+                CODEX_STREAM_TIMEOUT_CODE,
+                CODEX_STREAM_ERROR_CODE,
+            }
             or error_type in {"server_error", "upstream_error"}
             or any(word in message.lower() for word in ("aborted", "timeout", "timed out", "fetch failed"))
         )
@@ -812,11 +821,11 @@ class CodexRouter:
             )
             result.stream = self._codex_stream_to_chat(response, model_id, result, slot)
             return result
-        collected = await self._collect_codex_response(response, model_id, slot.index)
+        collected = await self._collect_codex_response(response, model_id, slot)
         collected.upstream_response_time_ms = upstream_response_time_ms
         return collected
 
-    async def _collect_codex_response(self, response: Any, model: str, slot_index: int) -> CodexCallResult:
+    async def _collect_codex_response(self, response: Any, model: str, slot: CodexSlot) -> CodexCallResult:
         state = CodexEventState()
         try:
             async for event, data in parse_sse_response(response):
@@ -832,6 +841,10 @@ class CodexRouter:
                 self._apply_codex_event_state(event, parsed, state)
                 if state.terminal_error:
                     break
+        except asyncio.TimeoutError as exc:
+            return self._stream_transport_result(exc, slot, state)
+        except Exception as exc:
+            return self._stream_transport_result(exc, slot, state)
         finally:
             response.release()
         return self._chat_completion_result(state, model)
@@ -909,12 +922,24 @@ class CodexRouter:
                     "usage": self._usage_payload(*self._usage_values(state)),
                 }))
                 await emit(b"data: [DONE]\n\n")
+            except asyncio.TimeoutError as exc:
+                error = self._stream_transport_error(exc)
+                result.error = str(error["code"])
+                self._mark_streaming_error(slot, error)
+                await emit(sse({"error": error}, event="error"))
+                await emit(b"data: [DONE]\n\n")
+            except Exception as exc:
+                error = self._stream_transport_error(exc)
+                result.error = str(error["code"])
+                self._mark_streaming_error(slot, error)
+                await emit(sse({"error": error}, event="error"))
+                await emit(b"data: [DONE]\n\n")
             finally:
                 self._copy_usage_to_result(result, state)
                 if state.terminal_seen and state.has_payload() and not result.error and not (state.finish_reason == "length" and state.tool_calls):
                     result.completed = True
                 if state.terminal_error and not result.error:
-                    result.error = str(state.terminal_error.get("message") or state.terminal_error.get("code") or "codex_error")
+                    result.error = self._error_code(state.terminal_error)
                 response.release()
                 await queue.put(None)
 
@@ -935,6 +960,15 @@ class CodexRouter:
                 except asyncio.CancelledError:
                     producer.cancel()
                     raise
+                except Exception:
+                    pass
+            if producer.done():
+                try:
+                    producer.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
 
     def _codex_chat_outputs_for_event(
         self,
@@ -955,13 +989,13 @@ class CodexRouter:
             return [], False
         if event == "error" or parsed.get("error"):
             error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
-            result.error = str(error.get("message") or error.get("code") or "codex_error")
+            result.error = self._error_code(error)
             self._mark_streaming_error(slot, error)
             return [sse({"error": error}, event="error"), b"data: [DONE]\n\n"], True
         chunks = self._apply_codex_event_state(event, parsed, state, stream=True)
         if state.terminal_error:
             self._copy_usage_to_result(result, state)
-            result.error = str(state.terminal_error.get("message") or state.terminal_error.get("code") or "codex_error")
+            result.error = self._error_code(state.terminal_error)
             self._mark_streaming_error(slot, state.terminal_error)
             return [sse({"error": state.terminal_error}, event="error"), b"data: [DONE]\n\n"], True
         outputs = []
@@ -1029,6 +1063,13 @@ class CodexRouter:
             "prompt_tokens_details": {"cached_tokens": cached},
         }
 
+    def _error_code(self, error: dict[str, Any], default: str = "codex_error") -> str:
+        code = error.get("code")
+        if isinstance(code, str) and code:
+            return code
+        error_type = error.get("type") or error.get("upstream_type")
+        return str(error_type or default)
+
     def _empty_response_error(self) -> dict[str, Any]:
         return {
             "message": "Codex returned an empty successful response",
@@ -1042,6 +1083,34 @@ class CodexRouter:
             "type": "upstream_error",
             "code": "codex_incomplete_response",
         }
+
+    def _stream_transport_error(self, exc: BaseException) -> dict[str, Any]:
+        if isinstance(exc, asyncio.TimeoutError):
+            return {
+                "message": "Codex stream timed out while reading the upstream response",
+                "type": "upstream_error",
+                "code": CODEX_STREAM_TIMEOUT_CODE,
+            }
+        return {
+            "message": "Codex stream failed while reading the upstream response",
+            "type": "upstream_error",
+            "code": CODEX_STREAM_ERROR_CODE,
+        }
+
+    def _stream_transport_result(self, exc: BaseException, slot: CodexSlot, state: CodexEventState) -> CodexCallResult:
+        error = self._stream_transport_error(exc)
+        self._mark_streaming_error(slot, error)
+        prompt_tokens, cached, output_tokens = self._usage_values(state)
+        return CodexCallResult(
+            status=502,
+            body={"error": error},
+            input_tokens=prompt_tokens,
+            cached_input_tokens=cached,
+            output_tokens=output_tokens,
+            error=str(error["code"]),
+            usage_seen=state.usage_seen,
+            usage_event_type=state.usage_event_type,
+        )
 
     def _codex_error_status(self, error: dict[str, Any]) -> int:
         code = str(error.get("code") or "")
@@ -1066,7 +1135,7 @@ class CodexRouter:
             input_tokens=prompt_tokens,
             cached_input_tokens=cached,
             output_tokens=output_tokens,
-            error=str(error.get("message") or error.get("code") or "codex_error"),
+            error=self._error_code(error),
             usage_seen=usage_seen,
             usage_event_type=usage_event_type,
         )

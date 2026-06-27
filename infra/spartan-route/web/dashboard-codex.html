@@ -118,6 +118,39 @@
       flex-wrap: wrap;
       margin-bottom: 12px;
     }
+    .account.slot-only {
+      border-style: dashed;
+    }
+    .account-meta {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+    .badge-row, .slot-actions, .slot-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .badge-row {
+      justify-content: flex-end;
+    }
+    .slot-row {
+      justify-content: space-between;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+    .slot-row-main {
+      min-width: 0;
+    }
+    .active-lease-strip, .reset-credit-strip {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: color-mix(in srgb, var(--line) 16%, transparent);
+    }
     .rings {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -222,21 +255,10 @@
 
     <section>
       <div class="section-head">
-        <h2>Usage</h2>
+        <h2>Usage and Slots</h2>
         <span class="muted" id="usage-status"></span>
       </div>
       <div class="grid" id="accounts"></div>
-    </section>
-
-    <section>
-      <div class="section-head">
-        <h2>Slots</h2>
-        <span class="muted" id="slot-summary"></span>
-      </div>
-      <table>
-        <thead><tr><th>Slot</th><th>Account</th><th>Routing</th><th>Auth</th><th>Cooldown</th><th>Actions</th></tr></thead>
-        <tbody id="slots"></tbody>
-      </table>
     </section>
 
     <section>
@@ -266,8 +288,6 @@
     const tokenInput = document.getElementById('token');
     const accountsEl = document.getElementById('accounts');
     const usageStatus = document.getElementById('usage-status');
-    const slotSummary = document.getElementById('slot-summary');
-    const slotsEl = document.getElementById('slots');
     const cacheEl = document.getElementById('cache');
     const leasesEl = document.getElementById('leases');
     const leaseSummary = document.getElementById('lease-summary');
@@ -298,10 +318,39 @@
       const d = new Date(value);
       return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
     }
+    function deadlineMs(value) {
+      if (!value) return NaN;
+      if (typeof value === 'number' || /^\d+(\.\d+)?$/.test(String(value))) {
+        const numeric = Number(value);
+        return numeric < 1000000000000 ? numeric * 1000 : numeric;
+      }
+      return Date.parse(value);
+    }
+    function countdownText(value) {
+      const target = deadlineMs(value);
+      if (!Number.isFinite(target)) return 'unknown';
+      const remaining = Math.max(0, Math.floor((target - Date.now()) / 1000));
+      const days = Math.floor(remaining / 86400);
+      const hours = Math.floor((remaining % 86400) / 3600);
+      const minutes = Math.floor((remaining % 3600) / 60);
+      const seconds = remaining % 60;
+      if (days > 0) return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+      if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+      return `${minutes}m ${seconds}s`;
+    }
+    function resetTitle(value) {
+      return value ? `Resets ${fmtTime(value)}` : 'No reset timestamp';
+    }
     function cooldown(until) {
       if (!until) return '-';
-      const ms = Number(until) * 1000 - Date.now();
-      return ms > 0 ? `${Math.ceil(ms / 1000)}s` : '-';
+      const target = deadlineMs(until);
+      return Number.isFinite(target) && target > Date.now() ? countdownText(until) : '-';
+    }
+    function updateCountdowns() {
+      document.querySelectorAll('[data-countdown]').forEach(element => {
+        const prefix = element.getAttribute('data-countdown-prefix') || '';
+        element.textContent = `${prefix}${countdownText(element.getAttribute('data-countdown'))}`;
+      });
     }
     function pct(cached, input) {
       return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : '0.0%';
@@ -313,11 +362,12 @@
     }
     function ring(windowName, row) {
       const used = row ? Math.max(0, Math.min(100, Number(row.usedPercent || 0))) : 0;
+      const resetCopy = row?.resetAt ? `reset in ${countdownText(row.resetAt)}` : 'no live data';
       return `<div class="ring-wrap">
         <div class="ring" style="--degrees:${used * 3.6}deg;--tone:${ringTone(used)}"><span class="ring-value">${row ? `${used.toFixed(1)}%` : '-'}</span></div>
         <div>
           <strong>${esc(windowName)}</strong>
-          <div class="muted">${row ? `resets ${fmtTime(row.resetAt)}` : 'no live data'}</div>
+          <div class="muted" title="${esc(resetTitle(row?.resetAt))}"${row?.resetAt ? ` data-countdown-prefix="reset in " data-countdown="${esc(row.resetAt)}"` : ''}>${esc(resetCopy)}</div>
         </div>
       </div>`;
     }
@@ -325,52 +375,138 @@
       const values = Array.isArray(paths) ? paths.filter(Boolean) : [];
       return values.length ? values.join(', ') : '-';
     }
-    function renderAccounts(accounts) {
-      accountsEl.innerHTML = (accounts || []).map(account => {
+    function activeLeaseStrip(account, leases) {
+      const slotIndexes = new Set((account.slotIndexes || []).map(Number));
+      const lease = (leases || []).find(item => item.accountKey === account.accountKey || slotIndexes.has(Number(item.slotIndex)));
+      if (!lease) return '';
+      return `<div class="active-lease-strip">
+        <strong>Active cache lease</strong>
+        <div class="muted">slot ${esc(lease.slotIndex)} · last ${esc(fmtTime(lease.lastUsedAt))} · expires <span title="${esc(fmtTime(lease.nominalExpiresAt))}" data-countdown-prefix="" data-countdown="${esc(lease.nominalExpiresAt)}">${esc(countdownText(lease.nominalExpiresAt))}</span></div>
+      </div>`;
+    }
+    function resetCreditStrip(credits) {
+      const creditCount = credits ? credits.availableCount : '-';
+      const creditItems = credits && Array.isArray(credits.credits) ? credits.credits : [];
+      return `<div class="reset-credit-strip">
+        <strong>Reset credits ${esc(creditCount)}</strong>
+        <div>${creditItems.slice(0, 4).map(item => `<span class="pill">${esc(item.status || 'available')} · expires ${esc(fmtTime(item.expiresAt))}</span>`).join('') || '<span class="pill">no reset-credit detail</span>'}</div>
+      </div>`;
+    }
+    function slotStateLine(slot) {
+      const cooldownText = cooldown(slot.rateLimitedUntil) !== '-' ? `rate ${cooldown(slot.rateLimitedUntil)}` : cooldown(slot.transientUntil);
+      const routing = slot.routingEnabled ? 'enabled' : 'disabled';
+      const auth = slot.authAvailable ? 'ready' : (slot.authUnavailableReason || 'unavailable');
+      const mismatch = slot.routingIdentityMismatch ? ' · identity mismatch, override ignored' : (slot.routingIdentityUnverified ? ' · identity unverified' : '');
+      return `${routing} · ${auth}${cooldownText !== '-' ? ` · cooldown ${cooldownText}` : ''}${mismatch}`;
+    }
+    function renderSlotControls(slot) {
+      return `<div class="slot-row">
+        <div class="slot-row-main">
+          <strong>slot ${esc(slot.slotIndex)}</strong>
+          <div class="muted">${esc(slot.accountKey || '-')} · ${esc(slot.slotPath || slot.slotPathHash || 'no path')}</div>
+          <div class="muted ${slot.routingEnabled ? 'good' : 'bad'}">${esc(slotStateLine(slot))}</div>
+        </div>
+        <div class="slot-actions">
+          <button data-action="toggle" data-slot="${esc(slot.slotIndex)}" data-next="${slot.routingEnabled ? 'false' : 'true'}" class="${slot.routingEnabled ? 'danger' : ''}">${esc(slot.routingEnabled ? 'Disable' : 'Enable')}</button>
+          <button data-action="usage" data-slot="${esc(slot.slotIndex)}">Check usage</button>
+        </div>
+      </div>`;
+    }
+    function appendUnique(target, values) {
+      for (const value of values || []) {
+        if (value !== undefined && value !== null && !target.includes(value)) target.push(value);
+      }
+    }
+    function mergeAccountCards(accounts, slots) {
+      const byKey = new Map();
+      for (const account of accounts || []) {
+        const key = account.accountKey || `account:${byKey.size}`;
+        const current = byKey.get(key);
+        if (current) {
+          appendUnique(current.slotIndexes, account.slotIndexes);
+          appendUnique(current.slotPaths, account.slotPaths);
+          current.fiveHour = current.fiveHour || account.fiveHour;
+          current.weekly = current.weekly || account.weekly;
+          current.resetCredits = current.resetCredits || account.resetCredits;
+          current.stale = current.stale && account.stale;
+          continue;
+        }
+        byKey.set(key, {
+          ...account,
+          slotIndexes: Array.isArray(account.slotIndexes) ? [...account.slotIndexes] : [],
+          slotPaths: Array.isArray(account.slotPaths) ? [...account.slotPaths] : [],
+          slots: [],
+          slotOnly: false,
+        });
+      }
+      for (const slot of slots || []) {
+        const key = slot.accountKey || `slot:${slot.slotIndex}`;
+        let card = byKey.get(key);
+        if (!card) {
+          card = {
+            accountKey: slot.accountKey || 'unknown',
+            slotIndexes: [],
+            slotPaths: [],
+            slots: [],
+            fiveHour: null,
+            weekly: null,
+            resetCredits: null,
+            source: 'slot-only',
+            stale: true,
+            slotOnly: true,
+          };
+          byKey.set(key, card);
+        }
+        card.slots.push(slot);
+        if (!card.slotIndexes.includes(slot.slotIndex)) card.slotIndexes.push(slot.slotIndex);
+        if (slot.slotPath && !card.slotPaths.includes(slot.slotPath)) card.slotPaths.push(slot.slotPath);
+      }
+      return Array.from(byKey.values()).sort((left, right) => {
+        const leftSlot = Math.min(...(left.slotIndexes.length ? left.slotIndexes : [9999]));
+        const rightSlot = Math.min(...(right.slotIndexes.length ? right.slotIndexes : [9999]));
+        return leftSlot - rightSlot;
+      });
+    }
+    function sourceBadge(account) {
+      if (account.slotOnly) return '<span class="pill warn">slot-only</span>';
+      return `<span class="pill">${esc(account.source || 'usage')}</span>${account.stale ? '<span class="pill warn">stale</span>' : ''}`;
+    }
+    function renderAccountCards(accounts, slots = [], leases = []) {
+      const cards = mergeAccountCards(accounts, slots);
+      accountsEl.innerHTML = cards.map(account => {
         const credits = account.resetCredits;
-        const creditCount = credits ? credits.availableCount : '-';
-        const creditItems = credits && Array.isArray(credits.credits) ? credits.credits : [];
-        return `<article class="account">
+        const slotsHtml = (account.slots || []).map(renderSlotControls).join('');
+        return `<article class="account${account.slotOnly ? ' slot-only' : ''}">
           <div class="account-head">
-            <div>
+            <div class="account-meta">
               <h3>${esc(account.accountKey || 'unknown')}</h3>
               <div class="muted">slots ${(account.slotIndexes || []).map(esc).join(', ') || '-'}</div>
               <div class="muted">${esc(slotPathText(account.slotPaths))}</div>
             </div>
-            <div><span class="pill">reset credits ${esc(creditCount)}</span></div>
+            <div class="badge-row">${sourceBadge(account)}</div>
           </div>
           <div class="rings">
             ${ring('5h', account.fiveHour)}
             ${ring('1w', account.weekly)}
           </div>
-          <div>
-            ${creditItems.slice(0, 4).map(item => `<span class="pill">${esc(item.status || 'available')} - expires ${esc(fmtTime(item.expiresAt))}</span>`).join('') || '<span class="pill">no reset-credit detail</span>'}
-          </div>
+          ${activeLeaseStrip(account, leases)}
+          ${resetCreditStrip(credits)}
+          ${slotsHtml || '<div class="slot-row muted">No configured slot metadata.</div>'}
         </article>`;
       }).join('') || '<div class="panel muted">No usage telemetry yet.</div>';
+      updateCountdowns();
     }
-    function renderSlots(slots) {
-      const enabled = (slots || []).filter(slot => slot.routingEnabled).length;
-      slotSummary.textContent = `${enabled}/${(slots || []).length} routing-enabled`;
-      slotsEl.innerHTML = (slots || []).map(slot => {
-        const cooldownText = cooldown(slot.rateLimitedUntil) !== '-' ? `rate ${cooldown(slot.rateLimitedUntil)}` : cooldown(slot.transientUntil);
-        const routingClass = slot.routingEnabled ? 'good' : 'bad';
-        const authClass = slot.authAvailable ? 'good' : 'warn';
-        const disabledReason = slot.routingIdentityMismatch ? 'identity mismatch, override ignored' : (slot.routingIdentityUnverified ? 'identity unverified' : '');
-        return `<tr>
-          <td>${esc(slot.slotIndex)}</td>
-          <td>${esc(slot.accountKey || '-')}<br><span class="muted">${esc(slot.slotPath || slot.slotPathHash || '')}</span></td>
-          <td class="${routingClass}">${esc(slot.routingEnabled ? 'enabled' : 'disabled')}<br><span class="muted">${esc(disabledReason)}</span></td>
-          <td class="${authClass}">${esc(slot.authAvailable ? 'ready' : (slot.authUnavailableReason || 'unavailable'))}</td>
-          <td>${esc(cooldownText)}</td>
-          <td>
-            <div class="slot-actions">
-              <button data-action="toggle" data-slot="${esc(slot.slotIndex)}" data-next="${slot.routingEnabled ? 'false' : 'true'}" class="${slot.routingEnabled ? 'danger' : ''}">${esc(slot.routingEnabled ? 'Disable' : 'Enable')}</button>
-              <button data-action="usage" data-slot="${esc(slot.slotIndex)}">Check usage</button>
-            </div>
-          </td>
-        </tr>`;
-      }).join('') || '<tr><td colspan="6" class="muted">No slots configured.</td></tr>';
+    function latencyCell(row) {
+      const avg = Number(row.avg_response_time_ms || 0);
+      const total = Number(row.avg_total_response_time_ms || 0);
+      const splitCount = Number(row.split_latency_requests || 0);
+      const legacyCount = Number(row.legacy_latency_requests || 0);
+      const label = splitCount > 0 ? 'first' : (legacyCount > 0 ? 'legacy' : 'response');
+      const parts = [];
+      if (avg > 0) parts.push(`${Math.round(avg)}ms ${label}`);
+      if (total > 0) parts.push(`<br><span class="muted">${esc(Math.round(total))}ms total</span>`);
+      if (splitCount > 0 && legacyCount > 0) parts.push(`<br><span class="muted">${esc(legacyCount)} legacy excluded</span>`);
+      return parts.join('') || '-';
     }
     function renderCache(days) {
       cacheEl.innerHTML = (days || []).map(row => `<tr>
@@ -379,7 +515,7 @@
         <td>${esc(num(row.input_tokens))}</td>
         <td>${esc(num(row.cached_input_tokens))}</td>
         <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}</td>
-        <td>${esc(row.avg_response_time_ms ? `${Math.round(row.avg_response_time_ms)}ms first` : '-')}${row.avg_total_response_time_ms ? `<br><span class="muted">${esc(Math.round(row.avg_total_response_time_ms))}ms total</span>` : ''}</td>
+        <td>${latencyCell(row)}</td>
         <td class="${Number(row.errors || 0) ? 'bad' : ''}">${esc(row.errors || 0)}</td>
       </tr>`).join('') || '<tr><td colspan="7" class="muted">No Codex cache rows yet.</td></tr>';
     }
@@ -417,7 +553,7 @@
       });
       renderPayload(payload);
     }
-    slotsEl.addEventListener('click', async event => {
+    accountsEl.addEventListener('click', async event => {
       const button = event.target.closest('button[data-action]');
       if (!button) return;
       button.disabled = true;
@@ -442,11 +578,11 @@
         payload.cacheExpiresAt ? `cache expires ${fmtTime(payload.cacheExpiresAt)}` : '',
       ].filter(Boolean).join(' - ');
       usageStatus.textContent = status;
-      renderAccounts(accounts);
-      renderSlots(payload.slots || balancer.slots || []);
+      renderAccountCards(accounts, payload.slots || balancer.slots || [], balancer.activeLeases || []);
       renderCache(payload.cacheDaily || []);
       renderLeases(balancer.activeLeases || []);
       renderErrors(payload);
+      updateCountdowns();
     }
     async function load(force = false) {
       try {
@@ -458,6 +594,7 @@
         errorsEl.innerHTML = `<div class="panel bad">${esc(error.message)}</div>`;
       }
     }
+    setInterval(updateCountdowns, 1000);
     load();
   </script>
 </body>

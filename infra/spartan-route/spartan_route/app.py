@@ -21,6 +21,9 @@ from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import (
     json_error,
     now_iso,
+    parse_bool,
+    parse_float,
+    parse_int,
     sanitize_preview,
     sha,
     stable_json,
@@ -75,6 +78,9 @@ CACHE_GUARD_EXPECTED_MIN_TOKENS = 1024
 CACHE_GUARD_LOW_MIN_TOKENS = 20_000
 CACHE_GUARD_LOW_RATIO = 0.20
 CACHE_GUARD_CONSECUTIVE_LOW = 2
+CACHE_STALL_DIAGNOSTIC_MIN_TOKENS = 50_000
+CACHE_STALL_DIAGNOSTIC_LOW_RATIO = 0.20
+CACHE_STALL_ERROR_CODES = {"codex_stream_timeout", "codex_stream_error", "codex_empty_response"}
 
 
 def provider_for_model(model_id: str) -> str:
@@ -506,6 +512,12 @@ def update_cache_guard(
 ) -> bool:
     if not cache_key_hash:
         return False
+
+    def trim_guard() -> None:
+        if len(state.cache_guard) > 512:
+            oldest_key = next(iter(state.cache_guard))
+            state.cache_guard.pop(oldest_key, None)
+
     key = cache_guard_key(
         route.actual_model,
         cache_key_hash,
@@ -514,17 +526,53 @@ def update_cache_guard(
         tool_schema_fingerprint,
     )
     entry = state.cache_guard.setdefault(key, {"consecutiveLow": 0})
+    stall_diagnostics_enabled = parse_bool(os.environ.get("SPARTAN_ROUTE_CACHE_STALL_GUARD_ENABLED"), True)
+    stall_min_tokens = parse_int(
+        os.environ.get("SPARTAN_ROUTE_CACHE_STALL_MIN_INPUT_TOKENS"),
+        CACHE_STALL_DIAGNOSTIC_MIN_TOKENS,
+        0,
+        2_000_000,
+    )
+    stall_low_ratio = max(0.0, min(1.0, parse_float(os.environ.get("SPARTAN_ROUTE_CACHE_STALL_LOW_CACHE_RATIO"), CACHE_STALL_DIAGNOSTIC_LOW_RATIO)))
+    stream_stall_error = result.error in CACHE_STALL_ERROR_CODES
+    if (
+        stall_diagnostics_enabled
+        and stream_stall_error
+        and input_tokens >= stall_min_tokens
+        and cache_hit_ratio < stall_low_ratio
+        and (expected_cache_hit or result.error in {"codex_stream_timeout", "codex_stream_error"})
+    ):
+        entry["consecutiveStreamFailures"] = int(entry.get("consecutiveStreamFailures") or 0) + 1
+        entry["lastError"] = result.error
+        entry["lastInputTokens"] = input_tokens
+        entry["lastCacheHitRatio"] = round(cache_hit_ratio, 4)
+        entry["lastExpectedCacheHit"] = bool(expected_cache_hit)
+        entry["diagnosticOnly"] = True
+    elif result.usage_seen and cache_hit_ratio >= stall_low_ratio:
+        entry["consecutiveStreamFailures"] = 0
     if not expected_cache_hit or not result.usage_seen or input_tokens < CACHE_GUARD_LOW_MIN_TOKENS:
         entry["consecutiveLow"] = 0
+        trim_guard()
         return False
     if cache_hit_ratio < CACHE_GUARD_LOW_RATIO:
         entry["consecutiveLow"] = int(entry.get("consecutiveLow") or 0) + 1
     else:
         entry["consecutiveLow"] = 0
-    if len(state.cache_guard) > 512:
-        oldest_key = next(iter(state.cache_guard))
-        state.cache_guard.pop(oldest_key, None)
+    trim_guard()
     return int(entry.get("consecutiveLow") or 0) >= CACHE_GUARD_CONSECUTIVE_LOW
+
+
+def cache_guard_diagnostic_context(entry: dict[str, Any] | None) -> dict[str, Any]:
+    if not entry:
+        return {"diagnostic_only": True, "consecutive_stream_failures": 0}
+    return {
+        "diagnostic_only": True,
+        "consecutive_stream_failures": int(entry.get("consecutiveStreamFailures") or 0),
+        "last_error": entry.get("lastError"),
+        "last_input_tokens": entry.get("lastInputTokens"),
+        "last_cache_hit_ratio": entry.get("lastCacheHitRatio"),
+        "last_expected_cache_hit": entry.get("lastExpectedCacheHit"),
+    }
 
 
 def estimate_shape_sizes(body: dict[str, Any]) -> tuple[int, int]:
@@ -700,6 +748,17 @@ def log_request(
         expected_cache_hit,
         cache_hit_ratio,
     )
+    guard_entry = (
+        state.cache_guard.get(cache_guard_key(
+            route.actual_model,
+            cache_key_hash,
+            result.slot_index,
+            result.account_key,
+            tool_schema_fp if isinstance(tool_schema_fp, str) else None,
+        ))
+        if cache_key_hash
+        else None
+    )
     context = {
         "routeReason": route.reason,
         "provider": route.provider,
@@ -716,6 +775,7 @@ def log_request(
         "expected_cache_hit": expected_cache_hit,
         "cache_hit_ratio": round(cache_hit_ratio, 4),
         "cache_low": cache_low,
+        "cache_stall_diagnostic": cache_guard_diagnostic_context(guard_entry),
         "request_api_kind": api_kind,
         "requested_reasoning_effort": body.get("reasoning_effort") if isinstance(body.get("reasoning_effort"), str) else None,
         "message_chars": message_chars,
@@ -886,6 +946,7 @@ async def chat_sse_to_responses_sse(
 ) -> AsyncIterator[bytes]:
     created = int(time.time())
     yield sse({"id": response_id, "object": "response", "created_at": created, "model": model, "status": "in_progress"}, "response.created")
+    failed_error: dict[str, Any] | None = None
     async for _event, data, _raw in iter_sse_payloads(source):
         if data == "[DONE]":
             continue
@@ -893,7 +954,8 @@ async def chat_sse_to_responses_sse(
         if not isinstance(parsed, dict):
             continue
         if parsed.get("error"):
-            yield sse({"error": parsed["error"]}, "error")
+            failed_error = parsed["error"] if isinstance(parsed["error"], dict) else {"message": str(parsed["error"]), "type": "upstream_error", "code": "codex_error"}
+            yield sse({"error": failed_error}, "error")
             continue
         for choice in parsed.get("choices") or []:
             if not isinstance(choice, dict):
@@ -905,6 +967,17 @@ async def chat_sse_to_responses_sse(
                 yield sse({"type": "response.reasoning_summary_text.delta", "delta": delta["reasoning_content"], "response_id": response_id}, "response.reasoning_summary_text.delta")
             if choice.get("finish_reason"):
                 yield sse({"type": "response.output_text.done", "response_id": response_id}, "response.output_text.done")
+    if failed_error is not None:
+        yield sse({
+            "id": response_id,
+            "object": "response",
+            "created_at": created,
+            "model": model,
+            "status": "failed",
+            "output": [],
+            "error": failed_error,
+        }, "response.failed")
+        return
     yield sse({"id": response_id, "object": "response", "created_at": created, "model": model, "status": "completed", "output": []}, "response.completed")
 
 
@@ -1242,6 +1315,7 @@ async def stats(request: web.Request) -> web.Response:
         "totals": totals,
         "today": today,
         "latencyToday": today["latencyMs"],
+        "firstResponseLatencyToday": today["firstResponseLatencyMs"],
         "dailyCache": rows,
         "codexSlots": state.codex.slot_status(include_paths=True) if state.codex else [],
     })

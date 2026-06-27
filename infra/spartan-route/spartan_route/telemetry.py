@@ -261,14 +261,22 @@ class TelemetryStore:
                        coalesce(sum(CASE WHEN usage_seen = 1 THEN cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
                        sum(CASE WHEN coalesce(error, '') <> '' THEN 1 ELSE 0 END) AS errors,
                        sum(CASE WHEN usage_seen = 0 THEN 1 ELSE 0 END) AS usage_missing_requests,
-                       avg(coalesce(NULLIF(upstream_response_time_ms, 0), NULLIF(response_time_ms, 0))) AS avg_response_time_ms,
-                       max(coalesce(NULLIF(upstream_response_time_ms, 0), NULLIF(response_time_ms, 0))) AS max_response_time_ms,
+                       CASE
+                           WHEN sum(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN 1 ELSE 0 END) > 0
+                           THEN avg(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN upstream_response_time_ms END)
+                           ELSE avg(NULLIF(response_time_ms, 0))
+                       END AS avg_response_time_ms,
+                       CASE
+                           WHEN sum(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN 1 ELSE 0 END) > 0
+                           THEN max(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN upstream_response_time_ms END)
+                           ELSE max(NULLIF(response_time_ms, 0))
+                       END AS max_response_time_ms,
                        avg(coalesce(NULLIF(total_response_time_ms, 0), NULLIF(response_time_ms, 0))) AS avg_total_response_time_ms,
                        max(coalesce(NULLIF(total_response_time_ms, 0), NULLIF(response_time_ms, 0))) AS max_total_response_time_ms,
+                       sum(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN 1 ELSE 0 END) AS split_latency_requests,
                        sum(CASE WHEN upstream_response_time_ms IS NULL AND total_response_time_ms IS NULL THEN 1 ELSE 0 END) AS legacy_latency_requests
                 FROM codex_rows
                 GROUP BY day
-                HAVING requests > 0
                 ORDER BY day
                 """
             ).fetchall()
@@ -292,8 +300,10 @@ class TelemetryStore:
         errors = 0
         input_tokens = cached_tokens = output_tokens = 0
         latencies: list[int] = []
+        split_latencies: list[int] = []
         total_latencies: list[int] = []
         legacy_latency_requests = 0
+        split_latency_requests = 0
         for item in items:
             seen = False
             if item.get("context_info"):
@@ -312,6 +322,9 @@ class TelemetryStore:
             latency, total_latency, legacy = self._row_latency_values(item)
             if latency > 0:
                 latencies.append(latency)
+                if not legacy and item.get("upstream_response_time_ms") is not None:
+                    split_latencies.append(latency)
+                    split_latency_requests += 1
             if total_latency > 0:
                 total_latencies.append(total_latency)
             if legacy:
@@ -327,8 +340,10 @@ class TelemetryStore:
             "cacheHitPercent": (cached_tokens / input_tokens * 100) if input_tokens else 0,
             "errors": errors,
             "latencyMs": self._latency_summary(latencies),
+            "firstResponseLatencyMs": self._latency_summary(split_latencies if split_latencies else latencies),
             "totalLatencyMs": self._latency_summary(total_latencies),
             "legacyLatencyRequests": legacy_latency_requests,
+            "splitLatencyRequests": split_latency_requests,
         }
 
     def live_sessions(
@@ -605,21 +620,33 @@ class TelemetryStore:
             "cachedInputTokens": 0,
             "outputTokens": 0,
             "errors": 0,
+            "usageSeenRequests": 0,
+            "usageMissingRequests": 0,
             "legacyLatencyRequests": 0,
+            "splitLatencyRequests": 0,
             "_latencies": [],
+            "_firstResponseLatencies": [],
             "_totalLatencies": [],
         }
 
     def _add_metrics(self, metrics: dict[str, Any], row: dict[str, Any]) -> None:
         metrics["requests"] += 1
-        metrics["inputTokens"] += int(row.get("input_tokens") or 0)
-        metrics["cachedInputTokens"] += int(row.get("cached_input_tokens") or 0)
-        metrics["outputTokens"] += int(row.get("output_tokens") or 0)
+        usage_seen = self._row_usage_seen(row)
+        if usage_seen:
+            metrics["usageSeenRequests"] += 1
+            metrics["inputTokens"] += int(row.get("input_tokens") or 0)
+            metrics["cachedInputTokens"] += int(row.get("cached_input_tokens") or 0)
+            metrics["outputTokens"] += int(row.get("output_tokens") or 0)
+        else:
+            metrics["usageMissingRequests"] += 1
         if row.get("error"):
             metrics["errors"] += 1
         latency, total_latency, legacy = self._row_latency_values(row)
         if latency > 0:
             metrics["_latencies"].append(latency)
+            if not legacy and row.get("upstream_response_time_ms") is not None:
+                metrics["_firstResponseLatencies"].append(latency)
+                metrics["splitLatencyRequests"] += 1
         if total_latency > 0:
             metrics["_totalLatencies"].append(total_latency)
         if legacy:
@@ -628,8 +655,20 @@ class TelemetryStore:
     def _finalize_metrics(self, metrics: dict[str, Any]) -> None:
         input_tokens = int(metrics.get("inputTokens") or 0)
         metrics["cacheHitPercent"] = (int(metrics.get("cachedInputTokens") or 0) / input_tokens * 100) if input_tokens else 0
-        metrics["latencyMs"] = self._latency_summary(metrics.pop("_latencies", []))
+        latencies = metrics.pop("_latencies", [])
+        first_latencies = metrics.pop("_firstResponseLatencies", [])
+        metrics["latencyMs"] = self._latency_summary(latencies)
+        metrics["firstResponseLatencyMs"] = self._latency_summary(first_latencies if first_latencies else latencies)
         metrics["totalLatencyMs"] = self._latency_summary(metrics.pop("_totalLatencies", []))
+
+    def _row_usage_seen(self, row: dict[str, Any]) -> bool:
+        if row.get("context_info"):
+            try:
+                context = json.loads(row["context_info"])
+                return bool(context.get("usage_seen"))
+            except json.JSONDecodeError:
+                return False
+        return False
 
     def _row_latency_values(self, row: dict[str, Any]) -> tuple[int, int, bool]:
         response = int(row.get("response_time_ms") or 0)

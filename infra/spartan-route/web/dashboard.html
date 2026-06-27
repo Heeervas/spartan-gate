@@ -156,23 +156,91 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
+    .request-list {
+      display: grid;
+      gap: 8px;
       margin-top: 10px;
     }
-    th, td {
+    .request {
       border-top: 1px solid var(--line);
-      padding: 8px 6px;
-      text-align: left;
-      vertical-align: top;
+      min-width: 0;
+    }
+    .request > summary {
+      display: grid;
+      grid-template-columns: minmax(120px, .85fr) minmax(130px, 1fr) minmax(110px, .85fr) minmax(120px, .9fr) minmax(120px, .85fr) minmax(90px, .7fr);
+      gap: 10px;
+      align-items: center;
+      padding: 9px 6px;
+      cursor: pointer;
+      list-style: none;
+      min-width: 0;
+    }
+    .request > summary::-webkit-details-marker { display: none; }
+    .request > summary:hover { background: color-mix(in srgb, var(--line) 22%, transparent); }
+    .request-field {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .request-model, .request-slot {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .request-tokens, .request-latency, .request-status {
+      font-variant-numeric: tabular-nums;
+    }
+    .request-detail {
+      padding: 0 6px 12px;
+      display: grid;
+      gap: 8px;
+    }
+    .request-preview {
+      border-left: 3px solid var(--accent);
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--line) 18%, transparent);
+      padding: 9px 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
       overflow-wrap: anywhere;
     }
-    th {
+    .request-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
       color: var(--muted);
       font-size: 12px;
-      font-weight: 600;
+    }
+    .meta-pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 7px;
+    }
+    .trace-items {
+      display: grid;
+      gap: 6px;
+    }
+    .trace-item {
+      border-left: 2px solid var(--line);
+      border-radius: 4px;
+      padding: 7px 9px;
+      background: color-mix(in srgb, var(--line) 12%, transparent);
+      font-size: 12px;
+    }
+    .trace-role {
+      margin-right: 7px;
+      color: var(--accent);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .trace-preview {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .trace-tool {
+      margin-top: 4px;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     .bad { color: var(--bad); }
     .warn { color: var(--warn); }
@@ -183,7 +251,8 @@
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .toolbar { display: grid; grid-template-columns: 1fr; }
       input { min-width: 0; width: 100%; }
-      th:nth-child(3), td:nth-child(3), th:nth-child(5), td:nth-child(5) { display: none; }
+      .request > summary { grid-template-columns: minmax(90px, 1fr) minmax(120px, 1fr); }
+      .request-slot, .request-tokens { display: none; }
       .summary-metrics { justify-content: flex-start; }
     }
   </style>
@@ -256,17 +325,22 @@
       return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(extra)}</div></div>`;
     }
     function metricLine(metrics = {}) {
-      const latency = metrics.latencyMs || {};
+      const latency = metrics.firstResponseLatencyMs || metrics.latencyMs || {};
       const totalLatency = metrics.totalLatencyMs || {};
+      const latencySuffix = metrics.splitLatencyRequests ? 'first' : 'legacy';
       return [
         `${num(metrics.requests)} req`,
         `${pct(metrics.cacheHitPercent)} cache`,
         `${num(metrics.inputTokens)} in`,
         `${num(metrics.outputTokens)} out`,
-        `${latency.avg == null ? '-' : `${latency.avg}ms first`}`,
+        `${latency.avg == null ? '-' : `${latency.avg}ms ${latencySuffix}`}`,
         `${totalLatency.avg == null ? '-' : `${totalLatency.avg}ms total`}`,
         `${num(metrics.errors)} errors`,
       ].map(item => `<span>${esc(item)}</span>`).join('');
+    }
+    function requestPreview(row) {
+      const preview = row.promptPreview || tracePreview(row);
+      return preview && preview !== 'No preview' ? preview : 'No user-message preview recorded';
     }
     function tracePreview(row) {
       const items = row.context?.request_trace?.delta?.items || [];
@@ -282,6 +356,47 @@
         return `${role}: ${item.preview || `${item.chars || 0} chars`}`;
       }).join('\n');
     }
+    function renderTraceItems(row) {
+      const items = row.context?.request_trace?.delta?.items || [];
+      if (!Array.isArray(items) || items.length === 0) {
+        return '<div class="trace-items"><div class="trace-item">No recorded trace items.</div></div>';
+      }
+      return `<div class="trace-items">${items.map(item => {
+        const tools = (item.toolCalls || []).map(call => {
+          const keys = (call.argumentKeys || []).join(', ') || `${call.argumentChars || 0} chars`;
+          return `<div class="trace-tool">tool ${esc(call.name || 'tool')}(${esc(keys)})</div>`;
+        }).join('');
+        return `<div class="trace-item"><span class="trace-role">${esc(item.role || 'unknown')}</span><span class="trace-preview">${esc(item.preview || `${item.chars || 0} chars`)}</span>${tools}</div>`;
+      }).join('')}</div>`;
+    }
+    function renderRequest(row) {
+      const preview = requestPreview(row);
+      const slot = row.selectedCodexSlotIndex ?? '-';
+      const account = row.selectedCodexAccountKey || '';
+      const total = row.totalResponseTimeMs || 0;
+      const latencyKind = row.latencySource === 'legacy_response_time' ? 'legacy' : 'first';
+      const status = row.error || 'ok';
+      return `<details class="request${row.error ? ' error' : ''}">
+        <summary title="${esc(preview)}">
+          <span class="request-field">${esc(fmtTime(row.timestamp))}</span>
+          <span class="request-field request-model">${esc(row.actualModel)}</span>
+          <span class="request-field request-slot">slot ${esc(slot)}${account ? ` · ${esc(account)}` : ''}</span>
+          <span class="request-field request-tokens">${num(row.inputTokens)} in · ${num(row.cachedInputTokens)} cached · ${num(row.outputTokens)} out</span>
+          <span class="request-field request-latency">${esc(row.responseTimeMs || 0)}ms ${esc(latencyKind)} · ${esc(total)}ms total</span>
+          <span class="request-field request-status ${row.error ? 'bad' : ''}">${esc(status)}</span>
+        </summary>
+        <div class="request-detail">
+          <div class="request-preview">${esc(preview)}</div>
+          <div class="request-meta">
+            <span class="meta-pill">${esc(row.originalModel)} to ${esc(row.routedModel)}</span>
+            <span class="meta-pill">${esc(row.tier || 'unknown')}</span>
+            <span class="meta-pill">${esc(row.requestId || 'no request id')}</span>
+            ${row.context?.request_trace?.delta?.phase ? `<span class="meta-pill">${esc(row.context.request_trace.delta.phase)}</span>` : ''}
+          </div>
+          ${renderTraceItems(row)}
+        </div>
+      </details>`;
+    }
     async function getJson(path) {
       const response = await fetch(path, { headers: headers() });
       if (!response.ok) throw new Error(`${path} HTTP ${response.status}`);
@@ -291,18 +406,7 @@
       target.innerHTML = '<p class="muted">Loading turn...</p>';
       const payload = await getJson(`/api/routing/turns/${encodeURIComponent(turnId)}`);
       const rows = payload.requests || [];
-      target.innerHTML = `<table>
-        <thead><tr><th>Time</th><th>Model</th><th>Content</th><th>Slot</th><th>Tokens</th><th>Latency</th><th>Status</th></tr></thead>
-        <tbody>${rows.map(row => `<tr>
-          <td>${esc(fmtTime(row.timestamp))}</td>
-          <td>${esc(row.actualModel)}</td>
-          <td><span class="preview">${esc(tracePreview(row))}</span></td>
-          <td>${esc(row.selectedCodexSlotIndex ?? '-')}<br><span class="muted">${esc(row.selectedCodexAccountKey || '')}</span></td>
-          <td>${num(row.inputTokens)} in<br>${num(row.cachedInputTokens)} cached<br>${num(row.outputTokens)} out</td>
-          <td>${esc(row.responseTimeMs || 0)}ms first<br><span class="muted">${esc(row.totalResponseTimeMs || 0)}ms total${row.latencySource === 'legacy_response_time' ? ' legacy' : ''}</span></td>
-          <td class="${row.error ? 'bad' : ''}">${esc(row.error || 'ok')}</td>
-        </tr>`).join('')}</tbody>
-      </table>`;
+      target.innerHTML = `<div class="request-list">${rows.map(renderRequest).join('') || '<div class="muted">No request detail is available.</div>'}</div>`;
     }
     function wireLazyTurns() {
       sessionsEl.querySelectorAll('details.turn').forEach(item => {
@@ -321,12 +425,18 @@
     function renderStats(stats) {
       const totals = stats.totals || {};
       const today = stats.today || {};
-      const latency = stats.latencyToday || {};
+      const latency = today.firstResponseLatencyMs || stats.latencyToday || {};
       const totalLatency = today.totalLatencyMs || {};
+      const firstLabel = today.splitLatencyRequests ? 'First response' : 'Legacy response';
+      const latencyExtra = [
+        `p90 ${latency.p90 == null ? '-' : `${latency.p90}ms`}`,
+        today.splitLatencyRequests ? `${today.splitLatencyRequests} split` : '',
+        today.legacyLatencyRequests ? `${today.legacyLatencyRequests} legacy` : '',
+      ].filter(Boolean).join(' · ');
       metricsEl.innerHTML = [
         metric('Today requests', today.loggedRequests || 0, `${today.usageSeenRequests || 0} with usage`),
         metric('Today cache', pct(today.cacheHitPercent), `${num(today.cachedInputTokens)} cached`),
-        metric('First response', latency.avg == null ? '-' : `${latency.avg}ms`, `p90 ${latency.p90 == null ? '-' : `${latency.p90}ms`}`),
+        metric(firstLabel, latency.avg == null ? '-' : `${latency.avg}ms`, latencyExtra),
         metric('Total duration', totalLatency.avg == null ? '-' : `${totalLatency.avg}ms`, `p90 ${totalLatency.p90 == null ? '-' : `${totalLatency.p90}ms`}`),
         metric('Today errors', today.errors || 0, `${today.usageMissingRequests || 0} missing usage`),
         metric('All cache', pct(totals.cacheHitPercent), `${num(totals.requests)} usage rows`),
