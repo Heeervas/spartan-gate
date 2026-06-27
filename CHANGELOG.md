@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Classified Spartan Route Codex stream read timeouts/errors as explicit
+  retryable transport failures, including SSE failure events, transient slot
+  cooldowns, stable telemetry codes, and diagnostic-only low-cache stall
+  tracking.
+- Clarified ClawRoute Codex-auth image fallback errors for unsupported
+  non-square or malformed image sizes before any upstream image call.
 - Added Spartan Route dashboard latency, recent-first session/turn trees,
   persistent Codex slot routing controls, cached usage polling, active-lease
   visibility, and bearer-only dashboard/API auth while deferring quota-unit
@@ -12,6 +18,10 @@ All notable changes to Spartan Gate are documented here.
   request duration, added authenticated Codex slot paths, restored
   threshold-colored usage rings, and improved dashboard request previews without
   exposing health-check slot paths.
+- Reworked Spartan Route dashboards so routing request content opens in
+  expandable request details, Codex usage and slot controls share account cards,
+  reset windows show countdowns, and current first-response latency is not
+  visually blended with legacy rows.
 - Drain Codex streaming responses long enough to preserve terminal usage after
   early client disconnects, restoring request-level Spartan Route cache
   metrics for Hermes tool-loop traffic.

@@ -47,7 +47,7 @@ Relevant files:
 - `infra/spartan-route/web/dashboard.html`: session and turn dashboard.
 - `infra/spartan-route/web/dashboard-codex.html`: Codex usage, slot state,
   persistent slot routing controls, daily cache percentage, latency, active
-  leases, and mandatory reset-credit showcase.
+  leases, reset countdowns, and mandatory reset-credit showcase.
 - `infra/compose/compose.spartan-route.yml`: full-stack side-by-side overlay.
 - `infra/compose/tiers/compose.spartan-route.yml`: tier-helper side-by-side
   overlay.
@@ -75,9 +75,11 @@ Kept in v1:
   `response_time_ms`/`responseTimeMs` means first upstream response time, while
   `total_response_time_ms`/`totalResponseTimeMs` means full request or stream
   duration through logging. Older rows without those split columns fall back to
-  the legacy `response_time_ms` value and are marked as legacy latency. Cache
-  hit percentage still uses only rows where upstream usage metadata was seen;
-  request and latency counters can include rows without usage.
+  the legacy `response_time_ms` value and are marked as legacy latency. The
+  dashboard uses split-only `firstResponseLatencyMs` when available and labels
+  fallback-only days as legacy response time. Cache hit percentage still uses
+  only rows where upstream usage metadata was seen; request and latency
+  counters can include rows without usage.
 - Persistent Codex slot routing enable/disable controls. Disabled slots are
   skipped by chat and image routing, leases for that slot/account are
   invalidated, and the override survives service restart. If a stored override
@@ -89,6 +91,9 @@ Kept in v1:
 - Authenticated Codex dashboard/API responses include the configured Codex auth
   path for each slot so local operators can identify accounts. Public health
   responses keep only hashes and never expose raw slot paths.
+- The Codex dashboard groups usage windows and slot controls by account. Slots
+  without live usage telemetry still render as slot-only cards, and reset times
+  are shown as countdowns with exact timestamps available on hover.
 
 With `CLAWROUTE_DEBUG=true`, Spartan Route logs a redacted summary of outbound
 image passthrough payloads. The summary includes fields such as `model`, `size`,
@@ -104,17 +109,33 @@ Reliability contract:
   Route classifies it as retryable `502 codex_empty_response`, rotates to the
   next eligible slot/account, and only returns that error after slot retry is
   exhausted.
+- A Codex stream that times out or fails while reading after response headers is
+  a transport failure, not a successful empty turn. Streaming Chat Completions
+  receive `event: error` with `codex_stream_timeout` or `codex_stream_error`
+  followed by `[DONE]`; streaming Responses receive the same error and then
+  `response.failed`. Non-streaming reads return retryable `502` with the same
+  stable codes. The affected slot/account gets the existing transient cooldown
+  and cache-lease invalidation.
 - An incomplete Codex response that contains tool calls is treated as retryable
   `502 codex_incomplete_response`; Spartan Route must not expose incomplete
   tool-call arguments to Hermes as a successful `finish_reason="length"` turn.
 - Streaming tool-call deltas are buffered and emitted only after a terminal
   successful Codex event, so Hermes never receives partial tool arguments from
   an upstream stream that later becomes incomplete.
+- Spartan Route does not implement Hermes gateway silence markers such as
+  `[SILENT]` or `NO_REPLY`; those are delivery semantics above the router.
 - Cache diagnostics in `context_info` are metadata-only by default: cache-key
   hash, cache key source, usage-event visibility, expected-hit/low-cache flags,
   message/tool counts, request-shape hashes, tool-schema fingerprint, and
   same-session prefix comparison. Raw tool schemas, raw cache keys, and auth
   values are not added to these diagnostics.
+- Large low-cache stream failures also update a diagnostic-only stall guard in
+  `context_info.cache_stall_diagnostic`. It records consecutive stream-failure
+  counts and stable error codes for the selected model/cache/slot/account/tool
+  shape, but does not block requests in v1. Tune it with
+  `SPARTAN_ROUTE_CACHE_STALL_GUARD_ENABLED`,
+  `SPARTAN_ROUTE_CACHE_STALL_MIN_INPUT_TOKENS`, and
+  `SPARTAN_ROUTE_CACHE_STALL_LOW_CACHE_RATIO`.
 - When `CLAWROUTE_LOG_CONTENT=true`, routing rows also store sanitized request
   previews for the dashboard. Spartan Route prefers the latest user message
   over the system prompt, strips common Hermes metadata preambles, redacts

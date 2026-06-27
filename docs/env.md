@@ -249,6 +249,11 @@ writes `/app/data/spartan-route.db` and does not reuse `clawroute.db`.
 `SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING=1` is a rollback switch that restores
 replay of prior assistant reasoning into upstream Codex requests; leave it
 unset for the default stable-prefix behavior.
+`SPARTAN_ROUTE_CACHE_STALL_GUARD_ENABLED`, default `1`, enables diagnostic-only
+tracking of repeated large low-cache Codex stream failures. It does not block
+requests. `SPARTAN_ROUTE_CACHE_STALL_MIN_INPUT_TOKENS`, default `50000`, and
+`SPARTAN_ROUTE_CACHE_STALL_LOW_CACHE_RATIO`, default `0.20`, tune which
+stream-failure rows are counted in `context_info.cache_stall_diagnostic`.
 
 Codex subscription routing: `OPENAI_CODEX_TOKEN`, `OPENAI_CODEX_AUTH_PATH`,
 `OPENAI_CODEX_AUTH_PATHS`, `CODEX_HOME`, `CODEX_BALANCE_LOADER_MODE`,
