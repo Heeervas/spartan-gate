@@ -72,7 +72,7 @@ function createUnsupportedResponse(message: string): Response {
 function createUnsupportedImageSizeResponse(size: unknown): Response {
     return createJsonResponse({
         error: {
-            message: `Codex-auth image generation cannot guarantee non-square OpenAI image sizes (${String(size)}). Configure OPENAI_API_KEY for /v1/images/* non-square sizes or request a square size.`,
+            message: `Requested image size ${String(size)} requires a non-square aspect ratio, but ClawRoute is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.`,
             type: 'invalid_request_error',
             code: 'unsupported_image_size',
         },

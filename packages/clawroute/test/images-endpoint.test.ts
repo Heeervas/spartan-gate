@@ -359,7 +359,26 @@ describe('POST /v1/images/generations', () => {
         const body = await response.json();
         expect(body.error.type).toBe('invalid_request_error');
         expect(body.error.code).toBe('unsupported_image_size');
-        expect(body.error.message).toMatch(/OPENAI_API_KEY.*non-square/i);
+        expect(body.error.message).toBe('Requested image size 1536x1024 requires a non-square aspect ratio, but ClawRoute is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid Codex-auth image generation sizes before any upstream call', async () => {
+        const { createApp } = await import('../src/server.js');
+        const codexConfig = createTestConfig();
+        codexConfig.apiKeys.openai = '';
+        const codexApp = createApp(codexConfig);
+
+        const response = await codexApp.request('/v1/images/generations', postJson({
+            model: 'gpt-image-2',
+            prompt: 'draw a guarded gate',
+            size: 'bad',
+        }));
+
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.error.type).toBe('invalid_request_error');
+        expect(body.error.message).toBe('size must be "auto" or WIDTHxHEIGHT; received bad');
         expect(mockFetch).not.toHaveBeenCalled();
     });
 });
@@ -595,7 +614,7 @@ describe('POST /v1/images/edits', () => {
         const body = await response.json();
         expect(body.error.type).toBe('invalid_request_error');
         expect(body.error.code).toBe('unsupported_image_size');
-        expect(body.error.message).toMatch(/OPENAI_API_KEY.*non-square/i);
+        expect(body.error.message).toBe('Requested image size 1536x1024 requires a non-square aspect ratio, but ClawRoute is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.');
         expect(mockFetch).not.toHaveBeenCalled();
     });
 });

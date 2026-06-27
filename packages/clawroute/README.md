@@ -54,8 +54,9 @@ When no OpenAI API key is configured, ClawRoute translates the same request to
 the Codex Auth image flow and returns the same OpenAI-compatible
 `data[0].b64_json` response shape. Codex Auth image generation currently
 rejects non-square sizes such as `1536x1024` or `1024x1536` because that
-backend has not proven OpenAI-compatible aspect-ratio handling; configure
-`OPENAI_API_KEY` for non-square image sizes.
+backend has not proven OpenAI-compatible aspect-ratio handling. The response is
+`400` with `code: "unsupported_image_size"`; configure `OPENAI_API_KEY` for
+non-square image sizes.
 
 `response_format=b64_json` is accepted for compatibility. `input_fidelity` is
 not forwarded for `gpt-image-2`; the upstream model processes image inputs at
