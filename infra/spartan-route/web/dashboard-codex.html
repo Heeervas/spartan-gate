@@ -304,7 +304,7 @@
     function renderCache(days) {
       cacheEl.innerHTML = (days || []).map(row => `<tr>
         <td>${esc(row.day)}</td>
-        <td>${esc(row.requests || 0)}</td>
+        <td>${esc(row.logged_requests && Number(row.logged_requests) !== Number(row.requests || 0) ? `${row.requests || 0}/${row.logged_requests}` : (row.requests || 0))}</td>
         <td>${esc(Number(row.input_tokens || 0).toLocaleString())}</td>
         <td>${esc(Number(row.cached_input_tokens || 0).toLocaleString())}</td>
         <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}</td>

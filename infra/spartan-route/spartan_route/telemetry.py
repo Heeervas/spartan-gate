@@ -208,16 +208,31 @@ class TelemetryStore:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT date(timestamp) AS day,
-                       count(*) AS requests,
-                       coalesce(sum(input_tokens), 0) AS input_tokens,
-                       coalesce(sum(cached_input_tokens), 0) AS cached_input_tokens,
+                WITH codex_rows AS (
+                    SELECT date(timestamp) AS day,
+                           input_tokens,
+                           cached_input_tokens,
+                           response_time_ms,
+                           error,
+                           CASE
+                               WHEN json_extract(context_info, '$.usage_seen') = 1 THEN 1
+                               ELSE 0
+                           END AS usage_seen
+                    FROM routing_log
+                    WHERE actual_model LIKE 'codex/%'
+                )
+                SELECT day,
+                       sum(usage_seen) AS requests,
+                       count(*) AS logged_requests,
+                       coalesce(sum(CASE WHEN usage_seen = 1 THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                       coalesce(sum(CASE WHEN usage_seen = 1 THEN cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
                        sum(CASE WHEN coalesce(error, '') <> '' THEN 1 ELSE 0 END) AS errors,
-                       avg(response_time_ms) AS avg_response_time_ms,
-                       max(response_time_ms) AS max_response_time_ms
-                FROM routing_log
-                WHERE actual_model LIKE 'codex/%'
-                GROUP BY date(timestamp)
+                       sum(CASE WHEN usage_seen = 0 THEN 1 ELSE 0 END) AS usage_missing_requests,
+                       avg(CASE WHEN usage_seen = 1 THEN response_time_ms ELSE NULL END) AS avg_response_time_ms,
+                       max(CASE WHEN usage_seen = 1 THEN response_time_ms ELSE NULL END) AS max_response_time_ms
+                FROM codex_rows
+                GROUP BY day
+                HAVING requests > 0
                 ORDER BY day
                 """
             ).fetchall()

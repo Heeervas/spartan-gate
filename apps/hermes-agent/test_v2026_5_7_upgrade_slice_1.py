@@ -159,6 +159,24 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('unset BROWSER_CDP_URL', entrypoint)
         self.assertLess(entrypoint.rfind(persist_call), entrypoint.rfind(delegation))
 
+    def test_entrypoint_keeps_compose_openai_base_url_authoritative(self):
+        entrypoint = read_text(ENTRYPOINT_PATH)
+
+        sync_call = 'sync_openai_base_url_for_with_contenv'
+        persist_call = 'persist_cdp_env_for_with_contenv'
+        delegation = 'exec /opt/hermes/docker/main-wrapper.sh "$@"'
+
+        self.assertIn('sync_openai_base_url_for_with_contenv()', entrypoint)
+        self.assertIn('local desired="${OPENAI_BASE_URL:-}"', entrypoint)
+        self.assertIn('local env_file="$HERMES_HOME/.env"', entrypoint)
+        self.assertIn('rm -f "${env_dir}/OPENAI_BASE_URL"', entrypoint)
+        self.assertIn('printf \'%s\' "$desired" > "${env_dir}/OPENAI_BASE_URL"', entrypoint)
+        self.assertIn('/^OPENAI_BASE_URL=/', entrypoint)
+        self.assertIn('print "OPENAI_BASE_URL=" desired', entrypoint)
+        self.assertIn('[entrypoint] Synced OPENAI_BASE_URL in ${env_file}', entrypoint)
+        self.assertLess(entrypoint.rfind(persist_call), entrypoint.rfind(sync_call))
+        self.assertLess(entrypoint.rfind(sync_call), entrypoint.rfind(delegation))
+
     def test_camofox_access_key_patch_is_applied(self):
         dockerfile = read_text(DOCKERFILE_PATH)
         entrypoint = read_text(ENTRYPOINT_PATH)

@@ -14,6 +14,18 @@ class TelemetryTests(unittest.TestCase):
         store = TelemetryStore(":memory:")
         try:
             store.log_routing(RoutingLogEntry(
+                timestamp="2026-06-26T09:00:00.000Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.5",
+                actual_model="codex/gpt-5.5",
+                tier="complex",
+                input_tokens=50000,
+                cached_input_tokens=0,
+                output_tokens=0,
+                response_time_ms=900,
+                context_info='{"usage_seen":false}',
+            ))
+            store.log_routing(RoutingLogEntry(
                 timestamp="2026-06-26T10:00:00.000Z",
                 original_model="clawroute/auto",
                 routed_model="codex/gpt-5.5",
@@ -28,12 +40,16 @@ class TelemetryTests(unittest.TestCase):
                 turn_id="turn",
                 selected_codex_slot_index=1,
                 selected_codex_account_key="acct",
+                context_info='{"usage_seen":true}',
             ))
 
             rows = store.daily_cache_rows()
             self.assertEqual(rows[0]["day"], "2026-06-26")
+            self.assertEqual(rows[0]["requests"], 1)
+            self.assertEqual(rows[0]["logged_requests"], 2)
             self.assertEqual(rows[0]["input_tokens"], 1000)
             self.assertEqual(rows[0]["cached_input_tokens"], 750)
+            self.assertEqual(rows[0]["usage_missing_requests"], 1)
 
             live = store.live_sessions()
             self.assertEqual(live["sessions"][0]["id"], "session")

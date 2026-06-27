@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Kept Hermes private runtime `.env` aligned with Compose `OPENAI_BASE_URL` so
+  Spartan Route stays authoritative across recreates, and changed Spartan Route
+  cache reporting to exclude log rows without upstream usage metadata.
 - Improved Spartan Route Codex prompt-cache diagnostics by preserving streamed
   usage metadata, detecting expected low-cache hits, and keeping assistant
   reasoning replay disabled by default to stabilize prompt prefixes.

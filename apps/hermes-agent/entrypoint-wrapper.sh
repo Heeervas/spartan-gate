@@ -62,6 +62,45 @@ persist_cdp_env_for_with_contenv() {
     fi
 }
 
+sync_openai_base_url_for_with_contenv() {
+    local desired="${OPENAI_BASE_URL:-}"
+    local env_file="$HERMES_HOME/.env"
+    local env_dir="/run/s6/container_environment"
+    local tmp current
+
+    [ -n "$desired" ] || return 0
+
+    if [ -d "$env_dir" ]; then
+        rm -f "${env_dir}/OPENAI_BASE_URL"
+        printf '%s' "$desired" > "${env_dir}/OPENAI_BASE_URL"
+    fi
+
+    [ -f "$env_file" ] || return 0
+
+    current="$(awk -F= '$1 == "OPENAI_BASE_URL" {print substr($0, index($0, "=") + 1); exit}' "$env_file" 2>/dev/null || true)"
+    [ "$current" = "$desired" ] && return 0
+
+    tmp="${env_file}.spartan-openai-base-url.tmp"
+    awk -v desired="$desired" '
+        BEGIN { written = 0 }
+        /^OPENAI_BASE_URL=/ {
+            if (!written) {
+                print "OPENAI_BASE_URL=" desired
+                written = 1
+            }
+            next
+        }
+        { print }
+        END {
+            if (!written) print "OPENAI_BASE_URL=" desired
+        }
+    ' "$env_file" > "$tmp"
+    chmod --reference="$env_file" "$tmp" 2>/dev/null || chmod 600 "$tmp" 2>/dev/null || true
+    chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$tmp" 2>/dev/null || true
+    mv "$tmp" "$env_file"
+    echo "[entrypoint] Synced OPENAI_BASE_URL in ${env_file}"
+}
+
 # Upstream /init runs docker/stage2-hook.sh before this wrapper. Keep this file
 # limited to Spartan Gate boot additions, then delegate final command routing
 # and privilege drop to /opt/hermes/docker/main-wrapper.sh.
@@ -136,5 +175,6 @@ fi
 run_user_patch "$INSTALL_DIR/patches/patch_chrome_devtools_ws_auth.py"
 
 persist_cdp_env_for_with_contenv
+sync_openai_base_url_for_with_contenv
 
 exec /opt/hermes/docker/main-wrapper.sh "$@"
