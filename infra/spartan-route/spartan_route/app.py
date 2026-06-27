@@ -18,7 +18,16 @@ from aiohttp.web_request import FileField
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
 from .config import ModelEntry, SpartanRouteConfig, load_config
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
-from .util import json_error, now_iso, sanitize_preview, sha, stable_json, text_content, token_count_estimate
+from .util import (
+    json_error,
+    now_iso,
+    sanitize_preview,
+    sha,
+    stable_json,
+    strip_metadata_preamble,
+    text_content,
+    token_count_estimate,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +55,8 @@ class ExecutionResult:
     error: str | None = None
     usage_seen: bool = False
     usage_event_type: str | None = None
+    upstream_response_time_ms: int | None = None
+    total_response_time_ms: int | None = None
 
 
 @dataclass
@@ -268,25 +279,36 @@ async def execute_provider_chat(
 
     timeout_ms = int(os.environ.get("SPARTAN_ROUTE_PROVIDER_TIMEOUT_MS") or "180000")
     try:
+        upstream_started = time.monotonic()
         response = await session.post(
             f"{base_url}/chat/completions",
             json=upstream_body,
             headers=headers,
             timeout=ClientTimeout(total=timeout_ms / 1000),
         )
+        upstream_response_time_ms = max(0, int((time.monotonic() - upstream_started) * 1000))
     except Exception as exc:
         message = str(exc)
         return ExecutionResult(502, body=json_error(message, 502, "provider_request_failed", "upstream_error")[0], error=message)
 
     content_type = response.headers.get("Content-Type", "application/json")
     if wants_stream and 200 <= response.status < 300:
-        result = ExecutionResult(response.status, headers={"Content-Type": "text/event-stream"})
+        result = ExecutionResult(
+            response.status,
+            headers={"Content-Type": "text/event-stream"},
+            upstream_response_time_ms=upstream_response_time_ms,
+        )
         result.stream = provider_stream(response, result)
         return result
 
     data = await response.read()
     response.release()
-    result = ExecutionResult(response.status, body=data, headers={"Content-Type": content_type})
+    result = ExecutionResult(
+        response.status,
+        body=data,
+        headers={"Content-Type": content_type},
+        upstream_response_time_ms=upstream_response_time_ms,
+    )
     parsed = parse_json_bytes(data)
     apply_usage(result, parsed)
     if response.status >= 400:
@@ -326,6 +348,8 @@ async def execute_chat(
             error=codex_result.error,
             usage_seen=codex_result.usage_seen,
             usage_event_type=codex_result.usage_event_type,
+            upstream_response_time_ms=codex_result.upstream_response_time_ms,
+            total_response_time_ms=codex_result.total_response_time_ms,
         )
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
@@ -353,6 +377,8 @@ async def sync_codex_stream_result(source_result: CodexCallResult, target: Execu
         target.error = source_result.error
         target.usage_seen = source_result.usage_seen
         target.usage_event_type = source_result.usage_event_type
+        target.upstream_response_time_ms = source_result.upstream_response_time_ms
+        target.total_response_time_ms = source_result.total_response_time_ms
 
 
 def request_prompt_cache_key(body: dict[str, Any]) -> str | None:
@@ -517,6 +543,121 @@ def build_request_shape_diagnostics(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def message_text_preview(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") in {"text", "input_text", "output_text"}:
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return " ".join(parts)
+
+
+def prompt_preview_from_request(body: dict[str, Any], log_content: bool) -> str | None:
+    if not log_content:
+        return None
+    messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "user":
+            text = strip_metadata_preamble(message_text_preview(message))
+            return sanitize_preview(text, 300) if text else None
+    return None
+
+
+def _tool_call_summary(call: Any) -> dict[str, Any] | None:
+    if not isinstance(call, dict):
+        return None
+    function = call.get("function") if isinstance(call.get("function"), dict) else {}
+    name = function.get("name")
+    args = function.get("arguments")
+    if not isinstance(name, str):
+        return None
+    argument_keys: list[str] = []
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+            if isinstance(parsed, dict):
+                argument_keys = list(parsed.keys())[:20]
+        except Exception:
+            argument_keys = []
+    return {
+        "name": name,
+        "argumentKeys": argument_keys,
+        "argumentChars": len(args) if isinstance(args, str) else 0,
+    }
+
+
+def _trace_item(message: dict[str, Any], log_content: bool) -> dict[str, Any] | None:
+    role = message.get("role") if isinstance(message.get("role"), str) else "unknown"
+    if role == "system":
+        return None
+    item: dict[str, Any] = {"role": role, "chars": len(stable_json(message))}
+    if role == "assistant":
+        tool_calls = [_tool_call_summary(call) for call in message.get("tool_calls") or []]
+        tool_calls = [call for call in tool_calls if call is not None]
+        if tool_calls:
+            item["toolCalls"] = tool_calls
+    if log_content:
+        text = message_text_preview(message)
+        if role == "user":
+            text = strip_metadata_preamble(text)
+        if text:
+            item["preview"] = sanitize_preview(text, 240 if role == "tool" else 300)
+    return item
+
+
+def request_trace_from_request(body: dict[str, Any], snapshot: dict[str, Any], log_content: bool) -> dict[str, Any]:
+    messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+    items = [
+        item for item in (_trace_item(message, log_content) for message in messages if isinstance(message, dict))
+        if item is not None
+    ]
+    capped_items = items[-24:]
+    role_counts: dict[str, int] = {}
+    for item in items:
+        role = str(item.get("role") or "unknown")
+        role_counts[role] = role_counts.get(role, 0) + 1
+    tool_call_count = sum(len(item.get("toolCalls") or []) for item in items)
+    tool_result_count = role_counts.get("tool", 0)
+    if role_counts.get("user", 0) > 0:
+        phase = "user_input"
+    elif tool_result_count > 0:
+        phase = "tool_results"
+    elif role_counts.get("assistant", 0) > 0:
+        phase = "assistant_continuation"
+    else:
+        phase = "baseline"
+    message_fingerprints = snapshot.get("messageFingerprints") if isinstance(snapshot.get("messageFingerprints"), list) else []
+    return {
+        "version": 1,
+        "requestFingerprint": snapshot.get("requestFingerprint"),
+        "messageFingerprints": message_fingerprints,
+        "messageCount": len(message_fingerprints),
+        "phase": phase,
+        "delta": {
+            "comparison": "baseline",
+            "addedMessageCount": len(items),
+            "removedMessageCount": 0,
+            "addedChars": sum(int(item.get("chars") or 0) for item in items),
+            "roleCounts": role_counts,
+            "toolCallCount": tool_call_count,
+            "toolResultCount": tool_result_count,
+            "items": capped_items,
+            "omittedItems": max(0, len(items) - len(capped_items)),
+            "toolSchemas": {
+                "status": "baseline",
+                "count": len(body.get("tools") if isinstance(body.get("tools"), list) else []),
+                "chars": len(stable_json(body.get("tools") or [])),
+            },
+        },
+    }
+
+
 def log_request(
     state: SpartanRouteState,
     body: dict[str, Any],
@@ -538,6 +679,7 @@ def log_request(
     message_chars, tool_schema_chars = estimate_shape_sizes(body)
     shape_snapshot = request_shape_snapshot(body)
     tool_schema_fp = shape_snapshot.get("toolSchemaFingerprint")
+    request_trace = request_trace_from_request(body, shape_snapshot, state.config.log_content)
     trace_key = f"{session_id or 'none'}:{cache_key_hash or 'none'}"
     previous_trace = state.recent_session_traces.get(trace_key)
     same_session_trace = compare_session_trace(shape_snapshot, previous_trace)
@@ -580,14 +722,17 @@ def log_request(
         "tool_schema_chars": tool_schema_chars,
         "tool_schema_rough_tokens": max(0, tool_schema_chars // 4),
         "tool_schema_fingerprint": tool_schema_fp,
-        "request_trace": {
-            "version": 1,
-            "requestFingerprint": shape_snapshot.get("requestFingerprint"),
-            "messageCount": len(shape_snapshot.get("messageFingerprints") or []),
-        },
+        "request_trace": request_trace,
         "same_session_cache_trace": same_session_trace,
         "request_shape_hashes": build_request_shape_diagnostics(shape_snapshot),
     }
+    total_response_time_ms = (
+        result.total_response_time_ms
+        if result.total_response_time_ms is not None
+        else max(0, int((time.monotonic() - started) * 1000))
+    )
+    upstream_response_time_ms = result.upstream_response_time_ms
+    primary_response_time_ms = upstream_response_time_ms or total_response_time_ms
     state.queue.log(
         RoutingLogEntry(
             timestamp=now_iso(),
@@ -600,12 +745,14 @@ def log_request(
             input_tokens=input_tokens,
             cached_input_tokens=result.cached_input_tokens,
             output_tokens=result.output_tokens,
-            response_time_ms=max(0, int((time.time() - started) * 1000)),
+            response_time_ms=primary_response_time_ms,
+            upstream_response_time_ms=upstream_response_time_ms,
+            total_response_time_ms=total_response_time_ms,
             had_tool_calls=bool(body.get("tools")),
             is_dry_run=state.config.dry_run,
             session_id=session_id,
             error=result.error if result.status >= 400 or result.error else None,
-            prompt_preview=sanitize_preview(stable_json(body.get("messages"))) if state.config.log_content else None,
+            prompt_preview=prompt_preview_from_request(body, state.config.log_content),
             context_info=stable_json(context),
             request_api_kind=api_kind,
             requested_reasoning_effort=body.get("reasoning_effort") if isinstance(body.get("reasoning_effort"), str) else None,
@@ -788,7 +935,7 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
         body["model"] = "clawroute/auto"
     state = get_state(request)
     request_id = uuid.uuid4().hex[:12]
-    started = time.time()
+    started = time.monotonic()
     prompt_cache_key = request_prompt_cache_key(body)
     session_id = session_id_from_request(body, prompt_cache_key)
     turn_id = resolve_turn_id(body, session_id, request_id)
@@ -813,7 +960,7 @@ async def responses(request: web.Request) -> web.StreamResponse:
     state = get_state(request)
     chat_body = responses_body_to_chat(body)
     request_id = uuid.uuid4().hex[:12]
-    started = time.time()
+    started = time.monotonic()
     prompt_cache_key = request_prompt_cache_key(chat_body)
     session_id = session_id_from_request(chat_body, prompt_cache_key)
     turn_id = resolve_turn_id(chat_body, session_id, request_id)
@@ -877,7 +1024,7 @@ def codex_image_size_error(size: Any) -> web.Response | None:
         return response_json_error(f'size must be "auto" or WIDTHxHEIGHT; received {size}', 400, "invalid_request", "invalid_request_error")
     if kind == "non_square":
         return response_json_error(
-            f"Codex-auth image generation cannot guarantee non-square OpenAI image sizes ({size}). Configure OPENAI_API_KEY for /v1/images/* non-square sizes or request a square size.",
+            f"Requested image size {size} requires a non-square aspect ratio, but Spartan Route is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.",
             400,
             "unsupported_image_size",
             "invalid_request_error",
@@ -1082,6 +1229,7 @@ async def health(request: web.Request) -> web.Response:
 async def stats(request: web.Request) -> web.Response:
     state = get_state(request)
     rows = state.telemetry.daily_cache_rows()
+    today = state.telemetry.today_summary()
     totals = {
         "requests": sum(int(row["requests"] or 0) for row in rows),
         "inputTokens": sum(int(row["input_tokens"] or 0) for row in rows),
@@ -1089,18 +1237,38 @@ async def stats(request: web.Request) -> web.Response:
         "errors": sum(int(row["errors"] or 0) for row in rows),
     }
     totals["cacheHitPercent"] = (totals["cachedInputTokens"] / totals["inputTokens"] * 100) if totals["inputTokens"] else 0
-    return web.json_response({"service": "spartan-route", "totals": totals, "dailyCache": rows, "codexSlots": state.codex.slot_status() if state.codex else []})
+    return web.json_response({
+        "service": "spartan-route",
+        "totals": totals,
+        "today": today,
+        "latencyToday": today["latencyMs"],
+        "dailyCache": rows,
+        "codexSlots": state.codex.slot_status(include_paths=True) if state.codex else [],
+    })
 
 
 async def api_routing_live(request: web.Request) -> web.Response:
     state = get_state(request)
     limit = int(request.query.get("limit") or "30")
-    return web.json_response(state.telemetry.live_sessions(limit))
+    session_limit = int(request.query.get("sessionLimit") or limit)
+    turn_limit = int(request.query.get("turnLimit") or "20")
+    return web.json_response(state.telemetry.live_sessions(limit=limit, session_limit=session_limit, turn_limit=turn_limit))
+
+
+def valid_turn_id(value: str) -> bool:
+    if not 1 <= len(value) <= 128:
+        return False
+    if "/" in value or "\\" in value:
+        return False
+    return not any(ord(char) < 32 or ord(char) == 127 for char in value)
 
 
 async def api_routing_turn(request: web.Request) -> web.Response:
     state = get_state(request)
-    return web.json_response(state.telemetry.turn_requests(request.match_info["turn_id"]))
+    turn_id = request.match_info["turn_id"]
+    if not valid_turn_id(turn_id):
+        return response_json_error("Invalid turn id", 400, "invalid_turn_id", "invalid_request_error")
+    return web.json_response(state.telemetry.turn_requests(turn_id))
 
 
 async def api_codex_cache_day(request: web.Request) -> web.Response:
@@ -1114,8 +1282,53 @@ async def api_codex_usage(request: web.Request) -> web.Response:
         return response_json_error("Codex router is not ready", 503, "codex_unavailable")
     payload = await state.codex.usage_snapshot(force=request.query.get("force") == "true")
     payload["cacheDaily"] = state.telemetry.daily_cache_rows()
-    payload["slots"] = state.codex.slot_status()
+    payload["slots"] = state.codex.slot_status(include_paths=True)
+    payload["balancer"] = state.codex.balancer_status(include_paths=True)
     return web.json_response(payload)
+
+
+async def api_codex_usage_slot(request: web.Request) -> web.Response:
+    state = get_state(request)
+    if state.codex is None:
+        return response_json_error("Codex router is not ready", 503, "codex_unavailable")
+    slot_index = int(request.match_info["slot_index"])
+    if not any(slot.index == slot_index for slot in state.codex.slots):
+        return response_json_error("Codex slot not found", 404, "slot_not_found", "invalid_request_error")
+    payload = await state.codex.usage_snapshot(force=True, slot_indexes={slot_index})
+    payload["cacheDaily"] = state.telemetry.daily_cache_rows()
+    payload["slots"] = state.codex.slot_status(include_paths=True)
+    payload["balancer"] = state.codex.balancer_status(include_paths=True)
+    return web.json_response(payload)
+
+
+async def api_codex_balancer(request: web.Request) -> web.Response:
+    state = get_state(request)
+    if state.codex is None:
+        return response_json_error("Codex router is not ready", 503, "codex_unavailable")
+    return web.json_response(state.codex.balancer_status(include_paths=True))
+
+
+async def api_codex_balancer_slot(request: web.Request) -> web.Response:
+    state = get_state(request)
+    if state.codex is None:
+        return response_json_error("Codex router is not ready", 503, "codex_unavailable")
+    body = await read_json_object(request)
+    if isinstance(body, web.Response):
+        return body
+    if "routingEnabled" in body:
+        value = body["routingEnabled"]
+    elif "enabled" in body:
+        value = body["enabled"]
+    else:
+        return response_json_error("routingEnabled is required", 400, "missing_routing_enabled", "invalid_request_error")
+    if not isinstance(value, bool):
+        return response_json_error("routingEnabled must be boolean", 400, "invalid_routing_enabled", "invalid_request_error")
+    slot_index = int(request.match_info["slot_index"])
+    try:
+        slot = await state.codex.set_slot_routing_enabled(slot_index, value)
+    except IndexError:
+        return response_json_error("Codex slot not found", 404, "slot_not_found", "invalid_request_error")
+    return web.json_response({"slot": slot, "balancer": state.codex.balancer_status(include_paths=True)})
 
 
 async def dashboard_file(request: web.Request) -> web.StreamResponse:
@@ -1150,8 +1363,6 @@ async def auth_middleware(request: web.Request, handler: Callable[[web.Request],
     candidate = ""
     if auth.lower().startswith("bearer "):
         candidate = auth[7:].strip()
-    elif request.method == "GET":
-        candidate = request.query.get("token", "")
     if candidate and hmac.compare_digest(candidate, token):
         return await handler(request)
     return web.json_response({"error": {"message": "Unauthorized. Provide Bearer token in Authorization header.", "type": "authentication_error", "code": "unauthorized"}}, status=401)
@@ -1188,6 +1399,9 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     app.router.add_get("/api/routing/turns/{turn_id}", api_routing_turn)
     app.router.add_get("/api/codex/cache/day", api_codex_cache_day)
     app.router.add_get("/api/codex/usage", api_codex_usage)
+    app.router.add_post(r"/api/codex/usage/slots/{slot_index:\d+}", api_codex_usage_slot)
+    app.router.add_get("/api/codex/balancer", api_codex_balancer)
+    app.router.add_patch(r"/api/codex/balancer/slots/{slot_index:\d+}", api_codex_balancer_slot)
     app.router.add_post("/v1/chat/completions", chat_completions)
     app.router.add_post("/v1/responses", responses)
     app.router.add_post("/v1/images/generations", image_generations)

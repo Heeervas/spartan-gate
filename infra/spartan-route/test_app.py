@@ -4,7 +4,9 @@ import json
 import os
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from aiohttp import FormData
@@ -16,17 +18,19 @@ from spartan_route.app import (
     ExecutionResult,
     RoutedRequest,
     SpartanRouteState,
+    STATE_KEY,
     build_request_shape_diagnostics,
     compare_session_trace,
     create_app,
     execute_chat,
     log_request,
+    prompt_preview_from_request,
     request_prompt_cache_key_source,
     request_shape_snapshot,
 )
 from spartan_route.config import ModelEntry, SpartanRouteConfig
-from spartan_route.codex import CodexCallResult
-from spartan_route.telemetry import TelemetryStore
+from spartan_route.codex import CodexAuth, CodexCallResult, CodexSlot
+from spartan_route.telemetry import RoutingLogEntry, TelemetryStore
 
 
 class CaptureQueue:
@@ -35,6 +39,46 @@ class CaptureQueue:
 
     def log(self, entry) -> None:
         self.entries.append(entry)
+
+
+class FakeUpstreamResponse:
+    def __init__(self, status: int = 200, body: dict[str, Any] | None = None) -> None:
+        self.status = status
+        self._body = json.dumps(body or {"created": 1, "data": [{"b64_json": "ZmFrZQ=="}]}).encode("utf-8")
+        self.headers = {"Content-Type": "application/json"}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def read(self) -> bytes:
+        return self._body
+
+
+class FakeOpenAISession:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def post(self, url: str, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        return FakeUpstreamResponse()
+
+    async def close(self) -> None:
+        pass
+
+
+class FakeImageCodex:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+
+    async def execute_image(self, request: dict[str, Any]) -> CodexCallResult:
+        self.requests.append(request)
+        return CodexCallResult(status=200, body={"created": 1, "data": [{"b64_json": "ZmFrZQ=="}]})
+
+    def slot_status(self):
+        return []
 
 
 def test_config() -> SpartanRouteConfig:
@@ -82,8 +126,14 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
 
     async def test_health_and_models_do_not_require_auth(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        state.codex.slots = [CodexSlot(0, path="/private/codex/auth.json", auth=CodexAuth("token", account_id="acct"))]
+
         health = await self.client.get("/health")
         self.assertEqual(health.status, 200)
+        health_payload = await health.json()
+        self.assertNotIn("slotPath", health_payload["codexSlots"][0])
         models = await self.client.get("/v1/models")
         self.assertEqual(models.status, 200)
         payload = await models.json()
@@ -92,8 +142,65 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
     async def test_api_requires_bearer_token(self) -> None:
         missing = await self.client.get("/api/routing/live")
         self.assertEqual(missing.status, 401)
+        query_token = await self.client.get("/api/routing/live?token=secret")
+        self.assertEqual(query_token.status, 401)
         ok = await self.client.get("/api/routing/live", headers={"Authorization": "Bearer secret"})
         self.assertEqual(ok.status, 200)
+
+    async def test_stats_include_today_latency(self) -> None:
+        self.store.log_routing(RoutingLogEntry(
+            timestamp="2026-06-27T08:00:00.000Z",
+            original_model="clawroute/auto",
+            routed_model="codex/gpt-5.5",
+            actual_model="codex/gpt-5.5",
+            tier="complex",
+            input_tokens=2000,
+            cached_input_tokens=1000,
+            output_tokens=50,
+            response_time_ms=800,
+            context_info='{"usage_seen":true}',
+        ))
+        response = await self.client.get("/stats", headers={"Authorization": "Bearer secret"})
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertIn("today", payload)
+        self.assertIn("latencyToday", payload)
+        self.assertGreaterEqual(payload["today"]["loggedRequests"], 1)
+        self.assertGreaterEqual(payload["latencyToday"]["avg"], 0)
+
+    async def test_invalid_turn_id_is_rejected_before_query(self) -> None:
+        response = await self.client.get(
+            f"/api/routing/turns/{'x' * 140}",
+            headers={"Authorization": "Bearer secret"},
+        )
+        self.assertEqual(response.status, 400)
+        payload = await response.json()
+        self.assertEqual(payload["error"]["code"], "invalid_turn_id")
+
+    async def test_codex_slot_routing_patch_persists_override(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        state.codex.slots = [CodexSlot(0, path="/tmp/auth.json", auth=CodexAuth("token", account_id="acct"))]
+        response = await self.client.patch(
+            "/api/codex/balancer/slots/0",
+            headers={"Authorization": "Bearer secret"},
+            json={"routingEnabled": False},
+        )
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertFalse(payload["slot"]["routingEnabled"])
+        self.assertFalse(self.store.slot_routing_override(0)["routingEnabled"])
+
+    async def test_codex_balancer_api_exposes_slot_path_after_auth(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        state.codex.slots = [CodexSlot(0, path="/tmp/auth.json", auth=CodexAuth("token", account_id="acct"))]
+
+        response = await self.client.get("/api/codex/balancer", headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["slots"][0]["slotPath"], "/tmp/auth.json")
 
     async def test_unsupported_provider_returns_json_error(self) -> None:
         response = await self.client.post(
@@ -139,7 +246,56 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         payload = await response.json()
         self.assertEqual(payload["error"]["type"], "invalid_request_error")
         self.assertEqual(payload["error"]["code"], "unsupported_image_size")
-        self.assertIn("OPENAI_API_KEY", payload["error"]["message"])
+        self.assertEqual(
+            payload["error"]["message"],
+            "Requested image size 1536x1024 requires a non-square aspect ratio, but Spartan Route is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.",
+        )
+
+    async def test_codex_image_generation_rejects_invalid_size(self) -> None:
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            response = await self.client.post(
+                "/v1/images/generations",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "gpt-image-2", "prompt": "draw a guarded gate", "size": "bad"},
+            )
+
+        self.assertEqual(response.status, 400)
+        payload = await response.json()
+        self.assertEqual(payload["error"]["type"], "invalid_request_error")
+        self.assertEqual(payload["error"]["code"], "invalid_request")
+
+    async def test_codex_image_generation_allows_square_size(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = FakeImageCodex()
+        state.codex = fake_codex
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            response = await self.client.post(
+                "/v1/images/generations",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "gpt-image-2", "prompt": "draw a guarded gate", "size": "1024x1024"},
+            )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(fake_codex.requests[0]["size"], "1024x1024")
+
+    async def test_openai_passthrough_preserves_non_square_generation_size(self) -> None:
+        state = self.app[STATE_KEY]
+        if state.session is not None:
+            await state.session.close()
+        fake_session = FakeOpenAISession()
+        state.session = fake_session
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            response = await self.client.post(
+                "/v1/images/generations",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "gpt-image-2", "prompt": "draw a guarded gate", "size": "1536x1024"},
+            )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(fake_session.calls[0]["json"]["size"], "1536x1024")
+        self.assertTrue(fake_session.calls[0]["url"].endswith("/images/generations"))
 
     async def test_codex_image_edits_reject_non_square_size(self) -> None:
         form = FormData()
@@ -159,7 +315,10 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         payload = await response.json()
         self.assertEqual(payload["error"]["type"], "invalid_request_error")
         self.assertEqual(payload["error"]["code"], "unsupported_image_size")
-        self.assertIn("OPENAI_API_KEY", payload["error"]["message"])
+        self.assertEqual(
+            payload["error"]["message"],
+            "Requested image size 1024x1536 requires a non-square aspect ratio, but Spartan Route is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.",
+        )
 
 
 class AppCacheDiagnosticsTests(unittest.TestCase):
@@ -177,6 +336,9 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
 
     def state(self) -> SpartanRouteState:
         return SpartanRouteState(test_config(), TelemetryStore(":memory:"), CaptureQueue())
+
+    def content_logging_state(self) -> SpartanRouteState:
+        return SpartanRouteState(replace(test_config(), log_content=True), TelemetryStore(":memory:"), CaptureQueue())
 
     def test_prompt_cache_key_source_is_metadata_only(self) -> None:
         self.assertEqual(request_prompt_cache_key_source({"prompt_cache_key": "raw"}, None), "prompt_cache_key")
@@ -214,6 +376,43 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
         self.assertAlmostEqual(context["cache_hit_ratio"], 0.48)
         self.assertNotIn("raw-secret-cache-key", serialized)
         self.assertNotIn("private system", serialized)
+
+    def test_log_request_preview_uses_last_user_message_not_system_prompt(self) -> None:
+        state = self.content_logging_state()
+        body = {
+            "model": "clawroute/auto",
+            "messages": [
+                {"role": "system", "content": "private system prompt must not be stored"},
+                {"role": "user", "content": "[SYSTEM: noisy]\nSender (untrusted metadata):\n```json\n{\"sender\":\"x\"}\n```\nActual question token=super-secret"},
+                {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": "call-1", "type": "function", "function": {"name": "lookup", "arguments": "{\"query\":\"secret\"}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "call-1", "content": "result token=super-secret"},
+            ],
+        }
+        result = ExecutionResult(
+            200,
+            input_tokens=25000,
+            cached_input_tokens=12000,
+            output_tokens=300,
+            usage_seen=True,
+            upstream_response_time_ms=123,
+        )
+
+        self.assertEqual(prompt_preview_from_request(body, True), "Actual question token=[REDACTED]")
+        log_request(state, body, self.route(), result, 0, "req", "session", "turn", "chat_completions")
+
+        entry = state.queue.entries[0]
+        context = json.loads(entry.context_info)
+        serialized = json.dumps(context)
+        self.assertEqual(entry.prompt_preview, "Actual question token=[REDACTED]")
+        self.assertEqual(entry.response_time_ms, 123)
+        self.assertEqual(entry.upstream_response_time_ms, 123)
+        self.assertGreaterEqual(entry.total_response_time_ms, 0)
+        self.assertNotIn("private system prompt", serialized)
+        self.assertEqual(context["request_trace"]["delta"]["items"][0]["role"], "user")
+        self.assertEqual(context["request_trace"]["delta"]["items"][0]["preview"], "Actual question token=[REDACTED]")
+        self.assertEqual(context["request_trace"]["delta"]["items"][1]["toolCalls"][0]["name"], "lookup")
 
     def test_cache_guard_marks_second_consecutive_expected_low_hit(self) -> None:
         state = self.state()
@@ -293,6 +492,17 @@ class AppStreamingTelemetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.output_tokens, 20)
         self.assertTrue(result.usage_seen)
         self.assertEqual(result.usage_event_type, "response.completed")
+
+
+class DashboardStaticTests(unittest.TestCase):
+    def test_codex_dashboard_uses_threshold_colored_rings(self) -> None:
+        html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
+
+        self.assertIn("function ringTone", html)
+        self.assertIn("value >= 90", html)
+        self.assertIn("value >= 70", html)
+        self.assertIn("--tone", html)
+        self.assertIn("slotPaths", html)
 
 
 if __name__ == "__main__":

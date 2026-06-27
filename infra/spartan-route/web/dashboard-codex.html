@@ -7,15 +7,15 @@
   <style>
     :root {
       color-scheme: light dark;
-      --bg: #f7f7f4;
+      --bg: #f6f7f5;
       --panel: #ffffff;
       --text: #202124;
-      --muted: #646866;
-      --line: #d8ddd8;
-      --accent: #1f7a68;
+      --muted: #636a67;
+      --line: #d9dfdc;
+      --accent: #146b58;
+      --good: #237b3b;
       --warn: #9a5b00;
       --bad: #b3261e;
-      --good: #237b3b;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -25,9 +25,9 @@
         --muted: #a9b0ab;
         --line: #383d3a;
         --accent: #56c2a8;
+        --good: #7bd88f;
         --warn: #e5ad4f;
         --bad: #ff897d;
-        --good: #7bd88f;
       }
     }
     * { box-sizing: border-box; }
@@ -38,32 +38,33 @@
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     header {
-      border-bottom: 1px solid var(--line);
       background: var(--panel);
+      border-bottom: 1px solid var(--line);
     }
     .wrap {
-      width: min(1180px, calc(100vw - 32px));
+      width: min(1260px, calc(100vw - 32px));
       margin: 0 auto;
     }
-    .top {
+    .top, .toolbar, .section-head, .slot-actions {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
-      padding: 18px 0;
+      gap: 12px;
       flex-wrap: wrap;
     }
-    h1, h2 {
+    .top { padding: 18px 0; }
+    h1, h2, h3 {
       margin: 0;
       letter-spacing: 0;
     }
     h1 { font-size: 22px; }
     h2 { font-size: 16px; }
-    nav, .toolbar {
+    h3 { font-size: 14px; }
+    nav, .actions {
       display: flex;
+      align-items: center;
       gap: 8px;
       flex-wrap: wrap;
-      align-items: center;
     }
     nav a, button {
       border: 1px solid var(--line);
@@ -79,11 +80,13 @@
       border-color: var(--accent);
       color: var(--accent);
     }
-    main {
-      padding: 22px 0 40px;
+    button.danger {
+      border-color: var(--bad);
+      color: var(--bad);
     }
+    main { padding: 22px 0 40px; }
     input {
-      min-width: 220px;
+      min-width: 240px;
       border: 1px solid var(--line);
       border-radius: 6px;
       background: var(--panel);
@@ -91,38 +94,63 @@
       padding: 9px 10px;
       font: inherit;
     }
-    section {
-      margin-top: 18px;
-    }
-    .section-head {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 10px;
-      flex-wrap: wrap;
-    }
+    section { margin-top: 18px; }
     .grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
     }
-    .card {
+    .panel, .account {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 14px;
       min-width: 0;
     }
-    .label, .muted {
+    .muted, .label {
       color: var(--muted);
       font-size: 12px;
     }
-    .value {
-      margin-top: 4px;
-      font-size: 24px;
+    .account-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .rings {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .ring-wrap {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+    .ring {
+      width: 76px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: conic-gradient(var(--tone, var(--accent)) var(--degrees), var(--line) 0deg);
+      display: grid;
+      place-items: center;
+      position: relative;
+    }
+    .ring::after {
+      content: "";
+      width: 50px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: var(--panel);
+      position: absolute;
+    }
+    .ring-value {
+      position: relative;
+      z-index: 1;
+      font-size: 13px;
       font-weight: 700;
-      letter-spacing: 0;
     }
     .pill {
       display: inline-flex;
@@ -153,19 +181,22 @@
       overflow-wrap: anywhere;
     }
     th {
-      color: var(--muted);
-      font-weight: 600;
-      font-size: 12px;
       border-top: 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
     }
-    .bad { color: var(--bad); }
-    .warn { color: var(--warn); }
     .good { color: var(--good); }
-    @media (max-width: 860px) {
+    .warn { color: var(--warn); }
+    .bad { color: var(--bad); }
+    @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
+      .rings { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      .toolbar { display: grid; grid-template-columns: 1fr; }
       input { min-width: 0; width: 100%; }
-      .toolbar { display: grid; grid-template-columns: 1fr auto auto; }
-      th:nth-child(4), td:nth-child(4) { display: none; }
+      th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; }
     }
   </style>
 </head>
@@ -176,50 +207,56 @@
       <nav>
         <a href="/dashboard">Routing</a>
         <a class="current" href="/dashboard-codex">Codex</a>
-        <a href="/api/codex/usage">Usage JSON</a>
       </nav>
     </div>
   </header>
   <main class="wrap">
     <div class="toolbar">
       <input id="token" type="password" autocomplete="off" placeholder="Bearer token">
-      <button id="save">Save</button>
-      <button id="refresh" class="primary">Refresh</button>
+      <div class="actions">
+        <button id="save">Save</button>
+        <button id="force">Refresh Live</button>
+        <button id="refresh" class="primary">Refresh</button>
+      </div>
     </div>
 
     <section>
       <div class="section-head">
-        <h2>Reset Credits</h2>
-        <span class="muted" id="reset-summary"></span>
-      </div>
-      <div class="grid" id="reset-grid"></div>
-    </section>
-
-    <section>
-      <div class="section-head">
-        <h2>Usage Windows</h2>
+        <h2>Usage</h2>
         <span class="muted" id="usage-status"></span>
       </div>
-      <div class="grid" id="usage-grid"></div>
+      <div class="grid" id="accounts"></div>
     </section>
 
     <section>
       <div class="section-head">
         <h2>Slots</h2>
+        <span class="muted" id="slot-summary"></span>
       </div>
       <table>
-        <thead><tr><th>Slot</th><th>Account</th><th>Auth</th><th>Cooldown</th><th>In flight</th></tr></thead>
+        <thead><tr><th>Slot</th><th>Account</th><th>Routing</th><th>Auth</th><th>Cooldown</th><th>Actions</th></tr></thead>
         <tbody id="slots"></tbody>
       </table>
     </section>
 
     <section>
       <div class="section-head">
-        <h2>Daily Cache</h2>
+        <h2>Cache</h2>
       </div>
       <table>
-        <thead><tr><th>Day</th><th>Requests</th><th>Input</th><th>Cached</th><th>Hit rate</th><th>Errors</th></tr></thead>
+        <thead><tr><th>Day</th><th>Requests</th><th>Input</th><th>Cached</th><th>Hit rate</th><th>Latency</th><th>Errors</th></tr></thead>
         <tbody id="cache"></tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Active Leases</h2>
+        <span class="muted" id="lease-summary"></span>
+      </div>
+      <table>
+        <thead><tr><th>Affinity</th><th>Slot</th><th>Account</th><th>Last used</th><th>Expires</th></tr></thead>
+        <tbody id="leases"></tbody>
       </table>
     </section>
 
@@ -227,32 +264,34 @@
   </main>
   <script>
     const tokenInput = document.getElementById('token');
-    const resetGrid = document.getElementById('reset-grid');
-    const resetSummary = document.getElementById('reset-summary');
-    const usageGrid = document.getElementById('usage-grid');
+    const accountsEl = document.getElementById('accounts');
     const usageStatus = document.getElementById('usage-status');
+    const slotSummary = document.getElementById('slot-summary');
     const slotsEl = document.getElementById('slots');
     const cacheEl = document.getElementById('cache');
+    const leasesEl = document.getElementById('leases');
+    const leaseSummary = document.getElementById('lease-summary');
     const errorsEl = document.getElementById('errors');
-    const stored = sessionStorage.getItem('spartanRouteToken') || new URLSearchParams(location.search).get('token') || '';
-    tokenInput.value = stored;
-    if (stored) sessionStorage.setItem('spartanRouteToken', stored);
+    tokenInput.value = sessionStorage.getItem('spartanRouteToken') || '';
 
     document.getElementById('save').onclick = () => {
       sessionStorage.setItem('spartanRouteToken', tokenInput.value.trim());
       load();
     };
     document.getElementById('refresh').onclick = () => load();
+    document.getElementById('force').onclick = () => load(true);
 
-    function headers() {
+    function headers(json = false) {
       const token = tokenInput.value.trim();
-      return token ? { Authorization: `Bearer ${token}` } : {};
+      const out = token ? { Authorization: `Bearer ${token}` } : {};
+      if (json) out['Content-Type'] = 'application/json';
+      return out;
     }
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]));
     }
-    function pct(cached, input) {
-      return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : '0.0%';
+    function num(value) {
+      return Number(value || 0).toLocaleString();
     }
     function fmtTime(value) {
       if (!value) return '-';
@@ -264,72 +303,159 @@
       const ms = Number(until) * 1000 - Date.now();
       return ms > 0 ? `${Math.ceil(ms / 1000)}s` : '-';
     }
-    function card(label, value, detail = '') {
-      return `<div class="card"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(detail)}</div></div>`;
+    function pct(cached, input) {
+      return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : '0.0%';
     }
-    function renderResetCredits(accounts) {
-      const rows = accounts.map(a => a.resetCredits).filter(Boolean);
-      const total = rows.reduce((sum, item) => sum + (Number(item.availableCount) || 0), 0);
-      resetSummary.textContent = `${rows.length} account(s), ${total} available`;
-      resetGrid.innerHTML = rows.map(item => {
-        const credits = Array.isArray(item.credits) ? item.credits : [];
-        const detail = credits.length
-          ? credits.slice(0, 4).map(c => `<span class="pill">${esc(c.status || 'available')} - expires ${esc(fmtTime(c.expiresAt))}</span>`).join('')
-          : `<span class="pill">${item.detailsAvailable ? 'No item rows returned' : 'Details unavailable'}</span>`;
-        return `<div class="card">
-          <div class="label">Account ${esc(item.accountKey)} - slot ${esc(item.slotIndex)}</div>
-          <div class="value">${esc(item.availableCount ?? '-')}</div>
-          <div class="muted">${esc(item.source || 'unknown')} - ${esc(fmtTime(item.updatedAt))}</div>
-          <div>${detail}</div>
-        </div>`;
-      }).join('') || '<div class="card"><div class="value">0</div><div class="muted">No reset-credit telemetry yet.</div></div>';
+    function ringTone(value) {
+      if (value >= 90) return 'var(--bad)';
+      if (value >= 70) return 'var(--warn)';
+      return 'var(--good)';
     }
-    function renderUsage(accounts, partial) {
-      usageStatus.textContent = partial ? 'partial payload' : 'live payload';
-      usageGrid.innerHTML = accounts.flatMap(account => ['fiveHour', 'weekly'].map(windowName => {
-        const row = account[windowName];
-        const label = `${account.accountKey || 'unknown'} - ${windowName}`;
-        return card(label, row ? `${Number(row.usedPercent || 0).toFixed(1)}%` : '-', row ? `resets ${fmtTime(row.resetAt)}` : 'no live data');
-      })).join('') || '<div class="card"><div class="value">-</div><div class="muted">No usage telemetry yet.</div></div>';
+    function ring(windowName, row) {
+      const used = row ? Math.max(0, Math.min(100, Number(row.usedPercent || 0))) : 0;
+      return `<div class="ring-wrap">
+        <div class="ring" style="--degrees:${used * 3.6}deg;--tone:${ringTone(used)}"><span class="ring-value">${row ? `${used.toFixed(1)}%` : '-'}</span></div>
+        <div>
+          <strong>${esc(windowName)}</strong>
+          <div class="muted">${row ? `resets ${fmtTime(row.resetAt)}` : 'no live data'}</div>
+        </div>
+      </div>`;
+    }
+    function slotPathText(paths) {
+      const values = Array.isArray(paths) ? paths.filter(Boolean) : [];
+      return values.length ? values.join(', ') : '-';
+    }
+    function renderAccounts(accounts) {
+      accountsEl.innerHTML = (accounts || []).map(account => {
+        const credits = account.resetCredits;
+        const creditCount = credits ? credits.availableCount : '-';
+        const creditItems = credits && Array.isArray(credits.credits) ? credits.credits : [];
+        return `<article class="account">
+          <div class="account-head">
+            <div>
+              <h3>${esc(account.accountKey || 'unknown')}</h3>
+              <div class="muted">slots ${(account.slotIndexes || []).map(esc).join(', ') || '-'}</div>
+              <div class="muted">${esc(slotPathText(account.slotPaths))}</div>
+            </div>
+            <div><span class="pill">reset credits ${esc(creditCount)}</span></div>
+          </div>
+          <div class="rings">
+            ${ring('5h', account.fiveHour)}
+            ${ring('1w', account.weekly)}
+          </div>
+          <div>
+            ${creditItems.slice(0, 4).map(item => `<span class="pill">${esc(item.status || 'available')} - expires ${esc(fmtTime(item.expiresAt))}</span>`).join('') || '<span class="pill">no reset-credit detail</span>'}
+          </div>
+        </article>`;
+      }).join('') || '<div class="panel muted">No usage telemetry yet.</div>';
     }
     function renderSlots(slots) {
-      slotsEl.innerHTML = (slots || []).map(slot => `<tr>
-        <td>${esc(slot.slotIndex)}</td>
-        <td>${esc(slot.accountKey || '-')}</td>
-        <td class="${slot.authAvailable ? 'good' : 'warn'}">${esc(slot.authAvailable ? 'ready' : (slot.authUnavailableReason || 'unavailable'))}</td>
-        <td>${esc(cooldown(slot.rateLimitedUntil) !== '-' ? `rate ${cooldown(slot.rateLimitedUntil)}` : cooldown(slot.transientUntil))}</td>
-        <td>${esc(slot.inFlight || 0)}</td>
-      </tr>`).join('') || '<tr><td colspan="5" class="muted">No slots configured.</td></tr>';
+      const enabled = (slots || []).filter(slot => slot.routingEnabled).length;
+      slotSummary.textContent = `${enabled}/${(slots || []).length} routing-enabled`;
+      slotsEl.innerHTML = (slots || []).map(slot => {
+        const cooldownText = cooldown(slot.rateLimitedUntil) !== '-' ? `rate ${cooldown(slot.rateLimitedUntil)}` : cooldown(slot.transientUntil);
+        const routingClass = slot.routingEnabled ? 'good' : 'bad';
+        const authClass = slot.authAvailable ? 'good' : 'warn';
+        const disabledReason = slot.routingIdentityMismatch ? 'identity mismatch, override ignored' : (slot.routingIdentityUnverified ? 'identity unverified' : '');
+        return `<tr>
+          <td>${esc(slot.slotIndex)}</td>
+          <td>${esc(slot.accountKey || '-')}<br><span class="muted">${esc(slot.slotPath || slot.slotPathHash || '')}</span></td>
+          <td class="${routingClass}">${esc(slot.routingEnabled ? 'enabled' : 'disabled')}<br><span class="muted">${esc(disabledReason)}</span></td>
+          <td class="${authClass}">${esc(slot.authAvailable ? 'ready' : (slot.authUnavailableReason || 'unavailable'))}</td>
+          <td>${esc(cooldownText)}</td>
+          <td>
+            <div class="slot-actions">
+              <button data-action="toggle" data-slot="${esc(slot.slotIndex)}" data-next="${slot.routingEnabled ? 'false' : 'true'}" class="${slot.routingEnabled ? 'danger' : ''}">${esc(slot.routingEnabled ? 'Disable' : 'Enable')}</button>
+              <button data-action="usage" data-slot="${esc(slot.slotIndex)}">Check usage</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="muted">No slots configured.</td></tr>';
     }
     function renderCache(days) {
       cacheEl.innerHTML = (days || []).map(row => `<tr>
         <td>${esc(row.day)}</td>
         <td>${esc(row.logged_requests && Number(row.logged_requests) !== Number(row.requests || 0) ? `${row.requests || 0}/${row.logged_requests}` : (row.requests || 0))}</td>
-        <td>${esc(Number(row.input_tokens || 0).toLocaleString())}</td>
-        <td>${esc(Number(row.cached_input_tokens || 0).toLocaleString())}</td>
+        <td>${esc(num(row.input_tokens))}</td>
+        <td>${esc(num(row.cached_input_tokens))}</td>
         <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}</td>
+        <td>${esc(row.avg_response_time_ms ? `${Math.round(row.avg_response_time_ms)}ms first` : '-')}${row.avg_total_response_time_ms ? `<br><span class="muted">${esc(Math.round(row.avg_total_response_time_ms))}ms total</span>` : ''}</td>
         <td class="${Number(row.errors || 0) ? 'bad' : ''}">${esc(row.errors || 0)}</td>
-      </tr>`).join('') || '<tr><td colspan="6" class="muted">No Codex cache rows yet.</td></tr>';
+      </tr>`).join('') || '<tr><td colspan="7" class="muted">No Codex cache rows yet.</td></tr>';
+    }
+    function renderLeases(leases) {
+      leaseSummary.textContent = `${(leases || []).length} active`;
+      leasesEl.innerHTML = (leases || []).map(lease => `<tr>
+        <td>${esc(lease.affinityKeyHash)}</td>
+        <td>${esc(lease.slotIndex)}</td>
+        <td>${esc(lease.accountKey)}</td>
+        <td>${esc(fmtTime(lease.lastUsedAt))}</td>
+        <td>${esc(fmtTime(lease.nominalExpiresAt))}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="muted">No active cache leases.</td></tr>';
     }
     function renderErrors(payload) {
       const errors = [...(payload.slotErrors || []), ...(payload.resetCreditErrors || [])];
-      errorsEl.innerHTML = errors.length ? `<div class="card bad">${errors.map(e => `slot ${esc(e.slotIndex)}: ${esc(e.message)}`).join('<br>')}</div>` : '';
+      errorsEl.innerHTML = errors.length ? `<div class="panel bad">${errors.map(e => `slot ${esc(e.slotIndex)}: ${esc(e.message)}`).join('<br>')}</div>` : '';
     }
-    async function load() {
+    async function fetchJson(path, options = {}) {
+      const response = await fetch(path, options);
+      if (!response.ok) throw new Error(`${path} HTTP ${response.status}`);
+      return await response.json();
+    }
+    async function patchSlot(slotIndex, enabled) {
+      await fetchJson(`/api/codex/balancer/slots/${slotIndex}`, {
+        method: 'PATCH',
+        headers: headers(true),
+        body: JSON.stringify({ routingEnabled: enabled }),
+      });
+      await load();
+    }
+    async function forceSlot(slotIndex) {
+      const payload = await fetchJson(`/api/codex/usage/slots/${slotIndex}`, {
+        method: 'POST',
+        headers: headers(),
+      });
+      renderPayload(payload);
+    }
+    slotsEl.addEventListener('click', async event => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      button.disabled = true;
+      try {
+        if (button.dataset.action === 'toggle') {
+          await patchSlot(button.dataset.slot, button.dataset.next === 'true');
+        } else if (button.dataset.action === 'usage') {
+          await forceSlot(button.dataset.slot);
+        }
+      } catch (error) {
+        errorsEl.innerHTML = `<div class="panel bad">${esc(error.message)}</div>`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+    function renderPayload(payload) {
+      const accounts = payload.accounts || [];
+      const balancer = payload.balancer || {};
+      const status = [
+        payload.cached ? 'cached' : 'live',
+        payload.partial ? 'partial' : 'complete',
+        payload.cacheExpiresAt ? `cache expires ${fmtTime(payload.cacheExpiresAt)}` : '',
+      ].filter(Boolean).join(' - ');
+      usageStatus.textContent = status;
+      renderAccounts(accounts);
+      renderSlots(payload.slots || balancer.slots || []);
+      renderCache(payload.cacheDaily || []);
+      renderLeases(balancer.activeLeases || []);
+      renderErrors(payload);
+    }
+    async function load(force = false) {
       try {
         usageStatus.textContent = 'Loading...';
-        const response = await fetch('/api/codex/usage', { headers: headers() });
-        if (!response.ok) throw new Error(`/api/codex/usage HTTP ${response.status}`);
-        const payload = await response.json();
-        const accounts = payload.accounts || [];
-        renderResetCredits(accounts);
-        renderUsage(accounts, Boolean(payload.partial));
-        renderSlots(payload.slots || []);
-        renderCache(payload.cacheDaily || []);
-        renderErrors(payload);
+        const payload = await fetchJson(`/api/codex/usage${force ? '?force=true' : ''}`, { headers: headers() });
+        renderPayload(payload);
       } catch (error) {
         usageStatus.textContent = '';
-        errorsEl.innerHTML = `<div class="card bad">${esc(error.message)}</div>`;
+        errorsEl.innerHTML = `<div class="panel bad">${esc(error.message)}</div>`;
       }
     }
     load();

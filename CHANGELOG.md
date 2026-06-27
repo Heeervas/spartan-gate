@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Added Spartan Route dashboard latency, recent-first session/turn trees,
+  persistent Codex slot routing controls, cached usage polling, active-lease
+  visibility, and bearer-only dashboard/API auth while deferring quota-unit
+  estimates to v2.
+- Split Spartan Route latency telemetry into first upstream response and total
+  request duration, added authenticated Codex slot paths, restored
+  threshold-colored usage rings, and improved dashboard request previews without
+  exposing health-check slot paths.
 - Drain Codex streaming responses long enough to preserve terminal usage after
   early client disconnects, restoring request-level Spartan Route cache
   metrics for Hermes tool-loop traffic.
@@ -13,9 +21,9 @@ All notable changes to Spartan Gate are documented here.
 - Improved Spartan Route Codex prompt-cache diagnostics by preserving streamed
   usage metadata, detecting expected low-cache hits, and keeping assistant
   reasoning replay disabled by default to stabilize prompt prefixes.
-- Added dashboard-only Codex capacity multipliers keyed by account hash, plus
-  derived `1x units` in usage, session, and analysis views while preserving raw
-  `/wham/usage` percentages and routing behavior.
+- Deferred dashboard-only Codex quota/capacity estimates to Spartan Route v2;
+  the v1 dashboard keeps raw `/wham/usage` percentages, cache metrics, and
+  latency visible without adding routing behavior.
 - Kept Codex prompt-cache leases sticky across balance-loader de-scoring and
   transient 502 retries, while preserving hard-block invalidation, and fixed
   Hermes profile-path prompt cache key plus reasoning effort forwarding.

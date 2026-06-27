@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,6 +25,8 @@ class TelemetryTests(unittest.TestCase):
                 cached_input_tokens=0,
                 output_tokens=0,
                 response_time_ms=900,
+                upstream_response_time_ms=120,
+                total_response_time_ms=900,
                 context_info='{"usage_seen":false}',
             ))
             store.log_routing(RoutingLogEntry(
@@ -35,6 +39,8 @@ class TelemetryTests(unittest.TestCase):
                 cached_input_tokens=750,
                 output_tokens=50,
                 response_time_ms=1200,
+                upstream_response_time_ms=250,
+                total_response_time_ms=1200,
                 session_id="session",
                 request_id="request",
                 turn_id="turn",
@@ -50,10 +56,164 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(rows[0]["input_tokens"], 1000)
             self.assertEqual(rows[0]["cached_input_tokens"], 750)
             self.assertEqual(rows[0]["usage_missing_requests"], 1)
+            self.assertEqual(rows[0]["avg_response_time_ms"], 185)
+            self.assertEqual(rows[0]["max_response_time_ms"], 250)
+            self.assertEqual(rows[0]["avg_total_response_time_ms"], 1050)
+            self.assertEqual(rows[0]["max_total_response_time_ms"], 1200)
+
+            today = store.today_summary("2026-06-26")
+            self.assertEqual(today["loggedRequests"], 2)
+            self.assertEqual(today["usageSeenRequests"], 1)
+            self.assertEqual(today["latencyMs"]["avg"], 185)
+            self.assertEqual(today["latencyMs"]["p50"], 120)
+            self.assertEqual(today["latencyMs"]["p90"], 250)
+            self.assertEqual(today["totalLatencyMs"]["avg"], 1050)
+            self.assertEqual(today["usageMissingRequests"], 1)
 
             live = store.live_sessions()
             self.assertEqual(live["sessions"][0]["id"], "session")
             self.assertEqual(live["sessions"][0]["metrics"]["cachedInputTokens"], 750)
+            self.assertEqual(live["sessions"][0]["metrics"]["latencyMs"]["avg"], 250)
+            self.assertEqual(live["sessions"][0]["metrics"]["totalLatencyMs"]["avg"], 1200)
+            self.assertEqual(live["sessions"][0]["turns"][0]["id"], "turn")
+            self.assertNotIn("requests", live["sessions"][0]["turns"][0])
+        finally:
+            store.close()
+
+    def test_legacy_latency_rows_fall_back_to_response_time(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-06-25T09:00:00.000Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.5",
+                actual_model="codex/gpt-5.5",
+                tier="complex",
+                input_tokens=1000,
+                cached_input_tokens=500,
+                response_time_ms=1300,
+                context_info='{"usage_seen":true}',
+            ))
+            rows = store.daily_cache_rows()
+            self.assertEqual(rows[0]["avg_response_time_ms"], 1300)
+            self.assertEqual(rows[0]["avg_total_response_time_ms"], 1300)
+            self.assertEqual(rows[0]["legacy_latency_requests"], 1)
+        finally:
+            store.close()
+
+    def test_existing_database_gets_latency_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "spartan-route.db")
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE routing_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        original_model TEXT NOT NULL,
+                        routed_model TEXT NOT NULL,
+                        actual_model TEXT NOT NULL,
+                        tier TEXT NOT NULL,
+                        classification_reason TEXT NOT NULL DEFAULT '',
+                        confidence REAL NOT NULL DEFAULT 0,
+                        input_tokens INTEGER NOT NULL DEFAULT 0,
+                        output_tokens INTEGER NOT NULL DEFAULT 0,
+                        original_cost_usd REAL NOT NULL DEFAULT 0,
+                        actual_cost_usd REAL NOT NULL DEFAULT 0,
+                        savings_usd REAL NOT NULL DEFAULT 0,
+                        escalated INTEGER NOT NULL DEFAULT 0,
+                        escalation_chain TEXT NOT NULL DEFAULT '[]',
+                        response_time_ms INTEGER NOT NULL DEFAULT 0,
+                        had_tool_calls INTEGER NOT NULL DEFAULT 0,
+                        is_dry_run INTEGER NOT NULL DEFAULT 0,
+                        is_override INTEGER NOT NULL DEFAULT 0,
+                        session_id TEXT,
+                        error TEXT,
+                        prompt_preview TEXT,
+                        context_info TEXT,
+                        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        request_api_kind TEXT NOT NULL DEFAULT 'chat_completions',
+                        requested_reasoning_effort TEXT,
+                        selected_codex_slot_index INTEGER,
+                        selected_codex_account_key TEXT,
+                        request_id TEXT,
+                        turn_id TEXT
+                    )
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            store = TelemetryStore(db_path)
+            try:
+                columns = {
+                    row["name"]
+                    for row in store._conn.execute("PRAGMA table_info(routing_log)").fetchall()
+                }
+                self.assertIn("upstream_response_time_ms", columns)
+                self.assertIn("total_response_time_ms", columns)
+                store.log_routing(RoutingLogEntry(
+                    timestamp="2026-06-25T09:00:00.000Z",
+                    original_model="clawroute/auto",
+                    routed_model="codex/gpt-5.5",
+                    actual_model="codex/gpt-5.5",
+                    tier="complex",
+                    response_time_ms=75,
+                    upstream_response_time_ms=75,
+                    total_response_time_ms=900,
+                    context_info='{"usage_seen":true}',
+                ))
+            finally:
+                store.close()
+
+    def test_live_sessions_and_turns_are_recent_first(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            entries = [
+                ("session-a", "turn-old", "2026-06-26T09:00:00.000Z", 100, 0),
+                ("session-b", "turn-newer", "2026-06-26T10:00:00.000Z", 200, 0),
+                ("session-a", "turn-latest", "2026-06-26T11:00:00.000Z", 300, 100),
+            ]
+            for index, (session_id, turn_id, timestamp, input_tokens, cached_tokens) in enumerate(entries):
+                store.log_routing(RoutingLogEntry(
+                    timestamp=timestamp,
+                    original_model="clawroute/auto",
+                    routed_model="codex/gpt-5.5",
+                    actual_model="codex/gpt-5.5",
+                    tier="complex",
+                    input_tokens=input_tokens,
+                    cached_input_tokens=cached_tokens,
+                    output_tokens=10,
+                    response_time_ms=100 + index,
+                    session_id=session_id,
+                    request_id=f"request-{index}",
+                    turn_id=turn_id,
+                    context_info='{"usage_seen":true}',
+                ))
+
+            live = store.live_sessions(session_limit=5, turn_limit=5)
+            self.assertEqual([session["id"] for session in live["sessions"]], ["session-a", "session-b"])
+            self.assertEqual([turn["id"] for turn in live["sessions"][0]["turns"]], ["turn-latest", "turn-old"])
+            self.assertEqual(live["sessions"][0]["turns"][0]["metrics"]["cachedInputTokens"], 100)
+        finally:
+            store.close()
+
+    def test_slot_routing_overrides_round_trip(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.set_slot_routing_enabled(
+                2,
+                False,
+                account_key="acct",
+                slot_path_hash="path-hash",
+                auth_fingerprint_hash="auth-hash",
+            )
+            overrides = store.slot_routing_overrides()
+            self.assertFalse(overrides[2]["routingEnabled"])
+            self.assertEqual(overrides[2]["accountKey"], "acct")
+            self.assertEqual(store.slot_routing_override(2)["slotPathHash"], "path-hash")
         finally:
             store.close()
 

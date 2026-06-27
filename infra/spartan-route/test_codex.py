@@ -57,6 +57,35 @@ class FakeResponse:
         self.released = True
 
 
+class FakeJsonContextResponse:
+    def __init__(self, status: int, payload: dict[str, Any]):
+        self.status = status
+        self.payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+    async def json(self):
+        return self.payload
+
+
+class FakeUsageSession:
+    def __init__(self):
+        self.urls: list[str] = []
+
+    def get(self, url: str, **_kwargs):
+        self.urls.append(url)
+        if "rate-limit-reset-credits" in url:
+            return FakeJsonContextResponse(200, {"available_count": 1, "credits": []})
+        return FakeJsonContextResponse(200, {
+            "primary_window": {"used_percent": 25, "reset_at": "2026-06-27T10:00:00Z"},
+            "secondary_window": {"used_percent": 40, "reset_at": "2026-07-01T10:00:00Z"},
+        })
+
+
 class RetryRouter(CodexRouter):
     def __init__(self):
         self.slots = [
@@ -565,6 +594,57 @@ class CodexTests(unittest.TestCase):
         self.assertTrue(result.usage_seen)
         self.assertEqual(router.slots[0].in_flight, 0)
         self.assertEqual(next(iter(router.leases.values())).slot_index, 0)
+
+    def test_disabled_slot_is_not_selected(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            router = CodexRouter.__new__(CodexRouter)
+            router.session = None
+            router.telemetry = store
+            router.slots = [
+                CodexSlot(0, auth=CodexAuth("token-a", account_id="acct-a")),
+                CodexSlot(1, auth=CodexAuth("token-b", account_id="acct-b")),
+            ]
+            router.leases = {}
+            router.refresh_locks = {}
+            router._usage_cache = None
+
+            asyncio_run(router.set_slot_routing_enabled(0, False))
+            chosen = asyncio_run(router.choose_slot(None, set(), set()))
+            self.assertIsNotNone(chosen)
+            self.assertEqual(chosen[0].index, 1)
+        finally:
+            store.close()
+
+    def test_usage_snapshot_uses_short_lived_cache(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            session = FakeUsageSession()
+            router = CodexRouter.__new__(CodexRouter)
+            router.session = session
+            router.telemetry = store
+            router.slots = [CodexSlot(0, path="/codex-a/auth.json", auth=CodexAuth("token", account_id="acct"))]
+            router.leases = {}
+            router.refresh_locks = {}
+            router._usage_cache = None
+
+            first = asyncio_run(router.usage_snapshot())
+            second = asyncio_run(router.usage_snapshot())
+            self.assertFalse(first["cached"])
+            self.assertEqual(first["accounts"][0]["slotPaths"], ["/codex-a/auth.json"])
+            self.assertTrue(second["cached"])
+            self.assertEqual(second["accounts"][0]["slotPaths"], ["/codex-a/auth.json"])
+            self.assertEqual(len(session.urls), 2)
+
+            forced = asyncio_run(router.usage_snapshot(force=True))
+            self.assertFalse(forced["cached"])
+            self.assertEqual(len(session.urls), 4)
+        finally:
+            store.close()
 
 
 def asyncio_run(coro):

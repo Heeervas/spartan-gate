@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import time
@@ -35,6 +36,7 @@ SEVEN_DAYS_SECONDS = 604_800
 INLINE_REASONING_PLACEHOLDER = "<think> </think>"
 TERMINAL_CODEX_EVENTS = {"response.completed", "response.incomplete", "response.failed", "response.cancelled"}
 CODEX_USAGE_DRAIN_TIMEOUT_SECONDS = 15.0
+CODEX_USAGE_CACHE_TTL_SECONDS = 60.0
 
 
 @dataclass
@@ -93,6 +95,8 @@ class CodexCallResult:
     completed: bool = False
     usage_seen: bool = False
     usage_event_type: str | None = None
+    upstream_response_time_ms: int | None = None
+    total_response_time_ms: int | None = None
 
 
 @dataclass
@@ -371,6 +375,7 @@ class CodexRouter:
         self.slots: list[CodexSlot] = []
         self.leases: dict[str, CacheLease] = {}
         self.refresh_locks: dict[str, asyncio.Lock] = {}
+        self._usage_cache: dict[str, Any] | None = None
         self._init_slots()
 
     def _init_slots(self) -> None:
@@ -384,16 +389,32 @@ class CodexRouter:
         self.slots = []
         self.leases.clear()
         self.refresh_locks.clear()
+        self._usage_cache = None
         self._init_slots()
 
-    def slot_status(self) -> list[dict[str, Any]]:
+    def slot_path_label(self, slot: CodexSlot) -> str | None:
+        if slot.path:
+            return slot.path
+        if slot.token:
+            return "OPENAI_CODEX_TOKEN"
+        return None
+
+    def slot_status(self, include_paths: bool = False) -> list[dict[str, Any]]:
         now = time.time()
         out = []
         for slot in self.slots:
             auth = slot.auth
+            routing = self.slot_routing_status(slot)
             out.append({
                 "slotIndex": slot.index,
                 "accountKey": auth.account_key if auth else None,
+                "slotPathHash": sha(slot.path, 16) if slot.path else None,
+                "authFingerprintHash": sha(slot.auth_fingerprint, 16) if slot.auth_fingerprint else None,
+                "routingEnabled": routing["routingEnabled"],
+                "requestedRoutingEnabled": routing["requestedRoutingEnabled"],
+                "routingOverrideUpdatedAt": routing["overrideUpdatedAt"],
+                "routingIdentityMismatch": routing["identityMismatch"],
+                "routingIdentityUnverified": routing["identityUnverified"],
                 "rateLimitedUntil": slot.rate_limited_until,
                 "transientUntil": slot.transient_until,
                 "authAvailable": bool(auth and not is_jwt_expired(auth.access_token)),
@@ -401,7 +422,83 @@ class CodexRouter:
                 "authRetryAt": slot.auth_retry_at if slot.auth_retry_at > now else None,
                 "inFlight": slot.in_flight,
             })
+            if include_paths:
+                out[-1]["slotPath"] = self.slot_path_label(slot)
         return out
+
+    def _slot_identity(self, slot: CodexSlot) -> dict[str, str | None]:
+        return {
+            "accountKey": slot.account_key(),
+            "slotPathHash": sha(slot.path, 16) if slot.path else None,
+            "authFingerprintHash": sha(slot.auth_fingerprint, 16) if slot.auth_fingerprint else None,
+        }
+
+    def slot_routing_status(self, slot: CodexSlot) -> dict[str, Any]:
+        telemetry = getattr(self, "telemetry", None)
+        override = telemetry.slot_routing_override(slot.index) if telemetry else None
+        if not override:
+            return {
+                "routingEnabled": True,
+                "requestedRoutingEnabled": True,
+                "identityMismatch": False,
+                "identityUnverified": False,
+                "overrideUpdatedAt": None,
+            }
+        identity = self._slot_identity(slot)
+        keys = ("accountKey", "slotPathHash", "authFingerprintHash")
+        mismatch = any(
+            bool(override.get(key) and identity.get(key) and override.get(key) != identity.get(key))
+            for key in keys
+        )
+        unverified = any(bool(override.get(key) and not identity.get(key)) for key in keys)
+        requested = bool(override.get("routingEnabled"))
+        enabled = requested or mismatch
+        return {
+            "routingEnabled": enabled,
+            "requestedRoutingEnabled": requested,
+            "identityMismatch": mismatch,
+            "identityUnverified": unverified and not requested,
+            "overrideUpdatedAt": override.get("updatedAt"),
+        }
+
+    async def set_slot_routing_enabled(self, slot_index: int, routing_enabled: bool) -> dict[str, Any]:
+        slot = next((candidate for candidate in self.slots if candidate.index == int(slot_index)), None)
+        if slot is None:
+            raise IndexError("slot not found")
+        await self.load_auth(slot)
+        identity = self._slot_identity(slot)
+        self.telemetry.set_slot_routing_enabled(
+            slot.index,
+            bool(routing_enabled),
+            account_key=identity["accountKey"],
+            slot_path_hash=identity["slotPathHash"],
+            auth_fingerprint_hash=identity["authFingerprintHash"],
+        )
+        if not routing_enabled:
+            self._invalidate_slot_leases(slot)
+        self._usage_cache = None
+        return next(status for status in self.slot_status(include_paths=True) if status["slotIndex"] == slot.index)
+
+    def lease_status(self) -> list[dict[str, Any]]:
+        self._clear_expired_leases()
+        return [
+            {
+                "affinityKeyHash": sha(lease.affinity_key, 12),
+                "slotIndex": lease.slot_index,
+                "accountKey": lease.account_key,
+                "startedAt": self._iso_from_epoch(lease.started_at),
+                "lastUsedAt": self._iso_from_epoch(lease.last_used_at),
+                "nominalExpiresAt": self._iso_from_epoch(lease.nominal_expires_at),
+                "maxExpiresAt": self._iso_from_epoch(lease.max_expires_at),
+            }
+            for lease in sorted(self.leases.values(), key=lambda item: item.last_used_at, reverse=True)
+        ]
+
+    def balancer_status(self, include_paths: bool = False) -> dict[str, Any]:
+        return {"mode": "minimal", "slots": self.slot_status(include_paths=include_paths), "activeLeases": self.lease_status()}
+
+    def _iso_from_epoch(self, value: float) -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(value))
 
     async def load_auth(self, slot: CodexSlot) -> CodexAuth | None:
         if slot.token:
@@ -561,6 +658,8 @@ class CodexRouter:
                 continue
             if auth.account_key and auth.account_key in excluded_accounts:
                 continue
+            if not self.slot_routing_status(slot)["routingEnabled"]:
+                continue
             candidates.append((slot, auth))
         if not candidates:
             return None
@@ -685,23 +784,36 @@ class CodexRouter:
             headers["chatgpt-account-id"] = auth.account_id
         timeout_ms = parse_int(os.environ.get("CODEX_REQUEST_TIMEOUT_MS"), 180_000, 10_000, 900_000)
         try:
+            upstream_started = time.monotonic()
             response = await self.session.post(
                 CODEX_RESPONSES_URL,
                 json=body,
                 headers=headers,
                 timeout=ClientTimeout(total=timeout_ms / 1000),
             )
+            upstream_response_time_ms = max(0, int((time.monotonic() - upstream_started) * 1000))
         except Exception as exc:
             return CodexCallResult(status=502, body={"error": {"message": str(exc), "type": "upstream_error", "code": "codex_error"}}, error=str(exc))
         if response.status != 200:
             text = await response.text()
             response.release()
-            return CodexCallResult(status=response.status, body=text.encode(), headers={"Content-Type": "application/json"}, error=text[:300])
+            return CodexCallResult(
+                status=response.status,
+                body=text.encode(),
+                headers={"Content-Type": "application/json"},
+                error=text[:300],
+                upstream_response_time_ms=upstream_response_time_ms,
+            )
         if wants_stream:
-            result = CodexCallResult(status=200, headers={"Content-Type": "text/event-stream"})
+            result = CodexCallResult(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+                upstream_response_time_ms=upstream_response_time_ms,
+            )
             result.stream = self._codex_stream_to_chat(response, model_id, result, slot)
             return result
         collected = await self._collect_codex_response(response, model_id, slot.index)
+        collected.upstream_response_time_ms = upstream_response_time_ms
         return collected
 
     async def _collect_codex_response(self, response: Any, model: str, slot_index: int) -> CodexCallResult:
@@ -1363,8 +1475,43 @@ class CodexRouter:
         except Exception as exc:
             return CodexCallResult(status=502, body={"error": {"message": str(exc), "type": "server_error", "code": "codex_image_error"}})
 
-    async def usage_snapshot(self, force: bool = False) -> dict[str, Any]:
-        del force
+    def _usage_cache_signature(self) -> tuple[Any, ...]:
+        return tuple(
+            (
+                slot.index,
+                self.slot_path_label(slot),
+                slot.account_key(),
+                slot.auth_unavailable_reason,
+                int(slot.rate_limited_until),
+                int(slot.transient_until),
+                self.slot_routing_status(slot)["routingEnabled"],
+            )
+            for slot in self.slots
+        )
+
+    async def usage_snapshot(self, force: bool = False, slot_indexes: set[int] | None = None) -> dict[str, Any]:
+        if slot_indexes is None and not force and self._usage_cache:
+            if self._usage_cache["expiresAt"] > time.time() and self._usage_cache["signature"] == self._usage_cache_signature():
+                cached_payload = copy.deepcopy(self._usage_cache["payload"])
+                cached_payload["cached"] = True
+                cached_payload["cacheExpiresAt"] = self._iso_from_epoch(self._usage_cache["expiresAt"])
+                return cached_payload
+
+        payload = await self._fetch_usage_snapshot(slot_indexes)
+        payload["cached"] = False
+        if slot_indexes is None:
+            expires_at = time.time() + CODEX_USAGE_CACHE_TTL_SECONDS
+            self._usage_cache = {
+                "expiresAt": expires_at,
+                "signature": self._usage_cache_signature(),
+                "payload": copy.deepcopy(payload),
+            }
+            payload["cacheExpiresAt"] = self._iso_from_epoch(expires_at)
+        else:
+            self._usage_cache = None
+        return payload
+
+    async def _fetch_usage_snapshot(self, slot_indexes: set[int] | None = None) -> dict[str, Any]:
         accounts: list[dict[str, Any]] = []
         slot_errors: list[dict[str, Any]] = []
         reset_errors: list[dict[str, Any]] = []
@@ -1372,12 +1519,24 @@ class CodexRouter:
         reset_records: list[dict[str, Any]] = []
         persisted_reset = self.telemetry.reset_credit_snapshots()
         for slot in self.slots:
+            if slot_indexes is not None and slot.index not in slot_indexes:
+                continue
             auth = await self.load_auth(slot)
             account_key = auth.account_key if auth else slot.account_key()
             if not auth or not account_key:
                 slot_errors.append({"slotIndex": slot.index, "source": "none", "message": slot.auth_unavailable_reason or "auth unavailable"})
                 continue
-            row = {"accountKey": account_key, "slotIndexes": [slot.index], "source": "live", "stale": False, "fiveHour": None, "weekly": None, "resetCredits": persisted_reset.get(account_key)}
+            slot_path = self.slot_path_label(slot)
+            row = {
+                "accountKey": account_key,
+                "slotIndexes": [slot.index],
+                "slotPaths": [slot_path] if slot_path else [],
+                "source": "live",
+                "stale": False,
+                "fiveHour": None,
+                "weekly": None,
+                "resetCredits": persisted_reset.get(account_key),
+            }
             headers = {"Authorization": f"Bearer {auth.access_token}"}
             if auth.account_id:
                 headers["chatgpt-account-id"] = auth.account_id

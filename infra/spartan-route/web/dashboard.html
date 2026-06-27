@@ -7,14 +7,14 @@
   <style>
     :root {
       color-scheme: light dark;
-      --bg: #f7f7f4;
+      --bg: #f6f7f5;
       --panel: #ffffff;
       --text: #202124;
-      --muted: #646866;
-      --line: #d8ddd8;
-      --accent: #1f7a68;
-      --warn: #9a5b00;
+      --muted: #636a67;
+      --line: #d9dfdc;
+      --accent: #146b58;
       --bad: #b3261e;
+      --warn: #9a5b00;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -24,8 +24,8 @@
         --muted: #a9b0ab;
         --line: #383d3a;
         --accent: #56c2a8;
-        --warn: #e5ad4f;
         --bad: #ff897d;
+        --warn: #e5ad4f;
       }
     }
     * { box-sizing: border-box; }
@@ -36,29 +36,31 @@
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     header {
-      border-bottom: 1px solid var(--line);
       background: var(--panel);
+      border-bottom: 1px solid var(--line);
     }
     .wrap {
-      width: min(1180px, calc(100vw - 32px));
+      width: min(1260px, calc(100vw - 32px));
       margin: 0 auto;
     }
-    .top {
+    .top, .toolbar, .section-head, summary {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
-      padding: 18px 0;
+      gap: 12px;
       flex-wrap: wrap;
     }
-    h1 {
+    .top { padding: 18px 0; }
+    h1, h2, h3 {
       margin: 0;
-      font-size: 22px;
-      font-weight: 700;
       letter-spacing: 0;
     }
-    nav {
+    h1 { font-size: 22px; }
+    h2 { font-size: 16px; }
+    h3 { font-size: 14px; }
+    nav, .actions {
       display: flex;
+      align-items: center;
       gap: 8px;
       flex-wrap: wrap;
     }
@@ -76,17 +78,9 @@
       border-color: var(--accent);
       color: var(--accent);
     }
-    main {
-      padding: 22px 0 40px;
-    }
-    .toolbar {
-      display: grid;
-      grid-template-columns: minmax(180px, 1fr) auto auto;
-      gap: 10px;
-      margin-bottom: 18px;
-    }
+    main { padding: 22px 0 40px; }
     input {
-      min-width: 0;
+      min-width: 240px;
       border: 1px solid var(--line);
       border-radius: 6px;
       background: var(--panel);
@@ -94,17 +88,19 @@
       padding: 9px 10px;
       font: inherit;
     }
+    .toolbar { margin-bottom: 18px; }
     .grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 18px;
     }
-    .metric, .session {
+    .metric, .panel {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 14px;
+      min-width: 0;
     }
     .metric .label, .muted {
       color: var(--muted);
@@ -112,24 +108,59 @@
     }
     .metric .value {
       margin-top: 4px;
-      font-size: 24px;
+      font-size: 22px;
       font-weight: 700;
       letter-spacing: 0;
+      overflow-wrap: anywhere;
     }
-    .session {
-      margin-bottom: 10px;
+    details.panel { margin-bottom: 10px; }
+    details.panel > summary {
+      list-style: none;
+      cursor: pointer;
     }
-    .session-head {
+    details.panel > summary::-webkit-details-marker { display: none; }
+    .chev {
+      display: inline-block;
+      width: 16px;
+      color: var(--muted);
+    }
+    details[open] > summary .chev { transform: rotate(90deg); }
+    .title {
+      display: grid;
+      gap: 2px;
+      min-width: 240px;
+    }
+    .summary-metrics {
       display: flex;
-      justify-content: space-between;
-      gap: 12px;
+      gap: 10px;
       flex-wrap: wrap;
-      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      justify-content: flex-end;
+    }
+    .turn-list {
+      margin-top: 12px;
+      display: grid;
+      gap: 8px;
+    }
+    .turn {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+    }
+    .turn summary { padding: 0; }
+    .preview {
+      max-width: 520px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     table {
       width: 100%;
       border-collapse: collapse;
       table-layout: fixed;
+      margin-top: 10px;
     }
     th, td {
       border-top: 1px solid var(--line);
@@ -140,15 +171,20 @@
     }
     th {
       color: var(--muted);
-      font-weight: 600;
       font-size: 12px;
+      font-weight: 600;
     }
     .bad { color: var(--bad); }
     .warn { color: var(--warn); }
-    @media (max-width: 780px) {
-      .toolbar { grid-template-columns: 1fr; }
+    @media (max-width: 1040px) {
+      .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      th:nth-child(3), td:nth-child(3) { display: none; }
+      .toolbar { display: grid; grid-template-columns: 1fr; }
+      input { min-width: 0; width: 100%; }
+      th:nth-child(3), td:nth-child(3), th:nth-child(5), td:nth-child(5) { display: none; }
+      .summary-metrics { justify-content: flex-start; }
     }
   </style>
 </head>
@@ -159,94 +195,179 @@
       <nav>
         <a class="current" href="/dashboard">Routing</a>
         <a href="/dashboard-codex">Codex</a>
-        <a href="/stats">Stats JSON</a>
       </nav>
     </div>
   </header>
   <main class="wrap">
     <div class="toolbar">
       <input id="token" type="password" autocomplete="off" placeholder="Bearer token">
-      <button id="save">Save</button>
-      <button id="refresh" class="primary">Refresh</button>
+      <div class="actions">
+        <button id="save">Save</button>
+        <button id="collapse">Collapse</button>
+        <button id="refresh" class="primary">Refresh</button>
+      </div>
     </div>
     <section class="grid" id="metrics"></section>
-    <section id="sessions"></section>
+    <section>
+      <div class="section-head">
+        <h2>Sessions</h2>
+        <span class="muted" id="status"></span>
+      </div>
+      <div id="sessions"></div>
+    </section>
   </main>
   <script>
     const tokenInput = document.getElementById('token');
     const metricsEl = document.getElementById('metrics');
     const sessionsEl = document.getElementById('sessions');
-    const stored = sessionStorage.getItem('spartanRouteToken') || new URLSearchParams(location.search).get('token') || '';
-    tokenInput.value = stored;
-    if (stored) sessionStorage.setItem('spartanRouteToken', stored);
+    const statusEl = document.getElementById('status');
+    tokenInput.value = sessionStorage.getItem('spartanRouteToken') || '';
 
     document.getElementById('save').onclick = () => {
       sessionStorage.setItem('spartanRouteToken', tokenInput.value.trim());
       load();
     };
     document.getElementById('refresh').onclick = () => load();
+    document.getElementById('collapse').onclick = () => {
+      sessionsEl.querySelectorAll('details[open]').forEach(item => { item.open = false; });
+    };
 
-    function headers() {
+    function headers(json = false) {
       const token = tokenInput.value.trim();
-      return token ? { Authorization: `Bearer ${token}` } : {};
+      const out = token ? { Authorization: `Bearer ${token}` } : {};
+      if (json) out['Content-Type'] = 'application/json';
+      return out;
     }
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]));
     }
-    function pct(cached, input) {
-      return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : '0.0%';
+    function num(value) {
+      return Number(value || 0).toLocaleString();
+    }
+    function pct(value) {
+      return `${Number(value || 0).toFixed(1)}%`;
+    }
+    function fmtTime(value) {
+      if (!value) return '-';
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
     }
     function metric(label, value, extra = '') {
       return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(extra)}</div></div>`;
+    }
+    function metricLine(metrics = {}) {
+      const latency = metrics.latencyMs || {};
+      const totalLatency = metrics.totalLatencyMs || {};
+      return [
+        `${num(metrics.requests)} req`,
+        `${pct(metrics.cacheHitPercent)} cache`,
+        `${num(metrics.inputTokens)} in`,
+        `${num(metrics.outputTokens)} out`,
+        `${latency.avg == null ? '-' : `${latency.avg}ms first`}`,
+        `${totalLatency.avg == null ? '-' : `${totalLatency.avg}ms total`}`,
+        `${num(metrics.errors)} errors`,
+      ].map(item => `<span>${esc(item)}</span>`).join('');
+    }
+    function tracePreview(row) {
+      const items = row.context?.request_trace?.delta?.items || [];
+      if (!Array.isArray(items) || items.length === 0) {
+        return row.promptPreview || 'No preview';
+      }
+      return items.map(item => {
+        const role = item.role || 'unknown';
+        if (Array.isArray(item.toolCalls) && item.toolCalls.length) {
+          const calls = item.toolCalls.map(call => `${call.name || 'tool'}(${(call.argumentKeys || []).join(', ') || `${call.argumentChars || 0} chars`})`).join('; ');
+          return `${role}: ${calls}`;
+        }
+        return `${role}: ${item.preview || `${item.chars || 0} chars`}`;
+      }).join('\n');
     }
     async function getJson(path) {
       const response = await fetch(path, { headers: headers() });
       if (!response.ok) throw new Error(`${path} HTTP ${response.status}`);
       return await response.json();
     }
-    function render(payload) {
-      const sessions = payload.sessions || [];
-      const totals = sessions.reduce((acc, session) => {
-        const m = session.metrics || {};
-        acc.requests += Number(m.requests) || 0;
-        acc.input += Number(m.inputTokens) || 0;
-        acc.cached += Number(m.cachedInputTokens) || 0;
-        acc.output += Number(m.outputTokens) || 0;
-        return acc;
-      }, { requests: 0, input: 0, cached: 0, output: 0 });
+    async function loadTurn(turnId, target) {
+      target.innerHTML = '<p class="muted">Loading turn...</p>';
+      const payload = await getJson(`/api/routing/turns/${encodeURIComponent(turnId)}`);
+      const rows = payload.requests || [];
+      target.innerHTML = `<table>
+        <thead><tr><th>Time</th><th>Model</th><th>Content</th><th>Slot</th><th>Tokens</th><th>Latency</th><th>Status</th></tr></thead>
+        <tbody>${rows.map(row => `<tr>
+          <td>${esc(fmtTime(row.timestamp))}</td>
+          <td>${esc(row.actualModel)}</td>
+          <td><span class="preview">${esc(tracePreview(row))}</span></td>
+          <td>${esc(row.selectedCodexSlotIndex ?? '-')}<br><span class="muted">${esc(row.selectedCodexAccountKey || '')}</span></td>
+          <td>${num(row.inputTokens)} in<br>${num(row.cachedInputTokens)} cached<br>${num(row.outputTokens)} out</td>
+          <td>${esc(row.responseTimeMs || 0)}ms first<br><span class="muted">${esc(row.totalResponseTimeMs || 0)}ms total${row.latencySource === 'legacy_response_time' ? ' legacy' : ''}</span></td>
+          <td class="${row.error ? 'bad' : ''}">${esc(row.error || 'ok')}</td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+    }
+    function wireLazyTurns() {
+      sessionsEl.querySelectorAll('details.turn').forEach(item => {
+        item.addEventListener('toggle', async () => {
+          if (!item.open || item.dataset.loaded === '1') return;
+          const target = item.querySelector('.turn-requests');
+          try {
+            await loadTurn(item.dataset.turnId, target);
+            item.dataset.loaded = '1';
+          } catch (error) {
+            target.innerHTML = `<p class="bad">${esc(error.message)}</p>`;
+          }
+        });
+      });
+    }
+    function renderStats(stats) {
+      const totals = stats.totals || {};
+      const today = stats.today || {};
+      const latency = stats.latencyToday || {};
+      const totalLatency = today.totalLatencyMs || {};
       metricsEl.innerHTML = [
-        metric('Requests', totals.requests),
-        metric('Input tokens', totals.input.toLocaleString()),
-        metric('Cached input', totals.cached.toLocaleString(), pct(totals.cached, totals.input)),
-        metric('Output tokens', totals.output.toLocaleString()),
+        metric('Today requests', today.loggedRequests || 0, `${today.usageSeenRequests || 0} with usage`),
+        metric('Today cache', pct(today.cacheHitPercent), `${num(today.cachedInputTokens)} cached`),
+        metric('First response', latency.avg == null ? '-' : `${latency.avg}ms`, `p90 ${latency.p90 == null ? '-' : `${latency.p90}ms`}`),
+        metric('Total duration', totalLatency.avg == null ? '-' : `${totalLatency.avg}ms`, `p90 ${totalLatency.p90 == null ? '-' : `${totalLatency.p90}ms`}`),
+        metric('Today errors', today.errors || 0, `${today.usageMissingRequests || 0} missing usage`),
+        metric('All cache', pct(totals.cacheHitPercent), `${num(totals.requests)} usage rows`),
       ].join('');
-      sessionsEl.innerHTML = sessions.map(session => {
+    }
+    function renderSessions(payload) {
+      const sessions = payload.sessions || [];
+      statusEl.textContent = `${sessions.length} shown${payload.hasMoreSessions ? ', more in DB' : ''}`;
+      sessionsEl.innerHTML = sessions.map((session, index) => {
         const turns = session.turns || [];
-        const rows = turns.flatMap(turn => (turn.requests || []).map(row => ({ ...row, turnId: turn.id })));
-        return `<article class="session">
-          <div class="session-head">
-            <strong>${esc(session.id)}</strong>
-            <span class="muted">${esc(session.lastAt)} - ${esc((session.metrics || {}).requests || 0)} requests - ${pct((session.metrics || {}).cachedInputTokens || 0, (session.metrics || {}).inputTokens || 0)} cache</span>
+        return `<details class="panel" ${index === 0 ? 'open' : ''}>
+          <summary>
+            <span class="title"><strong><span class="chev">›</span>${esc(session.id)}</strong><span class="muted">${esc(fmtTime(session.lastAt))} - ${esc(session.turnCount || turns.length)} turns</span></span>
+            <span class="summary-metrics">${metricLine(session.metrics)}</span>
+          </summary>
+          <div class="turn-list">
+            ${turns.map(turn => `<details class="turn" data-turn-id="${esc(turn.id)}">
+              <summary>
+                <span class="title"><strong><span class="chev">›</span>${esc(turn.id)}</strong><span class="preview">${esc(turn.promptPreview || (turn.models || []).join(', ') || 'No preview')}</span></span>
+                <span class="summary-metrics">${metricLine(turn.metrics)}</span>
+              </summary>
+              <div class="turn-requests"></div>
+            </details>`).join('')}
+            ${session.hasMoreTurns ? '<p class="muted">Older turns hidden by current limit.</p>' : ''}
           </div>
-          <table>
-            <thead><tr><th>Time</th><th>Model</th><th>Turn</th><th>Tokens</th><th>Status</th></tr></thead>
-            <tbody>${rows.map(row => `<tr>
-              <td>${esc(row.timestamp)}</td>
-              <td>${esc(row.actualModel)}</td>
-              <td>${esc(row.turnId)}</td>
-              <td>${esc(row.inputTokens || 0)} in - ${esc(row.cachedInputTokens || 0)} cached - ${esc(row.outputTokens || 0)} out</td>
-              <td class="${row.error ? 'bad' : ''}">${esc(row.error || 'ok')}</td>
-            </tr>`).join('')}</tbody>
-          </table>
-        </article>`;
-      }).join('') || '<p class="muted">No routing rows yet.</p>';
+        </details>`;
+      }).join('') || '<div class="panel muted">No routing rows yet.</div>';
+      wireLazyTurns();
     }
     async function load() {
       try {
-        sessionsEl.innerHTML = '<p class="muted">Loading...</p>';
-        render(await getJson('/api/routing/live'));
+        statusEl.textContent = 'Loading...';
+        const [stats, live] = await Promise.all([
+          getJson('/stats'),
+          getJson('/api/routing/live?sessionLimit=30&turnLimit=12'),
+        ]);
+        renderStats(stats);
+        renderSessions(live);
       } catch (error) {
-        sessionsEl.innerHTML = `<p class="bad">${esc(error.message)}</p>`;
+        statusEl.textContent = '';
+        sessionsEl.innerHTML = `<div class="panel bad">${esc(error.message)}</div>`;
       }
     }
     load();

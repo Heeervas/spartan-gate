@@ -46,7 +46,8 @@ Relevant files:
   `/app/data/spartan-route.db`.
 - `infra/spartan-route/web/dashboard.html`: session and turn dashboard.
 - `infra/spartan-route/web/dashboard-codex.html`: Codex usage, slot state,
-  daily cache percentage, and mandatory reset-credit showcase.
+  persistent slot routing controls, daily cache percentage, latency, active
+  leases, and mandatory reset-credit showcase.
 - `infra/compose/compose.spartan-route.yml`: full-stack side-by-side overlay.
 - `infra/compose/tiers/compose.spartan-route.yml`: tier-helper side-by-side
   overlay.
@@ -65,10 +66,29 @@ Kept in v1:
 - Codex image generation and no-mask image edits, with OpenAI image endpoint
   passthrough when `OPENAI_API_KEY` is available. The Codex-auth image fallback
   rejects non-square OpenAI image sizes such as `1536x1024` or `1024x1536`;
-  configure `OPENAI_API_KEY` when callers need non-square aspect ratios.
+  callers receive `400` with `code: "unsupported_image_size"`. Configure
+  `OPENAI_API_KEY` when callers need non-square aspect ratios.
 - Reset-credit telemetry and dashboard display. V1 only reads and persists
   reset-credit metadata; it never redeems credits.
 - Daily cache hit rows from `routing_log`.
+- Today's dashboard latency from logged request rows. For new rows,
+  `response_time_ms`/`responseTimeMs` means first upstream response time, while
+  `total_response_time_ms`/`totalResponseTimeMs` means full request or stream
+  duration through logging. Older rows without those split columns fall back to
+  the legacy `response_time_ms` value and are marked as legacy latency. Cache
+  hit percentage still uses only rows where upstream usage metadata was seen;
+  request and latency counters can include rows without usage.
+- Persistent Codex slot routing enable/disable controls. Disabled slots are
+  skipped by chat and image routing, leases for that slot/account are
+  invalidated, and the override survives service restart. If a stored override
+  clearly belongs to a different slot identity, Spartan Route ignores that
+  stale disable and reports an identity mismatch in the dashboard/API.
+- Cached Codex usage polling for the dashboard. Normal `/api/codex/usage`
+  calls reuse a short-lived in-process snapshot; `?force=true` or
+  `POST /api/codex/usage/slots/{slot}` performs a live check.
+- Authenticated Codex dashboard/API responses include the configured Codex auth
+  path for each slot so local operators can identify accounts. Public health
+  responses keep only hashes and never expose raw slot paths.
 
 With `CLAWROUTE_DEBUG=true`, Spartan Route logs a redacted summary of outbound
 image passthrough payloads. The summary includes fields such as `model`, `size`,
@@ -90,11 +110,16 @@ Reliability contract:
 - Streaming tool-call deltas are buffered and emitted only after a terminal
   successful Codex event, so Hermes never receives partial tool arguments from
   an upstream stream that later becomes incomplete.
-- Cache diagnostics in `context_info` are metadata-only: cache-key hash, cache
-  key source, usage-event visibility, expected-hit/low-cache flags,
+- Cache diagnostics in `context_info` are metadata-only by default: cache-key
+  hash, cache key source, usage-event visibility, expected-hit/low-cache flags,
   message/tool counts, request-shape hashes, tool-schema fingerprint, and
-  same-session prefix comparison. Raw prompts, raw tool schemas, raw cache keys,
-  and auth values are not added to these diagnostics.
+  same-session prefix comparison. Raw tool schemas, raw cache keys, and auth
+  values are not added to these diagnostics.
+- When `CLAWROUTE_LOG_CONTENT=true`, routing rows also store sanitized request
+  previews for the dashboard. Spartan Route prefers the latest user message
+  over the system prompt, strips common Hermes metadata preambles, redacts
+  secret-looking tokens, and records tool calls as function name plus argument
+  keys/size rather than raw arguments.
 - Prior assistant reasoning is not replayed into the next upstream Codex
   request by default, which keeps the stable prefix smaller and less volatile.
   Set `SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING=1` only as a rollback switch.
@@ -108,6 +133,8 @@ Cut from v1 on purpose:
   OpenRouter-compatible models.
 - Broad provider-specific translation. V1 passes through OpenAI-compatible
   providers and returns clean JSON for unsupported native providers.
+- Quota-unit/session-cost estimates. Those are deferred to v2; v1 keeps raw
+  usage-window percentages, cache metrics, and latency.
 
 ## Run
 
@@ -140,6 +167,11 @@ port `18791`, set `SPARTAN_ROUTE_EDGE_PORT=18792`. Private HTTPS stacks should
 use the Spartan Route URL printed by `sg-urls`; plain HTTP stacks use
 `http://localhost:<SPARTAN_ROUTE_EDGE_PORT>/dashboard-codex`. The existing
 ClawRoute service and `packages/clawroute/` remain untouched.
+
+Dashboard and `/api/*` requests require the same bearer token as model
+requests when `CLAWROUTE_TOKEN` is configured. Query-string `?token=...`
+authentication is intentionally not accepted; enter the token in the dashboard
+field or send `Authorization: Bearer <token>`.
 
 ## Validation
 

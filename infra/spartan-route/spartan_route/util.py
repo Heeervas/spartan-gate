@@ -98,6 +98,26 @@ def text_content(content: Any) -> str:
     return "".join(parts)
 
 
+def strip_metadata_preamble(text: str) -> str:
+    metadata_block = re.compile(r"^[^\n]+ \(untrusted metadata\):\n```[^\n]*\n[\s\S]*?\n```\n?\n?")
+    patterns = [
+        metadata_block,
+        re.compile(r"^\[SYSTEM:[\s\S]*?\]\n*"),
+        re.compile(r"^\[CONTEXT COMPACTION\][^\n]*\n*"),
+        re.compile(r"^\[Your active task list was preserved[^\]]*\]\n*"),
+        re.compile(r"^\[Replying to:[^\]]*\]\n*"),
+    ]
+    result = text
+    changed = True
+    while changed:
+        changed = False
+        for pattern in patterns:
+            if pattern.search(result):
+                result = pattern.sub("", result, count=1)
+                changed = True
+    return result.strip()
+
+
 def sanitize_preview(value: str, max_chars: int = 300) -> str:
     redacted = re.sub(r"\bBearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", value)
     redacted = re.sub(
