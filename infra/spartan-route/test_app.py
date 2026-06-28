@@ -32,6 +32,7 @@ from spartan_route.app import (
 from spartan_route.config import ModelEntry, SpartanRouteConfig
 from spartan_route.codex import CodexAuth, CodexCallResult, CodexSlot, sse
 from spartan_route.telemetry import RoutingLogEntry, TelemetryStore
+from spartan_route.util import now_iso
 
 
 class CaptureQueue:
@@ -150,7 +151,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stats_include_today_latency(self) -> None:
         self.store.log_routing(RoutingLogEntry(
-            timestamp="2026-06-27T08:00:00.000Z",
+            timestamp=now_iso(),
             original_model="clawroute/auto",
             routed_model="codex/gpt-5.5",
             actual_model="codex/gpt-5.5",

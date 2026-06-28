@@ -64,18 +64,41 @@ class FailingContent:
 
 
 class FakeResponse:
-    def __init__(self, events: list[tuple[str | None, dict[str, Any]]] | None = None, chunks: list[bytes] | None = None):
+    def __init__(
+        self,
+        events: list[tuple[str | None, dict[str, Any]]] | None = None,
+        chunks: list[bytes] | None = None,
+        status: int = 200,
+        text: str = "",
+    ):
         self.content = FakeContent(chunks if chunks is not None else [sse_event(event, data) for event, data in events or []])
         self.released = False
+        self.status = status
+        self._text = text
 
     def release(self) -> None:
         self.released = True
+
+    async def text(self) -> str:
+        return self._text
 
 
 class FailingResponse(FakeResponse):
     def __init__(self, exc: BaseException, chunks: list[bytes] | None = None):
         self.content = FailingContent(exc, chunks)
         self.released = False
+        self.status = 200
+        self._text = ""
+
+
+class CapturePostSession:
+    def __init__(self, response: FakeResponse):
+        self.response = response
+        self.timeout = None
+
+    async def post(self, *_args, **kwargs):
+        self.timeout = kwargs.get("timeout")
+        return self.response
 
 
 class FakeJsonContextResponse:
@@ -588,7 +611,7 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.body["error"]["code"], "codex_stream_timeout")
         self.assertEqual(result.error, "codex_stream_timeout")
         self.assertFalse(result.usage_seen)
-        self.assertGreater(slot.transient_until, time.time())
+        self.assertEqual(slot.transient_until, 0)
 
     def test_non_streaming_read_exception_is_retryable_transport_error(self) -> None:
         router = CodexRouter.__new__(CodexRouter)
@@ -600,9 +623,9 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.status, 502)
         self.assertEqual(result.body["error"]["code"], "codex_stream_error")
         self.assertEqual(result.error, "codex_stream_error")
-        self.assertGreater(slot.transient_until, time.time())
+        self.assertEqual(slot.transient_until, 0)
 
-    def test_streaming_read_timeout_emits_error_and_marks_slot(self) -> None:
+    def test_streaming_read_timeout_emits_error_without_marking_slot(self) -> None:
         body, result, slot, response = asyncio_run(self.collect_stream_response(FailingResponse(asyncio.TimeoutError())))
 
         self.assertIn("event: error", body)
@@ -612,9 +635,9 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.output_tokens, 0)
         self.assertFalse(result.usage_seen)
         self.assertTrue(response.released)
-        self.assertGreater(slot.transient_until, time.time())
+        self.assertEqual(slot.transient_until, 0)
 
-    def test_streaming_read_exception_emits_error_and_marks_slot(self) -> None:
+    def test_streaming_read_exception_emits_error_without_marking_slot(self) -> None:
         body, result, slot, response = asyncio_run(self.collect_stream_response(FailingResponse(RuntimeError("socket closed"))))
 
         self.assertIn("event: error", body)
@@ -622,7 +645,59 @@ class CodexTests(unittest.TestCase):
         self.assertIn("data: [DONE]", body)
         self.assertEqual(result.error, "codex_stream_error")
         self.assertTrue(response.released)
+        self.assertEqual(slot.transient_until, 0)
+
+    def test_streaming_terminal_server_error_marks_slot_transient(self) -> None:
+        body, result, slot = asyncio_run(self.collect_stream([
+            ("error", {"error": {"message": "upstream failed", "type": "server_error", "code": "server_error"}}),
+        ]))
+
+        self.assertIn("event: error", body)
+        self.assertEqual(result.error, "server_error")
         self.assertGreater(slot.transient_until, time.time())
+
+    def test_single_chat_call_uses_header_timeout_without_body_total_timeout(self) -> None:
+        response = FakeResponse([
+            ("response.output_text.done", {"item_id": "msg_1", "text": "done"}),
+            ("response.completed", {"response": {"status": "completed", "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+        ])
+        router = CodexRouter.__new__(CodexRouter)
+        router.session = CapturePostSession(response)
+
+        result = asyncio_run(router._single_chat_call(
+            {"input": [{"role": "user", "content": "hi"}], "stream": True},
+            "codex/gpt-5.5",
+            "gpt-5.5",
+            False,
+            CodexSlot(0),
+            CodexAuth("token", account_id="acct"),
+        ))
+
+        self.assertEqual(result.status, 200)
+        self.assertIsNotNone(router.session.timeout)
+        self.assertIsNone(router.session.timeout.total)
+
+    def test_all_transient_slots_return_retry_metadata(self) -> None:
+        router = CodexRouter.__new__(CodexRouter)
+        slot = CodexSlot(0, auth=CodexAuth("token", account_id="acct"))
+        slot.transient_until = time.time() + 60
+        router.slots = [slot]
+        router.leases = {}
+        router.telemetry = None
+
+        result = asyncio_run(router.execute_chat(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            "codex/gpt-5.5",
+            False,
+            "session",
+            None,
+            "request",
+        ))
+
+        self.assertEqual(result.status, 503)
+        self.assertEqual(result.body["error"]["code"], "codex_transient_unavailable")
+        self.assertGreater(result.body["error"]["retry_after_seconds"], 0)
+        self.assertEqual(result.body["error"]["slot_diagnostics"]["transient_5xx"], 1)
 
     def test_codex_empty_response_is_retryable(self) -> None:
         from spartan_route.codex import should_retry

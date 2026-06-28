@@ -39,6 +39,7 @@ CODEX_USAGE_DRAIN_TIMEOUT_SECONDS = 15.0
 CODEX_USAGE_CACHE_TTL_SECONDS = 60.0
 CODEX_STREAM_TIMEOUT_CODE = "codex_stream_timeout"
 CODEX_STREAM_ERROR_CODE = "codex_stream_error"
+CODEX_TRANSIENT_UNAVAILABLE_CODE = "codex_transient_unavailable"
 
 
 @dataclass
@@ -377,6 +378,10 @@ def should_retry(status: int, text: str) -> bool:
     return False
 
 
+def codex_request_timeout_ms() -> int:
+    return parse_int(os.environ.get("CODEX_REQUEST_TIMEOUT_MS"), 180_000, 10_000, 900_000)
+
+
 class CodexRouter:
     def __init__(self, session: ClientSession, telemetry: TelemetryStore):
         self.session = session
@@ -694,6 +699,51 @@ class CodexRouter:
             slot.transient_until = time.time() + cooldown
             self._invalidate_slot_leases(slot)
 
+    async def _unavailable_error(self) -> dict[str, Any]:
+        now = time.time()
+        diagnostics = {
+            "total": len(self.slots),
+            "eligible": 0,
+            "disabled": 0,
+            "auth_unavailable": 0,
+            "rate_limited": 0,
+            "transient_5xx": 0,
+        }
+        transient_retry_times: list[float] = []
+        for slot in self.slots:
+            if not self.slot_routing_status(slot)["routingEnabled"]:
+                diagnostics["disabled"] += 1
+                continue
+            if slot.rate_limited_until > now:
+                diagnostics["rate_limited"] += 1
+                continue
+            if slot.transient_until > now:
+                diagnostics["transient_5xx"] += 1
+                transient_retry_times.append(slot.transient_until)
+                continue
+            auth = await self.load_auth(slot)
+            if not auth:
+                diagnostics["auth_unavailable"] += 1
+                continue
+            diagnostics["eligible"] += 1
+
+        if diagnostics["eligible"] == 0 and transient_retry_times:
+            retry_at = min(transient_retry_times)
+            return {
+                "message": "All Codex auth slots are temporarily unavailable after upstream server errors. Try again shortly.",
+                "type": "upstream_error",
+                "code": CODEX_TRANSIENT_UNAVAILABLE_CODE,
+                "retry_at": self._iso_from_epoch(retry_at),
+                "retry_after_seconds": max(1, int((retry_at - now) + 0.999)),
+                "slot_diagnostics": diagnostics,
+            }
+        return {
+            "message": "All Codex auth slots are temporarily unavailable.",
+            "type": "upstream_error",
+            "code": "codex_unavailable",
+            "slot_diagnostics": diagnostics,
+        }
+
     async def execute_chat(
         self,
         request: dict[str, Any],
@@ -769,10 +819,11 @@ class CodexRouter:
             last_error = result
         if last_error:
             return last_error
+        error = await self._unavailable_error()
         return CodexCallResult(
             status=503,
-            body={"error": {"message": "All Codex auth slots are temporarily unavailable.", "type": "upstream_error", "code": "codex_unavailable"}},
-            error="codex_unavailable",
+            body={"error": error},
+            error=str(error["code"]),
         )
 
     async def _single_chat_call(
@@ -791,16 +842,30 @@ class CodexRouter:
         }
         if auth.account_id:
             headers["chatgpt-account-id"] = auth.account_id
-        timeout_ms = parse_int(os.environ.get("CODEX_REQUEST_TIMEOUT_MS"), 180_000, 10_000, 900_000)
+        timeout_ms = codex_request_timeout_ms()
         try:
             upstream_started = time.monotonic()
-            response = await self.session.post(
+            response = await asyncio.wait_for(self.session.post(
                 CODEX_RESPONSES_URL,
                 json=body,
                 headers=headers,
-                timeout=ClientTimeout(total=timeout_ms / 1000),
-            )
+                timeout=ClientTimeout(total=None),
+            ), timeout=timeout_ms / 1000)
             upstream_response_time_ms = max(0, int((time.monotonic() - upstream_started) * 1000))
+        except asyncio.TimeoutError:
+            upstream_response_time_ms = max(0, int((time.monotonic() - upstream_started) * 1000))
+            return CodexCallResult(
+                status=502,
+                body={
+                    "error": {
+                        "message": "Codex request timed out while waiting for response headers",
+                        "type": "server_error",
+                        "code": "codex_error",
+                    }
+                },
+                error="codex_error",
+                upstream_response_time_ms=upstream_response_time_ms,
+            )
         except Exception as exc:
             return CodexCallResult(status=502, body={"error": {"message": str(exc), "type": "upstream_error", "code": "codex_error"}}, error=str(exc))
         if response.status != 200:
@@ -1448,6 +1513,8 @@ class CodexRouter:
         code = str(error.get("code") or "")
         error_type = str(error.get("type") or error.get("upstream_type") or "")
         text = stable_json({"error": error})
+        if code in {CODEX_STREAM_TIMEOUT_CODE, CODEX_STREAM_ERROR_CODE}:
+            return
         if error_type == "auth_error" or code in {"invalid_auth", "unauthorized"}:
             slot.auth = None
             slot.auth_unavailable_reason = "expired"
