@@ -300,9 +300,10 @@ slot eligibility: upstream can still return a temporary rate limit. ClawRoute
 keeps long slot cooldowns for explicit `usage_limit_reached` responses with
 reset metadata, but generic streaming rate-limit errors are treated as
 request-local failures instead of account exhaustion.
-`CODEX_REQUEST_TIMEOUT_MS` bounds how long ClawRoute waits for Codex response
-headers before aborting a request; it defaults to `180000` so long Hermes
-sessions have more room than the older 60-second cutoff.
+`CODEX_REQUEST_TIMEOUT_MS` bounds how long ClawRoute and Spartan Route wait for
+Codex response headers before aborting a request; it defaults to `180000` so
+long Hermes sessions have more room than the older 60-second cutoff. It is not
+a total stream-body deadline.
 `CODEX_TRANSIENT_5XX_COOLDOWN_MS` defaults to `120000`; after retryable
 Codex 500/502 failures, ClawRoute invalidates that slot's prompt-cache lease
 and temporarily skips the affected slot/account so concurrent sessions do not

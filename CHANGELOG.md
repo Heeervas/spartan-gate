@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Matched Spartan Route Codex request timeout behavior to ClawRoute by applying
+  `CODEX_REQUEST_TIMEOUT_MS` only to response-header wait, keeping local stream
+  read failures out of generic 5xx slot cooldown, and returning retry metadata
+  for all-transient Codex slot pools.
 - Classified Spartan Route Codex stream read timeouts/errors as explicit
   retryable transport failures, including SSE failure events, transient slot
   cooldowns, stable telemetry codes, and diagnostic-only low-cache stall

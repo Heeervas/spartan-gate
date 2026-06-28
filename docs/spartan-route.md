@@ -114,8 +114,14 @@ Reliability contract:
   receive `event: error` with `codex_stream_timeout` or `codex_stream_error`
   followed by `[DONE]`; streaming Responses receive the same error and then
   `response.failed`. Non-streaming reads return retryable `502` with the same
-  stable codes. The affected slot/account gets the existing transient cooldown
-  and cache-lease invalidation.
+  stable codes. Local stream read failures do not put the selected slot into the
+  generic transient 5xx cooldown; terminal upstream server errors still do.
+- `CODEX_REQUEST_TIMEOUT_MS` matches ClawRoute semantics: it bounds the wait
+  for Codex response headers, not the total duration of the streamed response
+  body.
+- If all usable Codex slots are cooling after upstream server errors, Spartan
+  Route returns `503 codex_transient_unavailable` with sanitized retry metadata
+  instead of a generic unavailable message.
 - An incomplete Codex response that contains tool calls is treated as retryable
   `502 codex_incomplete_response`; Spartan Route must not expose incomplete
   tool-call arguments to Hermes as a successful `finish_reason="length"` turn.
