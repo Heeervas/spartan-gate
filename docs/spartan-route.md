@@ -65,9 +65,12 @@ Kept in v1:
   and retry across slots/accounts.
 - Codex image generation and no-mask image edits, with OpenAI image endpoint
   passthrough when `OPENAI_API_KEY` is available. The Codex-auth image fallback
-  rejects non-square OpenAI image sizes such as `1536x1024` or `1024x1536`;
-  callers receive `400` with `code: "unsupported_image_size"`. Configure
-  `OPENAI_API_KEY` when callers need non-square aspect ratios.
+  accepts OpenAI `gpt-image-2` sizes such as `1536x1024` and `1024x1536`,
+  validates the documented size constraints, and returns
+  `codex_image_size_mismatch` instead of silently returning the wrong aspect
+  ratio if upstream ignores the requested dimensions. If Codex Auth returns the
+  requested aspect ratio at a different pixel scale, Spartan Route returns the
+  image and includes `actual_size` on the image item.
 - Reset-credit telemetry and dashboard display. V1 only reads and persists
   reset-credit metadata; it never redeems credits.
 - Daily cache hit rows from `routing_log`.

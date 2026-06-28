@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
+import struct
 import sys
 import time
 import unittest
@@ -215,6 +217,75 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(resolve_auth_paths({"OPENAI_CODEX_TOKEN": "tok"}), [])
         with patch.dict(os.environ, {}, clear=True):
             self.assertTrue(resolve_auth_paths()[0].endswith(".codex/auth.json"))
+
+    def image_router(self, response: FakeResponse) -> CodexRouter:
+        router = CodexRouter.__new__(CodexRouter)
+        router.session = CapturePostSession(response)
+        router.telemetry = None
+        router.slots = [CodexSlot(0, auth=CodexAuth("token", account_id="acct"))]
+        router.leases = {}
+        router.refresh_locks = {}
+        return router
+
+    def png_b64(self, width: int, height: int) -> str:
+        raw = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", width, height) + (b"\x00" * 160)
+        return base64.b64encode(raw).decode("ascii")
+
+    def test_codex_image_payload_uses_minimal_builtin_tool_shape(self) -> None:
+        router = CodexRouter.__new__(CodexRouter)
+        body = router._build_codex_image_body({"prompt": "draw a gate", "size": "1536x1024", "quality": "high"})
+
+        self.assertEqual(body["model"], "gpt-5.5")
+        self.assertEqual(body["tool_choice"], "auto")
+        self.assertEqual(body["input"][0]["type"], "message")
+        tool = body["tools"][0]
+        self.assertEqual(tool, {"type": "image_generation", "output_format": "png", "size": "1536x1024"})
+        prompt_text = body["input"][0]["content"][-1]["text"]
+        self.assertIn("Size: 1536x1024", prompt_text)
+        self.assertIn("Quality: high", prompt_text)
+
+    def test_codex_image_rejects_silent_size_mismatch(self) -> None:
+        router = self.image_router(FakeResponse([
+            ("response.output_item.done", {"item": {"type": "image_generation_call", "result": self.png_b64(1254, 1254)}}),
+        ]))
+
+        result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1536x1024"}))
+
+        self.assertEqual(result.status, 502)
+        self.assertEqual(result.body["error"]["code"], "codex_image_size_mismatch")
+        self.assertEqual(result.body["error"]["requested_size"], "1536x1024")
+        self.assertEqual(result.body["error"]["actual_size"], "1254x1254")
+
+    def test_codex_image_allows_matching_non_square_result(self) -> None:
+        image = self.png_b64(1536, 1024)
+        router = self.image_router(FakeResponse([
+            ("response.output_item.done", {"item": {"type": "image_generation_call", "result": image}}),
+        ]))
+
+        result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1536x1024"}))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.body["data"][0]["b64_json"], image)
+
+    def test_codex_image_allows_same_aspect_scaled_square_result(self) -> None:
+        image = self.png_b64(1254, 1254)
+        router = self.image_router(FakeResponse([
+            ("response.output_item.done", {"item": {"type": "image_generation_call", "result": image}}),
+        ]))
+
+        result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1024x1024"}))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.body["data"][0]["actual_size"], "1254x1254")
+
+    def test_codex_image_http_error_empty_body_is_non_empty(self) -> None:
+        router = self.image_router(FakeResponse(status=500, text=""))
+
+        result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1024x1024"}))
+
+        self.assertEqual(result.status, 500)
+        self.assertEqual(result.body["error"]["code"], "codex_500")
+        self.assertEqual(result.body["error"]["message"], "Codex API error (500)")
 
     def test_chat_messages_to_responses_input_preserves_tools_and_images(self) -> None:
         output = chat_messages_to_responses_input([

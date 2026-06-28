@@ -4,14 +4,13 @@ Date: 2026-06-28
 
 ## Latest Update
 
-Spartan Route Codex timeout handling now matches ClawRoute semantics:
-`CODEX_REQUEST_TIMEOUT_MS` bounds only the wait for response headers, not the
-entire streamed response body. Local stream read timeouts/errors remain explicit
-retryable `codex_stream_timeout` / `codex_stream_error` failures but no longer
-put the selected slot into generic transient 5xx cooldown. True upstream server
-errors still cool the affected slot/account and all-transient pools now return
-sanitized `codex_transient_unavailable` retry metadata. The cache-stall guard
-remains diagnostic-only with no active request blocking.
+Spartan Route Codex-auth image fallback now accepts valid `gpt-image-2`
+non-square sizes instead of preflight-rejecting them. The image payload follows
+the Codex built-in `image_generation` tool shape, preserves requested aspect
+ratio, and returns `codex_image_size_mismatch` when upstream returns the wrong
+aspect instead of silently handing Hermes a square image. Live probes after
+rebuild confirmed `1536x1024` returns a real `1536x1024` PNG, and `1024x1024`
+returns a square `1254x1254` PNG with `actual_size` recorded.
 
 ## Active Task
 

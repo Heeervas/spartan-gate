@@ -236,7 +236,11 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         appended = {**body, "messages": [*body["messages"], {"role": "assistant", "content": "new"}]}
         self.assertEqual(compare_session_trace(request_shape_snapshot(appended), snapshot)["comparison"], "prefix")
 
-    async def test_codex_image_generation_rejects_non_square_size(self) -> None:
+    async def test_codex_image_generation_allows_non_square_size(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = FakeImageCodex()
+        state.codex = fake_codex
+
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
             response = await self.client.post(
                 "/v1/images/generations",
@@ -244,14 +248,8 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 json={"model": "gpt-image-2", "prompt": "draw a guarded gate", "size": "1536x1024"},
             )
 
-        self.assertEqual(response.status, 400)
-        payload = await response.json()
-        self.assertEqual(payload["error"]["type"], "invalid_request_error")
-        self.assertEqual(payload["error"]["code"], "unsupported_image_size")
-        self.assertEqual(
-            payload["error"]["message"],
-            "Requested image size 1536x1024 requires a non-square aspect ratio, but Spartan Route is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.",
-        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(fake_codex.requests[0]["size"], "1536x1024")
 
     async def test_codex_image_generation_rejects_invalid_size(self) -> None:
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
@@ -264,7 +262,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 400)
         payload = await response.json()
         self.assertEqual(payload["error"]["type"], "invalid_request_error")
-        self.assertEqual(payload["error"]["code"], "invalid_request")
+        self.assertEqual(payload["error"]["code"], "invalid_image_size")
 
     async def test_codex_image_generation_allows_square_size(self) -> None:
         state = self.app[STATE_KEY]
@@ -299,7 +297,11 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_session.calls[0]["json"]["size"], "1536x1024")
         self.assertTrue(fake_session.calls[0]["url"].endswith("/images/generations"))
 
-    async def test_codex_image_edits_reject_non_square_size(self) -> None:
+    async def test_codex_image_edits_allow_non_square_size(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = FakeImageCodex()
+        state.codex = fake_codex
+
         form = FormData()
         form.add_field("model", "gpt-image-2")
         form.add_field("prompt", "make the red square landscape")
@@ -313,14 +315,9 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 data=form,
             )
 
-        self.assertEqual(response.status, 400)
-        payload = await response.json()
-        self.assertEqual(payload["error"]["type"], "invalid_request_error")
-        self.assertEqual(payload["error"]["code"], "unsupported_image_size")
-        self.assertEqual(
-            payload["error"]["message"],
-            "Requested image size 1024x1536 requires a non-square aspect ratio, but Spartan Route is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.",
-        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(fake_codex.requests[0]["size"], "1024x1536")
+        self.assertEqual(len(fake_codex.requests[0]["images"]), 1)
 
 
 class AppCacheDiagnosticsTests(unittest.TestCase):

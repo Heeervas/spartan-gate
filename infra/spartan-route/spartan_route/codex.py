@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import os
+import struct
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +42,7 @@ CODEX_USAGE_CACHE_TTL_SECONDS = 60.0
 CODEX_STREAM_TIMEOUT_CODE = "codex_stream_timeout"
 CODEX_STREAM_ERROR_CODE = "codex_stream_error"
 CODEX_TRANSIENT_UNAVAILABLE_CODE = "codex_transient_unavailable"
+DEFAULT_CODEX_IMAGE_HOST_MODEL = "gpt-5.5"
 
 
 @dataclass
@@ -380,6 +383,63 @@ def should_retry(status: int, text: str) -> bool:
 
 def codex_request_timeout_ms() -> int:
     return parse_int(os.environ.get("CODEX_REQUEST_TIMEOUT_MS"), 180_000, 10_000, 900_000)
+
+
+def codex_image_host_model() -> str:
+    value = (os.environ.get("CODEX_IMAGE_HOST_MODEL") or os.environ.get("SPARTAN_ROUTE_CODEX_IMAGE_HOST_MODEL") or "").strip()
+    return value or DEFAULT_CODEX_IMAGE_HOST_MODEL
+
+
+def requested_image_size(size: Any) -> tuple[int, int] | None:
+    text = str(size or "").strip()
+    if not text or text == "auto" or "x" not in text:
+        return None
+    width, height = text.split("x", 1)
+    try:
+        return int(width), int(height)
+    except Exception:
+        return None
+
+
+def image_bytes_dimensions(raw: bytes) -> tuple[int, int] | None:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
+        return struct.unpack(">II", raw[16:24])
+    if raw.startswith(b"\xff\xd8"):
+        index = 2
+        while index + 9 < len(raw):
+            while index < len(raw) and raw[index] == 0xFF:
+                index += 1
+            if index >= len(raw):
+                return None
+            marker = raw[index]
+            index += 1
+            if marker in {0xD8, 0xD9}:
+                continue
+            if index + 2 > len(raw):
+                return None
+            segment_length = struct.unpack(">H", raw[index:index + 2])[0]
+            if marker in {*range(0xC0, 0xC4), *range(0xC5, 0xC8), *range(0xC9, 0xCC), *range(0xCD, 0xD0)}:
+                if index + 7 <= len(raw):
+                    height, width = struct.unpack(">HH", raw[index + 3:index + 7])
+                    return width, height
+                return None
+            index += segment_length
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP" and raw[12:16] == b"VP8X" and len(raw) >= 30:
+        width = int.from_bytes(raw[24:27], "little") + 1
+        height = int.from_bytes(raw[27:30], "little") + 1
+        return width, height
+    return None
+
+
+def image_b64_dimensions(value: str) -> tuple[int, int] | None:
+    try:
+        return image_bytes_dimensions(base64.b64decode(value, validate=False))
+    except Exception:
+        return None
+
+
+def same_image_aspect_ratio(requested: tuple[int, int], actual: tuple[int, int]) -> bool:
+    return requested[0] * actual[1] == requested[1] * actual[0]
 
 
 class CodexRouter:
@@ -1548,68 +1608,246 @@ class CodexRouter:
         )
         return self._apply_codex_event_state(event, parsed, state, stream=stream)
 
-    async def execute_image(self, request: dict[str, Any]) -> CodexCallResult:
-        chosen = await self.choose_slot(None, set(), set())
-        if not chosen:
-            return CodexCallResult(status=503, body={"error": {"message": "No Codex auth slot available", "type": "auth_error", "code": "codex_auth_missing"}})
-        slot, auth = chosen
-        prompt = str(request.get("prompt") or "")
-        content: list[dict[str, str]] = [{"type": "input_text", "text": prompt}]
-        for image_url in request.get("images") or []:
-            if isinstance(image_url, str) and image_url:
-                content.append({"type": "input_image", "image_url": image_url})
-        tool: dict[str, Any] = {
-            "type": "image_generation",
-            "model": "gpt-image-2",
-            "quality": request.get("quality") or "medium",
-            "size": request.get("size") or "1024x1024",
-            "output_format": request.get("output_format") or "png",
-            "background": request.get("background") or "opaque",
-            "partial_images": 1,
-        }
-        if len(content) > 1:
-            tool["action"] = "edit"
-        if request.get("output_compression") is not None:
-            tool["output_compression"] = parse_float(request.get("output_compression"), 0.0)
-        body = {
-            "model": "gpt-5.4",
-            "input": [{"role": "user", "content": content if len(content) > 1 else prompt}],
-            "tools": [tool],
-            "tool_choice": {"type": "allowed_tools", "mode": "required", "tools": [{"type": "image_generation"}]},
-            "instructions": "You must fulfill image requests by using the image_generation tool.",
+    def _codex_image_user_text(self, request: dict[str, Any], image_count: int) -> str:
+        prompt = str(request.get("prompt") or "").strip()
+        output_format = str(request.get("output_format") or "png").strip() or "png"
+        size = str(request.get("size") or "1024x1024").strip()
+        quality = str(request.get("quality") or "medium").strip()
+        if image_count:
+            text = (
+                "Use the image_generation tool to edit the attached reference image(s). "
+                f"Request: {prompt}. Output format: {output_format}."
+            )
+        else:
+            text = (
+                "Use the image_generation tool to render the following. "
+                f"Request: {prompt}. Output format: {output_format}."
+            )
+        if size and size != "auto":
+            text += f" Size: {size}."
+        if quality:
+            text += f" Quality: {quality}."
+        text += " Do not include explanatory text; produce only the image."
+        return text
+
+    def _build_codex_image_body(self, request: dict[str, Any]) -> dict[str, Any]:
+        images = [image_url for image_url in (request.get("images") or []) if isinstance(image_url, str) and image_url]
+        content: list[dict[str, str]] = [{"type": "input_image", "image_url": image_url} for image_url in images]
+        content.append({"type": "input_text", "text": self._codex_image_user_text(request, len(images))})
+        output_format = str(request.get("output_format") or "png").strip() or "png"
+        size = str(request.get("size") or "1024x1024").strip()
+        tool: dict[str, Any] = {"type": "image_generation", "output_format": output_format}
+        if size and size != "auto":
+            tool["size"] = size
+        return {
+            "model": codex_image_host_model(),
             "stream": True,
+            "instructions": "You are an image generation assistant.",
+            "input": [{"type": "message", "role": "user", "content": content}],
+            "tools": [tool],
+            "tool_choice": "required" if images else "auto",
+            "parallel_tool_calls": False,
             "store": False,
+            "reasoning": {"effort": "low", "summary": "auto"},
+            "include": ["reasoning.encrypted_content"],
+            "text": {"verbosity": "low"},
         }
-        headers = {"Authorization": f"Bearer {auth.access_token}", "Content-Type": "application/json", "OpenAI-Beta": "responses=experimental"}
+
+    def _codex_image_error_payload(
+        self,
+        error_value: Any,
+        fallback_message: str,
+        fallback_code: str,
+        fallback_type: str,
+    ) -> dict[str, Any]:
+        error_record = error_value if isinstance(error_value, dict) else {}
+        code = error_record.get("code")
+        error_type = error_record.get("type") or error_record.get("upstream_type")
+        raw_message = error_value if isinstance(error_value, str) else error_record.get("message")
+        message = raw_message if isinstance(raw_message, str) and raw_message.strip() else fallback_message
+        error = {
+            "message": message,
+            "type": error_type if isinstance(error_type, str) and error_type.strip() else fallback_type,
+            "code": code if isinstance(code, str) and code.strip() else fallback_code,
+        }
+        for key in ("resets_at", "resets_in_seconds"):
+            if key in error_record:
+                error[key] = error_record[key]
+        return error
+
+    def _codex_image_http_error(self, status: int, text: str) -> dict[str, Any]:
+        parsed = parse_codex_error(text)
+        upstream_message = parsed.get("message") if isinstance(parsed.get("message"), str) else text.strip()
+        message = f"Codex API error ({status})"
+        if upstream_message:
+            message = f"{message}: {upstream_message}"
+        return self._codex_image_error_payload(parsed, message, f"codex_{status}", "upstream_error")
+
+    def _codex_image_exception_error(self, exc: BaseException) -> dict[str, Any]:
+        if isinstance(exc, asyncio.TimeoutError):
+            return {
+                "message": "Codex stream timed out while reading the upstream image response",
+                "type": "upstream_error",
+                "code": CODEX_STREAM_TIMEOUT_CODE,
+            }
+        message = str(exc).strip() or type(exc).__name__
+        return {
+            "message": f"Codex image generation failed: {message}",
+            "type": "server_error",
+            "code": "codex_image_error",
+        }
+
+    def _extract_codex_image_result(self, value: Any) -> tuple[str | None, str | None]:
+        image_b64 = None
+        revised_prompt = None
+        if isinstance(value, dict):
+            if value.get("type") == "image_generation_call" and isinstance(value.get("result"), str):
+                image_b64 = value["result"]
+                if isinstance(value.get("revised_prompt"), str):
+                    revised_prompt = value["revised_prompt"]
+            for key in ("partial_image_b64", "partial_image", "result"):
+                raw = value.get(key)
+                if isinstance(raw, str) and len(raw) > 100:
+                    image_b64 = raw
+            for key in ("revised_prompt", "revisedPrompt"):
+                raw_prompt = value.get(key)
+                if isinstance(raw_prompt, str) and raw_prompt.strip():
+                    revised_prompt = raw_prompt.strip()
+            for child in value.values():
+                child_image, child_prompt = self._extract_codex_image_result(child)
+                image_b64 = child_image or image_b64
+                revised_prompt = child_prompt or revised_prompt
+        elif isinstance(value, list):
+            for child in value:
+                child_image, child_prompt = self._extract_codex_image_result(child)
+                image_b64 = child_image or image_b64
+                revised_prompt = child_prompt or revised_prompt
+        return image_b64, revised_prompt
+
+    async def _single_image_call(self, request: dict[str, Any], slot: CodexSlot, auth: CodexAuth) -> CodexCallResult:
+        body = self._build_codex_image_body(request)
+        headers = {
+            "Authorization": f"Bearer {auth.access_token}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "OpenAI-Beta": "responses=experimental",
+            "User-Agent": "codex_cli_rs/0.130.0 (spartan-route image fallback)",
+        }
         if auth.account_id:
             headers["chatgpt-account-id"] = auth.account_id
+        timeout_ms = codex_request_timeout_ms()
         try:
-            async with self.session.post(CODEX_RESPONSES_URL, json=body, headers=headers, timeout=ClientTimeout(total=180)) as response:
-                if response.status != 200:
-                    return CodexCallResult(status=response.status, body={"error": parse_codex_error(await response.text())})
-                image_b64 = None
-                revised_prompt = None
-                async for event, data in parse_sse_response(response):
-                    if not data or data == "[DONE]":
-                        continue
-                    parsed = json.loads(data)
-                    if event == "response.image_generation_call.partial_image":
-                        image_b64 = parsed.get("partial_image_b64") or image_b64
-                    elif event in {"response.output_item.done", "response.completed"}:
-                        items = []
-                        if isinstance(parsed.get("item"), dict):
-                            items = [parsed["item"]]
-                        elif isinstance(parsed.get("response"), dict):
-                            items = parsed["response"].get("output") or []
-                        for item in items:
-                            if isinstance(item, dict) and item.get("type") == "image_generation_call":
-                                image_b64 = item.get("result") or image_b64
-                                revised_prompt = item.get("revised_prompt") or revised_prompt
-                if not image_b64:
-                    return CodexCallResult(status=502, body={"error": {"message": "Codex response contained no image result", "type": "server_error", "code": "codex_image_empty"}})
-                return CodexCallResult(status=200, body={"created": int(time.time()), "data": [{"b64_json": image_b64, **({"revised_prompt": revised_prompt} if revised_prompt else {})}]})
+            response = await asyncio.wait_for(self.session.post(
+                CODEX_RESPONSES_URL,
+                json=body,
+                headers=headers,
+                timeout=ClientTimeout(total=None),
+            ), timeout=timeout_ms / 1000)
+        except asyncio.TimeoutError:
+            error = {
+                "message": "Codex image request timed out while waiting for response headers",
+                "type": "upstream_error",
+                "code": "codex_image_header_timeout",
+            }
+            return CodexCallResult(status=502, body={"error": error}, error=str(error["code"]))
         except Exception as exc:
-            return CodexCallResult(status=502, body={"error": {"message": str(exc), "type": "server_error", "code": "codex_image_error"}})
+            error = self._codex_image_exception_error(exc)
+            return CodexCallResult(status=502, body={"error": error}, error=str(error["code"]))
+        try:
+            if response.status != 200:
+                error = self._codex_image_http_error(response.status, await response.text())
+                return CodexCallResult(status=response.status, body={"error": error}, error=self._error_code(error))
+            image_b64 = None
+            revised_prompt = None
+            async for event, data in parse_sse_response(response):
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    parsed = json.loads(data)
+                except Exception:
+                    continue
+                if event == "error" or (isinstance(parsed, dict) and parsed.get("error")):
+                    error_value = parsed.get("error") if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict) else parsed
+                    error = self._codex_image_error_payload(error_value, "Codex image generation failed", "codex_image_error", "upstream_error")
+                    return CodexCallResult(status=self._codex_error_status(error), body={"error": error}, error=self._error_code(error))
+                response_record = parsed.get("response") if isinstance(parsed, dict) and isinstance(parsed.get("response"), dict) else {}
+                status = response_record.get("status") if isinstance(response_record, dict) else None
+                if event in {"response.failed", "response.cancelled"} or status in {"failed", "cancelled", "incomplete"}:
+                    upstream_error = response_record.get("error") if isinstance(response_record.get("error"), dict) else {}
+                    fallback_status = status if isinstance(status, str) and status else event.removeprefix("response.")
+                    error = self._codex_image_error_payload(upstream_error, f"Codex image response {fallback_status}", f"codex_image_{fallback_status}", "upstream_error")
+                    return CodexCallResult(status=self._codex_error_status(error), body={"error": error}, error=self._error_code(error))
+                found_image, found_prompt = self._extract_codex_image_result(parsed)
+                image_b64 = found_image or image_b64
+                revised_prompt = found_prompt or revised_prompt
+            if not image_b64:
+                error = {
+                    "message": "Codex response contained no image_generation_call result",
+                    "type": "server_error",
+                    "code": "codex_image_empty",
+                }
+                return CodexCallResult(status=502, body={"error": error}, error=str(error["code"]))
+            requested_size = requested_image_size(request.get("size") or "1024x1024")
+            actual_size = image_b64_dimensions(image_b64)
+            if requested_size and actual_size and not same_image_aspect_ratio(requested_size, actual_size):
+                error = {
+                    "message": f"Codex image output size mismatch: requested {requested_size[0]}x{requested_size[1]}, got {actual_size[0]}x{actual_size[1]}",
+                    "type": "invalid_response_error",
+                    "code": "codex_image_size_mismatch",
+                    "requested_size": f"{requested_size[0]}x{requested_size[1]}",
+                    "actual_size": f"{actual_size[0]}x{actual_size[1]}",
+                }
+                return CodexCallResult(status=502, body={"error": error}, error=str(error["code"]))
+            item = {"b64_json": image_b64, **({"revised_prompt": revised_prompt} if revised_prompt else {})}
+            if requested_size and actual_size and requested_size != actual_size:
+                item["actual_size"] = f"{actual_size[0]}x{actual_size[1]}"
+            return CodexCallResult(status=200, body={"created": int(time.time()), "data": [item]}, completed=True)
+        except Exception as exc:
+            error = self._codex_image_exception_error(exc)
+            return CodexCallResult(status=502, body={"error": error}, error=str(error["code"]))
+        finally:
+            response.release()
+
+    async def execute_image(self, request: dict[str, Any]) -> CodexCallResult:
+        slot_count = max(1, len(self.slots))
+        excluded_slots: set[int] = set()
+        excluded_accounts: set[str] = set()
+        last_error: CodexCallResult | None = None
+        for _attempt in range(slot_count):
+            chosen = await self.choose_slot(None, excluded_slots, excluded_accounts)
+            if not chosen:
+                break
+            slot, auth = chosen
+            slot.in_flight += 1
+            slot.last_selected_at = time.time()
+            try:
+                result = await self._single_image_call(request, slot, auth)
+            finally:
+                slot.in_flight = max(0, slot.in_flight - 1)
+            result.slot_index = slot.index
+            result.account_key = auth.account_key
+            result.input_tokens = token_count_estimate(request)
+            if result.status not in {401, 429, 500, 502}:
+                return result
+            text = result.body.decode("utf-8", errors="replace") if isinstance(result.body, bytes) else stable_json(result.body)
+            if not should_retry(result.status, text):
+                return result
+            excluded_slots.add(slot.index)
+            if auth.account_key:
+                excluded_accounts.add(auth.account_key)
+            if result.status == 401:
+                slot.auth = None
+                slot.auth_unavailable_reason = "expired"
+                self._invalidate_slot_leases(slot)
+            elif result.status == 429:
+                self.mark_rate_limited(slot, text)
+            else:
+                self.mark_transient(slot)
+            last_error = result
+        if last_error:
+            return last_error
+        error = await self._unavailable_error()
+        return CodexCallResult(status=503, body={"error": error}, error=str(error["code"]))
 
     def _usage_cache_signature(self) -> tuple[Any, ...]:
         return tuple(

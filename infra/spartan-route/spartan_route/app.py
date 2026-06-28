@@ -1079,7 +1079,13 @@ async def proxy_openai_json(state: SpartanRouteState, endpoint: str, body: dict[
         return ExecutionResult(response.status, body=data, headers={"Content-Type": response.headers.get("Content-Type", "application/json")}, error=sanitize_preview(data.decode("utf-8", "replace")) if response.status >= 400 else None)
 
 
-def image_size_kind(size: Any) -> str:
+GPT_IMAGE_MIN_PIXELS = 655_360
+GPT_IMAGE_MAX_PIXELS = 8_294_400
+GPT_IMAGE_MAX_EDGE = 3840
+GPT_IMAGE_MAX_RATIO = 3.0
+
+
+def parse_image_size(size: Any) -> tuple[int, int] | str:
     if size is None:
         return "default"
     text = str(size).strip()
@@ -1088,18 +1094,29 @@ def image_size_kind(size: Any) -> str:
     match = re.fullmatch(r"(\d+)x(\d+)", text)
     if not match:
         return "invalid"
-    return "square" if int(match.group(1)) == int(match.group(2)) else "non_square"
+    return int(match.group(1)), int(match.group(2))
 
 
 def codex_image_size_error(size: Any) -> web.Response | None:
-    kind = image_size_kind(size)
-    if kind == "invalid":
-        return response_json_error(f'size must be "auto" or WIDTHxHEIGHT; received {size}', 400, "invalid_request", "invalid_request_error")
-    if kind == "non_square":
+    parsed = parse_image_size(size)
+    if parsed in {"default", "auto"}:
+        return None
+    if parsed == "invalid":
+        return response_json_error(f'size must be "auto" or WIDTHxHEIGHT; received {size}', 400, "invalid_image_size", "invalid_request_error")
+    width, height = parsed
+    if width % 16 != 0 or height % 16 != 0:
+        return response_json_error(f"size edges must be multiples of 16 for gpt-image-2; received {size}", 400, "invalid_image_size", "invalid_request_error")
+    if width > GPT_IMAGE_MAX_EDGE or height > GPT_IMAGE_MAX_EDGE:
+        return response_json_error(f"size edge must be <= {GPT_IMAGE_MAX_EDGE}px for gpt-image-2; received {size}", 400, "invalid_image_size", "invalid_request_error")
+    ratio = max(width, height) / max(1, min(width, height))
+    if ratio > GPT_IMAGE_MAX_RATIO:
+        return response_json_error(f"size aspect ratio must not exceed 3:1 for gpt-image-2; received {size}", 400, "invalid_image_size", "invalid_request_error")
+    pixels = width * height
+    if pixels < GPT_IMAGE_MIN_PIXELS or pixels > GPT_IMAGE_MAX_PIXELS:
         return response_json_error(
-            f"Requested image size {size} requires a non-square aspect ratio, but Spartan Route is using the Codex Auth image fallback, which currently cannot guarantee non-square output. Configure OPENAI_API_KEY for OpenAI Images passthrough or request square size 1024x1024.",
+            f"size total pixels must be between {GPT_IMAGE_MIN_PIXELS} and {GPT_IMAGE_MAX_PIXELS} for gpt-image-2; received {size}",
             400,
-            "unsupported_image_size",
+            "invalid_image_size",
             "invalid_request_error",
         )
     return None
