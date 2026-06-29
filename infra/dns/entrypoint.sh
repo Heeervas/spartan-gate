@@ -153,11 +153,19 @@ refresh_loop() {
     current_time="$(TZ="$REFRESH_TZ" date '+%H:%M')"
     if [ "$current_time" = "$REFRESH_TIME" ]; then
       echo "[dns-relay] Refreshing whitelist for scheduled window ${REFRESH_TIME} ${REFRESH_TZ}"
-      generate_servers
-      kill -HUP "$dns_pid" 2>/dev/null || true
+      reload_servers "$dns_pid"
       sleep 61
     fi
   done
+}
+
+reload_servers() {
+  dns_pid="$1"
+  if generate_servers; then
+    kill -HUP "$dns_pid" 2>/dev/null || true
+  else
+    echo "[dns-relay] Whitelist reload failed; keeping previous runtime whitelist" >&2
+  fi
 }
 
 generate_servers
@@ -173,6 +181,7 @@ dns_pid="$!"
 refresh_loop "$dns_pid" &
 refresh_pid="$!"
 
+trap 'reload_servers "$dns_pid"' USR1
 trap 'kill "$dns_pid" "$refresh_pid" 2>/dev/null || true; wait "$dns_pid" 2>/dev/null || true; exit 143' INT TERM
 
 set +e

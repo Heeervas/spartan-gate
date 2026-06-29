@@ -143,11 +143,19 @@ refresh_loop() {
     current_time="$(TZ="$REFRESH_TZ" date '+%H:%M')"
     if [ "$current_time" = "$REFRESH_TIME" ]; then
       echo "[outbound-proxy] Refreshing whitelist for scheduled window ${REFRESH_TIME} ${REFRESH_TZ}"
-      generate_whitelist
-      kill -USR1 "$proxy_pid" 2>/dev/null || true
+      reload_whitelist "$proxy_pid"
       sleep 61
     fi
   done
+}
+
+reload_whitelist() {
+  proxy_pid="$1"
+  if generate_whitelist; then
+    kill -USR1 "$proxy_pid" 2>/dev/null || true
+  else
+    echo "[outbound-proxy] Whitelist reload failed; keeping previous runtime whitelist" >&2
+  fi
 }
 
 generate_whitelist
@@ -162,6 +170,7 @@ proxy_pid="$!"
 refresh_loop "$proxy_pid" &
 refresh_pid="$!"
 
+trap 'reload_whitelist "$proxy_pid"' USR1
 trap 'kill "$proxy_pid" "$refresh_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; exit 143' INT TERM
 
 set +e

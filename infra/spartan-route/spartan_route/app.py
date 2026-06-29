@@ -78,6 +78,8 @@ CACHE_GUARD_EXPECTED_MIN_TOKENS = 1024
 CACHE_GUARD_LOW_MIN_TOKENS = 20_000
 CACHE_GUARD_LOW_RATIO = 0.20
 CACHE_GUARD_CONSECUTIVE_LOW = 2
+CACHE_LIKELY_MIN_PREFIX_MESSAGES = 50
+CACHE_LIKELY_MIN_NON_TOOL_TOKENS = 50_000
 CACHE_STALL_DIAGNOSTIC_MIN_TOKENS = 50_000
 CACHE_STALL_DIAGNOSTIC_LOW_RATIO = 0.20
 CACHE_STALL_ERROR_CODES = {"codex_stream_timeout", "codex_stream_error", "codex_empty_response"}
@@ -484,6 +486,69 @@ def compare_session_trace(current: dict[str, Any], previous: dict[str, Any] | No
     }
 
 
+def cache_likely_min_prefix_messages() -> int:
+    return parse_int(
+        os.environ.get("SPARTAN_ROUTE_CACHE_LIKELY_MIN_PREFIX_MESSAGES"),
+        CACHE_LIKELY_MIN_PREFIX_MESSAGES,
+        0,
+        100_000,
+    )
+
+
+def cache_likely_min_non_tool_tokens() -> int:
+    return parse_int(
+        os.environ.get("SPARTAN_ROUTE_CACHE_LIKELY_MIN_NON_TOOL_TOKENS"),
+        CACHE_LIKELY_MIN_NON_TOOL_TOKENS,
+        0,
+        2_000_000,
+    )
+
+
+def classify_cache_expectation(
+    upstream_cache_key: str | None,
+    input_tokens: int,
+    non_tool_input_tokens: int,
+    same_session_trace: dict[str, Any],
+    result: ExecutionResult,
+) -> dict[str, Any]:
+    comparison = str(same_session_trace.get("comparison") or "baseline")
+    common_prefix_messages = int(same_session_trace.get("commonPrefixMessages") or 0)
+    cache_prefix_candidate = bool(
+        upstream_cache_key
+        and input_tokens >= CACHE_GUARD_EXPECTED_MIN_TOKENS
+        and comparison in {"prefix", "retry"}
+    )
+
+    if not upstream_cache_key:
+        reason = "no_key"
+    elif comparison == "baseline":
+        reason = "baseline"
+    elif comparison == "history_rewrite":
+        reason = "history_rewrite"
+    elif comparison == "tool_schema_changed":
+        reason = "tool_schema_changed"
+    elif comparison == "retry":
+        reason = "retry"
+    elif comparison != "prefix":
+        reason = "not_prefix"
+    elif result.error:
+        reason = "error"
+    elif not result.usage_seen:
+        reason = "usage_missing"
+    elif common_prefix_messages < cache_likely_min_prefix_messages():
+        reason = "shallow_prefix"
+    elif non_tool_input_tokens < cache_likely_min_non_tool_tokens():
+        reason = "small_prefix_tokens"
+    else:
+        reason = "mature_prefix"
+
+    return {
+        "cache_prefix_candidate": cache_prefix_candidate,
+        "cache_likely": reason == "mature_prefix",
+        "cache_expectation_reason": reason,
+    }
+
+
 def cache_guard_key(
     actual_model: str,
     cache_key_hash: str | None,
@@ -508,6 +573,7 @@ def update_cache_guard(
     cache_key_hash: str | None,
     tool_schema_fingerprint: str | None,
     expected_cache_hit: bool,
+    cache_likely: bool,
     cache_hit_ratio: float,
 ) -> bool:
     if not cache_key_hash:
@@ -550,7 +616,7 @@ def update_cache_guard(
         entry["diagnosticOnly"] = True
     elif result.usage_seen and cache_hit_ratio >= stall_low_ratio:
         entry["consecutiveStreamFailures"] = 0
-    if not expected_cache_hit or not result.usage_seen or input_tokens < CACHE_GUARD_LOW_MIN_TOKENS:
+    if not cache_likely or not result.usage_seen or input_tokens < CACHE_GUARD_LOW_MIN_TOKENS:
         entry["consecutiveLow"] = 0
         trim_guard()
         return False
@@ -735,8 +801,17 @@ def log_request(
     if len(state.recent_session_traces) > 512:
         oldest_key = next(iter(state.recent_session_traces))
         state.recent_session_traces.pop(oldest_key, None)
-    comparison = same_session_trace.get("comparison")
-    expected_cache_hit = bool(upstream_cache_key and input_tokens >= CACHE_GUARD_EXPECTED_MIN_TOKENS and comparison in {"prefix", "retry"})
+    tool_schema_rough_tokens = max(0, tool_schema_chars // 4)
+    non_tool_input_tokens = max(0, input_tokens - tool_schema_rough_tokens)
+    cache_expectation = classify_cache_expectation(
+        upstream_cache_key,
+        input_tokens,
+        non_tool_input_tokens,
+        same_session_trace,
+        result,
+    )
+    expected_cache_hit = bool(cache_expectation["cache_prefix_candidate"])
+    cache_likely = bool(cache_expectation["cache_likely"])
     cache_hit_ratio = (result.cached_input_tokens / input_tokens) if input_tokens > 0 else 0.0
     cache_low = update_cache_guard(
         state,
@@ -746,6 +821,7 @@ def log_request(
         cache_key_hash,
         tool_schema_fp if isinstance(tool_schema_fp, str) else None,
         expected_cache_hit,
+        cache_likely,
         cache_hit_ratio,
     )
     guard_entry = (
@@ -773,6 +849,9 @@ def log_request(
         "usage_seen": result.usage_seen,
         "usage_event_type": result.usage_event_type,
         "expected_cache_hit": expected_cache_hit,
+        "cache_prefix_candidate": cache_expectation["cache_prefix_candidate"],
+        "cache_likely": cache_likely,
+        "cache_expectation_reason": cache_expectation["cache_expectation_reason"],
         "cache_hit_ratio": round(cache_hit_ratio, 4),
         "cache_low": cache_low,
         "cache_stall_diagnostic": cache_guard_diagnostic_context(guard_entry),
@@ -780,7 +859,8 @@ def log_request(
         "requested_reasoning_effort": body.get("reasoning_effort") if isinstance(body.get("reasoning_effort"), str) else None,
         "message_chars": message_chars,
         "tool_schema_chars": tool_schema_chars,
-        "tool_schema_rough_tokens": max(0, tool_schema_chars // 4),
+        "tool_schema_rough_tokens": tool_schema_rough_tokens,
+        "non_tool_input_tokens": non_tool_input_tokens,
         "tool_schema_fingerprint": tool_schema_fp,
         "request_trace": request_trace,
         "same_session_cache_trace": same_session_trace,
@@ -1324,6 +1404,11 @@ async def stats(request: web.Request) -> web.Response:
         "requests": sum(int(row["requests"] or 0) for row in rows),
         "inputTokens": sum(int(row["input_tokens"] or 0) for row in rows),
         "cachedInputTokens": sum(int(row["cached_input_tokens"] or 0) for row in rows),
+        "cacheLikelyRequests": sum(int(row["cache_likely_requests"] or 0) for row in rows),
+        "cacheLikelyInputTokens": sum(int(row["cache_likely_input_tokens"] or 0) for row in rows),
+        "cacheLikelyCachedInputTokens": sum(int(row["cache_likely_cached_input_tokens"] or 0) for row in rows),
+        "cacheLowRequests": sum(int(row["cache_low_requests"] or 0) for row in rows),
+        "cacheLowInputTokens": sum(int(row["cache_low_input_tokens"] or 0) for row in rows),
         "errors": sum(int(row["errors"] or 0) for row in rows),
     }
     totals["cacheHitPercent"] = (totals["cachedInputTokens"] / totals["inputTokens"] * 100) if totals["inputTokens"] else 0

@@ -308,6 +308,12 @@ a total stream-body deadline.
 Codex 500/502 failures, ClawRoute invalidates that slot's prompt-cache lease
 and temporarily skips the affected slot/account so concurrent sessions do not
 keep selecting the same failing auth profile.
+`SPARTAN_ROUTE_RECOVERY_WAIT_MS` defaults to `180000`; Spartan Route holds a
+request for up to that long when all otherwise usable Codex slots are
+temporarily cooling after upstream 5xx or `usage_limit_reached` errors. Set it
+to `0` to return immediate `503`/`429` metadata instead.
+`SPARTAN_ROUTE_RECOVERY_POLL_MS` defaults to `1000` and controls the fallback
+poll interval while a request is waiting for a slot to recover.
 Prompt-cache leases default to `CODEX_CACHE_LEASE_MODE=keyed`, which keeps a
 bounded independent lease per prompt-cache key/affinity instead of a
 single global lease. `global` restores the old one-lease behavior and `off`
@@ -428,4 +434,5 @@ the private extension by default and accepts an optional TTL such as `15m`,
 `6h`, or `15d` before the domain list. Runtime whitelist refresh defaults to
 `SPARTAN_WHITELIST_REFRESH_TIME=02:00` and
 `SPARTAN_WHITELIST_REFRESH_TZ=Europe/Madrid`; expired entries are ignored at
-startup, helper-triggered recreates, and that daily refresh window.
+startup, helper-triggered hot reloads, fallback recreates, and that daily
+refresh window.

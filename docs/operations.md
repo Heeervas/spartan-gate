@@ -290,12 +290,15 @@ sg-whitelist-domain 6h api.example.com
 sg-whitelist-domain 15d vendor.example.com
 ```
 
-The helper writes to the private file by default and recreates only running
-`proxy`/`dns` services so the generated merged whitelist is rebuilt. If the stack
-is stopped, the next `sg-up` will load the merged whitelist. Temporary entries
-are ignored after their timestamp expires on the next recreate/reload, including
-the daily runtime refresh at `02:00` Europe/Madrid. The private file is not
-automatically pruned, so expired lines can remain as history.
+The helper writes to the private file by default and hot-reloads running
+`proxy`/`dns` services with `USR1` so the generated merged whitelist is rebuilt
+without recreating those containers. If signal reload fails for a running
+service, the helper recreates only that failed service as a fallback. If the
+stack is stopped, the next `sg-up` will load the merged whitelist. Temporary
+entries are ignored after their timestamp expires on the next startup, hot
+reload, fallback recreate, or the daily runtime refresh at `02:00`
+Europe/Madrid. The private file is not automatically pruned, so expired lines
+can remain as history.
 
 ## HTTPS Edge
 

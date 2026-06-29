@@ -413,7 +413,7 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
         self.assertEqual(context["request_trace"]["delta"]["items"][0]["preview"], "Actual question token=[REDACTED]")
         self.assertEqual(context["request_trace"]["delta"]["items"][1]["toolCalls"][0]["name"], "lookup")
 
-    def test_cache_guard_marks_second_consecutive_expected_low_hit(self) -> None:
+    def test_cache_guard_does_not_mark_shallow_prefix_low_hit(self) -> None:
         state = self.state()
         base_messages = [
             {"role": "system", "content": "stable"},
@@ -442,9 +442,100 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
         contexts = [json.loads(entry.context_info) for entry in state.queue.entries]
         self.assertFalse(contexts[0]["expected_cache_hit"])
         self.assertTrue(contexts[1]["expected_cache_hit"])
+        self.assertTrue(contexts[1]["cache_prefix_candidate"])
+        self.assertFalse(contexts[1]["cache_likely"])
+        self.assertEqual(contexts[1]["cache_expectation_reason"], "shallow_prefix")
         self.assertFalse(contexts[1]["cache_low"])
         self.assertTrue(contexts[2]["expected_cache_hit"])
+        self.assertTrue(contexts[2]["cache_prefix_candidate"])
+        self.assertFalse(contexts[2]["cache_likely"])
+        self.assertEqual(contexts[2]["cache_expectation_reason"], "shallow_prefix")
+        self.assertFalse(contexts[2]["cache_low"])
+
+    def test_cache_guard_marks_second_consecutive_mature_low_hit(self) -> None:
+        state = self.state()
+        route = self.route()
+        base_messages = [{"role": "system", "content": "stable"}]
+        base_messages.extend(
+            {"role": "user" if index % 2 == 0 else "assistant", "content": f"m{index}"}
+            for index in range(55)
+        )
+        bodies = [
+            {"model": "clawroute/auto", "prompt_cache_key": "session", "messages": base_messages},
+            {
+                "model": "clawroute/auto",
+                "prompt_cache_key": "session",
+                "messages": [*base_messages, {"role": "assistant", "content": "a"}],
+            },
+            {
+                "model": "clawroute/auto",
+                "prompt_cache_key": "session",
+                "messages": [
+                    *base_messages,
+                    {"role": "assistant", "content": "a"},
+                    {"role": "user", "content": "b"},
+                ],
+            },
+        ]
+
+        for index, body in enumerate(bodies):
+            result = ExecutionResult(
+                200,
+                slot_index=0,
+                account_key="account",
+                input_tokens=80000,
+                cached_input_tokens=0,
+                output_tokens=100,
+                usage_seen=True,
+                usage_event_type="response.completed",
+            )
+            log_request(state, body, route, result, 0, f"req-{index}", "session", f"turn-{index}", "chat_completions")
+
+        contexts = [json.loads(entry.context_info) for entry in state.queue.entries]
+        self.assertFalse(contexts[0]["expected_cache_hit"])
+        self.assertTrue(contexts[1]["expected_cache_hit"])
+        self.assertTrue(contexts[1]["cache_likely"])
+        self.assertEqual(contexts[1]["cache_expectation_reason"], "mature_prefix")
+        self.assertGreaterEqual(contexts[1]["same_session_cache_trace"]["commonPrefixMessages"], 50)
+        self.assertGreaterEqual(contexts[1]["non_tool_input_tokens"], 50000)
+        self.assertFalse(contexts[1]["cache_low"])
+        self.assertTrue(contexts[2]["expected_cache_hit"])
+        self.assertTrue(contexts[2]["cache_likely"])
+        self.assertEqual(contexts[2]["cache_expectation_reason"], "mature_prefix")
         self.assertTrue(contexts[2]["cache_low"])
+
+    def test_cache_retry_is_not_cache_likely(self) -> None:
+        state = self.state()
+        body = {
+            "model": "clawroute/auto",
+            "prompt_cache_key": "session",
+            "messages": [
+                {"role": "system", "content": "stable"},
+                {"role": "user", "content": "first"},
+            ],
+        }
+        route = self.route()
+
+        for index in range(2):
+            result = ExecutionResult(
+                200,
+                slot_index=0,
+                account_key="account",
+                input_tokens=80000,
+                cached_input_tokens=0,
+                output_tokens=100,
+                usage_seen=True,
+                usage_event_type="response.completed",
+            )
+            log_request(state, body, route, result, 0, f"req-{index}", "session", f"turn-{index}", "chat_completions")
+
+        contexts = [json.loads(entry.context_info) for entry in state.queue.entries]
+        self.assertEqual(contexts[1]["same_session_cache_trace"]["comparison"], "retry")
+        self.assertTrue(contexts[1]["expected_cache_hit"])
+        self.assertTrue(contexts[1]["cache_prefix_candidate"])
+        self.assertFalse(contexts[1]["cache_likely"])
+        self.assertEqual(contexts[1]["cache_expectation_reason"], "retry")
+        self.assertFalse(contexts[1]["cache_low"])
 
     def test_stream_stall_guard_records_diagnostic_without_blocking(self) -> None:
         state = self.state()
@@ -472,6 +563,8 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
         contexts = [json.loads(entry.context_info) for entry in state.queue.entries]
         self.assertFalse(contexts[0]["cache_low"])
         self.assertFalse(contexts[1]["cache_low"])
+        self.assertFalse(contexts[1]["cache_likely"])
+        self.assertEqual(contexts[1]["cache_expectation_reason"], "error")
         self.assertEqual(contexts[0]["cache_stall_diagnostic"]["consecutive_stream_failures"], 1)
         self.assertEqual(contexts[1]["cache_stall_diagnostic"]["consecutive_stream_failures"], 2)
         self.assertEqual(contexts[1]["cache_stall_diagnostic"]["last_error"], "codex_stream_timeout")

@@ -250,7 +250,15 @@ class TelemetryStore:
                            CASE
                                WHEN json_extract(context_info, '$.usage_seen') = 1 THEN 1
                                ELSE 0
-                           END AS usage_seen
+                           END AS usage_seen,
+                           CASE
+                               WHEN json_extract(context_info, '$.cache_likely') = 1 THEN 1
+                               ELSE 0
+                           END AS cache_likely,
+                           CASE
+                               WHEN json_extract(context_info, '$.cache_low') = 1 THEN 1
+                               ELSE 0
+                           END AS cache_low
                     FROM routing_log
                     WHERE actual_model LIKE 'codex/%'
                 )
@@ -259,6 +267,11 @@ class TelemetryStore:
                        count(*) AS logged_requests,
                        coalesce(sum(CASE WHEN usage_seen = 1 THEN input_tokens ELSE 0 END), 0) AS input_tokens,
                        coalesce(sum(CASE WHEN usage_seen = 1 THEN cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
+                       coalesce(sum(cache_likely), 0) AS cache_likely_requests,
+                       coalesce(sum(CASE WHEN cache_likely = 1 THEN input_tokens ELSE 0 END), 0) AS cache_likely_input_tokens,
+                       coalesce(sum(CASE WHEN cache_likely = 1 THEN cached_input_tokens ELSE 0 END), 0) AS cache_likely_cached_input_tokens,
+                       coalesce(sum(cache_low), 0) AS cache_low_requests,
+                       coalesce(sum(CASE WHEN cache_low = 1 THEN input_tokens ELSE 0 END), 0) AS cache_low_input_tokens,
                        sum(CASE WHEN coalesce(error, '') <> '' THEN 1 ELSE 0 END) AS errors,
                        sum(CASE WHEN usage_seen = 0 THEN 1 ELSE 0 END) AS usage_missing_requests,
                        CASE
@@ -299,24 +312,31 @@ class TelemetryStore:
         usage_seen = 0
         errors = 0
         input_tokens = cached_tokens = output_tokens = 0
+        cache_likely_requests = 0
+        cache_likely_input_tokens = 0
+        cache_likely_cached_input_tokens = 0
+        cache_low_requests = 0
+        cache_low_input_tokens = 0
         latencies: list[int] = []
         split_latencies: list[int] = []
         total_latencies: list[int] = []
         legacy_latency_requests = 0
         split_latency_requests = 0
         for item in items:
-            seen = False
-            if item.get("context_info"):
-                try:
-                    context = json.loads(item["context_info"])
-                    seen = bool(context.get("usage_seen"))
-                except json.JSONDecodeError:
-                    seen = False
+            context = self._row_context(item)
+            seen = bool(context.get("usage_seen"))
             if seen:
                 usage_seen += 1
                 input_tokens += int(item.get("input_tokens") or 0)
                 cached_tokens += int(item.get("cached_input_tokens") or 0)
                 output_tokens += int(item.get("output_tokens") or 0)
+            if context.get("cache_likely"):
+                cache_likely_requests += 1
+                cache_likely_input_tokens += int(item.get("input_tokens") or 0)
+                cache_likely_cached_input_tokens += int(item.get("cached_input_tokens") or 0)
+            if context.get("cache_low"):
+                cache_low_requests += 1
+                cache_low_input_tokens += int(item.get("input_tokens") or 0)
             if item.get("error"):
                 errors += 1
             latency, total_latency, legacy = self._row_latency_values(item)
@@ -338,6 +358,11 @@ class TelemetryStore:
             "cachedInputTokens": cached_tokens,
             "outputTokens": output_tokens,
             "cacheHitPercent": (cached_tokens / input_tokens * 100) if input_tokens else 0,
+            "cacheLikelyRequests": cache_likely_requests,
+            "cacheLikelyInputTokens": cache_likely_input_tokens,
+            "cacheLikelyCachedInputTokens": cache_likely_cached_input_tokens,
+            "cacheLowRequests": cache_low_requests,
+            "cacheLowInputTokens": cache_low_input_tokens,
             "errors": errors,
             "latencyMs": self._latency_summary(latencies),
             "firstResponseLatencyMs": self._latency_summary(split_latencies if split_latencies else latencies),
@@ -622,6 +647,11 @@ class TelemetryStore:
             "errors": 0,
             "usageSeenRequests": 0,
             "usageMissingRequests": 0,
+            "cacheLikelyRequests": 0,
+            "cacheLikelyInputTokens": 0,
+            "cacheLikelyCachedInputTokens": 0,
+            "cacheLowRequests": 0,
+            "cacheLowInputTokens": 0,
             "legacyLatencyRequests": 0,
             "splitLatencyRequests": 0,
             "_latencies": [],
@@ -631,7 +661,8 @@ class TelemetryStore:
 
     def _add_metrics(self, metrics: dict[str, Any], row: dict[str, Any]) -> None:
         metrics["requests"] += 1
-        usage_seen = self._row_usage_seen(row)
+        context = self._row_context(row)
+        usage_seen = bool(context.get("usage_seen"))
         if usage_seen:
             metrics["usageSeenRequests"] += 1
             metrics["inputTokens"] += int(row.get("input_tokens") or 0)
@@ -639,6 +670,13 @@ class TelemetryStore:
             metrics["outputTokens"] += int(row.get("output_tokens") or 0)
         else:
             metrics["usageMissingRequests"] += 1
+        if context.get("cache_likely"):
+            metrics["cacheLikelyRequests"] += 1
+            metrics["cacheLikelyInputTokens"] += int(row.get("input_tokens") or 0)
+            metrics["cacheLikelyCachedInputTokens"] += int(row.get("cached_input_tokens") or 0)
+        if context.get("cache_low"):
+            metrics["cacheLowRequests"] += 1
+            metrics["cacheLowInputTokens"] += int(row.get("input_tokens") or 0)
         if row.get("error"):
             metrics["errors"] += 1
         latency, total_latency, legacy = self._row_latency_values(row)
@@ -662,13 +700,16 @@ class TelemetryStore:
         metrics["totalLatencyMs"] = self._latency_summary(metrics.pop("_totalLatencies", []))
 
     def _row_usage_seen(self, row: dict[str, Any]) -> bool:
+        return bool(self._row_context(row).get("usage_seen"))
+
+    def _row_context(self, row: dict[str, Any]) -> dict[str, Any]:
         if row.get("context_info"):
             try:
                 context = json.loads(row["context_info"])
-                return bool(context.get("usage_seen"))
+                return context if isinstance(context, dict) else {}
             except json.JSONDecodeError:
-                return False
-        return False
+                return {}
+        return {}
 
     def _row_latency_values(self, row: dict[str, Any]) -> tuple[int, int, bool]:
         response = int(row.get("response_time_ms") or 0)

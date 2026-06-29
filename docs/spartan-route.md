@@ -46,7 +46,7 @@ Relevant files:
   `/app/data/spartan-route.db`.
 - `infra/spartan-route/web/dashboard.html`: session and turn dashboard.
 - `infra/spartan-route/web/dashboard-codex.html`: Codex usage, slot state,
-  persistent slot routing controls, daily cache percentage, latency, active
+  persistent slot routing controls, daily usage-cache percentage, latency, active
   leases, reset countdowns, and mandatory reset-credit showcase.
 - `infra/compose/compose.spartan-route.yml`: full-stack side-by-side overlay.
 - `infra/compose/tiers/compose.spartan-route.yml`: tier-helper side-by-side
@@ -66,21 +66,20 @@ Kept in v1:
 - Codex image generation and no-mask image edits, with OpenAI image endpoint
   passthrough when `OPENAI_API_KEY` is available. The Codex-auth image fallback
   accepts OpenAI `gpt-image-2` sizes such as `1536x1024` and `1024x1536`,
-  validates the documented size constraints, and returns
-  `codex_image_size_mismatch` instead of silently returning the wrong aspect
-  ratio if upstream ignores the requested dimensions. If Codex Auth returns the
-  requested aspect ratio at a different pixel scale, Spartan Route returns the
-  image and includes `actual_size` on the image item.
+  validates the documented request-size constraints, and returns Codex image
+  result bytes unchanged even when upstream produces different pixel
+  dimensions or aspect ratio. If dimensions can be detected, Spartan Route
+  includes `actual_size` on the image item.
 - Reset-credit telemetry and dashboard display. V1 only reads and persists
   reset-credit metadata; it never redeems credits.
-- Daily cache hit rows from `routing_log`.
+- Daily usage-cache rows from `routing_log`.
 - Today's dashboard latency from logged request rows. For new rows,
   `response_time_ms`/`responseTimeMs` means first upstream response time, while
   `total_response_time_ms`/`totalResponseTimeMs` means full request or stream
   duration through logging. Older rows without those split columns fall back to
   the legacy `response_time_ms` value and are marked as legacy latency. The
   dashboard uses split-only `firstResponseLatencyMs` when available and labels
-  fallback-only days as legacy response time. Cache hit percentage still uses
+  fallback-only days as legacy response time. Usage-cache percentage still uses
   only rows where upstream usage metadata was seen; request and latency
   counters can include rows without usage.
 - Persistent Codex slot routing enable/disable controls. Disabled slots are
@@ -123,8 +122,16 @@ Reliability contract:
   for Codex response headers, not the total duration of the streamed response
   body.
 - If all usable Codex slots are cooling after upstream server errors, Spartan
-  Route returns `503 codex_transient_unavailable` with sanitized retry metadata
-  instead of a generic unavailable message.
+  Route waits up to `SPARTAN_ROUTE_RECOVERY_WAIT_MS` for a slot to recover
+  before returning `503 codex_transient_unavailable` with sanitized retry
+  metadata and `Retry-After`. The default wait is `180000` ms; set it to `0`
+  to disable server-side waiting. `SPARTAN_ROUTE_RECOVERY_POLL_MS` controls the
+  fallback poll interval and defaults to `1000` ms.
+- If all usable Codex slots are cooling after explicit `usage_limit_reached`
+  errors, Spartan Route applies the same bounded wait when the earliest reset
+  is inside the recovery window. If recovery is too far away, it returns
+  ClawRoute-compatible `429 codex_429` with earliest `resets_at`,
+  `resets_in_seconds`, slot diagnostics, and `Retry-After`.
 - An incomplete Codex response that contains tool calls is treated as retryable
   `502 codex_incomplete_response`; Spartan Route must not expose incomplete
   tool-call arguments to Hermes as a successful `finish_reason="length"` turn.
@@ -134,10 +141,18 @@ Reliability contract:
 - Spartan Route does not implement Hermes gateway silence markers such as
   `[SILENT]` or `NO_REPLY`; those are delivery semantics above the router.
 - Cache diagnostics in `context_info` are metadata-only by default: cache-key
-  hash, cache key source, usage-event visibility, expected-hit/low-cache flags,
-  message/tool counts, request-shape hashes, tool-schema fingerprint, and
-  same-session prefix comparison. Raw tool schemas, raw cache keys, and auth
-  values are not added to these diagnostics.
+  hash, cache key source, usage-event visibility, broad prefix-candidate and
+  expected-hit flags, stricter cache-likely/low-cache flags, expectation reason,
+  non-tool input token estimate, message/tool counts, request-shape hashes,
+  tool-schema fingerprint, and same-session prefix comparison. Raw tool schemas,
+  raw cache keys, and auth values are not added to these diagnostics.
+- Low-cache warnings use the stricter `cache_likely` subset, not every broad
+  prefix candidate. By default a request is cache-likely only when it has an
+  upstream cache key, extends the previous same-session request as a prefix,
+  has usage metadata and no request error, shares at least 50 prefix messages,
+  and has at least 50000 non-tool input tokens. Tune those last two thresholds
+  with `SPARTAN_ROUTE_CACHE_LIKELY_MIN_PREFIX_MESSAGES` and
+  `SPARTAN_ROUTE_CACHE_LIKELY_MIN_NON_TOOL_TOKENS`.
 - Large low-cache stream failures also update a diagnostic-only stall guard in
   `context_info.cache_stall_diagnostic`. It records consecutive stream-failure
   counts and stable error codes for the selected model/cache/slot/account/tool

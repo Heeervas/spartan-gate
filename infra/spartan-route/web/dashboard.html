@@ -324,13 +324,20 @@
     function metric(label, value, extra = '') {
       return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(extra)}</div></div>`;
     }
+    function cacheLowSummary(low, likely) {
+      return likely ? `${num(low)}/${num(likely)} low likely` : 'no cache-likely rows';
+    }
     function metricLine(metrics = {}) {
       const latency = metrics.firstResponseLatencyMs || metrics.latencyMs || {};
       const totalLatency = metrics.totalLatencyMs || {};
       const latencySuffix = metrics.splitLatencyRequests ? 'first' : 'legacy';
+      const likely = Number(metrics.cacheLikelyRequests || 0);
+      const low = Number(metrics.cacheLowRequests || 0);
+      const cacheText = [`${pct(metrics.cacheHitPercent)} usage cache`];
+      if (likely || low) cacheText.push(cacheLowSummary(low, likely));
       return [
         `${num(metrics.requests)} req`,
-        `${pct(metrics.cacheHitPercent)} cache`,
+        cacheText.join(' · '),
         `${num(metrics.inputTokens)} in`,
         `${num(metrics.outputTokens)} out`,
         `${latency.avg == null ? '-' : `${latency.avg}ms ${latencySuffix}`}`,
@@ -433,13 +440,17 @@
         today.splitLatencyRequests ? `${today.splitLatencyRequests} split` : '',
         today.legacyLatencyRequests ? `${today.legacyLatencyRequests} legacy` : '',
       ].filter(Boolean).join(' · ');
+      const todayLikely = Number(today.cacheLikelyRequests || 0);
+      const todayLow = Number(today.cacheLowRequests || 0);
+      const allLikely = Number(totals.cacheLikelyRequests || 0);
+      const allLow = Number(totals.cacheLowRequests || 0);
       metricsEl.innerHTML = [
         metric('Today requests', today.loggedRequests || 0, `${today.usageSeenRequests || 0} with usage`),
-        metric('Today cache', pct(today.cacheHitPercent), `${num(today.cachedInputTokens)} cached`),
+        metric('Today usage cache', pct(today.cacheHitPercent), `${num(today.cachedInputTokens)} cached · ${cacheLowSummary(todayLow, todayLikely)}`),
         metric(firstLabel, latency.avg == null ? '-' : `${latency.avg}ms`, latencyExtra),
         metric('Total duration', totalLatency.avg == null ? '-' : `${totalLatency.avg}ms`, `p90 ${totalLatency.p90 == null ? '-' : `${totalLatency.p90}ms`}`),
         metric('Today errors', today.errors || 0, `${today.usageMissingRequests || 0} missing usage`),
-        metric('All cache', pct(totals.cacheHitPercent), `${num(totals.requests)} usage rows`),
+        metric('All usage cache', pct(totals.cacheHitPercent), `${num(totals.requests)} usage rows · ${cacheLowSummary(allLow, allLikely)}`),
       ].join('');
     }
     function renderSessions(payload) {

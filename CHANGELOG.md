@@ -4,11 +4,15 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Added bounded Spartan Route request recovery for temporary all-slot Codex
+  cooldowns, returning `Retry-After` metadata when recovery cannot happen
+  within the wait budget, and changed private whitelist updates to hot-reload
+  running proxy/DNS services with recreate fallback.
 - Changed Spartan Route Codex-auth image fallback to accept valid
   `gpt-image-2` non-square sizes, use the Codex built-in image-generation
-  payload shape, reject wrong-aspect outputs instead of silently returning
-  square images, and expose `actual_size` when Codex returns the right aspect
-  ratio at a different pixel scale.
+  payload shape, pass Codex image result bytes through unchanged even when
+  upstream returns different pixel dimensions or aspect ratio, and expose
+  `actual_size` when dimensions can be detected.
 - Matched Spartan Route Codex request timeout behavior to ClawRoute by applying
   `CODEX_REQUEST_TIMEOUT_MS` only to response-header wait, keeping local stream
   read failures out of generic 5xx slot cooldown, and returning retry metadata

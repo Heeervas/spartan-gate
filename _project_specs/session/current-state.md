@@ -1,20 +1,20 @@
 # Current State
 
-Date: 2026-06-28
+Date: 2026-06-29
 
 ## Latest Update
 
-Spartan Route Codex-auth image fallback now accepts valid `gpt-image-2`
-non-square sizes instead of preflight-rejecting them. The image payload follows
-the Codex built-in `image_generation` tool shape, preserves requested aspect
-ratio, and returns `codex_image_size_mismatch` when upstream returns the wrong
-aspect instead of silently handing Hermes a square image. Live probes after
-rebuild confirmed `1536x1024` returns a real `1536x1024` PNG, and `1024x1024`
-returns a square `1254x1254` PNG with `actual_size` recorded.
+Spartan Route now applies a bounded recovery wait when all usable Codex slots
+are temporarily cooling after upstream 5xx or `usage_limit_reached` errors.
+Temporary no-slot responses include `Retry-After`, transient 5xx states return
+`503 codex_transient_unavailable`, quota exhaustion returns `429 codex_429`,
+and forced live usage checks can clear restored slot cooldowns without a
+container recreate. `sg-whitelist-domain` now hot-reloads running proxy/DNS
+services with `USR1` and recreates only services whose signal reload fails.
 
 ## Active Task
 
-None recorded.
+Implemented; pending commit.
 
 ## Blockers
 

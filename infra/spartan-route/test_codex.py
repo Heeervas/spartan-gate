@@ -189,6 +189,28 @@ class StreamingCloseRouter(CodexRouter):
         return result
 
 
+class RecoveringRouter(CodexRouter):
+    def __init__(self, *, transient_until: float = 0, rate_limited_until: float = 0):
+        self.slots = [CodexSlot(0, auth=CodexAuth("token", account_id="acct"))]
+        self.slots[0].transient_until = transient_until
+        self.slots[0].rate_limited_until = rate_limited_until
+        self.leases = {}
+        self.refresh_locks = {}
+        self.telemetry = None
+        self._usage_cache = None
+        self._availability_event = None
+        self._availability_event_loop = None
+        self.calls = 0
+
+    async def _single_chat_call(self, _body, _model_id, _model_name, _wants_stream, _slot, _auth):
+        self.calls += 1
+        return CodexCallResult(status=200, body={"ok": True}, output_tokens=1, completed=True)
+
+    async def _single_image_call(self, _request, _slot, _auth):
+        self.calls += 1
+        return CodexCallResult(status=200, body={"data": [{"b64_json": "abc"}]}, completed=True)
+
+
 class CodexTests(unittest.TestCase):
     def test_content_prompt_cache_key_is_stable_for_tool_order(self) -> None:
         base = {
@@ -244,17 +266,53 @@ class CodexTests(unittest.TestCase):
         self.assertIn("Size: 1536x1024", prompt_text)
         self.assertIn("Quality: high", prompt_text)
 
-    def test_codex_image_rejects_silent_size_mismatch(self) -> None:
+    def test_codex_image_passes_through_non_exact_portrait_results(self) -> None:
+        for width, height in ((864, 1821), (941, 1672)):
+            with self.subTest(actual=f"{width}x{height}"):
+                image = self.png_b64(width, height)
+                router = self.image_router(FakeResponse([
+                    ("response.output_item.done", {"item": {"type": "image_generation_call", "result": image}}),
+                ]))
+
+                result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1024x1536"}))
+
+                self.assertEqual(result.status, 200)
+                self.assertEqual(result.body["data"][0]["b64_json"], image)
+                self.assertEqual(result.body["data"][0]["actual_size"], f"{width}x{height}")
+
+    def test_codex_image_passes_through_wrong_orientation_result(self) -> None:
+        image = self.png_b64(1536, 1024)
         router = self.image_router(FakeResponse([
-            ("response.output_item.done", {"item": {"type": "image_generation_call", "result": self.png_b64(1254, 1254)}}),
+            ("response.output_item.done", {"item": {"type": "image_generation_call", "result": image}}),
         ]))
 
-        result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1536x1024"}))
+        result = asyncio_run(router.execute_image({"prompt": "draw a portrait gate", "size": "1024x1536"}))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.body["data"][0]["b64_json"], image)
+        self.assertEqual(result.body["data"][0]["actual_size"], "1536x1024")
+
+    def test_codex_image_passes_through_when_dimensions_are_unknown(self) -> None:
+        image = base64.b64encode(b"not an image header").decode("ascii")
+        router = self.image_router(FakeResponse([
+            ("response.output_item.done", {"item": {"type": "image_generation_call", "result": image}}),
+        ]))
+
+        result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1024x1536"}))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.body["data"][0]["b64_json"], image)
+        self.assertNotIn("actual_size", result.body["data"][0])
+
+    def test_codex_image_empty_result_is_still_an_error(self) -> None:
+        router = self.image_router(FakeResponse([
+            ("response.completed", {"response": {"status": "completed", "output": []}}),
+        ]))
+
+        result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1024x1536"}))
 
         self.assertEqual(result.status, 502)
-        self.assertEqual(result.body["error"]["code"], "codex_image_size_mismatch")
-        self.assertEqual(result.body["error"]["requested_size"], "1536x1024")
-        self.assertEqual(result.body["error"]["actual_size"], "1254x1254")
+        self.assertEqual(result.body["error"]["code"], "codex_image_empty")
 
     def test_codex_image_allows_matching_non_square_result(self) -> None:
         image = self.png_b64(1536, 1024)
@@ -281,7 +339,8 @@ class CodexTests(unittest.TestCase):
     def test_codex_image_http_error_empty_body_is_non_empty(self) -> None:
         router = self.image_router(FakeResponse(status=500, text=""))
 
-        result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1024x1024"}))
+        with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "0"}):
+            result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1024x1024"}))
 
         self.assertEqual(result.status, 500)
         self.assertEqual(result.body["error"]["code"], "codex_500")
@@ -756,19 +815,81 @@ class CodexTests(unittest.TestCase):
         router.leases = {}
         router.telemetry = None
 
-        result = asyncio_run(router.execute_chat(
-            {"messages": [{"role": "user", "content": "hi"}]},
-            "codex/gpt-5.5",
-            False,
-            "session",
-            None,
-            "request",
-        ))
+        with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "0"}):
+            result = asyncio_run(router.execute_chat(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "codex/gpt-5.5",
+                False,
+                "session",
+                None,
+                "request",
+            ))
 
         self.assertEqual(result.status, 503)
         self.assertEqual(result.body["error"]["code"], "codex_transient_unavailable")
         self.assertGreater(result.body["error"]["retry_after_seconds"], 0)
         self.assertEqual(result.body["error"]["slot_diagnostics"]["transient_5xx"], 1)
+        self.assertIn("Retry-After", result.headers)
+
+    def test_all_transient_slots_wait_then_retry(self) -> None:
+        router = RecoveringRouter(transient_until=time.time() + 0.02)
+
+        with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "1000", "SPARTAN_ROUTE_RECOVERY_POLL_MS": "250"}):
+            result = asyncio_run(router.execute_chat(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "codex/gpt-5.5",
+                False,
+                "session",
+                None,
+                "request",
+            ))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(router.calls, 1)
+
+    def test_all_rate_limited_slots_return_429_metadata_when_wait_disabled(self) -> None:
+        router = RecoveringRouter(rate_limited_until=time.time() + 60)
+
+        with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "0"}):
+            result = asyncio_run(router.execute_chat(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "codex/gpt-5.5",
+                False,
+                "session",
+                None,
+                "request",
+            ))
+
+        self.assertEqual(result.status, 429)
+        self.assertEqual(result.body["error"]["code"], "codex_429")
+        self.assertGreater(result.body["error"]["resets_in_seconds"], 0)
+        self.assertEqual(result.body["error"]["slot_diagnostics"]["rate_limited"], 1)
+        self.assertIn("Retry-After", result.headers)
+
+    def test_all_rate_limited_slots_wait_then_retry(self) -> None:
+        router = RecoveringRouter(rate_limited_until=time.time() + 0.02)
+
+        with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "1000", "SPARTAN_ROUTE_RECOVERY_POLL_MS": "250"}):
+            result = asyncio_run(router.execute_chat(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "codex/gpt-5.5",
+                False,
+                "session",
+                None,
+                "request",
+            ))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(router.calls, 1)
+
+    def test_image_generation_uses_recovery_wait(self) -> None:
+        router = RecoveringRouter(transient_until=time.time() + 0.02)
+
+        with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "1000", "SPARTAN_ROUTE_RECOVERY_POLL_MS": "250"}):
+            result = asyncio_run(router.execute_image({"prompt": "draw a gate"}))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(router.calls, 1)
 
     def test_codex_empty_response_is_retryable(self) -> None:
         from spartan_route.codex import should_retry
@@ -777,6 +898,7 @@ class CodexTests(unittest.TestCase):
         self.assertTrue(should_retry(502, data_json({"error": {"type": "upstream_error", "code": "codex_incomplete_response"}})))
         self.assertTrue(should_retry(502, data_json({"error": {"type": "upstream_error", "code": "codex_stream_timeout"}})))
         self.assertTrue(should_retry(502, data_json({"error": {"type": "upstream_error", "code": "codex_stream_error"}})))
+        self.assertFalse(should_retry(502, data_json({"error": {"type": "upstream_error", "code": "codex_image_empty"}})))
 
     def test_execute_chat_retries_empty_response_and_remembers_successful_slot(self) -> None:
         router = RetryRouter()
@@ -870,6 +992,30 @@ class CodexTests(unittest.TestCase):
             forced = asyncio_run(router.usage_snapshot(force=True))
             self.assertFalse(forced["cached"])
             self.assertEqual(len(session.urls), 4)
+        finally:
+            store.close()
+
+    def test_forced_slot_usage_refresh_clears_recovered_rate_limit(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            session = FakeUsageSession()
+            router = CodexRouter.__new__(CodexRouter)
+            router.session = session
+            router.telemetry = store
+            router.slots = [CodexSlot(0, path="/codex-a/auth.json", auth=CodexAuth("token", account_id="acct"))]
+            router.slots[0].rate_limited_until = time.time() + 60
+            router.leases = {}
+            router.refresh_locks = {}
+            router._usage_cache = None
+            router._availability_event = None
+            router._availability_event_loop = None
+
+            payload = asyncio_run(router.usage_snapshot(force=True, slot_indexes={0}))
+
+            self.assertFalse(payload["partial"])
+            self.assertEqual(router.slots[0].rate_limited_until, 0)
         finally:
             store.close()
 

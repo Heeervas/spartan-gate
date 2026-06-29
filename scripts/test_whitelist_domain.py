@@ -27,6 +27,47 @@ class WhitelistDomainTests(unittest.TestCase):
             check=False,
         )
 
+    def fake_docker_bin(self, *, kill_fail_service=None):
+        bin_dir = pathlib.Path(self.tmp.name) / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        log = pathlib.Path(self.tmp.name) / "docker.log"
+        docker = bin_dir / "docker"
+        docker.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$FAKE_DOCKER_LOG\"\n"
+            "case \" $* \" in\n"
+            "  *' ps --services --status running '*) printf 'proxy\\ndns\\n'; exit 0 ;;\n"
+            "  *' kill -s USR1 '*)\n"
+            "    service=''\n"
+            "    for arg in \"$@\"; do service=\"$arg\"; done\n"
+            "    if [ -n \"$FAKE_DOCKER_KILL_FAIL_SERVICE\" ] && [ \"$service\" = \"$FAKE_DOCKER_KILL_FAIL_SERVICE\" ]; then exit 1; fi\n"
+            "    exit 0 ;;\n"
+            "  *' up -d --no-build --force-recreate --no-deps '*) exit 0 ;;\n"
+            "esac\n"
+            "exit 0\n"
+        )
+        docker.chmod(0o755)
+        return bin_dir, log, kill_fail_service or ""
+
+    def run_helper_with_fake_docker(self, *args, kill_fail_service=None):
+        bin_dir, log, fail_service = self.fake_docker_bin(kill_fail_service=kill_fail_service)
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["FAKE_DOCKER_LOG"] = str(log)
+        env["FAKE_DOCKER_KILL_FAIL_SERVICE"] = fail_service
+        env["SPARTAN_WHITELIST_FILE"] = str(self.whitelist)
+        env["SPARTAN_WHITELIST_NOW"] = str(NOW)
+        result = subprocess.run(
+            ["bash", str(SCRIPT), *args],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        return result, log.read_text() if log.exists() else ""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.whitelist = pathlib.Path(self.tmp.name) / "whitelist.private.txt"
@@ -144,6 +185,26 @@ class WhitelistDomainTests(unittest.TestCase):
         content = self.whitelist.read_text().splitlines()
         for index in range(40):
             self.assertIn(f"host-{index}.example.com", content)
+
+    def test_runtime_update_signals_proxy_and_dns_without_recreate(self):
+        result, calls = self.run_helper_with_fake_docker("example.com")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Signaling running services: proxy dns", result.stdout)
+        self.assertIn("kill -s USR1 proxy", calls)
+        self.assertIn("kill -s USR1 dns", calls)
+        self.assertNotIn("--force-recreate", calls)
+
+    def test_runtime_update_recreates_only_failed_reload_service(self):
+        result, calls = self.run_helper_with_fake_docker("example.com", kill_fail_service="proxy")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Signal reload failed for proxy", result.stderr)
+        self.assertIn("Recreating fallback services: proxy", result.stdout)
+        self.assertIn("kill -s USR1 proxy", calls)
+        self.assertIn("kill -s USR1 dns", calls)
+        self.assertIn("up -d --no-build --force-recreate --no-deps proxy", calls)
+        self.assertNotIn("up -d --no-build --force-recreate --no-deps dns", calls)
 
 
 class WhitelistRuntimeGenerationTests(unittest.TestCase):

@@ -42,7 +42,10 @@ CODEX_USAGE_CACHE_TTL_SECONDS = 60.0
 CODEX_STREAM_TIMEOUT_CODE = "codex_stream_timeout"
 CODEX_STREAM_ERROR_CODE = "codex_stream_error"
 CODEX_TRANSIENT_UNAVAILABLE_CODE = "codex_transient_unavailable"
+CODEX_RATE_LIMIT_UNAVAILABLE_CODE = "codex_429"
 DEFAULT_CODEX_IMAGE_HOST_MODEL = "gpt-5.5"
+DEFAULT_RECOVERY_WAIT_MS = 180_000
+DEFAULT_RECOVERY_POLL_MS = 1_000
 
 
 @dataclass
@@ -103,6 +106,36 @@ class CodexCallResult:
     usage_event_type: str | None = None
     upstream_response_time_ms: int | None = None
     total_response_time_ms: int | None = None
+
+
+@dataclass
+class SlotAvailability:
+    total: int = 0
+    eligible: int = 0
+    disabled: int = 0
+    auth_unavailable: int = 0
+    rate_limited: int = 0
+    transient_5xx: int = 0
+    earliest_rate_limit_until: float | None = None
+    earliest_transient_until: float | None = None
+
+    def diagnostics(self) -> dict[str, int]:
+        return {
+            "total": self.total,
+            "eligible": self.eligible,
+            "disabled": self.disabled,
+            "auth_unavailable": self.auth_unavailable,
+            "rate_limited": self.rate_limited,
+            "transient_5xx": self.transient_5xx,
+        }
+
+    def earliest_recovery(self) -> float | None:
+        candidates = [
+            item
+            for item in (self.earliest_rate_limit_until, self.earliest_transient_until)
+            if item is not None
+        ]
+        return min(candidates) if candidates else None
 
 
 @dataclass
@@ -366,6 +399,8 @@ def should_retry(status: int, text: str) -> bool:
     if status == 429:
         return error_type == "usage_limit_reached" or code == "usage_limit_reached"
     if status == 502:
+        if code.startswith("codex_image_"):
+            return False
         return (
             code in {
                 "codex_error",
@@ -438,10 +473,6 @@ def image_b64_dimensions(value: str) -> tuple[int, int] | None:
         return None
 
 
-def same_image_aspect_ratio(requested: tuple[int, int], actual: tuple[int, int]) -> bool:
-    return requested[0] * actual[1] == requested[1] * actual[0]
-
-
 class CodexRouter:
     def __init__(self, session: ClientSession, telemetry: TelemetryStore):
         self.session = session
@@ -449,6 +480,8 @@ class CodexRouter:
         self.slots: list[CodexSlot] = []
         self.leases: dict[str, CacheLease] = {}
         self.refresh_locks: dict[str, asyncio.Lock] = {}
+        self._availability_event: asyncio.Event | None = None
+        self._availability_event_loop: asyncio.AbstractEventLoop | None = None
         self._usage_cache: dict[str, Any] | None = None
         self._init_slots()
 
@@ -463,6 +496,7 @@ class CodexRouter:
         self.slots = []
         self.leases.clear()
         self.refresh_locks.clear()
+        self._notify_availability_changed()
         self._usage_cache = None
         self._init_slots()
 
@@ -506,6 +540,20 @@ class CodexRouter:
             "slotPathHash": sha(slot.path, 16) if slot.path else None,
             "authFingerprintHash": sha(slot.auth_fingerprint, 16) if slot.auth_fingerprint else None,
         }
+
+    def _availability_signal(self) -> asyncio.Event:
+        loop = asyncio.get_running_loop()
+        event = getattr(self, "_availability_event", None)
+        event_loop = getattr(self, "_availability_event_loop", None)
+        if event is None or event_loop is not loop:
+            self._availability_event = asyncio.Event()
+            self._availability_event_loop = loop
+        return self._availability_event
+
+    def _notify_availability_changed(self) -> None:
+        event = getattr(self, "_availability_event", None)
+        if event is not None:
+            event.set()
 
     def slot_routing_status(self, slot: CodexSlot) -> dict[str, Any]:
         telemetry = getattr(self, "telemetry", None)
@@ -551,6 +599,7 @@ class CodexRouter:
         if not routing_enabled:
             self._invalidate_slot_leases(slot)
         self._usage_cache = None
+        self._notify_availability_changed()
         return next(status for status in self.slot_status(include_paths=True) if status["slotIndex"] == slot.index)
 
     def lease_status(self) -> list[dict[str, Any]]:
@@ -643,6 +692,7 @@ class CodexRouter:
             slot.auth_unavailable_reason = None
             slot.auth_retry_at = 0
             self._persist_refresh(slot.path, access, next_refresh, payload.get("id_token"))
+            self._notify_availability_changed()
             return auth
 
     def _persist_refresh(self, path: str, access: str, refresh: str, id_token: Any) -> None:
@@ -747,62 +797,124 @@ class CodexRouter:
                 self.leases.pop(self._lease_key(affinity_key), None)
         return sorted(candidates, key=lambda pair: (pair[0].in_flight, pair[0].last_selected_at, pair[0].index))[0]
 
+    async def slot_availability(self) -> SlotAvailability:
+        now = time.time()
+        state = SlotAvailability(total=len(self.slots))
+        for slot in self.slots:
+            if not self.slot_routing_status(slot)["routingEnabled"]:
+                state.disabled += 1
+                continue
+            if slot.rate_limited_until > now:
+                state.rate_limited += 1
+                if state.earliest_rate_limit_until is None or slot.rate_limited_until < state.earliest_rate_limit_until:
+                    state.earliest_rate_limit_until = slot.rate_limited_until
+                continue
+            if slot.transient_until > now:
+                state.transient_5xx += 1
+                if state.earliest_transient_until is None or slot.transient_until < state.earliest_transient_until:
+                    state.earliest_transient_until = slot.transient_until
+                continue
+            auth = await self.load_auth(slot)
+            if not auth:
+                state.auth_unavailable += 1
+                continue
+            state.eligible += 1
+        return state
+
+    def _recovery_wait_ms(self) -> int:
+        return parse_int(os.environ.get("SPARTAN_ROUTE_RECOVERY_WAIT_MS"), DEFAULT_RECOVERY_WAIT_MS, 0, 600_000)
+
+    def _recovery_poll_ms(self) -> int:
+        return parse_int(os.environ.get("SPARTAN_ROUTE_RECOVERY_POLL_MS"), DEFAULT_RECOVERY_POLL_MS, 250, 10_000)
+
+    async def _wait_for_temporary_recovery(self, deadline: float) -> bool:
+        event = self._availability_signal()
+        poll_seconds = self._recovery_poll_ms() / 1000
+        while time.time() < deadline:
+            state = await self.slot_availability()
+            if state.eligible > 0:
+                return True
+            recovery_at = state.earliest_recovery()
+            if recovery_at is None or recovery_at > deadline:
+                return False
+            now = time.time()
+            timeout = min(poll_seconds, max(0.0, recovery_at - now), max(0.0, deadline - now))
+            if timeout <= 0:
+                await asyncio.sleep(0)
+                continue
+            event.clear()
+            try:
+                await asyncio.wait_for(event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+        return (await self.slot_availability()).eligible > 0
+
+    def _rate_limit_error(self, state: SlotAvailability) -> dict[str, Any]:
+        now = time.time()
+        reset_at = state.earliest_rate_limit_until or now
+        resets_in_seconds = max(1, int((reset_at - now) + 0.999))
+        return {
+            "message": "All Codex auth slots are currently rate-limited. Try again later.",
+            "type": "upstream_error",
+            "code": CODEX_RATE_LIMIT_UNAVAILABLE_CODE,
+            "resets_at": int(reset_at),
+            "resets_in_seconds": resets_in_seconds,
+            "slot_diagnostics": state.diagnostics(),
+        }
+
+    def _temporary_unavailable_headers(self, error: dict[str, Any]) -> dict[str, str]:
+        seconds = error.get("retry_after_seconds") or error.get("resets_in_seconds")
+        try:
+            value = max(1, int(seconds))
+        except (TypeError, ValueError):
+            return {}
+        return {"Retry-After": str(value)}
+
     def mark_rate_limited(self, slot: CodexSlot, text: str) -> None:
         error = parse_codex_error(text)
         reset = epoch_millis(error.get("resets_at")) or int((time.time() + parse_float(error.get("resets_in_seconds"), 900)) * 1000)
         slot.rate_limited_until = reset / 1000
         self._invalidate_slot_leases(slot)
+        self._notify_availability_changed()
 
     def mark_transient(self, slot: CodexSlot) -> None:
         cooldown = parse_int(os.environ.get("CODEX_TRANSIENT_5XX_COOLDOWN_MS"), 120_000, 0, 900_000) / 1000
         if cooldown > 0:
             slot.transient_until = time.time() + cooldown
             self._invalidate_slot_leases(slot)
+            self._notify_availability_changed()
 
     async def _unavailable_error(self) -> dict[str, Any]:
+        state = await self.slot_availability()
         now = time.time()
-        diagnostics = {
-            "total": len(self.slots),
-            "eligible": 0,
-            "disabled": 0,
-            "auth_unavailable": 0,
-            "rate_limited": 0,
-            "transient_5xx": 0,
-        }
-        transient_retry_times: list[float] = []
-        for slot in self.slots:
-            if not self.slot_routing_status(slot)["routingEnabled"]:
-                diagnostics["disabled"] += 1
-                continue
-            if slot.rate_limited_until > now:
-                diagnostics["rate_limited"] += 1
-                continue
-            if slot.transient_until > now:
-                diagnostics["transient_5xx"] += 1
-                transient_retry_times.append(slot.transient_until)
-                continue
-            auth = await self.load_auth(slot)
-            if not auth:
-                diagnostics["auth_unavailable"] += 1
-                continue
-            diagnostics["eligible"] += 1
-
-        if diagnostics["eligible"] == 0 and transient_retry_times:
-            retry_at = min(transient_retry_times)
+        if state.eligible == 0 and state.transient_5xx:
+            retry_at = state.earliest_transient_until or now
             return {
                 "message": "All Codex auth slots are temporarily unavailable after upstream server errors. Try again shortly.",
                 "type": "upstream_error",
                 "code": CODEX_TRANSIENT_UNAVAILABLE_CODE,
                 "retry_at": self._iso_from_epoch(retry_at),
                 "retry_after_seconds": max(1, int((retry_at - now) + 0.999)),
-                "slot_diagnostics": diagnostics,
+                "slot_diagnostics": state.diagnostics(),
             }
+        if state.eligible == 0 and state.rate_limited:
+            return self._rate_limit_error(state)
         return {
             "message": "All Codex auth slots are temporarily unavailable.",
             "type": "upstream_error",
             "code": "codex_unavailable",
-            "slot_diagnostics": diagnostics,
+            "slot_diagnostics": state.diagnostics(),
         }
+
+    async def _unavailable_result(self) -> CodexCallResult:
+        error = await self._unavailable_error()
+        status = 429 if error["code"] == CODEX_RATE_LIMIT_UNAVAILABLE_CODE else 503
+        return CodexCallResult(
+            status=status,
+            body={"error": error},
+            headers=self._temporary_unavailable_headers(error),
+            error=str(error["code"]),
+        )
 
     async def execute_chat(
         self,
@@ -821,70 +933,80 @@ class CodexRouter:
         excluded_slots: set[int] = set()
         excluded_accounts: set[str] = set()
         last_error: CodexCallResult | None = None
-        for _attempt in range(slot_count):
-            chosen = await self.choose_slot(affinity_key, excluded_slots, excluded_accounts)
-            if not chosen:
-                break
-            slot, auth = chosen
-            slot.in_flight += 1
-            slot.last_selected_at = time.time()
-            try:
-                result = await self._single_chat_call(body, model_id, model_name, wants_stream, slot, auth)
-            except Exception:
-                slot.in_flight = max(0, slot.in_flight - 1)
-                raise
-            if result.stream is None:
-                slot.in_flight = max(0, slot.in_flight - 1)
-            else:
-                source = result.stream
+        deadline = time.time() + (self._recovery_wait_ms() / 1000)
+        while True:
+            attempted = 0
+            for _attempt in range(slot_count):
+                chosen = await self.choose_slot(affinity_key, excluded_slots, excluded_accounts)
+                if not chosen:
+                    break
+                attempted += 1
+                slot, auth = chosen
+                slot.in_flight += 1
+                slot.last_selected_at = time.time()
+                try:
+                    result = await self._single_chat_call(body, model_id, model_name, wants_stream, slot, auth)
+                except Exception:
+                    slot.in_flight = max(0, slot.in_flight - 1)
+                    raise
+                if result.stream is None:
+                    slot.in_flight = max(0, slot.in_flight - 1)
+                else:
+                    source = result.stream
 
-                async def stream_with_inflight_guard() -> AsyncIterator[bytes]:
-                    try:
-                        while True:
-                            try:
-                                chunk = await source.__anext__()
-                            except StopAsyncIteration:
-                                break
-                            yield chunk
-                    finally:
-                        close = getattr(source, "aclose", None)
-                        if callable(close):
-                            await close()
-                        if result.completed and not result.error and affinity_key:
-                            self._remember_lease(affinity_key, slot)
-                        slot.in_flight = max(0, slot.in_flight - 1)
+                    async def stream_with_inflight_guard() -> AsyncIterator[bytes]:
+                        try:
+                            while True:
+                                try:
+                                    chunk = await source.__anext__()
+                                except StopAsyncIteration:
+                                    break
+                                yield chunk
+                        finally:
+                            close = getattr(source, "aclose", None)
+                            if callable(close):
+                                await close()
+                            if result.completed and not result.error and affinity_key:
+                                self._remember_lease(affinity_key, slot)
+                            slot.in_flight = max(0, slot.in_flight - 1)
 
-                result.stream = stream_with_inflight_guard()
-            result.slot_index = slot.index
-            result.account_key = auth.account_key
-            result.input_tokens = token_count_estimate(request)
-            if result.status not in {401, 429, 500, 502}:
-                if result.status < 400 and result.stream is None and not result.error:
-                    self._remember_lease(affinity_key, slot)
-                return result
-            text = result.body.decode("utf-8", errors="replace") if isinstance(result.body, bytes) else stable_json(result.body)
-            if not should_retry(result.status, text):
-                return result
-            excluded_slots.add(slot.index)
-            if auth.account_key:
-                excluded_accounts.add(auth.account_key)
-            if result.status == 401:
-                slot.auth = None
-                slot.auth_unavailable_reason = "expired"
-                self._invalidate_slot_leases(slot)
-            elif result.status == 429:
-                self.mark_rate_limited(slot, text)
-            else:
-                self.mark_transient(slot)
-            last_error = result
-        if last_error:
-            return last_error
-        error = await self._unavailable_error()
-        return CodexCallResult(
-            status=503,
-            body={"error": error},
-            error=str(error["code"]),
-        )
+                    result.stream = stream_with_inflight_guard()
+                result.slot_index = slot.index
+                result.account_key = auth.account_key
+                result.input_tokens = token_count_estimate(request)
+                if result.status not in {401, 429, 500, 502}:
+                    if result.status < 400 and result.stream is None and not result.error:
+                        self._remember_lease(affinity_key, slot)
+                    return result
+                text = result.body.decode("utf-8", errors="replace") if isinstance(result.body, bytes) else stable_json(result.body)
+                if not should_retry(result.status, text):
+                    return result
+                excluded_slots.add(slot.index)
+                if auth.account_key:
+                    excluded_accounts.add(auth.account_key)
+                if result.status == 401:
+                    slot.auth = None
+                    slot.auth_unavailable_reason = "expired"
+                    self._invalidate_slot_leases(slot)
+                    self._notify_availability_changed()
+                elif result.status == 429:
+                    self.mark_rate_limited(slot, text)
+                else:
+                    self.mark_transient(slot)
+                last_error = result
+
+            state = await self.slot_availability()
+            recovery_at = state.earliest_recovery()
+            if recovery_at is not None and recovery_at <= deadline and await self._wait_for_temporary_recovery(deadline):
+                excluded_slots.clear()
+                excluded_accounts.clear()
+                last_error = None
+                continue
+            if last_error:
+                return last_error
+            if attempted == 0 or state.rate_limited or state.transient_5xx:
+                return await self._unavailable_result()
+            return await self._unavailable_result()
 
     async def _single_chat_call(
         self,
@@ -1789,15 +1911,6 @@ class CodexRouter:
                 return CodexCallResult(status=502, body={"error": error}, error=str(error["code"]))
             requested_size = requested_image_size(request.get("size") or "1024x1024")
             actual_size = image_b64_dimensions(image_b64)
-            if requested_size and actual_size and not same_image_aspect_ratio(requested_size, actual_size):
-                error = {
-                    "message": f"Codex image output size mismatch: requested {requested_size[0]}x{requested_size[1]}, got {actual_size[0]}x{actual_size[1]}",
-                    "type": "invalid_response_error",
-                    "code": "codex_image_size_mismatch",
-                    "requested_size": f"{requested_size[0]}x{requested_size[1]}",
-                    "actual_size": f"{actual_size[0]}x{actual_size[1]}",
-                }
-                return CodexCallResult(status=502, body={"error": error}, error=str(error["code"]))
             item = {"b64_json": image_b64, **({"revised_prompt": revised_prompt} if revised_prompt else {})}
             if requested_size and actual_size and requested_size != actual_size:
                 item["actual_size"] = f"{actual_size[0]}x{actual_size[1]}"
@@ -1813,41 +1926,55 @@ class CodexRouter:
         excluded_slots: set[int] = set()
         excluded_accounts: set[str] = set()
         last_error: CodexCallResult | None = None
-        for _attempt in range(slot_count):
-            chosen = await self.choose_slot(None, excluded_slots, excluded_accounts)
-            if not chosen:
-                break
-            slot, auth = chosen
-            slot.in_flight += 1
-            slot.last_selected_at = time.time()
-            try:
-                result = await self._single_image_call(request, slot, auth)
-            finally:
-                slot.in_flight = max(0, slot.in_flight - 1)
-            result.slot_index = slot.index
-            result.account_key = auth.account_key
-            result.input_tokens = token_count_estimate(request)
-            if result.status not in {401, 429, 500, 502}:
-                return result
-            text = result.body.decode("utf-8", errors="replace") if isinstance(result.body, bytes) else stable_json(result.body)
-            if not should_retry(result.status, text):
-                return result
-            excluded_slots.add(slot.index)
-            if auth.account_key:
-                excluded_accounts.add(auth.account_key)
-            if result.status == 401:
-                slot.auth = None
-                slot.auth_unavailable_reason = "expired"
-                self._invalidate_slot_leases(slot)
-            elif result.status == 429:
-                self.mark_rate_limited(slot, text)
-            else:
-                self.mark_transient(slot)
-            last_error = result
-        if last_error:
-            return last_error
-        error = await self._unavailable_error()
-        return CodexCallResult(status=503, body={"error": error}, error=str(error["code"]))
+        deadline = time.time() + (self._recovery_wait_ms() / 1000)
+        while True:
+            attempted = 0
+            for _attempt in range(slot_count):
+                chosen = await self.choose_slot(None, excluded_slots, excluded_accounts)
+                if not chosen:
+                    break
+                attempted += 1
+                slot, auth = chosen
+                slot.in_flight += 1
+                slot.last_selected_at = time.time()
+                try:
+                    result = await self._single_image_call(request, slot, auth)
+                finally:
+                    slot.in_flight = max(0, slot.in_flight - 1)
+                result.slot_index = slot.index
+                result.account_key = auth.account_key
+                result.input_tokens = token_count_estimate(request)
+                if result.status not in {401, 429, 500, 502}:
+                    return result
+                text = result.body.decode("utf-8", errors="replace") if isinstance(result.body, bytes) else stable_json(result.body)
+                if not should_retry(result.status, text):
+                    return result
+                excluded_slots.add(slot.index)
+                if auth.account_key:
+                    excluded_accounts.add(auth.account_key)
+                if result.status == 401:
+                    slot.auth = None
+                    slot.auth_unavailable_reason = "expired"
+                    self._invalidate_slot_leases(slot)
+                    self._notify_availability_changed()
+                elif result.status == 429:
+                    self.mark_rate_limited(slot, text)
+                else:
+                    self.mark_transient(slot)
+                last_error = result
+
+            state = await self.slot_availability()
+            recovery_at = state.earliest_recovery()
+            if recovery_at is not None and recovery_at <= deadline and await self._wait_for_temporary_recovery(deadline):
+                excluded_slots.clear()
+                excluded_accounts.clear()
+                last_error = None
+                continue
+            if last_error:
+                return last_error
+            if attempted == 0 or state.rate_limited or state.transient_5xx:
+                return await self._unavailable_result()
+            return await self._unavailable_result()
 
     def _usage_cache_signature(self) -> tuple[Any, ...]:
         return tuple(
@@ -1919,18 +2046,25 @@ class CodexRouter:
                     if response.status != 200:
                         raise RuntimeError(f"Codex usage HTTP {response.status}")
                     payload = await response.json()
+                live_window_used: list[float] = []
                 for window_name, source, seconds in (
                     ("fiveHour", payload.get("primary_window") or (payload.get("rate_limit") or {}).get("primary_window"), FIVE_HOURS_SECONDS),
                     ("weekly", payload.get("secondary_window") or (payload.get("rate_limit") or {}).get("secondary_window"), SEVEN_DAYS_SECONDS),
                 ):
                     if isinstance(source, dict):
                         used = parse_float(source.get("used_percent"), 0.0)
+                        live_window_used.append(used)
                         reset_at = source.get("reset_at")
                         if isinstance(reset_at, (int, float)):
                             reset_at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(float(reset_at)))
                         if isinstance(reset_at, str):
                             row[window_name] = {"window": window_name, "usedPercent": used, "resetAt": reset_at, "windowMinutes": seconds // 60, "updatedAt": now_iso()}
                             usage_records.append({"account_key": account_key, "slot_index": slot.index, "window": window_name, "used_percent": used, "reset_at": reset_at, "window_minutes": seconds // 60})
+                if slot_indexes is not None and live_window_used and all(used < 100 for used in live_window_used):
+                    if slot.rate_limited_until > 0:
+                        slot.rate_limited_until = 0
+                        self._usage_cache = None
+                        self._notify_availability_changed()
             except Exception as exc:
                 slot_errors.append({"slotIndex": slot.index, "source": "none", "message": str(exc)})
             try:

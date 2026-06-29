@@ -81,6 +81,58 @@ class TelemetryTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_cache_likely_and_low_metrics_are_reported(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            entries = [
+                ("request-a", 100000, 90000, '{"usage_seen":true,"cache_likely":true,"cache_low":false}'),
+                ("request-b", 80000, 0, '{"usage_seen":true,"cache_likely":true,"cache_low":true}'),
+                ("request-c", 12000, 0, '{"usage_seen":true,"cache_likely":false,"cache_low":false}'),
+            ]
+            for request_id, input_tokens, cached_tokens, context_info in entries:
+                store.log_routing(RoutingLogEntry(
+                    timestamp="2026-06-26T10:00:00.000Z",
+                    original_model="clawroute/auto",
+                    routed_model="codex/gpt-5.5",
+                    actual_model="codex/gpt-5.5",
+                    tier="complex",
+                    input_tokens=input_tokens,
+                    cached_input_tokens=cached_tokens,
+                    output_tokens=50,
+                    response_time_ms=1200,
+                    upstream_response_time_ms=250,
+                    total_response_time_ms=1200,
+                    session_id="session",
+                    request_id=request_id,
+                    turn_id="turn",
+                    context_info=context_info,
+                ))
+
+            rows = store.daily_cache_rows()
+            self.assertEqual(rows[0]["requests"], 3)
+            self.assertEqual(rows[0]["cache_likely_requests"], 2)
+            self.assertEqual(rows[0]["cache_likely_input_tokens"], 180000)
+            self.assertEqual(rows[0]["cache_likely_cached_input_tokens"], 90000)
+            self.assertEqual(rows[0]["cache_low_requests"], 1)
+            self.assertEqual(rows[0]["cache_low_input_tokens"], 80000)
+
+            today = store.today_summary("2026-06-26")
+            self.assertEqual(today["cacheLikelyRequests"], 2)
+            self.assertEqual(today["cacheLikelyInputTokens"], 180000)
+            self.assertEqual(today["cacheLikelyCachedInputTokens"], 90000)
+            self.assertEqual(today["cacheLowRequests"], 1)
+            self.assertEqual(today["cacheLowInputTokens"], 80000)
+
+            live = store.live_sessions()
+            metrics = live["sessions"][0]["metrics"]
+            self.assertEqual(metrics["cacheLikelyRequests"], 2)
+            self.assertEqual(metrics["cacheLikelyInputTokens"], 180000)
+            self.assertEqual(metrics["cacheLikelyCachedInputTokens"], 90000)
+            self.assertEqual(metrics["cacheLowRequests"], 1)
+            self.assertEqual(metrics["cacheLowInputTokens"], 80000)
+        finally:
+            store.close()
+
     def test_legacy_latency_rows_fall_back_to_response_time(self) -> None:
         store = TelemetryStore(":memory:")
         try:

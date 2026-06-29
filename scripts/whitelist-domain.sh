@@ -207,7 +207,7 @@ compose_cmd() {
 
 restart_consumers() {
     command -v docker >/dev/null 2>&1 || {
-        printf '[whitelist] Docker is not available; restart proxy/dns manually if the stack is running.\n'
+        printf '[whitelist] Docker is not available; reload proxy/dns manually if the stack is running.\n'
         return 0
     }
 
@@ -222,12 +222,23 @@ restart_consumers() {
     done
 
     if [[ "${#restart_services[@]}" -eq 0 ]]; then
-        printf '[whitelist] No running proxy/dns services found; nothing restarted.\n'
+        printf '[whitelist] No running proxy/dns services found; nothing reloaded.\n'
         return 0
     fi
 
-    printf '[whitelist] Reloading running services: %s\n' "${restart_services[*]}"
-    compose_cmd up -d --no-build --force-recreate --no-deps "${restart_services[@]}"
+    printf '[whitelist] Signaling running services: %s\n' "${restart_services[*]}"
+    local -a fallback_services=()
+    for service in "${restart_services[@]}"; do
+        if ! compose_cmd kill -s USR1 "$service"; then
+            printf '[whitelist] Signal reload failed for %s; will recreate it.\n' "$service" >&2
+            fallback_services+=("$service")
+        fi
+    done
+
+    if [[ "${#fallback_services[@]}" -gt 0 ]]; then
+        printf '[whitelist] Recreating fallback services: %s\n' "${fallback_services[*]}"
+        compose_cmd up -d --no-build --force-recreate --no-deps "${fallback_services[@]}"
+    fi
 }
 
 restart=true

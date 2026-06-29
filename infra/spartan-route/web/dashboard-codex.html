@@ -266,7 +266,7 @@
         <h2>Cache</h2>
       </div>
       <table>
-        <thead><tr><th>Day</th><th>Requests</th><th>Input</th><th>Cached</th><th>Hit rate</th><th>Latency</th><th>Errors</th></tr></thead>
+        <thead><tr><th>UTC day</th><th>Usage/logged</th><th>Input</th><th>Cached</th><th>Usage cache</th><th>Latency</th><th>Errors</th></tr></thead>
         <tbody id="cache"></tbody>
       </table>
     </section>
@@ -509,15 +509,20 @@
       return parts.join('') || '-';
     }
     function renderCache(days) {
-      cacheEl.innerHTML = (days || []).map(row => `<tr>
+      cacheEl.innerHTML = (days || []).map(row => {
+        const likely = Number(row.cache_likely_requests || 0);
+        const low = Number(row.cache_low_requests || 0);
+        const lowSummary = likely ? `<br><span class="muted">${esc(num(low))}/${esc(num(likely))} low likely</span>` : '';
+        return `<tr>
         <td>${esc(row.day)}</td>
         <td>${esc(row.logged_requests && Number(row.logged_requests) !== Number(row.requests || 0) ? `${row.requests || 0}/${row.logged_requests}` : (row.requests || 0))}</td>
         <td>${esc(num(row.input_tokens))}</td>
         <td>${esc(num(row.cached_input_tokens))}</td>
-        <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}</td>
+        <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}${lowSummary}</td>
         <td>${latencyCell(row)}</td>
         <td class="${Number(row.errors || 0) ? 'bad' : ''}">${esc(row.errors || 0)}</td>
-      </tr>`).join('') || '<tr><td colspan="7" class="muted">No Codex cache rows yet.</td></tr>';
+      </tr>`;
+      }).join('') || '<tr><td colspan="7" class="muted">No Codex cache rows yet.</td></tr>';
     }
     function renderLeases(leases) {
       leaseSummary.textContent = `${(leases || []).length} active`;

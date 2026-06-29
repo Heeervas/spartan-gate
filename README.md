@@ -358,8 +358,9 @@ sg-whitelist-domain 15d vendor.example.com
 ```
 
 Temporary entries are timestamped in the private file. Runtime whitelists drop
-expired entries when proxy/DNS start, when the helper recreates running services,
-or during the daily refresh window at `02:00` Europe/Madrid.
+expired entries when proxy/DNS start, when the helper hot-reloads running
+services, during fallback recreates, or during the daily refresh window at
+`02:00` Europe/Madrid.
 
 At startup, Tinyproxy and DNS merge:
 
@@ -438,7 +439,7 @@ docker compose -f infra/compose/compose.yml config
 Useful helper scripts:
 
 - `scripts/aliases.sh`: shell helpers; `sg` is a Docker Compose passthrough and `sg-up` starts the selected tier, including Hermes.
-- `scripts/whitelist-domain.sh`: adds permanent or temporary private outbound whitelist domains and recreates only running proxy/DNS services.
+- `scripts/whitelist-domain.sh`: adds permanent or temporary private outbound whitelist domains and hot-reloads running proxy/DNS services, with recreate fallback on reload failure.
 - `scripts/add-port.sh`: adds private Caddy listeners and private Compose port mappings for Hermes app ports.
 
 ## Credits
