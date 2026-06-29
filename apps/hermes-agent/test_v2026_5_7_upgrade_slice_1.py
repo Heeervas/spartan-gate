@@ -226,6 +226,16 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
                 self.assertIn('NPM_CONFIG_PREFIX: /opt/data/.local', compose)
                 self.assertNotIn('PIP_USER: "1"', compose)
 
+    def test_tier_spartan_route_mounts_cache_lineage_plugin(self):
+        compose = read_text(TIER_COMPOSE_DIR / 'compose.spartan-route.yml')
+
+        self.assertIn('OPENAI_BASE_URL: http://spartan-route:18790/v1', compose)
+        self.assertIn(
+            '../../../infra/hermes-plugins/spartan-cache-lineage:/opt/data/plugins/spartan-cache-lineage:ro',
+            compose,
+        )
+        self.assertNotIn(':/opt/data/plugins:ro', compose)
+
     def test_full_compose_allows_user_level_python_and_node_installs(self):
         compose = read_text(COMPOSE_PATH)
 

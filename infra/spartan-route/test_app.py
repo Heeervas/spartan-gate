@@ -30,7 +30,7 @@ from spartan_route.app import (
     request_shape_snapshot,
 )
 from spartan_route.config import ModelEntry, SpartanRouteConfig
-from spartan_route.codex import CodexAuth, CodexCallResult, CodexSlot, sse
+from spartan_route.codex import CodexAuth, CodexCallResult, CodexSlot, build_content_prompt_cache_key, sse
 from spartan_route.telemetry import RoutingLogEntry, TelemetryStore
 from spartan_route.util import now_iso
 
@@ -57,6 +57,15 @@ class FakeUpstreamResponse:
 
     async def read(self) -> bytes:
         return self._body
+
+    def release(self) -> None:
+        pass
+
+    def __await__(self):
+        async def _self():
+            return self
+
+        return _self().__await__()
 
 
 class FakeOpenAISession:
@@ -121,6 +130,7 @@ def test_config() -> SpartanRouteConfig:
     }
     models = {
         "anthropic/test": ModelEntry("anthropic/test", "anthropic"),
+        "openai/gpt-test": ModelEntry("openai/gpt-test", "openai"),
         "codex/gpt-5.5": ModelEntry("codex/gpt-5.5", "codex"),
         "codex/gpt-5.4": ModelEntry("codex/gpt-5.4", "codex"),
         "codex/gpt-5.4-mini": ModelEntry("codex/gpt-5.4-mini", "codex"),
@@ -266,6 +276,55 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["prompt_cache_key"], f"{raw_key}\0spartan-cache-lineage:2")
         self.assertNotIn("spartan_cache_lineage", call["request"])
         self.assertNotIn("spartan_cache_lineage_reason", call["request"])
+
+    async def test_cache_lineage_applies_to_content_derived_key(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        body = {
+            "model": "clawroute/auto",
+            "spartan_cache_lineage": 3,
+            "messages": [{"role": "system", "content": "stable policy"}, {"role": "user", "content": "hello"}],
+        }
+
+        response = await self.client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer secret"},
+            json=body,
+        )
+
+        self.assertEqual(response.status, 200)
+        await response.json()
+        content_key = build_content_prompt_cache_key(body)
+        self.assertIsNotNone(content_key)
+        self.assertEqual(fake_codex.calls[0]["prompt_cache_key"], f"{content_key}\0spartan-cache-lineage:3")
+
+    async def test_openai_passthrough_uses_effective_prompt_cache_key(self) -> None:
+        state = self.app[STATE_KEY]
+        if state.session is not None:
+            await state.session.close()
+        fake_session = FakeOpenAISession()
+        state.session = fake_session
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            response = await self.client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": "Bearer secret"},
+                json={
+                    "model": "openai/gpt-test",
+                    "prompt_cache_key": "session",
+                    "spartan_cache_lineage": 4,
+                    "spartan_cache_lineage_reason": "history_rewrite",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+
+        self.assertEqual(response.status, 200)
+        await response.json()
+        upstream_body = fake_session.calls[0]["json"]
+        self.assertEqual(upstream_body["prompt_cache_key"], "session\0spartan-cache-lineage:4")
+        self.assertNotIn("spartan_cache_lineage", upstream_body)
+        self.assertNotIn("spartan_cache_lineage_reason", upstream_body)
 
     async def test_request_shape_diagnostics_are_metadata_only(self) -> None:
         body = {
@@ -451,6 +510,70 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
         self.assertNotEqual(context["cache_key_hash"], context["effective_cache_key_hash"])
         self.assertNotIn("raw-secret-cache-key", serialized)
         self.assertNotIn("private system", serialized)
+
+    def test_invalid_cache_lineage_is_ignored(self) -> None:
+        for lineage in (True, False, -1, 1_000_001, "bad", "-1", "1000001"):
+            with self.subTest(lineage=lineage):
+                state = self.state()
+                body = {
+                    "model": "clawroute/auto",
+                    "prompt_cache_key": "session",
+                    "spartan_cache_lineage": lineage,
+                    "messages": [{"role": "system", "content": "stable"}, {"role": "user", "content": "hello"}],
+                }
+                result = ExecutionResult(200, input_tokens=25000, cached_input_tokens=0, output_tokens=300, usage_seen=True)
+
+                log_request(state, body, self.route(), result, 0, "req", "session", "turn", "chat_completions")
+
+                context = json.loads(state.queue.entries[0].context_info)
+                self.assertIsNone(context["cache_lineage"])
+                self.assertFalse(context["cache_lineage_present"])
+                self.assertEqual(context["cache_key_hash"], context["effective_cache_key_hash"])
+
+    def test_lineage_change_starts_new_effective_cache_trace(self) -> None:
+        state = self.state()
+        route = self.route()
+        base_messages = [{"role": "system", "content": "stable"}]
+        base_messages.extend(
+            {"role": "user" if index % 2 == 0 else "assistant", "content": f"m{index}"}
+            for index in range(55)
+        )
+        bodies = [
+            {
+                "model": "clawroute/auto",
+                "prompt_cache_key": "session",
+                "spartan_cache_lineage": 0,
+                "messages": base_messages,
+            },
+            {
+                "model": "clawroute/auto",
+                "prompt_cache_key": "session",
+                "spartan_cache_lineage": 1,
+                "spartan_cache_lineage_reason": "history_rewrite",
+                "messages": [*base_messages, {"role": "assistant", "content": "a"}],
+            },
+        ]
+
+        for index, body in enumerate(bodies):
+            result = ExecutionResult(
+                200,
+                slot_index=0,
+                account_key="account",
+                input_tokens=80000,
+                cached_input_tokens=0,
+                output_tokens=100,
+                usage_seen=True,
+                usage_event_type="response.completed",
+            )
+            log_request(state, body, route, result, 0, f"req-{index}", "session", f"turn-{index}", "chat_completions")
+
+        contexts = [json.loads(entry.context_info) for entry in state.queue.entries]
+        self.assertEqual(contexts[1]["same_session_cache_trace"]["comparison"], "baseline")
+        self.assertFalse(contexts[1]["expected_cache_hit"])
+        self.assertFalse(contexts[1]["cache_prefix_candidate"])
+        self.assertFalse(contexts[1]["cache_likely"])
+        self.assertEqual(contexts[1]["cache_expectation_reason"], "baseline")
+        self.assertFalse(contexts[1]["cache_low"])
 
     def test_log_request_preview_uses_last_user_message_not_system_prompt(self) -> None:
         state = self.content_logging_state()

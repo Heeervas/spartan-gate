@@ -261,6 +261,7 @@ async def execute_provider_chat(
     body: dict[str, Any],
     route: RoutedRequest,
     wants_stream: bool,
+    prompt_cache_key: str | None,
 ) -> ExecutionResult:
     provider = route.provider
     base_url = provider_base_url(provider)
@@ -279,7 +280,10 @@ async def execute_provider_chat(
 
     upstream_body = dict(body)
     upstream_body["model"] = upstream_model_id(route.actual_model, provider)
-    if provider != "openai":
+    if provider == "openai":
+        if prompt_cache_key:
+            upstream_body["prompt_cache_key"] = prompt_cache_key
+    else:
         upstream_body.pop("prompt_cache_key", None)
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -366,7 +370,7 @@ async def execute_chat(
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
         return execution
-    return await execute_provider_chat(state, upstream_body, route, wants_stream)
+    return await execute_provider_chat(state, upstream_body, route, wants_stream, prompt_cache_key)
 
 
 async def sync_codex_stream_result(source_result: CodexCallResult, target: ExecutionResult) -> AsyncIterator[bytes]:
@@ -400,6 +404,8 @@ def request_prompt_cache_key(body: dict[str, Any]) -> str | None:
 
 def request_prompt_cache_lineage(body: dict[str, Any]) -> str | None:
     value = body.get(SPARTAN_CACHE_LINEAGE_FIELD)
+    if isinstance(value, bool):
+        return None
     if isinstance(value, int) and 0 <= value <= 1_000_000:
         return str(value)
     if isinstance(value, str):
@@ -413,6 +419,22 @@ def cache_key_with_lineage(prompt_cache_key: str | None, lineage: str | None) ->
     if not prompt_cache_key or lineage is None:
         return prompt_cache_key
     return f"{prompt_cache_key}\0spartan-cache-lineage:{lineage}"
+
+
+def request_logical_cache_identity(body: dict[str, Any], session_id: str | None, explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    content_key = build_content_prompt_cache_key(body)
+    if content_key:
+        return content_key
+    return session_id
+
+
+def request_effective_prompt_cache_key(body: dict[str, Any], session_id: str | None, explicit: str | None) -> str | None:
+    lineage = request_prompt_cache_lineage(body)
+    if lineage is None:
+        return explicit
+    return cache_key_with_lineage(request_logical_cache_identity(body, session_id, explicit), lineage)
 
 
 def strip_private_spartan_fields(body: dict[str, Any]) -> dict[str, Any]:
@@ -815,9 +837,9 @@ def log_request(
     tools = body.get("tools") if isinstance(body.get("tools"), list) else []
     explicit_cache_key = request_prompt_cache_key(body)
     cache_lineage = request_prompt_cache_lineage(body)
-    effective_explicit_cache_key = cache_key_with_lineage(explicit_cache_key, cache_lineage)
+    effective_prompt_cache_key = request_effective_prompt_cache_key(body, session_id, explicit_cache_key)
     logical_upstream_cache_key = resolve_prompt_cache_key(body, session_id, explicit_cache_key)
-    upstream_cache_key = resolve_prompt_cache_key(body, session_id, effective_explicit_cache_key)
+    upstream_cache_key = resolve_prompt_cache_key(body, session_id, effective_prompt_cache_key)
     cache_key_hash = sha(logical_upstream_cache_key, 12) if logical_upstream_cache_key else None
     effective_cache_key_hash = sha(upstream_cache_key, 12) if upstream_cache_key else None
     cache_key_source = request_prompt_cache_key_source(body, session_id)
@@ -825,7 +847,7 @@ def log_request(
     shape_snapshot = request_shape_snapshot(body)
     tool_schema_fp = shape_snapshot.get("toolSchemaFingerprint")
     request_trace = request_trace_from_request(body, shape_snapshot, state.config.log_content)
-    trace_key = f"{session_id or 'none'}:{cache_key_hash or 'none'}"
+    trace_key = f"{session_id or 'none'}:{effective_cache_key_hash or 'none'}"
     previous_trace = state.recent_session_traces.get(trace_key)
     same_session_trace = compare_session_trace(shape_snapshot, previous_trace)
     state.recent_session_traces[trace_key] = shape_snapshot
@@ -1129,8 +1151,8 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
     request_id = uuid.uuid4().hex[:12]
     started = time.monotonic()
     prompt_cache_key = request_prompt_cache_key(body)
-    effective_prompt_cache_key = cache_key_with_lineage(prompt_cache_key, request_prompt_cache_lineage(body))
     session_id = session_id_from_request(body, prompt_cache_key)
+    effective_prompt_cache_key = request_effective_prompt_cache_key(body, session_id, prompt_cache_key)
     turn_id = resolve_turn_id(body, session_id, request_id)
     route = route_request(state.config, body)
     result = await execute_chat(state, body, route, bool(body.get("stream")), session_id, effective_prompt_cache_key, request_id)
@@ -1155,8 +1177,8 @@ async def responses(request: web.Request) -> web.StreamResponse:
     request_id = uuid.uuid4().hex[:12]
     started = time.monotonic()
     prompt_cache_key = request_prompt_cache_key(chat_body)
-    effective_prompt_cache_key = cache_key_with_lineage(prompt_cache_key, request_prompt_cache_lineage(chat_body))
     session_id = session_id_from_request(chat_body, prompt_cache_key)
+    effective_prompt_cache_key = request_effective_prompt_cache_key(chat_body, session_id, prompt_cache_key)
     turn_id = resolve_turn_id(chat_body, session_id, request_id)
     route = route_request(state.config, chat_body)
     wants_stream = bool(body.get("stream"))

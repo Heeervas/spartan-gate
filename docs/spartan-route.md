@@ -206,6 +206,21 @@ This uses the normal full-stack private Compose path plus
 `http://spartan-route:18790/v1` in this mode. Plain `sg up -d` remains the
 normal ClawRoute path and does not load Spartan Route-only private overrides.
 
+Spartan Route overlays mount the local Hermes `spartan-cache-lineage` plugin at
+`/opt/data/plugins/spartan-cache-lineage`. Hermes user plugins are opt-in, so
+enable it once in the active Hermes data profile:
+
+```sh
+sg route exec hermes hermes plugins enable spartan-cache-lineage
+sg route up -d --force-recreate hermes
+sg route exec hermes hermes plugins list --plain --no-bundled | rg spartan-cache-lineage
+```
+
+The plugin owns Spartan Route cache lineage metadata. It can preserve visible
+`reasoning_effort` request fields, but the existing Hermes transport patch is
+still required for `reasoning_config` forwarding paths that middleware cannot
+observe; do not remove that patch as part of the plugin rollout.
+
 Spartan Route is exposed through Caddy on `SPARTAN_ROUTE_EDGE_PORT`, default
 `18791`. For local private stacks that still reserve legacy Mission Control
 port `18791`, set `SPARTAN_ROUTE_EDGE_PORT=18792`. Private HTTPS stacks should
@@ -222,6 +237,7 @@ field or send `Authorization: Bearer <token>`.
 
 ```sh
 python3 -m py_compile infra/spartan-route/spartan_route/*.py infra/spartan-route/test_*.py
+python3 -m unittest infra/hermes-plugins/test_spartan_cache_lineage.py
 docker build -t spartan-route:test infra/spartan-route
 docker run --rm -v "$PWD/infra/spartan-route:/tests:ro" -w /tests \
   spartan-route:test python3 -m unittest discover -s /tests -p 'test_*.py'

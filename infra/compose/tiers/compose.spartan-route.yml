@@ -54,3 +54,5 @@ services:
       CUSTOM_1_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       NO_PROXY: localhost,127.0.0.1,::1,hermes,camofox,spartan-route
       no_proxy: localhost,127.0.0.1,::1,hermes,camofox,spartan-route
+    volumes:
+      - ../../../infra/hermes-plugins/spartan-cache-lineage:/opt/data/plugins/spartan-cache-lineage:ro
