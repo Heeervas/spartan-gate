@@ -83,6 +83,33 @@ class FakeImageCodex:
         return []
 
 
+class CaptureChatCodex:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute_chat(
+        self,
+        request: dict[str, Any],
+        model_id: str,
+        wants_stream: bool,
+        session_id: str | None,
+        prompt_cache_key: str | None,
+        request_id: str,
+    ) -> CodexCallResult:
+        self.calls.append({
+            "request": request,
+            "model_id": model_id,
+            "wants_stream": wants_stream,
+            "session_id": session_id,
+            "prompt_cache_key": prompt_cache_key,
+            "request_id": request_id,
+        })
+        return CodexCallResult(status=200, body={"id": "chatcmpl_test", "choices": []}, usage_seen=False)
+
+    def slot_status(self):
+        return []
+
+
 def test_config() -> SpartanRouteConfig:
     tier_models = {
         "heartbeat": {"primary": "codex/gpt-5.4-mini", "fallback": "codex/gpt-5.4-mini"},
@@ -213,6 +240,32 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 503)
         payload = await response.json()
         self.assertEqual(payload["error"]["code"], "provider_not_supported")
+
+    async def test_cache_lineage_uses_effective_key_and_stays_private(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        raw_key = "raw-secret-cache-key"
+
+        response = await self.client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer secret"},
+            json={
+                "model": "clawroute/auto",
+                "prompt_cache_key": raw_key,
+                "spartan_cache_lineage": 2,
+                "spartan_cache_lineage_reason": "history_rewrite",
+                "messages": [{"role": "system", "content": "private system"}, {"role": "user", "content": "hello"}],
+            },
+        )
+
+        self.assertEqual(response.status, 200)
+        await response.json()
+        self.assertEqual(len(fake_codex.calls), 1)
+        call = fake_codex.calls[0]
+        self.assertEqual(call["prompt_cache_key"], f"{raw_key}\0spartan-cache-lineage:2")
+        self.assertNotIn("spartan_cache_lineage", call["request"])
+        self.assertNotIn("spartan_cache_lineage_reason", call["request"])
 
     async def test_request_shape_diagnostics_are_metadata_only(self) -> None:
         body = {
@@ -373,6 +426,29 @@ class AppCacheDiagnosticsTests(unittest.TestCase):
         self.assertEqual(context["usage_seen"], True)
         self.assertEqual(context["usage_event_type"], "response.completed")
         self.assertAlmostEqual(context["cache_hit_ratio"], 0.48)
+        self.assertNotIn("raw-secret-cache-key", serialized)
+        self.assertNotIn("private system", serialized)
+
+    def test_log_request_records_lineage_effective_hash_without_raw_key(self) -> None:
+        state = self.state()
+        body = {
+            "model": "clawroute/auto",
+            "prompt_cache_key": "raw-secret-cache-key",
+            "spartan_cache_lineage": "2",
+            "spartan_cache_lineage_reason": "history_rewrite",
+            "messages": [{"role": "system", "content": "private system"}, {"role": "user", "content": "hello"}],
+        }
+        result = ExecutionResult(200, input_tokens=25000, cached_input_tokens=0, output_tokens=300, usage_seen=True)
+
+        log_request(state, body, self.route(), result, 0, "req", "session", "turn", "chat_completions")
+
+        context = json.loads(state.queue.entries[0].context_info)
+        serialized = json.dumps(context)
+        self.assertEqual(context["cache_key_source"], "prompt_cache_key")
+        self.assertEqual(context["cache_lineage"], "2")
+        self.assertTrue(context["cache_lineage_present"])
+        self.assertEqual(context["cache_lineage_reason"], "history_rewrite")
+        self.assertNotEqual(context["cache_key_hash"], context["effective_cache_key_hash"])
         self.assertNotIn("raw-secret-cache-key", serialized)
         self.assertNotIn("private system", serialized)
 

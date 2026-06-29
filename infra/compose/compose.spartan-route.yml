@@ -66,6 +66,8 @@ services:
       CUSTOM_1_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       NO_PROXY: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,spartan-route,ollama,browserless,camofox
       no_proxy: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,spartan-route,ollama,browserless,camofox
+    volumes:
+      - ../hermes-plugins/spartan-cache-lineage:/opt/data/plugins/spartan-cache-lineage:ro
 
   caddy:
     ports:

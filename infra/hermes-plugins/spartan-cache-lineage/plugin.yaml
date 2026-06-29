@@ -1,0 +1,4 @@
+name: spartan-cache-lineage
+version: "0.1.0"
+description: Adds Spartan Route prompt-cache identity and lineage metadata.
+kind: standalone

@@ -83,6 +83,9 @@ CACHE_LIKELY_MIN_NON_TOOL_TOKENS = 50_000
 CACHE_STALL_DIAGNOSTIC_MIN_TOKENS = 50_000
 CACHE_STALL_DIAGNOSTIC_LOW_RATIO = 0.20
 CACHE_STALL_ERROR_CODES = {"codex_stream_timeout", "codex_stream_error", "codex_empty_response"}
+SPARTAN_CACHE_LINEAGE_FIELD = "spartan_cache_lineage"
+SPARTAN_CACHE_LINEAGE_REASON_FIELD = "spartan_cache_lineage_reason"
+SPARTAN_PRIVATE_REQUEST_FIELDS = {SPARTAN_CACHE_LINEAGE_FIELD, SPARTAN_CACHE_LINEAGE_REASON_FIELD}
 
 
 def provider_for_model(model_id: str) -> str:
@@ -333,11 +336,12 @@ async def execute_chat(
     prompt_cache_key: str | None,
     request_id: str,
 ) -> ExecutionResult:
+    upstream_body = strip_private_spartan_fields(body)
     if route.provider == "codex":
         if state.codex is None:
             return ExecutionResult(503, body=json_error("Codex router is not ready", 503, "codex_unavailable")[0], error="codex_unavailable")
         codex_result: CodexCallResult = await state.codex.execute_chat(
-            body,
+            upstream_body,
             route.actual_model,
             wants_stream,
             session_id,
@@ -362,7 +366,7 @@ async def execute_chat(
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
         return execution
-    return await execute_provider_chat(state, body, route, wants_stream)
+    return await execute_provider_chat(state, upstream_body, route, wants_stream)
 
 
 async def sync_codex_stream_result(source_result: CodexCallResult, target: ExecutionResult) -> AsyncIterator[bytes]:
@@ -392,6 +396,29 @@ async def sync_codex_stream_result(source_result: CodexCallResult, target: Execu
 def request_prompt_cache_key(body: dict[str, Any]) -> str | None:
     value = body.get("prompt_cache_key") or body.get("user")
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def request_prompt_cache_lineage(body: dict[str, Any]) -> str | None:
+    value = body.get(SPARTAN_CACHE_LINEAGE_FIELD)
+    if isinstance(value, int) and 0 <= value <= 1_000_000:
+        return str(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit() and int(stripped) <= 1_000_000:
+            return str(int(stripped))
+    return None
+
+
+def cache_key_with_lineage(prompt_cache_key: str | None, lineage: str | None) -> str | None:
+    if not prompt_cache_key or lineage is None:
+        return prompt_cache_key
+    return f"{prompt_cache_key}\0spartan-cache-lineage:{lineage}"
+
+
+def strip_private_spartan_fields(body: dict[str, Any]) -> dict[str, Any]:
+    if not any(field in body for field in SPARTAN_PRIVATE_REQUEST_FIELDS):
+        return body
+    return {key: value for key, value in body.items() if key not in SPARTAN_PRIVATE_REQUEST_FIELDS}
 
 
 def request_prompt_cache_key_source(body: dict[str, Any], session_id: str | None) -> str:
@@ -787,8 +814,12 @@ def log_request(
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     tools = body.get("tools") if isinstance(body.get("tools"), list) else []
     explicit_cache_key = request_prompt_cache_key(body)
-    upstream_cache_key = resolve_prompt_cache_key(body, session_id, explicit_cache_key)
-    cache_key_hash = sha(upstream_cache_key, 12) if upstream_cache_key else None
+    cache_lineage = request_prompt_cache_lineage(body)
+    effective_explicit_cache_key = cache_key_with_lineage(explicit_cache_key, cache_lineage)
+    logical_upstream_cache_key = resolve_prompt_cache_key(body, session_id, explicit_cache_key)
+    upstream_cache_key = resolve_prompt_cache_key(body, session_id, effective_explicit_cache_key)
+    cache_key_hash = sha(logical_upstream_cache_key, 12) if logical_upstream_cache_key else None
+    effective_cache_key_hash = sha(upstream_cache_key, 12) if upstream_cache_key else None
     cache_key_source = request_prompt_cache_key_source(body, session_id)
     message_chars, tool_schema_chars = estimate_shape_sizes(body)
     shape_snapshot = request_shape_snapshot(body)
@@ -818,7 +849,7 @@ def log_request(
         route,
         result,
         input_tokens,
-        cache_key_hash,
+        effective_cache_key_hash,
         tool_schema_fp if isinstance(tool_schema_fp, str) else None,
         expected_cache_hit,
         cache_likely,
@@ -827,12 +858,12 @@ def log_request(
     guard_entry = (
         state.cache_guard.get(cache_guard_key(
             route.actual_model,
-            cache_key_hash,
+            effective_cache_key_hash,
             result.slot_index,
             result.account_key,
             tool_schema_fp if isinstance(tool_schema_fp, str) else None,
         ))
-        if cache_key_hash
+        if effective_cache_key_hash
         else None
     )
     context = {
@@ -845,7 +876,13 @@ def log_request(
         "last_role": messages[-1].get("role") if messages and isinstance(messages[-1], dict) else None,
         "cache_key_present": bool(upstream_cache_key),
         "cache_key_hash": cache_key_hash,
+        "effective_cache_key_hash": effective_cache_key_hash,
         "cache_key_source": cache_key_source,
+        "cache_lineage": cache_lineage,
+        "cache_lineage_present": cache_lineage is not None,
+        "cache_lineage_reason": body.get(SPARTAN_CACHE_LINEAGE_REASON_FIELD)
+        if isinstance(body.get(SPARTAN_CACHE_LINEAGE_REASON_FIELD), str)
+        else None,
         "usage_seen": result.usage_seen,
         "usage_event_type": result.usage_event_type,
         "expected_cache_hit": expected_cache_hit,
@@ -985,6 +1022,8 @@ def responses_body_to_chat(body: dict[str, Any]) -> dict[str, Any]:
         ("top_p", "top_p"),
         ("reasoning_effort", "reasoning_effort"),
         ("prompt_cache_key", "prompt_cache_key"),
+        (SPARTAN_CACHE_LINEAGE_FIELD, SPARTAN_CACHE_LINEAGE_FIELD),
+        (SPARTAN_CACHE_LINEAGE_REASON_FIELD, SPARTAN_CACHE_LINEAGE_REASON_FIELD),
         ("user", "user"),
         ("metadata", "metadata"),
     ):
@@ -1090,10 +1129,11 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
     request_id = uuid.uuid4().hex[:12]
     started = time.monotonic()
     prompt_cache_key = request_prompt_cache_key(body)
+    effective_prompt_cache_key = cache_key_with_lineage(prompt_cache_key, request_prompt_cache_lineage(body))
     session_id = session_id_from_request(body, prompt_cache_key)
     turn_id = resolve_turn_id(body, session_id, request_id)
     route = route_request(state.config, body)
-    result = await execute_chat(state, body, route, bool(body.get("stream")), session_id, prompt_cache_key, request_id)
+    result = await execute_chat(state, body, route, bool(body.get("stream")), session_id, effective_prompt_cache_key, request_id)
     return await write_execution_response(
         request,
         result,
@@ -1115,11 +1155,12 @@ async def responses(request: web.Request) -> web.StreamResponse:
     request_id = uuid.uuid4().hex[:12]
     started = time.monotonic()
     prompt_cache_key = request_prompt_cache_key(chat_body)
+    effective_prompt_cache_key = cache_key_with_lineage(prompt_cache_key, request_prompt_cache_lineage(chat_body))
     session_id = session_id_from_request(chat_body, prompt_cache_key)
     turn_id = resolve_turn_id(chat_body, session_id, request_id)
     route = route_request(state.config, chat_body)
     wants_stream = bool(body.get("stream"))
-    result = await execute_chat(state, chat_body, route, wants_stream, session_id, prompt_cache_key, request_id)
+    result = await execute_chat(state, chat_body, route, wants_stream, session_id, effective_prompt_cache_key, request_id)
 
     def done() -> None:
         log_request(state, chat_body, route, result, started, request_id, session_id, turn_id, "responses")
