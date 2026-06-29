@@ -270,6 +270,15 @@ class TelemetryStore:
                        coalesce(sum(cache_likely), 0) AS cache_likely_requests,
                        coalesce(sum(CASE WHEN cache_likely = 1 THEN input_tokens ELSE 0 END), 0) AS cache_likely_input_tokens,
                        coalesce(sum(CASE WHEN cache_likely = 1 THEN cached_input_tokens ELSE 0 END), 0) AS cache_likely_cached_input_tokens,
+                       CASE
+                           WHEN coalesce(sum(CASE WHEN cache_likely = 1 THEN input_tokens ELSE 0 END), 0) > 0
+                           THEN (
+                               100.0
+                               * coalesce(sum(CASE WHEN cache_likely = 1 THEN cached_input_tokens ELSE 0 END), 0)
+                               / coalesce(sum(CASE WHEN cache_likely = 1 THEN input_tokens ELSE 0 END), 0)
+                           )
+                           ELSE 0
+                       END AS cache_likely_hit_percent,
                        coalesce(sum(cache_low), 0) AS cache_low_requests,
                        coalesce(sum(CASE WHEN cache_low = 1 THEN input_tokens ELSE 0 END), 0) AS cache_low_input_tokens,
                        sum(CASE WHEN coalesce(error, '') <> '' THEN 1 ELSE 0 END) AS errors,
@@ -361,6 +370,11 @@ class TelemetryStore:
             "cacheLikelyRequests": cache_likely_requests,
             "cacheLikelyInputTokens": cache_likely_input_tokens,
             "cacheLikelyCachedInputTokens": cache_likely_cached_input_tokens,
+            "cacheLikelyHitPercent": (
+                cache_likely_cached_input_tokens / cache_likely_input_tokens * 100
+                if cache_likely_input_tokens
+                else 0
+            ),
             "cacheLowRequests": cache_low_requests,
             "cacheLowInputTokens": cache_low_input_tokens,
             "errors": errors,
@@ -650,6 +664,7 @@ class TelemetryStore:
             "cacheLikelyRequests": 0,
             "cacheLikelyInputTokens": 0,
             "cacheLikelyCachedInputTokens": 0,
+            "cacheLikelyHitPercent": 0,
             "cacheLowRequests": 0,
             "cacheLowInputTokens": 0,
             "legacyLatencyRequests": 0,
@@ -693,6 +708,12 @@ class TelemetryStore:
     def _finalize_metrics(self, metrics: dict[str, Any]) -> None:
         input_tokens = int(metrics.get("inputTokens") or 0)
         metrics["cacheHitPercent"] = (int(metrics.get("cachedInputTokens") or 0) / input_tokens * 100) if input_tokens else 0
+        likely_input_tokens = int(metrics.get("cacheLikelyInputTokens") or 0)
+        metrics["cacheLikelyHitPercent"] = (
+            int(metrics.get("cacheLikelyCachedInputTokens") or 0) / likely_input_tokens * 100
+            if likely_input_tokens
+            else 0
+        )
         latencies = metrics.pop("_latencies", [])
         first_latencies = metrics.pop("_firstResponseLatencies", [])
         metrics["latencyMs"] = self._latency_summary(latencies)

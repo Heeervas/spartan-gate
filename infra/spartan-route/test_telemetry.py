@@ -113,6 +113,7 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(rows[0]["cache_likely_requests"], 2)
             self.assertEqual(rows[0]["cache_likely_input_tokens"], 180000)
             self.assertEqual(rows[0]["cache_likely_cached_input_tokens"], 90000)
+            self.assertEqual(rows[0]["cache_likely_hit_percent"], 50.0)
             self.assertEqual(rows[0]["cache_low_requests"], 1)
             self.assertEqual(rows[0]["cache_low_input_tokens"], 80000)
 
@@ -120,6 +121,7 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(today["cacheLikelyRequests"], 2)
             self.assertEqual(today["cacheLikelyInputTokens"], 180000)
             self.assertEqual(today["cacheLikelyCachedInputTokens"], 90000)
+            self.assertEqual(today["cacheLikelyHitPercent"], 50.0)
             self.assertEqual(today["cacheLowRequests"], 1)
             self.assertEqual(today["cacheLowInputTokens"], 80000)
 
@@ -128,6 +130,7 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(metrics["cacheLikelyRequests"], 2)
             self.assertEqual(metrics["cacheLikelyInputTokens"], 180000)
             self.assertEqual(metrics["cacheLikelyCachedInputTokens"], 90000)
+            self.assertEqual(metrics["cacheLikelyHitPercent"], 50.0)
             self.assertEqual(metrics["cacheLowRequests"], 1)
             self.assertEqual(metrics["cacheLowInputTokens"], 80000)
         finally:

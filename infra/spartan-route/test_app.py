@@ -197,7 +197,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             cached_input_tokens=1000,
             output_tokens=50,
             response_time_ms=800,
-            context_info='{"usage_seen":true}',
+            context_info='{"usage_seen":true,"cache_likely":true}',
         ))
         response = await self.client.get("/stats", headers={"Authorization": "Bearer secret"})
         self.assertEqual(response.status, 200)
@@ -206,6 +206,9 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("latencyToday", payload)
         self.assertGreaterEqual(payload["today"]["loggedRequests"], 1)
         self.assertGreaterEqual(payload["latencyToday"]["avg"], 0)
+        self.assertEqual(payload["today"]["cacheLikelyHitPercent"], 50.0)
+        self.assertEqual(payload["totals"]["cacheLikelyHitPercent"], 50.0)
+        self.assertEqual(payload["dailyCache"][0]["cache_likely_hit_percent"], 50.0)
 
     async def test_invalid_turn_id_is_rejected_before_query(self) -> None:
         response = await self.client.get(
@@ -842,6 +845,8 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn('class="request-preview"', html)
         self.assertIn('class="trace-items"', html)
         self.assertIn("firstResponseLatencyMs", html)
+        self.assertIn("tokenCachePercent", html)
+        self.assertIn("likelyUsageCacheText", html)
 
     def test_codex_dashboard_uses_threshold_colored_rings(self) -> None:
         html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
@@ -851,6 +856,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("value >= 70", html)
         self.assertIn("--tone", html)
         self.assertIn("slotPaths", html)
+        self.assertIn("likelyUsageCacheText", html)
 
     def test_codex_dashboard_merges_usage_and_slot_cards_with_countdowns(self) -> None:
         html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")

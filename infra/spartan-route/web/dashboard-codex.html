@@ -355,6 +355,15 @@
     function pct(cached, input) {
       return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : '0.0%';
     }
+    function likelyUsageCacheText(row = {}) {
+      const likely = Number(row.cache_likely_requests || row.cacheLikelyRequests || 0);
+      const input = Number(row.cache_likely_input_tokens || row.cacheLikelyInputTokens || 0);
+      if (!likely && !input) return '';
+      if (row.cache_likely_hit_percent !== undefined) return `${Number(row.cache_likely_hit_percent || 0).toFixed(1)}% likely cache`;
+      if (row.cacheLikelyHitPercent !== undefined) return `${Number(row.cacheLikelyHitPercent || 0).toFixed(1)}% likely cache`;
+      const cached = Number(row.cache_likely_cached_input_tokens || row.cacheLikelyCachedInputTokens || 0);
+      return `${pct(cached, input)} likely cache`;
+    }
     function ringTone(value) {
       if (value >= 90) return 'var(--bad)';
       if (value >= 70) return 'var(--warn)';
@@ -512,13 +521,16 @@
       cacheEl.innerHTML = (days || []).map(row => {
         const likely = Number(row.cache_likely_requests || 0);
         const low = Number(row.cache_low_requests || 0);
-        const lowSummary = likely ? `<br><span class="muted">${esc(num(low))}/${esc(num(likely))} low likely</span>` : '';
+        const cacheDetails = [
+          likelyUsageCacheText(row),
+          likely ? `${num(low)}/${num(likely)} low likely` : '',
+        ].filter(Boolean).map(item => `<br><span class="muted">${esc(item)}</span>`).join('');
         return `<tr>
         <td>${esc(row.day)}</td>
         <td>${esc(row.logged_requests && Number(row.logged_requests) !== Number(row.requests || 0) ? `${row.requests || 0}/${row.logged_requests}` : (row.requests || 0))}</td>
         <td>${esc(num(row.input_tokens))}</td>
         <td>${esc(num(row.cached_input_tokens))}</td>
-        <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}${lowSummary}</td>
+        <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}${cacheDetails}</td>
         <td>${latencyCell(row)}</td>
         <td class="${Number(row.errors || 0) ? 'bad' : ''}">${esc(row.errors || 0)}</td>
       </tr>`;

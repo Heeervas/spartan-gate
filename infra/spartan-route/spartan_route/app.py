@@ -1475,6 +1475,11 @@ async def stats(request: web.Request) -> web.Response:
         "errors": sum(int(row["errors"] or 0) for row in rows),
     }
     totals["cacheHitPercent"] = (totals["cachedInputTokens"] / totals["inputTokens"] * 100) if totals["inputTokens"] else 0
+    totals["cacheLikelyHitPercent"] = (
+        totals["cacheLikelyCachedInputTokens"] / totals["cacheLikelyInputTokens"] * 100
+        if totals["cacheLikelyInputTokens"]
+        else 0
+    )
     return web.json_response({
         "service": "spartan-route",
         "totals": totals,

@@ -153,6 +153,11 @@ Reliability contract:
   and has at least 50000 non-tool input tokens. Tune those last two thresholds
   with `SPARTAN_ROUTE_CACHE_LIKELY_MIN_PREFIX_MESSAGES` and
   `SPARTAN_ROUTE_CACHE_LIKELY_MIN_NON_TOOL_TOKENS`.
+- Dashboard `usage cache` percentages are aggregate usage-visible rows for the
+  selected day, session, or turn. Dashboard `likely cache` percentages are the
+  mature cache-likely subset only. Individual expanded request rows show their
+  own cached-token percentage, which can be much higher or lower than the
+  aggregate.
 - Large low-cache stream failures also update a diagnostic-only stall guard in
   `context_info.cache_stall_diagnostic`. It records consecutive stream-failure
   counts and stable error codes for the selected model/cache/slot/account/tool
