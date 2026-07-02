@@ -149,6 +149,32 @@ exit 2
         calls = self.log.read_text(encoding="utf-8").splitlines()
         self.assertTrue(any("infra/compose/compose.yml" in call and str(private_compose) in call for call in calls))
 
+    def test_l4_install_does_not_auto_configure_spartan_reader(self):
+        result = self.run_install("L4", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.log.read_text(encoding="utf-8")
+        self.assertNotIn("web/spartan-reader", calls)
+        self.assertNotIn("extract_backend", calls)
+
+    def test_non_l4_install_does_not_configure_spartan_reader(self):
+        result = self.run_install("L3", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.log.read_text(encoding="utf-8")
+        self.assertNotIn("web/spartan-reader", calls)
+
+    def test_l4_existing_hermes_config_skips_spartan_reader_auto_config(self):
+        hermes_home = self.data_root / "current" / "hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text("web:\n  extract_backend: firecrawl\n", encoding="utf-8")
+
+        result = self.run_install("L4", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.log.read_text(encoding="utf-8")
+        self.assertNotIn("web/spartan-reader", calls)
+
 
 if __name__ == "__main__":
     unittest.main()

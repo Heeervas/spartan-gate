@@ -42,7 +42,10 @@ inspecting the failed request.
 L4 uses Hermes native SearXNG support for `web_search` through
 `SEARXNG_URL=http://searxng:8080`. Spartan Gate no longer bundles
 `web-search-plus` on fresh installs. SearXNG does not implement `web_extract`;
-use a separate Hermes extract backend or Reader for bounded page text.
+use Reader directly when bounded GET-only page text is the right contract.
+Native `web_extract` performs Hermes URL safety checks before provider dispatch
+and can block domains before Reader receives the URL. Direct Reader calls keep
+the DNS, redirect, and connection checks inside Reader.
 
 Recreate Hermes explicitly after changing its private env or mounts:
 

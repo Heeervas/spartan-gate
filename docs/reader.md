@@ -24,11 +24,17 @@ only when the optional Hermes Camofox backend is enabled for browser-tool tasks.
 
 ## How Hermes Should Use It
 
-Hermes receives:
+In full L4 stacks, Hermes receives:
 
 ```env
 READER_PROXY_URL=http://reader:3000
 ```
+
+Reader is the supported path when bounded page extraction should be decided by
+Reader rather than by Hermes' native `web_extract` preflight. Native
+`web_extract` validates the target URL before provider dispatch and can block a
+domain before Reader receives it. Direct Reader calls keep the DNS, redirect,
+and connection checks inside Reader.
 
 A concrete agent instruction can be:
 

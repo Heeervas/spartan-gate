@@ -170,8 +170,9 @@ configured data paths. L4 remains the full public Compose topology with the
 bundled Hermes agent.
 
 L4 also exposes native Hermes web search through the internal SearXNG service.
-Hermes receives `SEARXNG_URL=http://searxng:8080`; SearXNG is search-only, so
-configure a separate Hermes extract backend when `web_extract` is required.
+Hermes receives `SEARXNG_URL=http://searxng:8080`; SearXNG is search-only. Use
+Reader directly for bounded GET-only page text when Reader should own the DNS,
+redirect, and connection checks.
 
 For L4, expect `proxy`, `dns`, `reader`, and `searxng` to become healthy
 quickly. `clawroute` and browser services can need 30-60 seconds before
@@ -193,8 +194,8 @@ Optional reader smoke test:
 sg-reader-test https://example.com
 ```
 
-If it fails because the target domain is blocked, add the domain to the private
-whitelist and retry.
+This tests Reader itself. Native `web_extract` has a separate Hermes URL
+preflight and can block a target before Reader receives it.
 
 ## Agent Runtime
 

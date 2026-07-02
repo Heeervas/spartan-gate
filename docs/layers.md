@@ -97,6 +97,7 @@ In the full L4 topology, Hermes receives:
 ```env
 SEARXNG_URL=http://searxng:8080
 SEARXNG_INSTANCE_URL=http://searxng:8080
+READER_PROXY_URL=http://reader:3000
 ```
 
 Hermes auto-detects SearXNG from `SEARXNG_URL` when no explicit web backend is
@@ -107,9 +108,13 @@ web:
   search_backend: "searxng"
 ```
 
-SearXNG is search-only. `web_extract` needs a separate Hermes-supported extract
-backend, or a Spartan Gate Reader flow when bounded GET-only page text is the
-right contract.
+SearXNG is search-only. Reader is exposed to Hermes as the internal
+`READER_PROXY_URL` service for direct bounded GET-only page text retrieval.
+It is not mounted as the default native `web_extract` backend because Hermes'
+native wrapper performs its own URL safety preflight before provider dispatch.
+That preflight can block domains before Reader receives the URL. Use direct
+Reader calls or the Reader skill/instruction path when Reader should own the
+DNS, redirect, and connection checks.
 
 Existing user-owned plugin directories such as
 `/opt/data/plugins/web-search-plus` are not deleted automatically. Remove them

@@ -1,0 +1,6 @@
+name: web-spartan-reader
+version: "0.1.0"
+description: Exposes Spartan Gate Reader as a native Hermes web_extract backend.
+kind: backend
+provides_web_providers:
+  - spartan-reader
