@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Updated the Hermes base image pin, archived two upstream-absorbed Hermes
+  patchers, and mapped Camofox protected-route auth into upstream Hermes'
+  `CAMOFOX_API_KEY` client variable.
+- Pinned refreshed Caddy, SearXNG, and Camofox image references, and rebuilt the
+  Camofox wrapper with package upgrades applied at image build time.
+- Added an opt-in Hermes `spartan-reader` web extract backend for the internal
+  Reader service while keeping fresh installs on direct Reader usage rather than
+  native `web_extract` auto-configuration.
 - Added bounded Spartan Route request recovery for temporary all-slot Codex
   cooldowns, returning `Retry-After` metadata when recovery cannot happen
   within the wait budget, and changed private whitelist updates to hot-reload

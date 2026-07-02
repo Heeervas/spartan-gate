@@ -1,19 +1,18 @@
 # Current State
 
-Date: 2026-06-29
+Date: 2026-07-02
 
 ## Latest Update
 
-Spartan Route dashboard cache metrics were clarified on
-`spike/hermes-cache-lineage`. Aggregate dashboard cards now distinguish overall
-usage cache from mature cache-likely hit rate, Codex daily cache rows expose the
-same likely-cache percentage, and expanded request rows show their own cached
-input percentage so high per-request hits are not confused with day/session
-aggregates.
+The remaining uncommitted work was reviewed, tested, and committed for
+publication. It updates the Hermes/Camofox integration for the newer upstream
+Hermes image, archives two absorbed patchers, refreshes runtime image pins, and
+adds an opt-in Spartan Reader Hermes web extract provider without
+auto-configuring fresh installs.
 
 ## Active Task
 
-Dashboard/API implementation is under validation; branch cleanup pending.
+Re-analyze branch publication state after worktree cleanup.
 
 ## Blockers
 

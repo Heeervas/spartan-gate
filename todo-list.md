@@ -1,6 +1,6 @@
 # Task List
 
-Last updated: 2026-06-21
+Last updated: 2026-07-02
 
 ## In Progress
 
@@ -11,6 +11,8 @@ Last updated: 2026-06-21
 - [ ] Review Browserless hardening follow-ups and convert publishable items into public issues or tracked docs.
 
 ## Done
+- [x] Review and commit uncommitted Hermes/Camofox and Reader cleanup.
+
 - [x] Implement Spartan Gate layers/addons/Hermes mode install model.
 
 - [x] Complete final validation and independent code review.
