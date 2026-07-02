@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Runtime patcher: keep Hermes alive when startup failures are retryable.
+"""Archived patcher: keep Hermes alive when startup failures are retryable.
+
+Archived 2026-06-30 after upstream Hermes added degraded startup behavior for
+retryable platform outages.
 
 If the only configured messaging platforms fail during startup for retryable
 reasons such as transient network, DNS, or proxy outages, upstream Hermes

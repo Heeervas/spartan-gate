@@ -37,7 +37,7 @@ class GatewayServiceCdpEnvPatchTests(unittest.TestCase):
         self.assertNotIn('umask 0002', patched)
         self.assertIn('BROWSER_CDP_URL BROWSER_CDP_MAIN_URL BROWSER_CDP_LAUNCH_URL', patched)
         self.assertIn('BROWSERLESS_CDP_BROKER_ENABLED BROWSERLESS_CDP_BROKER_PORT', patched)
-        self.assertIn('CAMOFOX_URL CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID CAMOFOX_SESSION_KEY', patched)
+        self.assertIn('CAMOFOX_URL CAMOFOX_API_KEY CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID CAMOFOX_SESSION_KEY', patched)
         self.assertIn('/run/s6/container_environment/$_hermes_browser_key', patched)
         self.assertIn('export \\"$_hermes_browser_key=$(cat \\"$_hermes_browser_file\\")\\"', patched)
         self.assertIn('nc -z 127.0.0.1 \\"$BROWSERLESS_CDP_BROKER_PORT\\"', patched)

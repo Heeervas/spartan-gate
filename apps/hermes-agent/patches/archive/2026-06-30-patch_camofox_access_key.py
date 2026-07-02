@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Runtime patcher: send CAMOFOX_ACCESS_KEY from Hermes Camofox client."""
+"""Archived patcher: send CAMOFOX_ACCESS_KEY from Hermes Camofox client.
+
+Archived 2026-06-30 after upstream Hermes added Camofox auth headers from
+CAMOFOX_API_KEY. Spartan Gate now maps the client-side Hermes CAMOFOX_API_KEY
+to the protected-route access key in Compose instead of patching Hermes.
+"""
 
 from __future__ import annotations
 

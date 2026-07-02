@@ -215,7 +215,7 @@ caddy_hash_password() {
         return
     fi
     password="$1"
-    docker run --rm caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794 caddy hash-password --plaintext "$password"
+    docker run --rm caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648 caddy hash-password --plaintext "$password"
 }
 
 quote_env() {
@@ -327,7 +327,7 @@ write_env_file() {
     append_env CAMOFOX_ENABLE_VNC "1"
     append_env CAMOFOX_VNC_PASSWORD "$(get_or_generate CAMOFOX_VNC_PASSWORD 24)"
     append_env CAMOFOX_IMAGE "spartan-gate-camofox:1.11.2"
-    append_env CAMOFOX_BASE_IMAGE "ghcr.io/jo-inc/camofox-browser:1.11.2"
+    append_env CAMOFOX_BASE_IMAGE "ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137"
     append_env HERMES_IMAGE "spartan-gate-hermes:latest"
 
     mv "$tmp" "$env_file"

@@ -29,6 +29,9 @@ CAMOFOX_ACCESS_KEY=<private-key>
 protects most routes with `Authorization: Bearer <key>` when this key is set.
 `GET /health` intentionally stays unauthenticated for Docker healthchecks, so a
 successful healthcheck alone does not prove browser/auth integration.
+`CAMOFOX_API_KEY` is generated separately for dedicated cookie/storage routes.
+Hermes receives the access key under upstream Hermes' `CAMOFOX_API_KEY` client
+variable so upstream Camofox auth headers work without a local Hermes patch.
 
 ## Runtime State
 
@@ -84,7 +87,7 @@ browser is using the expected network path.
 Spartan Gate builds a thin local wrapper image:
 
 ```env
-CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.11.2
+CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137
 CAMOFOX_IMAGE=spartan-gate-camofox:1.11.2
 ```
 
@@ -193,8 +196,10 @@ password from `CAMOFOX_VNC_PASSWORD` in the URL fragment. The fragment is not
 sent to Caddy or websockify. If Camofox is already running and noVNC is healthy,
 the helper reuses it instead of rebuilding or recreating the service.
 
-Hermes receives the runtime `CAMOFOX_ACCESS_KEY` needed to call Camofox. It
-also receives `CAMOFOX_USER_ID`, `CAMOFOX_SESSION_KEY`, and
+Hermes receives the runtime `CAMOFOX_ACCESS_KEY` needed to call Camofox, and
+also receives that same protected-route token as `CAMOFOX_API_KEY` for upstream
+Hermes' Camofox auth helper. It also receives `CAMOFOX_USER_ID`,
+`CAMOFOX_SESSION_KEY`, and
 `CAMOFOX_ADOPT_EXISTING_TAB` from the selected private env so browser tools use
 the same saved Camofox profile instead of a new ephemeral `hermes_*` session.
 It does not receive the human account password, 2FA material, or personal API

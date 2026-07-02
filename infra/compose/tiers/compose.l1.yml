@@ -38,7 +38,7 @@ services:
       HERMES_GATEWAY_TOKEN: ${HERMES_GATEWAY_TOKEN:-change-me-hermes-gateway-token}
       HERMES_MAX_ITERATIONS: ${HERMES_MAX_ITERATIONS:-90}
       CAMOFOX_URL: http://camofox:9377
-      CAMOFOX_API_KEY: ${CAMOFOX_API_KEY:-}
+      CAMOFOX_API_KEY: ${CAMOFOX_ACCESS_KEY:-}
       CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-}
       CAMOFOX_USER_ID: ${CAMOFOX_USER_ID:-spartan-camofox-main}
       CAMOFOX_SESSION_KEY: ${CAMOFOX_SESSION_KEY:-manual-login}
@@ -61,7 +61,7 @@ services:
     build:
       context: ../../camofox
       args:
-        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.11.2}
+        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137}
     image: ${CAMOFOX_IMAGE:-spartan-gate-camofox:1.11.2}
     restart: unless-stopped
     shm_size: 1gb

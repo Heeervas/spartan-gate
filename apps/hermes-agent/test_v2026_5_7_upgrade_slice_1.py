@@ -10,6 +10,12 @@ PACKAGE_INSTALLS_DOC_PATH = HERMES_DIR / 'runtime-docs' / 'package-installs.md'
 COMPOSE_PATH = REPO_ROOT / 'infra' / 'compose' / 'compose.yml'
 TIER_COMPOSE_DIR = REPO_ROOT / 'infra' / 'compose' / 'tiers'
 REMOVED_PATCH_PATH = HERMES_DIR / 'patches' / 'patch_post_tool_empty_retry.py'
+ARCHIVED_CAMOFOX_PATCH_PATH = (
+    HERMES_DIR / 'patches' / 'archive' / '2026-06-30-patch_camofox_access_key.py'
+)
+ARCHIVED_GATEWAY_RETRY_PATCH_PATH = (
+    HERMES_DIR / 'patches' / 'archive' / '2026-06-30-patch_gateway_retryable_startup.py'
+)
 
 
 def read_text(path: pathlib.Path) -> str:
@@ -22,7 +28,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn(
             'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:9c7360c541ac61507596409eee333179b55233944f92103087781eafac7fe8ec',
+            'sha256:096066c849e1c952aa89962502a3d346654167b3eab774b1648a94cdfb46d888',
             dockerfile,
         )
 
@@ -151,6 +157,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('printf \'%s\' "$BROWSER_CDP_URL" > "${env_dir}/BROWSER_CDP_URL"', entrypoint)
         self.assertIn('rm -f "${env_dir}/BROWSER_CDP_MAIN_URL"', entrypoint)
         self.assertIn('printf \'%s\' "$BROWSER_CDP_MAIN_URL" > "${env_dir}/BROWSER_CDP_MAIN_URL"', entrypoint)
+        self.assertIn('CAMOFOX_API_KEY', entrypoint)
         self.assertIn('CAMOFOX_ACCESS_KEY', entrypoint)
         self.assertIn('printf \'%s\' "${!key}" > "${env_dir}/${key}"', entrypoint)
         self.assertIn('camofox_browser_mode_enabled()', entrypoint)
@@ -176,12 +183,31 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertLess(entrypoint.rfind(persist_call), entrypoint.rfind(sync_call))
         self.assertLess(entrypoint.rfind(sync_call), entrypoint.rfind(delegation))
 
-    def test_camofox_access_key_patch_is_applied(self):
+    def test_camofox_access_key_patch_is_archived(self):
         dockerfile = read_text(DOCKERFILE_PATH)
         entrypoint = read_text(ENTRYPOINT_PATH)
 
-        self.assertIn('RUN python3 /opt/hermes/patches/patch_camofox_access_key.py', dockerfile)
+        self.assertNotIn('RUN python3 /opt/hermes/patches/patch_camofox_access_key.py', dockerfile)
         self.assertNotIn('run_install_patch "$INSTALL_DIR/patches/patch_camofox_access_key.py"', entrypoint)
+        self.assertTrue(ARCHIVED_CAMOFOX_PATCH_PATH.exists())
+
+    def test_gateway_retryable_startup_patch_is_archived(self):
+        dockerfile = read_text(DOCKERFILE_PATH)
+
+        self.assertNotIn('RUN python3 /opt/hermes/patches/patch_gateway_retryable_startup.py', dockerfile)
+        self.assertTrue(ARCHIVED_GATEWAY_RETRY_PATCH_PATH.exists())
+
+    def test_compose_maps_camofox_access_key_to_hermes_api_key(self):
+        for path in [
+            COMPOSE_PATH,
+            TIER_COMPOSE_DIR / 'compose.l1.yml',
+            TIER_COMPOSE_DIR / 'compose.l2.yml',
+        ]:
+            with self.subTest(path=path.name):
+                compose = read_text(path)
+
+                self.assertIn('CAMOFOX_API_KEY: ${CAMOFOX_ACCESS_KEY:-', compose)
+                self.assertIn('CAMOFOX_ACCESS_KEY:', compose)
 
     def test_entrypoint_no_longer_owns_cdp_broker_lifecycle(self):
         entrypoint = read_text(ENTRYPOINT_PATH)

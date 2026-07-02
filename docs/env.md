@@ -180,12 +180,15 @@ unless `CAMOFOX_URL` is set.
   `http://camofox:9377` to opt in for generic Hermes browser tools and Google
   Meet transcribe mode.
 - `CAMOFOX_BASE_IMAGE`: pinned upstream Camofox base image, default
-  `ghcr.io/jo-inc/camofox-browser:1.11.2`.
+  `ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137`.
 - `CAMOFOX_IMAGE`: local Spartan Gate Camofox wrapper image, default
   `spartan-gate-camofox:1.11.2`. The wrapper pre-fetches Camofox's default
   add-on at build time so the runtime service can stay internal-network only.
 - `CAMOFOX_ACCESS_KEY`: bearer token required by protected Camofox routes.
-- `CAMOFOX_API_KEY`: optional dedicated key for cookie/storage-related routes.
+- `CAMOFOX_API_KEY`: optional dedicated key for Camofox cookie/storage-related
+  routes. The Camofox service receives this value directly; Hermes receives the
+  protected-route access key under the same variable name because upstream
+  Hermes reads `CAMOFOX_API_KEY` for Camofox client bearer auth.
 - `CAMOFOX_ADMIN_KEY`: optional dedicated key for admin stop behavior.
 - `CAMOFOX_USER_ID`: stable Camofox user/profile identity used by Hermes, for
   example `spartan-camofox-main`.

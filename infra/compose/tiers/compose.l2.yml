@@ -56,7 +56,7 @@ services:
     build:
       context: ../../camofox
       args:
-        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.11.2}
+        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137}
     image: ${CAMOFOX_IMAGE:-spartan-gate-camofox:1.11.2}
     restart: unless-stopped
     shm_size: 1gb
@@ -141,6 +141,7 @@ services:
       HERMES_GATEWAY_TOKEN: ${HERMES_GATEWAY_TOKEN:-change-me-hermes-gateway-token}
       HERMES_MAX_ITERATIONS: ${HERMES_MAX_ITERATIONS:-90}
       CAMOFOX_URL: http://camofox:9377
+      CAMOFOX_API_KEY: ${CAMOFOX_ACCESS_KEY:-change-me-camofox-access-key}
       CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-change-me-camofox-access-key}
       CAMOFOX_USER_ID: ${CAMOFOX_USER_ID:-spartan-camofox-main}
       CAMOFOX_SESSION_KEY: ${CAMOFOX_SESSION_KEY:-manual-login}
@@ -164,7 +165,7 @@ services:
       start_period: 30s
 
   caddy:
-    image: caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     restart: unless-stopped
     read_only: true
     tmpfs:

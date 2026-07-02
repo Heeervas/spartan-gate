@@ -30,6 +30,7 @@ persist_cdp_env_for_with_contenv() {
 
     for key in \
         CAMOFOX_URL \
+        CAMOFOX_API_KEY \
         CAMOFOX_ACCESS_KEY \
         CAMOFOX_USER_ID \
         CAMOFOX_SESSION_KEY \

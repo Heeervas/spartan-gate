@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS node22
 
-FROM docker.io/nousresearch/hermes-agent:main@sha256:9c7360c541ac61507596409eee333179b55233944f92103087781eafac7fe8ec
+FROM docker.io/nousresearch/hermes-agent:main@sha256:096066c849e1c952aa89962502a3d346654167b3eab774b1648a94cdfb46d888
 
 USER root
 
@@ -157,10 +157,8 @@ RUN python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py
 RUN python3 /opt/hermes/patches/patch_prompt_load_callback.py
 RUN python3 /opt/hermes/patches/patch_checkpoint_rollback_scan.py
 RUN python3 /opt/hermes/patches/patch_mcp_proxy_env.py
-RUN python3 /opt/hermes/patches/patch_gateway_retryable_startup.py
 RUN python3 /opt/hermes/patches/patch_google_meet_cdp.py
 RUN python3 /opt/hermes/patches/patch_google_meet_transcript.py
-RUN python3 /opt/hermes/patches/patch_camofox_access_key.py
 RUN python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py
 
 # Keep installed code owned by root so the hermes workload cannot mutate future

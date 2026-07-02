@@ -1,7 +1,8 @@
-ARG CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.11.2
+ARG CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137
 FROM ${CAMOFOX_BASE_IMAGE}
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends x11vnc novnc websockify yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 

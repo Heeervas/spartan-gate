@@ -29,10 +29,17 @@ extension points.
 | --- | --- |
 | `patch_clawroute_named_provider.py` | Migrates Hermes config to the named `custom-1` ClawRoute provider. |
 | `patch_clawroute_prompt_cache_key.py` | Forwards Hermes `session_id` as ClawRoute `prompt_cache_key` plus `reasoning_effort` metadata. |
-| `patch_camofox_access_key.py` | Sends Camofox bearer auth from Hermes browser calls. |
+| Camofox auth env mapping | Passes the protected-route `CAMOFOX_ACCESS_KEY` to Hermes under upstream's expected `CAMOFOX_API_KEY` client variable. |
 | `proxy-bootstrap.py` | Routes selected web/search traffic through Spartan Gate controls and logs audited egress. |
 | `browserless-cdp-broker.py` | Shares one persistent Browserless profile session across local CDP clients. |
 | `browserless-cdp-url.js` and `cdp-patch.js` | Normalize Browserless CDP URLs for container networking and auth. |
+
+## Archived Patches
+
+| Patch | Decision |
+| --- | --- |
+| `archive/2026-06-30-patch_camofox_access_key.py` | Archived after upstream Hermes added Camofox `_auth_headers()` support. Spartan Gate now maps the Camofox protected-route access key into Hermes' upstream `CAMOFOX_API_KEY` client variable instead of patching Hermes browser calls. |
+| `archive/2026-06-30-patch_gateway_retryable_startup.py` | Archived after upstream Hermes added degraded startup behavior for retryable platform outages. |
 
 ## Removed Bundled Plugins
 
@@ -58,7 +65,6 @@ These should be proposed upstream or deleted when upstream fixes the behavior.
 
 | Patch | Why it looks upstreamable |
 | --- | --- |
-| `patch_gateway_retryable_startup.py` | Retryable startup outages should not kill the gateway process when background reconnect is possible. |
 | `patch_mcp_proxy_env.py` | Stdio MCP subprocesses need proxy variables in network-constrained containers. |
 | Camofox display/noVNC/Playwright pinning in `infra/camofox/` | Operational browser container fixes, not specific to Spartan Gate policy. |
 

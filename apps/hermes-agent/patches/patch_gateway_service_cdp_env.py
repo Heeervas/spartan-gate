@@ -14,7 +14,7 @@ RUNTIME_OWNER_MARKER = "# Spartan Gate patch: service manager runtime owner"
 ANCHOR = '            ". /opt/hermes/.venv/bin/activate",'
 
 IMPORT_LINES = '''            "# Spartan Gate patch: import Browser/CDP env for gateway services",
-            "_hermes_browser_env_keys=\\"BROWSER_CDP_URL BROWSER_CDP_MAIN_URL BROWSER_CDP_LAUNCH_URL BROWSERLESS_CDP_BROKER_ENABLED BROWSERLESS_CDP_BROKER_PORT CAMOFOX_URL CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID CAMOFOX_SESSION_KEY HERMES_MEET_CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB\\"",
+            "_hermes_browser_env_keys=\\"BROWSER_CDP_URL BROWSER_CDP_MAIN_URL BROWSER_CDP_LAUNCH_URL BROWSERLESS_CDP_BROKER_ENABLED BROWSERLESS_CDP_BROKER_PORT CAMOFOX_URL CAMOFOX_API_KEY CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID CAMOFOX_SESSION_KEY HERMES_MEET_CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB\\"",
             "for _hermes_browser_key in $_hermes_browser_env_keys; do",
             "    _hermes_browser_file=/run/s6/container_environment/$_hermes_browser_key",
             "    if [ -f \\"$_hermes_browser_file\\" ]; then",
