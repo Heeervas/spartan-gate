@@ -11,8 +11,8 @@ Compose project name and the configured data paths.
 | L0 | Hermes only | `free` | User-level Python and Node installs allowed | Fast portable Hermes baseline |
 | L1 | Hermes + Camofox/noVNC | `free` | User-level Python and Node installs allowed | Portable Hermes with persistent browser login |
 | L2 | L1 + Tinyproxy, DNS, and Caddy edge | `gated` | User-level installs still allowed through the gate | Local security boundary without ClawRoute |
-| L3 | L2 + ClawRoute compatibility alias | `gated` | Same as L2 | Gated runtime with internal LLM router |
-| L4 | Full public topology | `full` | Same as L2/L3 | Current full Spartan Gate stack |
+| L3 | L2 + ClawRoute compatibility alias | `gated` | Same as L2 | Legacy gated runtime with ClawRoute |
+| L4 | Full public topology with Spartan Route | `full` | Same as L2/L3 | Current full Spartan Gate stack |
 
 `L0` and `L1` are intentionally not root shells. Hermes workloads are
 unprivileged, but they can install Python and Node packages into `/opt/data` or
@@ -42,7 +42,8 @@ scripts/install.sh --tier L1 --with clawroute --hermes free
 scripts/install.sh --tier L2 --with clawroute --hermes gated
 ```
 
-`L3` and `L4` always include ClawRoute. The installer creates
+`L3` always includes ClawRoute for the legacy tier contract. `L4` uses Spartan
+Route as the base router. The installer creates
 `private/env/local.env`, generates local secrets, runs `hermes setup`, starts
 the selected layer, and recreates Hermes once setup completes.
 
@@ -73,8 +74,8 @@ sg-tier doctor    # validate selected Compose config
 sg-status
 ```
 
-For a full-stack Spartan Route trial, use `sg route up -d`; this keeps
-`sg up -d` on the normal ClawRoute path.
+In the full L4 stack, `sg up -d` starts Spartan Route as the normal router.
+`sg route ...` remains a compatibility alias for older operator muscle memory.
 
 Layer selection is stored in `private/env/local.env`:
 
@@ -125,8 +126,8 @@ manually only after confirming the native tool path works for that data home.
 - Hermes must not join the external Docker network in gated/full layers.
 - L0 and L1 are convenience layers, not secret-sharing modes; real tokens still
   belong in ignored private env files.
-- ClawRoute owns provider credentials and OpenAI-compatible routing when the
-  addon is enabled.
+- Spartan Route owns provider credentials and OpenAI-compatible routing in L4.
+  ClawRoute owns that boundary only when the legacy addon/tier is enabled.
 - Browserless and Camofox are separate browser modes. Do not claim the inactive
   browser service is available.
 - Private domains, host paths, browser profiles, Codex auth, certificates, and

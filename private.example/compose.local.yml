@@ -102,9 +102,11 @@ services:
       # private/local: agent can inspect local outbound whitelist additions.
       - ../../private/outbound-proxy/whitelist.private.txt:/etc/proxy-whitelist.private.txt:ro
 
-  clawroute:
+  spartan-route:
     volumes:
-      # private/local: persistent ClawRoute data outside the repo.
-      - ${SPARTAN_CLAWROUTE_DATA_PATH:-../../runtime/clawroute}:/app/data:Z
+      # private/local: persistent Spartan Route data outside the repo.
+      - ${SPARTAN_ROUTE_DATA_PATH:-../../runtime/spartan-route}:/app/data:Z
+      # private/local: optional Codex home/profile directory.
+      - ${SPARTAN_CODEX_HOME_PATH:-../../private/codex-home}:/codex-home:ro
       # private/local: optional Codex auth profiles. Add only paths that exist.
       # - /absolute/path/to/codex-profile:/.codex:ro

@@ -32,7 +32,7 @@ sg-up
 sg-status
 ```
 
-Check ClawRoute, the selected browser service, reader, proxy, DNS, and Hermes
+Check Spartan Route, the selected browser service, reader, proxy, DNS, and Hermes
 for L4. For smaller installs, check only the services in the selected tier.
 
 ## 3. Network Policy
@@ -52,7 +52,7 @@ sg up -d hermes
 sg-logs-hermes
 ```
 
-Confirm Hermes calls `http://clawroute:18790/v1`, not provider APIs directly.
+Confirm Hermes calls `http://spartan-route:18790/v1`, not provider APIs directly.
 
 ## 5. Profiles
 

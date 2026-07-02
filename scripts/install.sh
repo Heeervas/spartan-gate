@@ -66,7 +66,7 @@ normalize_addons() {
 
 default_addons() {
     case "$TIER" in
-        L3|L4) printf 'clawroute\n' ;;
+        L3) printf 'clawroute\n' ;;
         *) printf '\n' ;;
     esac
 }
@@ -110,8 +110,11 @@ done
 
 [[ -n "$TIER" ]] || die "missing --tier L0|L1|L2|L3|L4"
 [[ -n "$ADDONS" ]] || ADDONS="$(default_addons)"
-if [[ "$TIER" == "L3" || "$TIER" == "L4" ]]; then
+if [[ "$TIER" == "L3" ]]; then
     ADDONS="$(default_addons)"
+fi
+if [[ "$TIER" == "L4" ]] && has_addon clawroute; then
+    die "ClawRoute is not part of L4; use L0/L1/L2 --with clawroute for the legacy addon"
 fi
 [[ -n "$HERMES_MODE" ]] || HERMES_MODE="$(default_hermes_mode)"
 
@@ -226,7 +229,7 @@ quote_env() {
 write_env_file() {
     local tmp managed_keys key caddy_password
     mkdir -p "$(dirname "$env_file")"
-    mkdir -p "$data_root/hermes" "$data_root/camofox" "$data_root/clawroute" "$data_root/browserless-profiles" "$data_root/gogcli"
+    mkdir -p "$data_root/hermes" "$data_root/camofox" "$data_root/clawroute" "$data_root/spartan-route" "$data_root/browserless-profiles" "$data_root/gogcli"
     [[ -f "$env_file" ]] || : > "$env_file"
 
     managed_keys=(
@@ -236,7 +239,7 @@ write_env_file() {
         BROWSERLESS_DEBUG_PORT HERMES_DASHBOARD_PORT HERMES_API_PORT
         CAMOFOX_API_PORT CAMOFOX_NOVNC_PORT SPARTAN_INTERNAL_SUBNET
         SPARTAN_DNS_IP SPARTAN_ALLOW_EXISTING_STACK_PATHS
-        SPARTAN_HERMES_DATA_PATH SPARTAN_CLAWROUTE_DATA_PATH
+        SPARTAN_HERMES_DATA_PATH SPARTAN_CLAWROUTE_DATA_PATH SPARTAN_ROUTE_DATA_PATH
         SPARTAN_GOGCLI_DATA_PATH SPARTAN_BROWSERLESS_PROFILES_PATH
         SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CODEX_HOME_PATH
         HERMES_UID HERMES_GID
@@ -293,6 +296,7 @@ write_env_file() {
     append_env SPARTAN_ALLOW_EXISTING_STACK_PATHS "false"
     append_env SPARTAN_HERMES_DATA_PATH "$data_root/hermes"
     append_env SPARTAN_CLAWROUTE_DATA_PATH "$data_root/clawroute"
+    append_env SPARTAN_ROUTE_DATA_PATH "$data_root/spartan-route"
     append_env SPARTAN_GOGCLI_DATA_PATH "$data_root/gogcli"
     append_env SPARTAN_BROWSERLESS_PROFILES_PATH "$data_root/browserless-profiles"
     append_env SPARTAN_CAMOFOX_DATA_PATH "$data_root/camofox"
@@ -377,9 +381,9 @@ services:
       - ${SPARTAN_BROWSERLESS_PROFILES_PATH:-../../runtime/browserless/profiles}:/profiles:Z
       - ../../private/outbound-proxy/whitelist.private.txt:/etc/proxy-whitelist.private.txt:ro
 
-  clawroute:
+  spartan-route:
     volumes:
-      - ${SPARTAN_CLAWROUTE_DATA_PATH:-../../runtime/clawroute}:/app/data:Z
+      - ${SPARTAN_ROUTE_DATA_PATH:-../../runtime/spartan-route}:/app/data:Z
       - ${SPARTAN_CODEX_HOME_PATH:-../../private/codex-home}:/codex-home:ro
 EOF
 }
@@ -406,7 +410,7 @@ EOF
 }
 
 require_docker
-if has_addon clawroute; then
+if has_addon clawroute || [[ "$TIER" == "L4" ]]; then
     mkdir -p "$private_codex_home"
 fi
 write_env_file

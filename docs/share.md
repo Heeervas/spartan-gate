@@ -25,7 +25,7 @@ scripts/doctor.sh
 ```
 
 For the simplest setup, start colleagues at L0 or L1. Use L4 only when they
-need the full proxy, DNS, reader, ClawRoute, Caddy, and browser boundary.
+need the full proxy, DNS, reader, Spartan Route, Caddy, and browser boundary.
 If they need ClawRoute routing but not the rest of the gate, enable it as an
 addon:
 

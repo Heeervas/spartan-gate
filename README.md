@@ -4,7 +4,7 @@
 
 Spartan Gate is defensive infrastructure for private AI agents. It puts Hermes inside a controlled Docker boundary with whitelisted network egress, guarded browsing, LLM routing, DNS filtering, and authenticated edge access. The public shape is a gate: hard limits, visible control points, and private execution by default.
 
-Hermes is the primary agent/runtime. ClawRoute is the internal OpenAI-compatible LLM router. The surrounding services enforce controlled outbound access, browser mediation, search, read-only web fetching, and authenticated local entry points.
+Hermes is the primary agent/runtime. Spartan Route is the internal OpenAI-compatible LLM router in the full stack. The surrounding services enforce controlled outbound access, browser mediation, search, read-only web fetching, and authenticated local entry points. ClawRoute remains available as a legacy lower-tier addon and source package.
 
 ## Status
 
@@ -65,7 +65,7 @@ Tiers let each operator choose how much of the gate to run:
 | L1 | Hermes + Camofox/noVNC, free user-level Python/Node package installs |
 | L2 | L1 + proxy, DNS, and Caddy edge |
 | L3 | L2 + ClawRoute internal LLM routing compatibility alias |
-| L4 | Full Spartan Gate topology |
+| L4 | Full Spartan Gate topology with Spartan Route |
 
 Use `L0` for the fastest portable Hermes setup and `L4` for the full current
 security gate. The installer writes secrets and paths under ignored `private/`.
@@ -312,7 +312,8 @@ input are:
 - `SPARTAN_INTERNAL_SUBNET` and `SPARTAN_DNS_IP`, if your host already has an
   overlapping Docker network.
 - `SPARTAN_*_PORT`, if your old stack still owns the default ports.
-- `SPARTAN_HERMES_DATA_PATH`, `SPARTAN_CLAWROUTE_DATA_PATH`,
+- `SPARTAN_HERMES_DATA_PATH`, `SPARTAN_ROUTE_DATA_PATH`,
+  `SPARTAN_CLAWROUTE_DATA_PATH`,
   `SPARTAN_GOGCLI_DATA_PATH`, `SPARTAN_BROWSERLESS_PROFILES_PATH`.
 - `HERMES_*`, `CLAWROUTE_TOKEN`, `BROWSERLESS_TOKEN`, provider keys, chat bot
   tokens and profile variables, if you intend to start Hermes.
@@ -378,8 +379,8 @@ Private HTTPS is supported by overriding Caddy from `private/`: copy `private.ex
 - `doctor: docker subnet overlaps existing network: ...` means another Docker stack already uses an overlapping subnet. Edit `.env` or `private/env/local.env` and change both `SPARTAN_INTERNAL_SUBNET` and `SPARTAN_DNS_IP`.
 - `doctor: host port already in use before compose up: ...` means a local published port is occupied by another process or stack. Change `SPARTAN_GATE_PORT`, `CLAWROUTE_EDGE_PORT`, `BROWSERLESS_DEBUG_PORT`, or `HERMES_DASHBOARD_PORT` in `.env` or `private/env/local.env`, then rerun `scripts/doctor.sh`.
 - `sg-up` starts the selected tier, including Hermes. `sg up -d` remains raw Compose passthrough.
-- `clawroute` and the selected browser service can stay in `starting` for roughly 30-60 seconds after startup. That is normal warm-up time. Check `sg ps` or `sg-ps` again before treating it as a failure.
-- Reusing old Hermes or ClawRoute data paths is not a normal first install. Keep the public `runtime/` defaults or point the private override at fresh empty directories unless you are intentionally migrating.
+- `spartan-route` and the selected browser service can stay in `starting` for roughly 30-60 seconds after startup. That is normal warm-up time. Check `sg ps` or `sg-ps` again before treating it as a failure.
+- Reusing old Hermes, Spartan Route, or ClawRoute data paths is not a normal first install. Keep the public `runtime/` defaults or point the private override at fresh empty directories unless you are intentionally migrating.
 
 ## Use Cases
 
@@ -391,7 +392,7 @@ Private HTTPS is supported by overriding Caddy from `private/`: copy `private.ex
 - Decide if it is ready as the definitive stack: follow [docs/go-live.md](docs/go-live.md).
 - Understand carried Hermes patches: follow [docs/patches.md](docs/patches.md).
 - Test reader/page fetching: follow [docs/reader.md](docs/reader.md).
-- Understand ClawRoute source versus runtime config: follow [docs/clawroute.md](docs/clawroute.md).
+- Understand router source versus runtime config: follow [docs/spartan-route.md](docs/spartan-route.md) and [docs/clawroute.md](docs/clawroute.md).
 - Keep local/private runbooks in ignored `private/docs/`; see [docs/private-docs.md](docs/private-docs.md).
 
 ## Architecture
@@ -399,7 +400,8 @@ Private HTTPS is supported by overriding Caddy from `private/`: copy `private.ex
 Spartan Gate is a monorepo:
 
 - `apps/hermes-agent`: Hermes image customizations, runtime bootstrap, and patch scripts.
-- `packages/clawroute`: ClawRoute router source, tests, dashboard, and Docker image.
+- `infra/spartan-route`: current Spartan Route router source, tests, dashboard, and Docker image.
+- `packages/clawroute`: legacy ClawRoute router source, tests, dashboard, and Docker image.
 - `infra/compose`: public Compose entry points.
 - `infra/outbound-proxy`: Tinyproxy whitelist enforcement and public domain baseline.
 - `infra/dns`: dnsmasq whitelist relay.
@@ -410,19 +412,20 @@ Spartan Gate is a monorepo:
 - `infra/browserless`: Browserless integration notes and future policy.
 - `config/clawroute` and `config/searxng`: public runtime configuration.
 
-`packages/clawroute/` is the source package. `config/clawroute/` is the runtime
-configuration mounted into the container. Keep secrets out of both and put them
-in `.env` or `private/env/local.env`.
+`infra/spartan-route/` is the current L4 router package. `packages/clawroute/`
+is the legacy router package. `config/clawroute/` is the publishable runtime
+routing configuration mounted into Spartan Route and legacy ClawRoute. Keep
+secrets out of those files and put them in `.env` or `private/env/local.env`.
 
 Hermes is only attached to the internal Docker network. Remote LLM calls go
-through ClawRoute, which routes through the outbound proxy. Browser traffic goes
+through Spartan Route, which routes through the outbound proxy. Browser traffic goes
 through Browserless and the same proxy/DNS controls. Reader is a direct GET-only
 public text fetcher with SSRF protection and untrusted-content delimiters. Caddy
 is the authenticated edge.
 
 ## Public Safety Rules
 
-The public Compose files do not include personal host paths, private credentials, certificate material, Codex profile mounts, or LAN-wide port binds. Runtime data defaults to `runtime/`, which is ignored by Git. Hermes is the bundled default agent. Alternate agent integrations belong in private Compose overrides that reuse Spartan Gate's ClawRoute, Browserless, reader, SearXNG, proxy, and internal network contracts.
+The public Compose files do not include personal host paths, private credentials, certificate material, Codex profile mounts, or LAN-wide port binds. Runtime data defaults to `runtime/`, which is ignored by Git. Hermes is the bundled default agent. Alternate agent integrations belong in private Compose overrides that reuse Spartan Gate's Spartan Route, Browserless, reader, SearXNG, proxy, and internal network contracts.
 
 The public docs should remain generic and shareable. Machine-specific cutover notes, real port choices, token ownership, profile names, Tailscale hostnames, and migration notes belong in `private/docs/`.
 
@@ -430,6 +433,7 @@ Run the local checks before publishing:
 
 ```sh
 scripts/doctor.sh
+python3 -m py_compile infra/spartan-route/spartan_route/*.py infra/spartan-route/test_*.py
 npm --prefix packages/clawroute ci
 npm --prefix packages/clawroute test
 npm --prefix packages/clawroute run build
@@ -447,6 +451,6 @@ Useful helper scripts:
 Spartan Gate is maintained as an independent monorepo.
 
 - **Lobster Cage** provided the original Docker cage, isolated network, outbound proxy, DNS relay, reader, and hardening ideas.
-- **ClawRoute** provided the OpenAI-compatible routing service and model-routing logic.
+- **ClawRoute** provided the original OpenAI-compatible routing service and model-routing logic.
 
 The current product identity, structure, and maintenance path are Spartan Gate: a private security gate for Hermes-class agents.

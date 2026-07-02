@@ -9,7 +9,7 @@ Public setup docs intentionally avoid machine-specific values. Put personal path
 
 - Docker with the Compose plugin.
 - Git, `curl`, and basic shell tools.
-- Node.js 22 or newer for ClawRoute development.
+- Node.js 22 or newer for legacy ClawRoute development.
 - At least one LLM provider credential, or a private Codex/Ollama setup configured outside the public files.
 
 On Debian, Ubuntu, or Raspberry Pi OS, the shortest development bootstrap is:
@@ -46,7 +46,7 @@ Use the smallest tier that fits the machine:
 | L1 | Hermes + Camofox/noVNC, free user-level Python/Node package installs |
 | L2 | L1 + proxy, DNS, and Caddy edge |
 | L3 | L2 + ClawRoute internal LLM routing compatibility alias |
-| L4 | Full Spartan Gate topology |
+| L4 | Full Spartan Gate topology with Spartan Route |
 
 The installer creates ignored `private/env/local.env`, generates local secrets,
 runs `hermes setup`, starts the selected tier, and recreates Hermes once setup
@@ -91,9 +91,10 @@ Edit `private/env/local.env` and replace placeholders with local tokens, ports, 
 The private example already shifts the common conflict points away from the public defaults. Keep the alternate ports and subnet from `private.example/env/local.env.example` unless you have a reason to choose something else.
 
 Use isolated data paths for a fresh install. Do not point
-`SPARTAN_HERMES_DATA_PATH`, `SPARTAN_CLAWROUTE_DATA_PATH`,
-`SPARTAN_GOGCLI_DATA_PATH`, or `SPARTAN_CAMOFOX_DATA_PATH` at an old stack
-unless you are intentionally migrating.
+`SPARTAN_HERMES_DATA_PATH`, `SPARTAN_ROUTE_DATA_PATH`,
+`SPARTAN_CLAWROUTE_DATA_PATH`, `SPARTAN_GOGCLI_DATA_PATH`, or
+`SPARTAN_CAMOFOX_DATA_PATH` at an old stack unless you are intentionally
+migrating.
 
 For an intentional cutover to existing data paths, stop the old stack first and
 set `SPARTAN_ALLOW_EXISTING_STACK_PATHS=true` in `private/env/local.env`. That
@@ -175,14 +176,14 @@ Reader directly for bounded GET-only page text when Reader should own the DNS,
 redirect, and connection checks.
 
 For L4, expect `proxy`, `dns`, `reader`, and `searxng` to become healthy
-quickly. `clawroute` and browser services can need 30-60 seconds before
+quickly. `spartan-route` and browser services can need 30-60 seconds before
 `sg-status` shows them as healthy. For smaller tiers, check only the services
 that tier includes.
 
 If a service stays in `starting` or turns `unhealthy`, inspect logs:
 
 ```sh
-sg-logs clawroute
+sg-logs spartan-route
 sg-logs browserless
 sg-logs camofox
 sg-logs hermes

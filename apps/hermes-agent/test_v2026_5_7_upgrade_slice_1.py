@@ -262,6 +262,16 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         )
         self.assertNotIn(':/opt/data/plugins:ro', compose)
 
+    def test_full_compose_uses_spartan_route_as_base_router(self):
+        compose = read_text(COMPOSE_PATH)
+
+        self.assertIn('spartan-route:', compose)
+        self.assertIn('container_name: spartan_gate_spartan_route', compose)
+        self.assertIn('OPENAI_BASE_URL: http://spartan-route:18790/v1', compose)
+        self.assertIn('spartan-route:', compose.split('depends_on:', 1)[1])
+        self.assertNotIn('container_name: spartan_gate_clawroute', compose)
+        self.assertIn('../hermes-plugins/spartan-cache-lineage:/opt/data/plugins/spartan-cache-lineage:ro', compose)
+
     def test_full_compose_allows_user_level_python_and_node_installs(self):
         compose = read_text(COMPOSE_PATH)
 

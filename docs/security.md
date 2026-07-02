@@ -27,10 +27,10 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   publish the dashboard edge broadly.
 - Tailscale exposure belongs in `private/compose.local.yml`; do not publish edge ports on `0.0.0.0` or LAN addresses in public files.
 - Extra Hermes app ports belong in `private/caddy.local.d` plus `private/compose.local.yml`; use `scripts/add-port.sh` instead of editing public Compose.
-- ClawRoute stats, dashboards, and API endpoints require bearer auth when
-  `CLAWROUTE_TOKEN` is configured; `/health` remains public for local health
-  checks.
-- ClawRoute content logging is disabled by default.
+- The OpenAI-compatible router stats, dashboards, and API endpoints require
+  bearer auth when `CLAWROUTE_TOKEN` is configured; `/health` remains public
+  for local health checks.
+- Router content logging is disabled by default.
 - Hermes application workloads run as the unprivileged `hermes` user under s6.
   Local deployments may drop those workloads directly to the host owner's
   numeric UID/GID for `/opt/data`; PID 1 and supervisors remain root only so
@@ -53,8 +53,9 @@ Keep service ownership explicit when changing security-sensitive behavior:
 
 - Hermes consumes services and must remain off the external network in gate
   tiers.
-- ClawRoute owns model routing, provider credentials, quota telemetry, and
-  OpenAI-compatible API behavior.
+- Spartan Route owns model routing, provider credentials, quota telemetry, and
+  OpenAI-compatible API behavior in L4. ClawRoute owns that boundary only when
+  the legacy tier/addon is enabled.
 - Tinyproxy and DNS own general egress policy. Invalid, malformed, expired, or
   overflowing policy data must fail closed.
 - Reader owns bounded GET-only page retrieval. Reader content is untrusted
@@ -85,4 +86,4 @@ real browsing or integration inventory by adding it to `infra/outbound-proxy/whi
 
 ## Logging
 
-Keep `CLAWROUTE_LOG_CONTENT=false` unless you are debugging in a private environment and accept the privacy impact. Reader audit logs redact URL query strings, but hosts and paths can still be sensitive; treat logs as private operational data.
+Keep `CLAWROUTE_LOG_CONTENT=false` unless you are debugging the router in a private environment and accept the privacy impact. Reader audit logs redact URL query strings, but hosts and paths can still be sensitive; treat logs as private operational data.

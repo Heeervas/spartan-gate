@@ -22,8 +22,8 @@ for alias_name in \
     sg-priv sg-up sg-build-up sg-down sg-status sg-ps sg-health sg-logs \
     sg-exec sg-config sg-doctor sg-up-core sg-up-hermes \
     sg-up-private-hermes sg-up-full sg-restart-hermes sg-restart-caddy \
-    sg-restart-proxy sg-rebuild-hermes sg-rebuild-clawroute sg-logs-hermes \
-    sg-logs-clawroute sg-hermes-shell sg-hermes-doctor sg-hermes-profile \
+    sg-restart-proxy sg-rebuild-hermes sg-rebuild-clawroute sg-rebuild-spartan-route sg-logs-hermes \
+    sg-logs-clawroute sg-logs-spartan-route sg-hermes-shell sg-hermes-doctor sg-hermes-profile \
     sg-hermes-profiles sg-hermes-profile-create sg-hermes-profile-new sg-hermes-gateway-profile \
     sg-clawroute-shell sg-whitelist-domain sg-add-port sg-reader-test \
     sg-browserless-profile-live sg-hermes-chrome-profile sg-hermes-meet sg-hermes-meet-join \
@@ -96,29 +96,7 @@ sg_compose() {
 }
 
 sg_route_compose() {
-    local private_compose="$SPARTAN_GATE_DIR/private/compose.local.yml"
-    local private_route_compose="$SPARTAN_GATE_DIR/private/compose.spartan-route.local.yml"
-    local env_file
-    env_file="$(sg_default_env_file)"
-    local args=(
-        -f "$SPARTAN_GATE_DIR/infra/compose/compose.yml"
-        -f "$SPARTAN_GATE_DIR/infra/compose/compose.spartan-route.yml"
-    )
-
-    if [[ -f "$private_compose" ]]; then
-        args+=(-f "$private_compose")
-    fi
-    if [[ -f "$private_route_compose" ]]; then
-        args+=(-f "$private_route_compose")
-    fi
-
-    if [[ -f "$env_file" ]]; then
-        args+=(--env-file "$env_file")
-    elif [[ -f "$SPARTAN_GATE_DIR/.env" ]]; then
-        args+=(--env-file "$SPARTAN_GATE_DIR/.env")
-    fi
-
-    docker compose "${args[@]}" "$@"
+    sg_compose "$@"
 }
 
 sg_normalize_tier() {
@@ -167,8 +145,8 @@ sg_current_hermes_mode() {
 
 sg_default_addons() {
     case "$1" in
-        L3|L4) printf 'clawroute\n' ;;
-        L0|L1|L2) printf '\n' ;;
+        L3) printf 'clawroute\n' ;;
+        L0|L1|L2|L4) printf '\n' ;;
         *) return 1 ;;
     esac
 }
@@ -282,13 +260,13 @@ Spartan Gate helpers
 Usage:
   sg                         cd to the Spartan Gate checkout
   sg <compose-args...>        run docker compose with public + private config
-  sg route <compose-args...>  run private Compose with Spartan Route enabled
+  sg route <compose-args...>  compatibility alias for the normal Route stack
   sg-tier <command>           select and operate L0-L4 install tiers
   sg -h | sg-help             show this help
 
 Groups:
   sg-hermes -h                Hermes shell, profiles, gateway, and doctor
-  sg route -h                 Spartan Route private-stack compose helper
+  sg route -h                 Spartan Route compose helper
   sg-tier list                show tier descriptions
   sg-browser -h               Browserless/Camofox mode and profile helpers
   sg-meet -h                  Google Meet and host Chrome CDP helpers
@@ -296,10 +274,10 @@ Groups:
 
 Common commands:
   sg-up                       start the selected tier
-  sg route up -d              start private stack with Spartan Route
+  sg up -d                    start private stack with Spartan Route
   sg-status | sg-health       container status and basic Hermes health
   sg-logs-hermes              follow Hermes logs
-  sg-logs-clawroute           follow ClawRoute logs
+  sg-logs-spartan-route       follow Spartan Route logs
   sg-urls                     print local/remote service URLs
   sg-doctor                   run repository preflight checks
   sg-whitelist-domain <host>  allow an outbound domain temporarily
@@ -308,7 +286,7 @@ Common commands:
 
 Examples:
   sg up -d hermes
-  sg route up -d
+  sg up -d
   sg logs -f proxy dns
   sg-disk top /var 2 30
 EOF
@@ -319,7 +297,7 @@ sg_route_help() {
 Spartan Route helpers
 
 Usage:
-  sg route <compose-args...>   run docker compose with Spartan Route overlay
+  sg route <compose-args...>   compatibility alias for normal Spartan Route stack
   sg-route <compose-args...>   same as `sg route`
 
 Examples:
@@ -330,11 +308,11 @@ Examples:
   sg route logs -f spartan_route
 
 Behavior:
-  Uses compose.yml + compose.spartan-route.yml + private overrides.
-  Hermes points at http://spartan-route:18790/v1 in this mode.
-  Spartan Route is exposed through the Caddy edge on SPARTAN_ROUTE_EDGE_PORT.
+  Spartan Route is now the normal full-stack router.
+  Uses compose.yml + private overrides, same as `sg <compose-args...>`.
+  Hermes points at http://spartan-route:18790/v1.
+  Spartan Route is exposed through the Caddy router edge on CLAWROUTE_EDGE_PORT.
   The service alias spartan_route is accepted for spartan-route.
-  Plain `sg up -d` is unchanged and keeps the normal ClawRoute path.
 EOF
 }
 
@@ -358,7 +336,7 @@ Tiers:
   L1  Hermes + Camofox/noVNC, free user-level package installs
   L2  L1 + proxy, DNS, and Caddy edge
   L3  L2 + ClawRoute internal LLM routing compatibility alias
-  L4  full Spartan Gate topology
+  L4  full Spartan Gate topology with Spartan Route
 
 Addons:
   clawroute can be enabled on L0, L1, or L2 without moving provider auth into Hermes.
@@ -692,9 +670,11 @@ sg_restart_caddy() { sg_compose restart caddy; }
 sg_restart_proxy() { sg_compose restart proxy dns; }
 sg_rebuild_hermes() { sg_compose build hermes && sg_compose up -d hermes; }
 sg_rebuild_clawroute() { sg_compose build clawroute && sg_compose up -d clawroute; }
+sg_rebuild_spartan_route() { sg_compose build spartan-route && sg_compose up -d spartan-route; }
 
 sg_logs_hermes() { sg_compose logs -f hermes "$@"; }
 sg_logs_clawroute() { sg_compose logs -f clawroute "$@"; }
+sg_logs_spartan_route() { sg_compose logs -f spartan-route "$@"; }
 
 # Hermes container helpers. Use these for shell access, profile management, and
 # gateway startup without remembering the docker exec incantations.
@@ -896,7 +876,7 @@ sg_browser_mode_apply() {
 
     printf 'Applying Spartan Gate browser mode: %s\n' "$mode"
     COMPOSE_PROFILES="$inactive" sg_compose stop "$inactive" >/dev/null 2>&1 || true
-    COMPOSE_PROFILES="$mode" sg_compose up -d proxy dns searxng reader clawroute caddy "$active" || return 1
+    COMPOSE_PROFILES="$mode" sg_compose up -d proxy dns searxng reader spartan-route caddy "$active" || return 1
     COMPOSE_PROFILES="$mode" sg_compose up -d --force-recreate hermes
 }
 
@@ -1574,27 +1554,24 @@ sg_browserless_debug_origins() {
 }
 
 sg_urls() {
-    local scheme host gate claw spartan_route browserless dashboard camofox_vnc camofox_enabled
+    local scheme host gate route browserless dashboard camofox_vnc camofox_enabled
     scheme="$(sg_edge_scheme)"
     host="$(sg_remote_host)"
     gate="$(sg_env_value SPARTAN_GATE_PORT 18789)"
-    claw="$(sg_env_value CLAWROUTE_EDGE_PORT 18790)"
-    spartan_route="$(sg_env_value SPARTAN_ROUTE_EDGE_PORT "")"
+    route="$(sg_env_value CLAWROUTE_EDGE_PORT 18790)"
     browserless="$(sg_env_value BROWSERLESS_DEBUG_PORT 3005)"
     dashboard="$(sg_env_value HERMES_DASHBOARD_PORT 9119)"
     camofox_vnc="$(sg_env_value CAMOFOX_NOVNC_PORT 26080)"
     camofox_enabled="$(sg_env_value CAMOFOX_ENABLE_VNC 0)"
     if [[ "$scheme" == "http" ]]; then
         printf 'Spartan Gate local:      http://localhost:%s\n' "$gate"
-        printf 'ClawRoute local:         http://localhost:%s\n' "$claw"
-        [[ -n "$spartan_route" ]] && printf 'Spartan Route local:     http://localhost:%s\n' "$spartan_route"
+        printf 'Spartan Route local:     http://localhost:%s\n' "$route"
         printf 'Browserless local:       http://localhost:%s\n' "$browserless"
         printf 'Hermes dashboard local:  http://localhost:%s\n' "$dashboard"
     fi
     if [[ "$host" != "localhost" || "$scheme" != "http" ]]; then
         printf 'Spartan Gate remote:     %s://%s:%s\n' "$scheme" "$host" "$gate"
-        printf 'ClawRoute remote:        %s://%s:%s\n' "$scheme" "$host" "$claw"
-        [[ -n "$spartan_route" ]] && printf 'Spartan Route remote:    %s://%s:%s\n' "$scheme" "$host" "$spartan_route"
+        printf 'Spartan Route remote:    %s://%s:%s\n' "$scheme" "$host" "$route"
         printf 'Browserless remote:      %s://%s:%s\n' "$scheme" "$host" "$browserless"
         printf 'Hermes dashboard remote: %s://%s:%s\n' "$scheme" "$host" "$dashboard"
     fi
@@ -1618,13 +1595,7 @@ sg_health() {
 
 sg_caddy_validate() { sg_compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile; }
 sg_ports() {
-    local spartan_route
-    spartan_route="$(sg_env_value SPARTAN_ROUTE_EDGE_PORT "")"
-    if [[ -n "$spartan_route" ]]; then
-        ss -H -ltn "( sport = :18789 or sport = :18790 or sport = :$spartan_route or sport = :3005 or sport = :9119 )" 2>/dev/null || sg_compose ps
-    else
-        ss -H -ltn '( sport = :18789 or sport = :18790 or sport = :3005 or sport = :9119 )' 2>/dev/null || sg_compose ps
-    fi
+    ss -H -ltn '( sport = :18789 or sport = :18790 or sport = :3005 or sport = :9119 )' 2>/dev/null || sg_compose ps
 }
 sg_docker_root() {
     docker info --format '{{.DockerRootDir}}' 2>/dev/null || true
@@ -1870,8 +1841,10 @@ sg-restart-caddy() { sg_restart_caddy "$@"; }
 sg-restart-proxy() { sg_restart_proxy "$@"; }
 sg-rebuild-hermes() { sg_rebuild_hermes "$@"; }
 sg-rebuild-clawroute() { sg_rebuild_clawroute "$@"; }
+sg-rebuild-spartan-route() { sg_rebuild_spartan_route "$@"; }
 sg-logs-hermes() { sg_logs_hermes "$@"; }
 sg-logs-clawroute() { sg_logs_clawroute "$@"; }
+sg-logs-spartan-route() { sg_logs_spartan_route "$@"; }
 sg-logs-camofox() { sg_logs_camofox "$@"; }
 sg-hermes-shell() { sg_hermes_shell "$@"; }
 sg-hermes-doctor() { sg_hermes_doctor "$@"; }

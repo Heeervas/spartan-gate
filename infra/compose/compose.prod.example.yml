@@ -5,7 +5,7 @@ services:
       HERMES_DUMP_REQUESTS: "false"
       HERMES_DUMP_REQUEST_STDOUT: "false"
 
-  clawroute:
+  spartan-route:
     restart: always
     environment:
       CLAWROUTE_DEBUG: "false"

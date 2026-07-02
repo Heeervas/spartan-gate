@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Made Spartan Route the normal L4/full-stack router, kept existing
+  `CLAWROUTE_TOKEN`/`CLAWROUTE_EDGE_PORT` compatibility, and left ClawRoute as
+  the legacy lower-tier addon/source package.
+- Repaired the private HTTPS Caddy contract for the router and Browserless
+  debugger edge so local/Tailscale ports are published by the active stack
+  while Browserless WebSockets still require `BROWSERLESS_EDGE_TOKEN`.
 - Updated the Hermes base image pin, archived two upstream-absorbed Hermes
   patchers, and mapped Camofox protected-route auth into upstream Hermes'
   `CAMOFOX_API_KEY` client variable.

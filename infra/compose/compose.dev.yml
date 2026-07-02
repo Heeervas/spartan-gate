@@ -1,10 +1,10 @@
 services:
-  clawroute:
+  spartan-route:
     environment:
       # recommended/dev: verbose router diagnostics without adding private keys.
       CLAWROUTE_DEBUG: "true"
       CLAWROUTE_DRY_RUN: ${CLAWROUTE_DRY_RUN:-false}
     volumes:
-      # recommended/dev: live-edit public ClawRoute source from this repo only.
-      - ../../packages/clawroute/src:/app/src:ro
-      - ../../packages/clawroute/web:/app/web:ro
+      # recommended/dev: live-edit public Spartan Route source from this repo only.
+      - ../spartan-route/spartan_route:/app/spartan_route:ro
+      - ../spartan-route/web:/app/web:ro

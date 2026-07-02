@@ -39,7 +39,7 @@ For a substrate-only smoke test:
 
 ```sh
 docker compose -f infra/compose/compose.yml config
-docker compose -f infra/compose/compose.yml up -d proxy dns searxng reader clawroute browserless caddy
+docker compose -f infra/compose/compose.yml up -d proxy dns searxng reader spartan-route browserless caddy
 ```
 
 Stop the smoke stack with:

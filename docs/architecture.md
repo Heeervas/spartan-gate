@@ -5,7 +5,7 @@ Spartan Gate separates agent execution from network reachability.
 ## Core Services
 
 - **Hermes** runs the agent gateway on the internal network only.
-- **ClawRoute** exposes an OpenAI-compatible endpoint to Hermes and selects upstream models/providers.
+- **Spartan Route** exposes an OpenAI-compatible endpoint to Hermes and selects upstream models/providers in the full stack.
 - **Tinyproxy** is the only general outbound HTTP proxy path for controlled services.
 - **DNS relay** resolves only whitelisted domains for internal workloads.
 - **Reader** fetches public pages through a GET-only API, blocks internal/private targets, and returns bounded text content.
@@ -16,7 +16,7 @@ Spartan Gate separates agent execution from network reachability.
 
 ## Network Model
 
-`spartan_internal` is an internal Docker network. Hermes, ClawRoute,
+`spartan_internal` is an internal Docker network. Hermes, Spartan Route,
 Browserless, Camofox, DNS, reader, proxy, SearXNG, and Caddy can communicate
 there.
 
@@ -24,8 +24,8 @@ there.
 proxy, DNS, SearXNG, reader, and Caddy. Reader is a narrow direct-GET egress
 exception for public page text; it is not published to the host.
 
-Hermes does not join the external network. It calls ClawRoute at
-`http://clawroute:18790/v1`, uses Browserless for CDP-backed browsing, can opt
+Hermes does not join the external network. It calls Spartan Route at
+`http://spartan-route:18790/v1`, uses Browserless for CDP-backed browsing, can opt
 into Camofox for Hermes browser tools, and relies on the reader/search services
 for controlled retrieval.
 
@@ -39,10 +39,12 @@ The outbound policy is split into two fragments:
 Tinyproxy and the DNS relay merge both fragments at container startup. The helper
 `scripts/whitelist-domain.sh` writes to the private fragment by default.
 
-## ClawRoute Layout
+## Router Layout
 
-`packages/clawroute/` is source code and tests. `config/clawroute/` is runtime
-routing config mounted into the container. See [clawroute.md](clawroute.md).
+`infra/spartan-route/` is the current full-stack router source code and tests.
+`packages/clawroute/` is the legacy ClawRoute package. `config/clawroute/` is
+runtime routing config mounted into Spartan Route and legacy ClawRoute. See
+[spartan-route.md](spartan-route.md) and [clawroute.md](clawroute.md).
 
 ## Reader
 

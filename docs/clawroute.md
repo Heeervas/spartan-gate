@@ -1,15 +1,15 @@
 # ClawRoute Layout
 
-Spartan Gate has two ClawRoute directories on purpose:
+Spartan Gate keeps the legacy ClawRoute package and the shared runtime routing
+config separate on purpose:
 
 - `packages/clawroute/`: source code, tests, package metadata, Dockerfile and
   development defaults.
-- `config/clawroute/`: runtime routing configuration mounted into the running
-  container by Compose.
+- `config/clawroute/`: publishable runtime routing configuration mounted into
+  Spartan Route in L4 and into ClawRoute when the legacy tier/addon is enabled.
 
-Spartan Route is a separate parallel rebuild under `infra/spartan-route/`.
-It reads the same publishable runtime config but writes its own
-`spartan-route.db` and uses separate Compose overlays. See
+Spartan Route is the current L4 router under `infra/spartan-route/`. It reads
+the same publishable runtime config but writes its own `spartan-route.db`. See
 [spartan-route.md](spartan-route.md).
 
 ## Source Package
@@ -34,16 +34,16 @@ The Compose stack mounts:
 ```
 
 That means a running Spartan Gate stack reads provider/model routing from
-`config/clawroute/`, not from `packages/clawroute/config/`, when started through
-the public Compose file.
+`config/clawroute/`, not from `packages/clawroute/config/`, when started
+through the public Compose file.
 
 Keep publishable routing defaults in `config/clawroute/`. Put private provider
 tokens in `.env` or `private/env/local.env`, not in JSON config files.
 
 ## Quick Rule
 
-- Code change: edit `packages/clawroute/`.
-- Parallel rebuild code change: edit `infra/spartan-route/`.
+- Legacy ClawRoute code change: edit `packages/clawroute/`.
+- L4 router code change: edit `infra/spartan-route/`.
 - Runtime model/provider policy: edit `config/clawroute/`.
 - Secret or host-specific auth: edit `private/env/local.env` or
   `private/compose.local.yml`.

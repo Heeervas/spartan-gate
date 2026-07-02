@@ -33,6 +33,7 @@ scripts/doctor.sh
 npm --prefix packages/clawroute ci
 npm --prefix packages/clawroute test
 npm --prefix packages/clawroute run build
+python3 -m py_compile infra/spartan-route/spartan_route/*.py infra/spartan-route/test_*.py
 docker compose -f infra/compose/tiers/compose.l0.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l0.yml -f infra/compose/tiers/compose.clawroute.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l1.yml config --quiet
@@ -77,7 +78,7 @@ After publishing, a new user should be able to:
 1. Clone the repo.
 2. Run `scripts/doctor.sh`.
 3. Run `scripts/install.sh --tier L0` for a portable Hermes baseline.
-4. Move upward through L1-L4 with `sg-tier set` when they need more boundary services, or add ClawRoute with `--with clawroute`.
+4. Move upward through L1-L4 with `sg-tier set` when they need more boundary services; L4 uses Spartan Route, and lower tiers can add legacy ClawRoute with `--with clawroute`.
 5. Run `docker compose ... config` for the selected public topology.
 6. Replace or extend the bundled agent privately when they need a different runtime.
 

@@ -1,9 +1,10 @@
 # Spartan Route V1
 
-`infra/spartan-route/` is a parallel router package for rebuilding ClawRoute
-with a smaller reliability-first surface. It does not replace
-`packages/clawroute/`; both can exist in the same checkout and both can run in
-Compose while cutover is evaluated.
+`infra/spartan-route/` is the current L4 router package. It replaces ClawRoute
+as the full-stack OpenAI-compatible router while keeping the existing
+`CLAWROUTE_TOKEN`, `CLAWROUTE_EDGE_PORT`, model aliases, and `config/clawroute`
+runtime profiles for compatibility. `packages/clawroute/` remains in the repo
+for the legacy lower-tier addon and source-package work.
 
 ## Implementation Choice
 
@@ -48,7 +49,9 @@ Relevant files:
 - `infra/spartan-route/web/dashboard-codex.html`: Codex usage, slot state,
   persistent slot routing controls, daily usage-cache percentage, latency, active
   leases, reset countdowns, and mandatory reset-credit showcase.
-- `infra/compose/compose.spartan-route.yml`: full-stack side-by-side overlay.
+- `infra/compose/compose.yml`: full-stack baseline service and Hermes wiring.
+- `infra/compose/compose.spartan-route.yml`: compatibility no-op overlay for
+  older commands that still include it.
 - `infra/compose/tiers/compose.spartan-route.yml`: tier-helper side-by-side
   overlay.
 - `infra/spartan-route/test_*.py`: focused regression suite.
@@ -188,7 +191,18 @@ Cut from v1 on purpose:
 
 ## Run
 
-Tier overlay:
+Full L4 stack:
+
+```sh
+source scripts/aliases.sh
+sg up -d
+```
+
+`sg route up -d` remains a compatibility alias for the same full-stack Compose
+path. Hermes points at `http://spartan-route:18790/v1`, and Caddy keeps the
+router edge on `CLAWROUTE_EDGE_PORT` so existing local URLs continue to work.
+
+Lower-tier side-by-side overlay:
 
 ```sh
 docker compose \
@@ -198,27 +212,14 @@ docker compose \
   config --quiet
 ```
 
-Full-stack side-by-side overlay:
+The full-stack baseline mounts the local Hermes `spartan-cache-lineage` plugin
+at `/opt/data/plugins/spartan-cache-lineage`. Hermes user plugins are opt-in,
+so enable it once in the active Hermes data profile:
 
 ```sh
-source scripts/aliases.sh
-sg route up -d
-```
-
-This uses the normal full-stack private Compose path plus
-`infra/compose/compose.spartan-route.yml` and optional
-`private/compose.spartan-route.local.yml` overrides. Hermes points at
-`http://spartan-route:18790/v1` in this mode. Plain `sg up -d` remains the
-normal ClawRoute path and does not load Spartan Route-only private overrides.
-
-Spartan Route overlays mount the local Hermes `spartan-cache-lineage` plugin at
-`/opt/data/plugins/spartan-cache-lineage`. Hermes user plugins are opt-in, so
-enable it once in the active Hermes data profile:
-
-```sh
-sg route exec hermes hermes plugins enable spartan-cache-lineage
-sg route up -d --force-recreate hermes
-sg route exec hermes hermes plugins list --plain --no-bundled | rg spartan-cache-lineage
+sg exec hermes hermes plugins enable spartan-cache-lineage
+sg up -d --force-recreate hermes
+sg exec hermes hermes plugins list --plain --no-bundled | rg spartan-cache-lineage
 ```
 
 The plugin owns Spartan Route cache lineage metadata. It can preserve visible
@@ -226,12 +227,12 @@ The plugin owns Spartan Route cache lineage metadata. It can preserve visible
 still required for `reasoning_config` forwarding paths that middleware cannot
 observe; do not remove that patch as part of the plugin rollout.
 
-Spartan Route is exposed through Caddy on `SPARTAN_ROUTE_EDGE_PORT`, default
-`18791`. For local private stacks that still reserve legacy Mission Control
-port `18791`, set `SPARTAN_ROUTE_EDGE_PORT=18792`. Private HTTPS stacks should
-use the Spartan Route URL printed by `sg-urls`; plain HTTP stacks use
-`http://localhost:<SPARTAN_ROUTE_EDGE_PORT>/dashboard-codex`. The existing
-ClawRoute service and `packages/clawroute/` remain untouched.
+Spartan Route is exposed through Caddy on `CLAWROUTE_EDGE_PORT`, default
+`18790`, for compatibility with existing router URLs. Private HTTPS stacks
+should use the scheme and hostname printed by `sg-urls`; if the private Caddy
+file is HTTPS-only, plain `http://...:<port>` is expected to fail while HTTPS
+through the certificate-covered private hostname reaches Caddy.
+`SPARTAN_ROUTE_EDGE_PORT` is only for older side-by-side tier overlays.
 
 Dashboard and `/api/*` requests require the same bearer token as model
 requests when `CLAWROUTE_TOKEN` is configured. Query-string `?token=...`
@@ -246,6 +247,7 @@ python3 -m unittest infra/hermes-plugins/test_spartan_cache_lineage.py
 docker build -t spartan-route:test infra/spartan-route
 docker run --rm -v "$PWD/infra/spartan-route:/tests:ro" -w /tests \
   spartan-route:test python3 -m unittest discover -s /tests -p 'test_*.py'
+docker compose -f infra/compose/compose.yml --env-file .env.example config --quiet
 docker compose -f infra/compose/compose.yml -f infra/compose/compose.spartan-route.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l1.yml -f infra/compose/tiers/compose.spartan-route.yml config --quiet
 ```

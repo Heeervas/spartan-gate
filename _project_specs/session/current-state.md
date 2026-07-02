@@ -4,15 +4,14 @@ Date: 2026-07-02
 
 ## Latest Update
 
-The remaining uncommitted work was reviewed, tested, and committed for
-publication. It updates the Hermes/Camofox integration for the newer upstream
-Hermes image, archives two absorbed patchers, refreshes runtime image pins, and
-adds an opt-in Spartan Reader Hermes web extract provider without
-auto-configuring fresh installs.
+The current work makes Spartan Route the L4/full-stack router, removes
+ClawRoute from the full Compose baseline, keeps compatibility env/edge names,
+and repairs the private Caddy HTTPS edge used by local and Tailscale ports.
 
 ## Active Task
 
-Re-analyze branch publication state after worktree cleanup.
+Finish validation for the Spartan Route base cutover and Caddy edge recovery,
+then re-analyze branch publication state after the worktree is clean.
 
 ## Blockers
 

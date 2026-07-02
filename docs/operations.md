@@ -16,17 +16,17 @@ sg-status
 `sg-tier set L0|L1|L2|L3|L4 [--with clawroute] [--hermes free|gated|full]` to
 change it. L0 and L1 keep Hermes unprivileged but allow user-level Python/Node
 package installs under `/opt/data` or the workspace. L4 starts proxy, DNS,
-SearXNG, reader, ClawRoute, Caddy, Hermes, and the selected browser service.
+SearXNG, reader, Spartan Route, Caddy, Hermes, and the selected browser service.
 See [layers.md](layers.md) for the full layer/addon contract.
 
-After startup, expect `clawroute` and the selected browser service to spend
+After startup, expect `spartan-route` and the selected browser service to spend
 roughly 30-60 seconds in `starting` while they warm up. That is normal. Treat
 it as a problem only if the state stays `starting` for much longer or flips to
 `unhealthy`.
 
 ## Agent Runtime
 
-Hermes is the default public agent. If you want to use another agent, keep that integration in private Compose files and point it at Spartan Gate's internal ClawRoute, Browserless, reader, SearXNG, proxy, and DNS services.
+Hermes is the default public agent. If you want to use another agent, keep that integration in private Compose files and point it at Spartan Gate's internal Spartan Route, Browserless, reader, SearXNG, proxy, and DNS services.
 
 Hermes includes native Pango/Cairo, ffmpeg, and a curated TeX subset for
 creative tools such as Manim, but Python and Node packages should still be
@@ -74,21 +74,18 @@ docker compose \
   up -d
 ```
 
-Parallel Spartan Route start:
+Spartan Route is the normal L4 router:
 
 ```sh
 source scripts/aliases.sh
-sg route up -d
+sg up -d
 ```
 
-This keeps the existing `clawroute` service in place, adds `spartan-route`, and
-points Hermes at `http://spartan-route:18790/v1`. Plain `sg up -d` keeps the
-normal ClawRoute path and does not load `private/compose.spartan-route.local.yml`.
-Spartan Route is exposed through Caddy on `SPARTAN_ROUTE_EDGE_PORT`, default
-`18791`; use `18792` if legacy local tooling already reserves `18791`. Private
-HTTPS stacks should use the Spartan Route URL printed by `sg-urls`; plain HTTP
-stacks use `http://localhost:<SPARTAN_ROUTE_EDGE_PORT>/dashboard-codex`. The
-Codex dashboard includes reset-credit telemetry.
+Hermes points at `http://spartan-route:18790/v1`. Spartan Route is exposed
+through Caddy on `CLAWROUTE_EDGE_PORT`, default `18790`, so existing local
+router URLs continue to work while the backend changes. `sg route ...` remains
+a compatibility alias for older commands. The Codex dashboard includes
+reset-credit telemetry.
 
 Do not use private commands against old stack data paths unless you are intentionally migrating data. The provided private override should use isolated Spartan Gate paths.
 
@@ -96,7 +93,7 @@ Do not use private commands against old stack data paths unless you are intentio
 
 ```sh
 sg-logs-hermes
-sg-logs-clawroute
+sg-logs-spartan-route
 sg-logs proxy dns browserless
 ```
 
@@ -104,7 +101,7 @@ Equivalent raw Compose commands:
 
 ```sh
 docker compose -f infra/compose/compose.yml logs -f hermes
-docker compose -f infra/compose/compose.yml logs -f clawroute
+docker compose -f infra/compose/compose.yml logs -f spartan-route
 docker compose -f infra/compose/compose.yml logs -f proxy dns browserless
 ```
 
@@ -261,8 +258,7 @@ Raw checks:
 
 ```sh
 sg-status
-docker compose -f infra/compose/compose.yml exec clawroute node -e "fetch('http://127.0.0.1:18790/health').then(r=>r.text()).then(console.log)"
-docker compose -f infra/compose/compose.yml -f infra/compose/compose.spartan-route.yml exec spartan-route python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:18790/health').read().decode())"
+docker compose -f infra/compose/compose.yml exec spartan-route python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:18790/health').read().decode())"
 ```
 
 Reader check:
@@ -276,8 +272,8 @@ If startup fails before containers are healthy, the most common causes are now c
 - Overlapping Docker subnet. Fix `SPARTAN_INTERNAL_SUBNET` and `SPARTAN_DNS_IP` in `.env` or `private/env/local.env`.
 - Occupied local edge ports. Fix `SPARTAN_GATE_PORT`, `CLAWROUTE_EDGE_PORT`, `BROWSERLESS_DEBUG_PORT`, or `HERMES_DASHBOARD_PORT`.
 - Private env placeholders. Replace `change-me`, `100.x.y.z`, and `/absolute/path` values before starting.
-- Missing private data directories. Create `SPARTAN_HERMES_DATA_PATH`, `SPARTAN_CLAWROUTE_DATA_PATH`, and `SPARTAN_GOGCLI_DATA_PATH`; when Camofox is selected, also create `SPARTAN_CAMOFOX_DATA_PATH` and `SPARTAN_CAMOFOX_ADDONS_PATH`.
-- Slow first warm-up. Check `sg-logs clawroute browserless camofox` before restarting everything.
+- Missing private data directories. Create `SPARTAN_HERMES_DATA_PATH`, `SPARTAN_ROUTE_DATA_PATH`, and `SPARTAN_GOGCLI_DATA_PATH`; when Camofox is selected, also create `SPARTAN_CAMOFOX_DATA_PATH` and `SPARTAN_CAMOFOX_ADDONS_PATH`.
+- Slow first warm-up. Check `sg-logs spartan-route browserless camofox` before restarting everything.
 
 ## Whitelist Changes
 

@@ -252,35 +252,34 @@ class AliasHelpTests(unittest.TestCase):
         self.assertIn(f"-f {private_compose}", calls)
         self.assertIn(" ps", calls)
 
-    def test_spartan_route_compose_helper_includes_overlay_private_and_env(self):
+    def test_spartan_route_compose_helper_uses_normal_private_stack(self):
         bin_dir, log = self.write_docker_stub("1000:1000")
         (self.root / "private" / "env").mkdir(parents=True)
         env_file = self.root / "private" / "env" / "local.env"
         env_file.write_text("SPARTAN_ROUTE_EDGE_PORT=18792\n", encoding="utf-8")
         private_compose = self.root / "private" / "compose.local.yml"
         private_compose.write_text("services: {}\n", encoding="utf-8")
-        private_route_compose = self.root / "private" / "compose.spartan-route.local.yml"
-        private_route_compose.write_text("services: {}\n", encoding="utf-8")
 
         result = self.run_sourced_with_path("sg route up -d", bin_dir)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = log.read_text(encoding="utf-8")
         compose_file = self.root / "infra" / "compose" / "compose.yml"
-        route_file = self.root / "infra" / "compose" / "compose.spartan-route.yml"
         self.assertIn(
-            f"docker compose -f {compose_file} -f {route_file} -f {private_compose} -f {private_route_compose} --env-file {env_file} up -d",
+            f"docker compose -f {compose_file} -f {private_compose} --env-file {env_file} up -d",
             calls,
         )
+        self.assertNotIn("compose.spartan-route.yml", calls)
 
-    def test_spartan_route_flat_alias_uses_same_compose_overlay(self):
+    def test_spartan_route_flat_alias_uses_normal_compose(self):
         bin_dir, log = self.write_docker_stub("1000:1000")
 
         result = self.run_sourced_with_path("sg-route ps", bin_dir)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = log.read_text(encoding="utf-8")
-        self.assertIn(f"-f {self.root / 'infra' / 'compose' / 'compose.spartan-route.yml'}", calls)
+        self.assertIn(f"-f {self.root / 'infra' / 'compose' / 'compose.yml'}", calls)
+        self.assertNotIn("compose.spartan-route.yml", calls)
         self.assertIn(" ps", calls)
 
     def test_spartan_route_helper_accepts_underscore_service_alias(self):
@@ -293,7 +292,7 @@ class AliasHelpTests(unittest.TestCase):
         self.assertIn(" logs -f spartan-route", calls)
         self.assertNotIn("spartan_route", calls)
 
-    def test_urls_include_spartan_route_when_port_is_configured(self):
+    def test_urls_print_l4_spartan_route_port_without_legacy_alias(self):
         (self.root / "private" / "env").mkdir(parents=True)
         (self.root / "private" / "env" / "local.env").write_text(
             "SPARTAN_ROUTE_EDGE_PORT=18792\n",
@@ -303,7 +302,9 @@ class AliasHelpTests(unittest.TestCase):
         result = self.run_sourced("sg-urls")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Spartan Route local:     http://localhost:18792", result.stdout)
+        self.assertIn("Spartan Route local:     http://localhost:18790", result.stdout)
+        self.assertNotIn("Spartan Route alias", result.stdout)
+        self.assertNotIn("18792", result.stdout)
 
     def test_public_helpers_do_not_default_to_old_custom_claw_path(self):
         for path in (

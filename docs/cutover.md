@@ -65,7 +65,7 @@ sg-logs-hermes
 Confirm:
 
 - Hermes creates state in the new `SPARTAN_HERMES_DATA_PATH`.
-- Hermes uses `http://clawroute:18790/v1`.
+- Hermes uses `http://spartan-route:18790/v1` in L4.
 - Caddy routes work over local HTTP or your private Tailscale bind.
 - Telegram/Discord tokens are not shared by two live gateway processes.
 - Autostart profiles have unique tokens and `API_SERVER_PORT` values.

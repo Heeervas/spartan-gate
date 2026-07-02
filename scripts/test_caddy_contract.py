@@ -38,6 +38,16 @@ class CaddyContractTests(unittest.TestCase):
     def test_https_example_matches_browserless_edge_contract(self):
         self.assert_browserless_contract(HTTPS_EXAMPLE.read_text(encoding="utf-8"))
 
+    def test_router_edge_points_to_spartan_route(self):
+        for path in (PUBLIC_CADDY, HTTPS_EXAMPLE):
+            with self.subTest(path=path):
+                source = path.read_text(encoding="utf-8")
+                router = block(source, ":18790")
+
+                self.assertIn("reverse_proxy http://spartan-route:18790", router)
+                self.assertIn('header_up Authorization "Bearer {$CLAWROUTE_TOKEN}"', router)
+                self.assertNotIn("reverse_proxy http://clawroute:18790", router)
+
     def test_hermes_dashboard_pass_through_is_explicitly_documented(self):
         source = PUBLIC_CADDY.read_text(encoding="utf-8")
         dashboard = block(source, ":9119")

@@ -8,10 +8,12 @@ Public env docs describe names and behavior only. Real values and machine-specif
 
 - `SPARTAN_BIND_LOCALHOST`: public host bind, default `127.0.0.1`.
 - `SPARTAN_GATE_PORT`: Caddy edge port for the Hermes API.
-- `CLAWROUTE_EDGE_PORT`: Caddy edge port for ClawRoute.
-- `SPARTAN_ROUTE_EDGE_PORT`: Caddy edge port for the parallel Spartan Route
-  service in route mode, default `18791`. Private stacks can set `18792` when
-  legacy local tooling already reserves `18791`.
+- `CLAWROUTE_EDGE_PORT`: Caddy edge port for the OpenAI-compatible router.
+  In L4 this reaches Spartan Route; in legacy tiers/addons it reaches
+  ClawRoute.
+- `SPARTAN_ROUTE_EDGE_PORT`: optional compatibility edge port for older
+  side-by-side Spartan Route tier overlays. The normal L4 stack uses
+  `CLAWROUTE_EDGE_PORT`.
 - `BROWSERLESS_DEBUG_PORT`: Caddy edge port for Browserless debugging.
 - `HERMES_DASHBOARD_PORT`: Caddy edge port for the Hermes dashboard.
 - `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`,
@@ -229,9 +231,10 @@ configuration in Compose, plus the generic `HTTP_PROXY`/`HTTPS_PROXY` env vars.
 Browserless remains required for CDP, Google Meet realtime/CDP flows, Chrome
 DevTools MCP, and Browserless profile seeding. See `infra/camofox/README.md`.
 
-## ClawRoute
+## Router And ClawRoute Compatibility
 
-- `CLAWROUTE_TOKEN`: shared bearer token between Hermes and ClawRoute.
+- `CLAWROUTE_TOKEN`: shared bearer token between Hermes, Caddy, Spartan Route,
+  and legacy ClawRoute.
 - `CLAWROUTE_BASELINE_MODEL`: default model when no route matches.
 - `CLAWROUTE_PROVIDER`: optional provider profile override.
 - `CLAWROUTE_DEBUG`: redacted debug logging.
@@ -244,11 +247,14 @@ DevTools MCP, and Browserless profile seeding. See `infra/camofox/README.md`.
 Provider keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, and `OPENROUTER_API_KEY`.
 Additional providers: `XAI_API_KEY` and `STEPFUN_API_KEY`.
 
-Spartan Route uses the same bearer token, provider keys, Codex auth variables,
-and `config/clawroute` runtime profiles. Its parallel-only variables are
-`SPARTAN_ROUTE_DATA_PATH`, `SPARTAN_ROUTE_DB_PATH`, and
-`SPARTAN_ROUTE_EDGE_PORT`. If `SPARTAN_ROUTE_DB_PATH` is not set, the service
-writes `/app/data/spartan-route.db` and does not reuse `clawroute.db`.
+Spartan Route is the L4 router. It uses the same bearer token, provider keys,
+Codex auth variables, and `config/clawroute` runtime profiles while writing its
+own SQLite state. `SPARTAN_ROUTE_DATA_PATH` controls the host data mount and
+`SPARTAN_ROUTE_DB_PATH` controls the in-container database path. If
+`SPARTAN_ROUTE_DB_PATH` is not set, the service writes
+`/app/data/spartan-route.db` and does not reuse `clawroute.db`.
+`SPARTAN_CODEX_HOME_PATH` can mount a private Codex home at `/codex-home` while
+leaving `CODEX_HOME` pointed at that container path.
 `SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING=1` is a rollback switch that restores
 replay of prior assistant reasoning into upstream Codex requests; leave it
 unset for the default stable-prefix behavior.

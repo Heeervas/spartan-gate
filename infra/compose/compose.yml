@@ -114,16 +114,16 @@ services:
       retries: 3
       start_period: 10s
 
-  clawroute:
+  spartan-route:
     build:
-      context: ../../packages/clawroute
-      args:
-        CLAWROUTE_BUILD_REVISION: ${CLAWROUTE_BUILD_REVISION:-unknown}
-    container_name: spartan_gate_clawroute
+      context: ../spartan-route
+    container_name: spartan_gate_spartan_route
     restart: unless-stopped
     mem_limit: 512m
     environment:
-      # required: internal OpenAI-compatible router.
+      # required: internal OpenAI-compatible router. Spartan Route keeps the
+      # ClawRoute env names for compatibility with Hermes and existing private
+      # configuration.
       CLAWROUTE_HOST: 0.0.0.0
       CLAWROUTE_PORT: 18790
       CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
@@ -135,7 +135,7 @@ services:
       CLAWROUTE_DRY_RUN: ${CLAWROUTE_DRY_RUN:-false}
       CLAWROUTE_LOG_CONTENT: ${CLAWROUTE_LOG_CONTENT:-false}
       CLAWROUTE_PROVIDER: ${CLAWROUTE_PROVIDER:-}
-      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-http://ollama:11434}
+      SPARTAN_ROUTE_DB_PATH: ${SPARTAN_ROUTE_DB_PATH:-/app/data/spartan-route.db}
 
       # private/local: real provider keys are supplied by private/env/*.env.
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
@@ -150,40 +150,33 @@ services:
       OPENAI_CODEX_TOKEN: ${OPENAI_CODEX_TOKEN:-}
       OPENAI_CODEX_AUTH_PATH: ${OPENAI_CODEX_AUTH_PATH:-}
       OPENAI_CODEX_AUTH_PATHS: ${OPENAI_CODEX_AUTH_PATHS:-}
-      CODEX_HOME: ${CODEX_HOME:-}
-      CODEX_ROTATION_INTERVAL_HOURS: ${CODEX_ROTATION_INTERVAL_HOURS:-2}
-      CODEX_ROTATION_IDLE_MINUTES: ${CODEX_ROTATION_IDLE_MINUTES:-30}
-      CODEX_BALANCE_LOADER_MODE: ${CODEX_BALANCE_LOADER_MODE:-off}
-      CODEX_SCHEDULE_START_DAY: ${CODEX_SCHEDULE_START_DAY:-mon}
-      CODEX_EARLY_ACTIVATION_ENABLED: ${CODEX_EARLY_ACTIVATION_ENABLED:-true}
-      CODEX_EARLY_ACTIVATION_WEEKLY_PERCENT: ${CODEX_EARLY_ACTIVATION_WEEKLY_PERCENT:-70}
-      CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT: ${CODEX_COLD_MIGRATION_FIVE_HOUR_THRESHOLD_PERCENT:-7}
-      CODEX_COLD_MIGRATION_DECISION_TTL_HOURS: ${CODEX_COLD_MIGRATION_DECISION_TTL_HOURS:-6}
+      CODEX_HOME: ${CODEX_HOME:-/codex-home}
+      CODEX_CACHE_LEASE_MODE: ${CODEX_CACHE_LEASE_MODE:-keyed}
+      CODEX_CACHE_LEASE_MINUTES: ${CODEX_CACHE_LEASE_MINUTES:-60}
+      CODEX_CACHE_LEASE_IDLE_GRACE_MINUTES: ${CODEX_CACHE_LEASE_IDLE_GRACE_MINUTES:-10}
       CODEX_TRANSIENT_5XX_COOLDOWN_MS: ${CODEX_TRANSIENT_5XX_COOLDOWN_MS:-120000}
-
-      # private/local: optional admin alerts.
-      CLAWROUTE_ALERT_EMAIL: ${CLAWROUTE_ALERT_EMAIL:-}
-      CLAWROUTE_ALERT_SLACK_WEBHOOK: ${CLAWROUTE_ALERT_SLACK_WEBHOOK:-}
 
       # required: remote API calls leave through Tinyproxy.
       http_proxy: http://proxy:8888
       https_proxy: http://proxy:8888
       HTTP_PROXY: http://proxy:8888
       HTTPS_PROXY: http://proxy:8888
-      NO_PROXY: localhost,127.0.0.1,::1,ollama,hermes,clawroute,proxy,caddy,searxng,reader,browserless
-      no_proxy: localhost,127.0.0.1,::1,ollama,hermes,clawroute,proxy,caddy,searxng,reader,browserless
+      NO_PROXY: localhost,127.0.0.1,::1,hermes,spartan-route,proxy,caddy,searxng,reader,browserless,camofox
+      no_proxy: localhost,127.0.0.1,::1,hermes,spartan-route,proxy,caddy,searxng,reader,browserless,camofox
     volumes:
-      # required: isolated public runtime data. Change this line for a different ClawRoute data path.
-      - ../../runtime/clawroute:/app/data
+      # required: isolated public runtime data. Change this line for a different Spartan Route data path.
+      - ${SPARTAN_ROUTE_DATA_PATH:-../../runtime/spartan-route}:/app/data
       # required: public model routing config.
       - ../../config/clawroute:/app/config:ro
+      # optional/private: Codex auth home, overridden by private compose for multi-slot auth.
+      - ${SPARTAN_CODEX_HOME_PATH:-../../private/codex-home}:/codex-home:ro
     networks:
       - spartan_internal
     depends_on:
       proxy:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18790/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -231,8 +224,8 @@ services:
       https_proxy: http://proxy:8888
       HTTP_PROXY: http://proxy:8888
       HTTPS_PROXY: http://proxy:8888
-      NO_PROXY: localhost,127.0.0.1,::1,browserless,hermes,proxy,caddy,searxng,reader,clawroute
-      no_proxy: localhost,127.0.0.1,::1,browserless,hermes,proxy,caddy,searxng,reader,clawroute
+      NO_PROXY: localhost,127.0.0.1,::1,browserless,hermes,proxy,caddy,searxng,reader,spartan-route
+      no_proxy: localhost,127.0.0.1,::1,browserless,hermes,proxy,caddy,searxng,reader,spartan-route
     volumes:
       # required: persistent Chromium profiles for Browserless sessions.
       - ../../runtime/browserless/profiles:/profiles
@@ -304,8 +297,8 @@ services:
       https_proxy: http://proxy:8888
       HTTP_PROXY: http://proxy:8888
       HTTPS_PROXY: http://proxy:8888
-      NO_PROXY: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,clawroute,browserless
-      no_proxy: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,clawroute,browserless
+      NO_PROXY: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,spartan-route,browserless
+      no_proxy: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,spartan-route,browserless
     volumes:
       # required: Camofox storageState, cookies, and traces. Do not share Browserless profiles.
       - ../../runtime/camofox:/root/.camofox
@@ -341,7 +334,7 @@ services:
         condition: service_healthy
       dns:
         condition: service_healthy
-      clawroute:
+      spartan-route:
         condition: service_healthy
       browserless:
         condition: service_healthy
@@ -399,8 +392,8 @@ services:
       HERMES_MAX_ITERATIONS: ${HERMES_MAX_ITERATIONS:-90}
       HERMES_GATEWAY_TOKEN: ${HERMES_GATEWAY_TOKEN:-change-me-hermes-gateway-token}
 
-      # required: Hermes talks to ClawRoute, not directly to model APIs.
-      OPENAI_BASE_URL: http://clawroute:18790/v1
+      # required: Hermes talks to Spartan Route, not directly to model APIs.
+      OPENAI_BASE_URL: http://spartan-route:18790/v1
       OPENAI_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       CUSTOM_1_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
 
@@ -454,8 +447,8 @@ services:
       https_proxy: http://proxy:8888
       HTTP_PROXY: http://proxy:8888
       HTTPS_PROXY: http://proxy:8888
-      NO_PROXY: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,ollama,browserless,camofox
-      no_proxy: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,clawroute,ollama,browserless,camofox
+      NO_PROXY: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,spartan-route,ollama,browserless,camofox
+      no_proxy: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,spartan-route,ollama,browserless,camofox
     volumes:
       # required: isolated public runtime data. Change this line for a different Hermes data path.
       - ../../runtime/hermes:/opt/data
@@ -463,6 +456,8 @@ services:
       - ../../runtime/browserless/profiles:/profiles
       # required: agent can inspect but not modify the public proxy whitelist fragment.
       - ../outbound-proxy/whitelist.txt:/etc/proxy-whitelist.public.txt:ro
+      # optional: Spartan Route cache-lineage plugin, enabled by user-owned Hermes config.
+      - ../hermes-plugins/spartan-cache-lineage:/opt/data/plugins/spartan-cache-lineage:ro
     networks:
       - spartan_internal
     healthcheck:

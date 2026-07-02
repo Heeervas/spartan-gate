@@ -144,8 +144,14 @@ exit 2
         self.assertTrue((self.private_dir / "outbound-proxy" / "whitelist.private.txt").is_file())
         content = private_compose.read_text(encoding="utf-8")
         self.assertIn("SPARTAN_BIND_LOCALHOST", content)
+        self.assertIn("spartan-route:", content)
+        self.assertIn("SPARTAN_ROUTE_DATA_PATH", content)
+        self.assertNotIn("  clawroute:", content)
         self.assertNotIn("TAILSCALE_IP", content)
         self.assertNotIn("/absolute/path", content)
+        values = self.read_env()
+        self.assertEqual(values["SPARTAN_ADDONS"], "")
+        self.assertIn("SPARTAN_ROUTE_DATA_PATH", values)
         calls = self.log.read_text(encoding="utf-8").splitlines()
         self.assertTrue(any("infra/compose/compose.yml" in call and str(private_compose) in call for call in calls))
 
@@ -156,6 +162,12 @@ exit 2
         calls = self.log.read_text(encoding="utf-8")
         self.assertNotIn("web/spartan-reader", calls)
         self.assertNotIn("extract_backend", calls)
+
+    def test_l4_rejects_legacy_clawroute_addon(self):
+        result = self.run_install("L4", "linux", "--with", "clawroute")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ClawRoute is not part of L4", result.stderr)
 
     def test_non_l4_install_does_not_configure_spartan_reader(self):
         result = self.run_install("L3", "linux")
