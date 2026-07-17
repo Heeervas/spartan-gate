@@ -77,6 +77,10 @@ exit 2
         self.assertEqual(values["CADDY_AUTH_HASH"], "$2a$test-generated-caddy-hash")
         self.assertIn("SPARTAN_CADDY_PASSWORD", values)
         self.assertIn("BROWSERLESS_EDGE_TOKEN", values)
+        self.assertIn("CADDY_CAMOFOX_EDGE_TOKEN", values)
+        self.assertIn("CADDY_WS_EDGE_TOKEN", values)
+        self.assertRegex(values["CADDY_CAMOFOX_EDGE_TOKEN"], r"^[0-9a-f]{64}$")
+        self.assertRegex(values["CADDY_WS_EDGE_TOKEN"], r"^[0-9a-f]{64}$")
         self.assertNotIn(values["HERMES_API_KEY"], result.stdout)
         self.assertNotIn(values["HERMES_GATEWAY_TOKEN"], result.stdout)
         self.assertNotIn(values["SPARTAN_CADDY_PASSWORD"], result.stdout)
@@ -93,6 +97,55 @@ exit 2
         self.assertNotIn(values["SPARTAN_CADDY_PASSWORD"], result.stdout)
         self.assertIn('"platform": "macos"', (self.private_dir / "install-state.json").read_text(encoding="utf-8"))
 
+    def test_existing_caddy_hash_without_plaintext_is_preserved_without_inventing_password(self):
+        env_dir = self.private_dir / "env"
+        env_dir.mkdir(parents=True)
+        (env_dir / "local.env").write_text(
+            "CADDY_AUTH_USER='admin'\nCADDY_AUTH_HASH='$2a$existing-private-hash'\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_install("L2", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.read_env()
+        self.assertEqual(values["CADDY_AUTH_HASH"], "$2a$existing-private-hash")
+        self.assertNotIn("SPARTAN_CADDY_PASSWORD", values)
+
+    def test_invalid_edge_tokens_are_rotated_to_valid_distinct_values(self):
+        env_dir = self.private_dir / "env"
+        env_dir.mkdir(parents=True)
+        (env_dir / "local.env").write_text(
+            "CADDY_CAMOFOX_EDGE_TOKEN=short\n"
+            "CADDY_WS_EDGE_TOKEN=GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_install("L2", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.read_env()
+        self.assertRegex(values["CADDY_CAMOFOX_EDGE_TOKEN"], r"^[0-9a-f]{64}$")
+        self.assertRegex(values["CADDY_WS_EDGE_TOKEN"], r"^[0-9a-f]{64}$")
+        self.assertNotEqual(values["CADDY_CAMOFOX_EDGE_TOKEN"], values["CADDY_WS_EDGE_TOKEN"])
+
+    def test_equal_valid_edge_tokens_are_separated(self):
+        env_dir = self.private_dir / "env"
+        env_dir.mkdir(parents=True)
+        token = "a" * 64
+        (env_dir / "local.env").write_text(
+            f"CADDY_CAMOFOX_EDGE_TOKEN={token}\nCADDY_WS_EDGE_TOKEN={token}\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_install("L2", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.read_env()
+        self.assertEqual(values["CADDY_WS_EDGE_TOKEN"], token)
+        self.assertRegex(values["CADDY_CAMOFOX_EDGE_TOKEN"], r"^[0-9a-f]{64}$")
+        self.assertNotEqual(values["CADDY_CAMOFOX_EDGE_TOKEN"], token)
+
     def test_install_is_idempotent_for_existing_secret_values(self):
         first = self.run_install("L1", "wsl")
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -106,6 +159,61 @@ exit 2
             self.assertEqual(after[key], before[key])
         self.assertEqual(after["SPARTAN_HERMES_DATA_PATH"], before["SPARTAN_HERMES_DATA_PATH"])
         self.assertIn('"platform": "wsl"', (self.private_dir / "install-state.json").read_text(encoding="utf-8"))
+
+    def test_install_manages_browserless_derived_and_base_images(self):
+        result = self.run_install("L1", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.read_env()
+        self.assertEqual(values["BROWSERLESS_IMAGE"], "spartan-gate-browserless:2.51.0")
+        self.assertEqual(values["BROWSERLESS_BASE_IMAGE"], "ghcr.io/browserless/chromium:v2.51.0")
+
+    def test_install_migrates_legacy_browserless_tag_to_derived_image(self):
+        env_dir = self.private_dir / "env"
+        env_dir.mkdir(parents=True)
+        (env_dir / "local.env").write_text(
+            "BROWSERLESS_IMAGE=ghcr.io/browserless/chromium:v2.50.0\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_install("L1", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.read_env()
+        self.assertEqual(values["BROWSERLESS_IMAGE"], "spartan-gate-browserless:2.51.0")
+        self.assertEqual(values["BROWSERLESS_BASE_IMAGE"], "ghcr.io/browserless/chromium:v2.50.0")
+
+    def test_install_migrates_legacy_browserless_digest_to_derived_image(self):
+        env_dir = self.private_dir / "env"
+        env_dir.mkdir(parents=True)
+        legacy = "ghcr.io/browserless/chromium@sha256:" + "a" * 64
+        (env_dir / "local.env").write_text(
+            f"BROWSERLESS_IMAGE={legacy}\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_install("L1", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.read_env()
+        self.assertEqual(values["BROWSERLESS_IMAGE"], "spartan-gate-browserless:2.51.0")
+        self.assertEqual(values["BROWSERLESS_BASE_IMAGE"], legacy)
+
+    def test_install_preserves_custom_browserless_image_with_default_base(self):
+        env_dir = self.private_dir / "env"
+        env_dir.mkdir(parents=True)
+        custom = "registry.example.test/browserless:v9"
+        (env_dir / "local.env").write_text(
+            f"BROWSERLESS_IMAGE={custom}\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_install("L1", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.read_env()
+        self.assertEqual(values["BROWSERLESS_IMAGE"], custom)
+        self.assertEqual(values["BROWSERLESS_BASE_IMAGE"], "ghcr.io/browserless/chromium:v2.51.0")
 
     def test_runs_setup_before_start_and_hermes_recreate(self):
         result = self.run_install("L3", "linux")

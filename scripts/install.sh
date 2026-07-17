@@ -210,6 +210,17 @@ get_or_generate() {
     fi
 }
 
+get_or_generate_edge_token() {
+    local key="$1"
+    local current
+    current="$(env_value "$key" || true)"
+    if [[ "$current" =~ ^[0-9a-f]{64}$ ]]; then
+        printf "%s\n" "$current"
+    else
+        random_hex 32
+    fi
+}
+
 caddy_hash_password() {
     local existing password
     existing="$(env_value CADDY_AUTH_HASH || true)"
@@ -227,7 +238,8 @@ quote_env() {
 }
 
 write_env_file() {
-    local tmp managed_keys key caddy_password
+    local tmp managed_keys key caddy_password caddy_hash camofox_edge_token websocket_edge_token
+    local browserless_image browserless_base_image
     mkdir -p "$(dirname "$env_file")"
     mkdir -p "$data_root/hermes" "$data_root/camofox" "$data_root/clawroute" "$data_root/spartan-route" "$data_root/browserless-profiles" "$data_root/gogcli"
     [[ -f "$env_file" ]] || : > "$env_file"
@@ -248,12 +260,12 @@ write_env_file() {
         HERMES_DASHBOARD_BASIC_AUTH_USERNAME
         HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
         HERMES_DASHBOARD_BASIC_AUTH_SECRET
-        CLAWROUTE_TOKEN BROWSERLESS_TOKEN BROWSERLESS_EDGE_TOKEN CADDY_AUTH_USER CADDY_AUTH_HASH
+        CLAWROUTE_TOKEN BROWSERLESS_TOKEN BROWSERLESS_EDGE_TOKEN CADDY_CAMOFOX_EDGE_TOKEN CADDY_WS_EDGE_TOKEN CADDY_AUTH_USER CADDY_AUTH_HASH
         SPARTAN_CADDY_PASSWORD
         CAMOFOX_URL CAMOFOX_API_KEY CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID
         CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB CAMOFOX_ENABLE_VNC
         CAMOFOX_VNC_PASSWORD CAMOFOX_IMAGE CAMOFOX_BASE_IMAGE
-        HERMES_IMAGE
+        BROWSERLESS_IMAGE BROWSERLESS_BASE_IMAGE HERMES_IMAGE
     )
 
     tmp="$(mktemp)"
@@ -314,10 +326,26 @@ write_env_file() {
     append_env CLAWROUTE_TOKEN "$(get_or_generate CLAWROUTE_TOKEN 32)"
     append_env BROWSERLESS_TOKEN "$(get_or_generate BROWSERLESS_TOKEN 32)"
     append_env BROWSERLESS_EDGE_TOKEN "$(get_or_generate BROWSERLESS_EDGE_TOKEN 32)"
+    camofox_edge_token="$(get_or_generate_edge_token CADDY_CAMOFOX_EDGE_TOKEN)"
+    websocket_edge_token="$(get_or_generate_edge_token CADDY_WS_EDGE_TOKEN)"
+    if [[ "$camofox_edge_token" == "$websocket_edge_token" ]]; then
+        camofox_edge_token="$(random_hex 32)"
+    fi
+    append_env CADDY_CAMOFOX_EDGE_TOKEN "$camofox_edge_token"
+    append_env CADDY_WS_EDGE_TOKEN "$websocket_edge_token"
     append_env CADDY_AUTH_USER "admin"
-    caddy_password="$(get_or_generate SPARTAN_CADDY_PASSWORD 24)"
-    append_env SPARTAN_CADDY_PASSWORD "$caddy_password"
-    append_env CADDY_AUTH_HASH "$(caddy_hash_password "$caddy_password")"
+    caddy_password="$(env_value SPARTAN_CADDY_PASSWORD || true)"
+    caddy_hash="$(env_value CADDY_AUTH_HASH || true)"
+    if [[ -n "$caddy_password" && "$caddy_password" != change-me* ]]; then
+        append_env SPARTAN_CADDY_PASSWORD "$caddy_password"
+        append_env CADDY_AUTH_HASH "$(caddy_hash_password "$caddy_password")"
+    elif [[ -n "$caddy_hash" && "$caddy_hash" != *UMuSzA3WdVqcAwE3yvFeCO* ]]; then
+        append_env CADDY_AUTH_HASH "$caddy_hash"
+    else
+        caddy_password="$(random_hex 24)"
+        append_env SPARTAN_CADDY_PASSWORD "$caddy_password"
+        append_env CADDY_AUTH_HASH "$(caddy_hash_password "$caddy_password")"
+    fi
     if [[ "$TIER" == "L0" ]]; then
         append_env CAMOFOX_URL ""
     else
@@ -332,6 +360,17 @@ write_env_file() {
     append_env CAMOFOX_VNC_PASSWORD "$(get_or_generate CAMOFOX_VNC_PASSWORD 24)"
     append_env CAMOFOX_IMAGE "spartan-gate-camofox:1.11.2"
     append_env CAMOFOX_BASE_IMAGE "ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137"
+    browserless_image="$(env_value BROWSERLESS_IMAGE || true)"
+    browserless_base_image="$(env_value BROWSERLESS_BASE_IMAGE || true)"
+    if [[ "$browserless_image" == ghcr.io/browserless/chromium:* || "$browserless_image" == ghcr.io/browserless/chromium@* ]]; then
+        [[ -n "$browserless_base_image" ]] || browserless_base_image="$browserless_image"
+        browserless_image="spartan-gate-browserless:2.51.0"
+    else
+        [[ -n "$browserless_base_image" ]] || browserless_base_image="ghcr.io/browserless/chromium:v2.51.0"
+        [[ -n "$browserless_image" ]] || browserless_image="spartan-gate-browserless:2.51.0"
+    fi
+    append_env BROWSERLESS_IMAGE "$browserless_image"
+    append_env BROWSERLESS_BASE_IMAGE "$browserless_base_image"
     append_env HERMES_IMAGE "spartan-gate-hermes:latest"
 
     mv "$tmp" "$env_file"

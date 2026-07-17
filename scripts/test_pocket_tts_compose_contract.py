@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+COMPOSE_PATH = ROOT / "infra" / "compose" / "compose.yml"
+
+
+class PocketTTSComposeContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+
+    def test_runtime_has_only_dedicated_internal_network(self):
+        service = self.compose["services"]["pocket-tts"]
+        self.assertEqual(service["networks"], ["pocket_tts_internal"])
+        self.assertNotIn("ports", service)
+        self.assertTrue(service["read_only"])
+        self.assertEqual(service["cap_drop"], ["ALL"])
+        self.assertEqual(service["user"], "10001:10001")
+        self.assertNotIn("HTTP_PROXY", service.get("environment", {}))
+        self.assertNotIn("HTTPS_PROXY", service.get("environment", {}))
+        self.assertNotIn("POCKET_TTS_ENGLISH_VOICE", service["environment"])
+        self.assertNotIn("POCKET_TTS_SPANISH_VOICE", service["environment"])
+
+    def test_prefetch_uses_gate_network_but_runtime_does_not(self):
+        runtime = self.compose["services"]["pocket-tts"]
+        prefetch = self.compose["services"]["pocket-tts-prefetch"]
+        self.assertNotIn("spartan_internal", runtime["networks"])
+        self.assertEqual(prefetch["networks"], ["spartan_internal"])
+        self.assertEqual(prefetch["environment"]["HTTP_PROXY"], "http://proxy:8888")
+        self.assertNotIn("HF_TOKEN", prefetch.get("environment", {}))
+
+    def test_hermes_gets_client_and_private_tts_network(self):
+        hermes = self.compose["services"]["hermes"]
+        self.assertIn("pocket_tts_internal", hermes["networks"])
+        self.assertNotIn("pocket-tts", hermes["depends_on"])
+        self.assertTrue(
+            any(
+                "pocket-tts/hermes_client.py:/opt/hermes/bootstrap/pocket-tts-client.py:ro"
+                in volume
+                for volume in hermes["volumes"]
+            )
+        )
+
+    def test_dedicated_network_is_internal(self):
+        self.assertTrue(self.compose["networks"]["pocket_tts_internal"]["internal"])
+
+
+if __name__ == "__main__":
+    unittest.main()

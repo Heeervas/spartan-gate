@@ -177,6 +177,7 @@ services:
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_GATE_PORT:-18789}:18789"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CAMOFOX_NOVNC_PORT:-26080}:26080"
+    entrypoint: ["/bin/sh", "/usr/local/bin/spartan-caddy-entrypoint"]
     environment:
       CADDY_AUTH_USER: ${CADDY_AUTH_USER:-admin}
       CADDY_AUTH_HASH: ${CADDY_AUTH_HASH:-$$2a$$14$$UMuSzA3WdVqcAwE3yvFeCO.CesMjqqGDVrxpL1s87FsWM/NRrADi2}
@@ -184,8 +185,11 @@ services:
       CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
       BROWSERLESS_EDGE_TOKEN: ${BROWSERLESS_EDGE_TOKEN:-change-me-browserless-edge-token}
+      CADDY_CAMOFOX_EDGE_TOKEN: ${CADDY_CAMOFOX_EDGE_TOKEN:-}
+      CADDY_WS_EDGE_TOKEN: ${CADDY_WS_EDGE_TOKEN:-}
     volumes:
       - ../../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../caddy/entrypoint.sh:/usr/local/bin/spartan-caddy-entrypoint:ro
       - ../../caddy/local.d:/etc/caddy/local.d:ro
       - ../../caddy/browserless-debugger-router.js:/srv/browserless-debugger/router.js:ro
       - ../../caddy/portal.html:/srv/portal.html:ro

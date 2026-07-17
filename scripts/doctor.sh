@@ -179,6 +179,17 @@ validate_private_env() {
     cat "$TMPDIR/spartan-gate-env-placeholders.txt" >&2
     fail "private env still contains placeholder values: $env_file"
   fi
+  for key in BROWSERLESS_EDGE_TOKEN CADDY_CAMOFOX_EDGE_TOKEN CADDY_WS_EDGE_TOKEN; do
+    value=$(env_value "$env_file" "$key")
+    test -n "$value" || fail "missing required private edge token: $key in $env_file"
+    case "$key" in
+      CADDY_*) printf "%s" "$value" | grep -Eq "^[0-9a-f]{64}$" || fail "invalid private edge token (expected 64 lowercase hex): $key in $env_file" ;;
+    esac
+  done
+
+  camofox_edge_token=$(env_value "$env_file" CADDY_CAMOFOX_EDGE_TOKEN)
+  websocket_edge_token=$(env_value "$env_file" CADDY_WS_EDGE_TOKEN)
+  test "$camofox_edge_token" != "$websocket_edge_token" || fail "Caddy edge tokens must differ: CADDY_CAMOFOX_EDGE_TOKEN and CADDY_WS_EDGE_TOKEN"
 
   for key in SPARTAN_HERMES_DATA_PATH SPARTAN_CLAWROUTE_DATA_PATH SPARTAN_ROUTE_DATA_PATH SPARTAN_GOGCLI_DATA_PATH SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CAMOFOX_ADDONS_PATH; do
     case "$key" in
