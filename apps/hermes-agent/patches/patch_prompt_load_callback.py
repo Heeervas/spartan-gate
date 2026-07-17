@@ -34,6 +34,17 @@ MARKER = "# --- Prompt-load callbacks (pl:<skill> → synthetic /prompt_load_sel
 PATCH_BLOCK = '''\
 # --- Prompt-load callbacks (pl:<skill> → synthetic /prompt_load_select) ---
 if data.startswith("pl:"):
+    caller_id = str(getattr(query.from_user, "id", ""))
+    if not self._is_callback_user_authorized(
+        caller_id,
+        chat_id=query_chat_id,
+        chat_type=str(query_chat_type) if query_chat_type is not None else None,
+        thread_id=str(query_thread_id) if query_thread_id is not None else None,
+        user_name=query_user_name,
+    ):
+        await query.answer(text="⛔ You are not authorized to load prompts.")
+        return
+
     skill_name = data[3:]
     if not skill_name:
         await query.answer(text="Invalid prompt-load selection.")

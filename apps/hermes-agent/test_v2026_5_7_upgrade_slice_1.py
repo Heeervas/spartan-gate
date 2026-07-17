@@ -28,7 +28,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn(
             'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:096066c849e1c952aa89962502a3d346654167b3eab774b1648a94cdfb46d888',
+            'sha256:add2cf403b277a3124cf37c8172c7e3bd91e1f0953d02d38d033cca5888c781a',
             dockerfile,
         )
 
@@ -45,8 +45,9 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('RUN python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py', dockerfile)
         self.assertIn('RUN python3 /opt/hermes/patches/patch_s6_service_permissions.py', dockerfile)
         self.assertIn('RUN python3 /opt/hermes/patches/patch_runtime_identity_drop.py', dockerfile)
+        self.assertIn('RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py', dockerfile)
         self.assertLess(
-            dockerfile.index('patch_stage2_install_chown_guard.py'),
+            dockerfile.index('patch_stage2_runtime_owner.py'),
             dockerfile.index('patch_s6_service_permissions.py'),
         )
         self.assertLess(

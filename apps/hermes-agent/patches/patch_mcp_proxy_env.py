@@ -41,22 +41,31 @@ _SAFE_ENV_KEYS = frozenset({
 })'''
 
 
+def patch_source(source: str) -> str:
+    if MARKER in source or all(token in source for token in PROXY_TOKENS):
+        return source
+    if OLD_BLOCK not in source:
+        raise ValueError("safe stdio environment anchor not found")
+    return source.replace(OLD_BLOCK, NEW_BLOCK, 1)
+
+
 def main() -> None:
     if not TARGET.exists():
         print(f"FATAL: {TARGET} not found", file=sys.stderr)
         sys.exit(1)
 
     source = TARGET.read_text(encoding="utf-8")
+    try:
+        patched = patch_source(source)
+    except ValueError as exc:
+        print(f"FATAL: {exc} in {TARGET}", file=sys.stderr)
+        sys.exit(1)
 
-    if MARKER in source or all(token in source for token in PROXY_TOKENS):
+    if patched == source:
         print(f"Already patched: {TARGET}")
         return
 
-    if OLD_BLOCK not in source:
-        print(f"FATAL: anchor block not found in {TARGET}", file=sys.stderr)
-        sys.exit(1)
-
-    TARGET.write_text(source.replace(OLD_BLOCK, NEW_BLOCK, 1), encoding="utf-8")
+    TARGET.write_text(patched, encoding="utf-8")
     print(f"Patched: {TARGET} — proxy env vars preserved for stdio MCP subprocesses")
 
 

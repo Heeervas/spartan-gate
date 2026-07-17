@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS node22
 
-FROM docker.io/nousresearch/hermes-agent:main@sha256:096066c849e1c952aa89962502a3d346654167b3eab774b1648a94cdfb46d888
+FROM docker.io/nousresearch/hermes-agent:main@sha256:add2cf403b277a3124cf37c8172c7e3bd91e1f0953d02d38d033cca5888c781a
 
 USER root
 
@@ -80,8 +80,32 @@ RUN apt-get update \
     # --- TLS / Certs ---
     ca-certificates \
     openssl \
+    fontconfig \
     libpangocairo-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install the complete static Onest 1.000 release and make it available to all
+# Fontconfig consumers (browser automation, image capture, and PDF tooling).
+RUN set -eux; \
+    curl -fsSL "https://github.com/simpals/onest/releases/download/1.000/onest-fonts.zip" -o /tmp/onest-fonts.zip; \
+    echo "e44491d1f892716036307beddb4cad5adae52aac7fb70f8c274198c8aea3cb15  /tmp/onest-fonts.zip" | sha256sum -c -; \
+    mkdir -p /tmp/onest /usr/local/share/fonts/onest; \
+    unzip /tmp/onest-fonts.zip "onest-fonts/fonts/ttf/*.ttf" -d /tmp/onest; \
+    for font in \
+        Onest-Black.ttf \
+        Onest-Bold.ttf \
+        Onest-ExtraBold.ttf \
+        Onest-Light.ttf \
+        Onest-Medium.ttf \
+        Onest-Regular.ttf \
+        Onest-Thin.ttf; \
+    do \
+        install -m 0644 "/tmp/onest/onest-fonts/fonts/ttf/${font}" /usr/local/share/fonts/onest/; \
+    done; \
+    [ "$(find /usr/local/share/fonts/onest -type f -name '*.ttf' | wc -l)" -eq "7" ]; \
+    fc-cache -fv; \
+    fc-list | grep -i Onest; \
+    rm -rf /tmp/onest /tmp/onest-fonts.zip
 
 # Persist APT proxy so runtime builds inside the container use the outbound proxy
 RUN echo 'Acquire::http::Proxy "http://proxy:8888";' > /etc/apt/apt.conf.d/99proxy \
@@ -149,7 +173,7 @@ RUN chmod +x /opt/hermes/entrypoint-wrapper.sh
 
 # Build-time patches for upstream Hermes files (survive base image updates)
 COPY patches/ /opt/hermes/patches/
-RUN python3 /opt/hermes/patches/patch_stage2_install_chown_guard.py
+RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py
 RUN python3 /opt/hermes/patches/patch_s6_service_permissions.py
 RUN python3 /opt/hermes/patches/patch_runtime_identity_drop.py
 RUN python3 /opt/hermes/patches/patch_stage2_cdp_env.py
@@ -160,6 +184,7 @@ RUN python3 /opt/hermes/patches/patch_mcp_proxy_env.py
 RUN python3 /opt/hermes/patches/patch_google_meet_cdp.py
 RUN python3 /opt/hermes/patches/patch_google_meet_transcript.py
 RUN python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py
+RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py
 
 # Keep installed code owned by root so the hermes workload cannot mutate future
 # Python imports, gateway source, Node dependencies, or bundled patches.
