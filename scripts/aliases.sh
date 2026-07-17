@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Load Spartan Gate helpers:
-#   cd /path/to/spartan-gate
-#   source scripts/aliases.sh
-#   echo 'cd /path/to/spartan-gate && source scripts/aliases.sh' >> ~/.bashrc   # or ~/.zshrc
+#   source /path/to/spartan-gate/scripts/aliases.sh
+#   echo 'source /path/to/spartan-gate/scripts/aliases.sh' >> ~/.bashrc   # or ~/.zshrc
 #
 # Compose interpolation uses variables from the file passed with --env-file
 # (private/env/local.env here, falling back to .env). Service-level env_file:
@@ -10,15 +9,19 @@
 # for compose.yml interpolation.
 
 if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
-    export SPARTAN_GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    _sg_alias_source="${BASH_SOURCE[0]}"
+elif [[ -n "${ZSH_VERSION:-}" ]]; then
+    _sg_alias_source="${(%):-%x}"
 else
-    export SPARTAN_GATE_DIR="$PWD"
+    _sg_alias_source="$PWD/scripts/aliases.sh"
 fi
+export SPARTAN_GATE_DIR="$(cd "$(dirname "$_sg_alias_source")/.." && pwd)"
+unset _sg_alias_source
 
 # Clear aliases from older versions before defining functions with the same
 # command names. This makes repeated `source scripts/aliases.sh` predictable.
 for alias_name in \
-    sg sg-help sg-tier sg-route sg-hermes sg-browser sg-meet sg-disk \
+    sg sg-help sg-tier sg-route sg-hermes sg-browser sg-meet sg-disk sg-tmux \
     sg-priv sg-up sg-build-up sg-down sg-status sg-ps sg-health sg-logs \
     sg-exec sg-config sg-doctor sg-up-core sg-up-hermes \
     sg-up-private-hermes sg-up-full sg-restart-hermes sg-restart-caddy \
@@ -29,7 +32,7 @@ for alias_name in \
     sg-browserless-profile-live sg-hermes-chrome-profile sg-hermes-meet sg-hermes-meet-join \
     sg-browser-mode-apply sg-camofox-profile-live sg-camofox-profile-use \
     sg-camofox-profile-save sg-camofox-profile-reset \
-    sg-camofox-health sg-camofox-smoke sg-camofox-url sg-logs-camofox \
+    sg-camofox-health sg-camofox-smoke sg-camofox-viewport-check sg-camofox-url sg-logs-camofox \
     sg-browserless-profile-chrome sg-browserless-snapshot sg-meet-google-check \
     sg-meet-chrome-start sg-meet-chrome-relay-start sg-meet-chrome-ws-url sg-meet-chrome-check \
     sg-urls sg-caddy-validate sg-ports sg-docker-df sg-cache-top \
@@ -266,6 +269,7 @@ Usage:
 
 Groups:
   sg-hermes -h                Hermes shell, profiles, gateway, and doctor
+  sg-tmux -h                  tmux sessions, Codex, and Hermes launchers
   sg route -h                 Spartan Route compose helper
   sg-tier list                show tier descriptions
   sg-browser -h               Browserless/Camofox mode and profile helpers
@@ -289,6 +293,46 @@ Examples:
   sg up -d
   sg logs -f proxy dns
   sg-disk top /var 2 30
+EOF
+}
+
+sg_tmux_help() {
+    cat <<'EOF'
+Tmux helpers
+
+Usage:
+  sg-tmux new <name> [-- command args...]   create and attach to a named session
+  sg-tmux list                              list sessions and attachment state
+  sg-tmux attach [name]                     attach by name or open the session tree
+  sg-tmux choose                            open the native tmux session tree
+  sg-tmux keys                              show interactive navigation keys
+  sg-tmux codex <name> [codex-args...]      start Codex in the current directory
+  sg-tmux hermes <name> [hermes-args...]    enter Hermes and run exact arguments
+
+Hermes examples:
+  sg-tmux hermes h-default
+      runs: hermes
+  sg-tmux hermes h-chat chat
+      runs: hermes chat
+  sg-tmux hermes h-coach -p coach chat
+      runs: hermes -p coach chat
+  sg-tmux hermes h-browser -p coach sessions browse
+      runs: hermes -p coach sessions browse
+
+Existing session names are attached or selected without launching a duplicate.
+EOF
+}
+
+sg_tmux_keys() {
+    cat <<'EOF'
+Tmux session navigation
+
+  Ctrl-b s    interactive session tree (arrows or j/k, Enter, q to cancel)
+  Ctrl-b (    previous session
+  Ctrl-b )    next session
+  Ctrl-b L    last-used session
+  Ctrl-b d    detach from tmux
+  Ctrl-b w    combined window/session tree
 EOF
 }
 
@@ -380,6 +424,7 @@ Usage:
   sg-browser camofox-reset <profile>
   sg-browser camofox-health
   sg-browser camofox-smoke [url]
+  sg-browser camofox-viewport-check [width height]
   sg-browser camofox-url
 
 Selection:
@@ -729,6 +774,26 @@ EOF
 exec bash --rcfile "$tmp_rc" -i
 '
 }
+sg_hermes_shell_command() {
+    if [[ "$#" -lt 1 ]]; then
+        printf 'Usage: sg_hermes_shell_command <command> [args...]\n' >&2
+        return 2
+    fi
+    sg_hermes_exec_tty bash -lc '
+tmp_rc="$(mktemp /tmp/sg-hermes-bashrc.XXXXXX)"
+cat > "$tmp_rc" <<'"'"'EOF'"'"'
+test -f /etc/bash.bashrc && . /etc/bash.bashrc
+test -f "$HOME/.bashrc" && . "$HOME/.bashrc"
+PS1="hermes@\h:\w\$ "
+EOF
+command_status=0
+"$@" || command_status=$?
+if [[ "$command_status" -ne 0 ]]; then
+    printf "Command exited with status %s; remaining in the Hermes shell.\n" "$command_status" >&2
+fi
+exec bash --rcfile "$tmp_rc" -i
+' sg-hermes-shell-command "$@"
+}
 sg_hermes_doctor() { sg_hermes_exec hermes doctor "$@"; }
 sg_hermes_profile() { sg_hermes_exec_tty hermes profile "$@"; }
 sg_hermes_profiles() { sg_hermes_profile list; }
@@ -746,6 +811,251 @@ sg_hermes_gateway_profile() {
         return 1
     fi
     sg_hermes_exec_tty hermes -p "$1" gateway run
+}
+
+# Host tmux helpers. New Codex sessions retain a host login shell after Codex
+# exits. New Hermes sessions enter the container, run the exact Hermes argv,
+# then retain the interactive container shell.
+sg_tmux_require() {
+    if ! command -v tmux >/dev/null 2>&1; then
+        printf 'tmux is not installed or not available on PATH.\n' >&2
+        return 127
+    fi
+}
+
+sg_tmux_validate_name() {
+    local name="${1:-}"
+    if [[ -z "$name" || ! "$name" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        printf 'Invalid tmux session name: %s (use letters, numbers, _ or -).\n' "${name:-<empty>}" >&2
+        return 2
+    fi
+}
+
+sg_tmux_has_session() {
+    tmux has-session -t "=$1" 2>/dev/null
+}
+
+sg_tmux_attach_existing() {
+    local name="$1"
+    if [[ -n "${TMUX:-}" ]]; then
+        tmux switch-client -t "=$name"
+    else
+        tmux attach-session -t "=$name"
+    fi
+}
+
+sg_tmux_list() {
+    sg_tmux_require || return
+    local sessions
+    sessions="$(tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_windows}|#{t:session_created}' 2>/dev/null)" || {
+        printf 'No tmux sessions.\n'
+        return 0
+    }
+    printf '%-24s %-8s %-7s %s\n' NAME ATTACHED WINDOWS CREATED
+    local name attached windows created
+    while IFS='|' read -r name attached windows created; do
+        printf '%-24s %-8s %-7s %s\n' "$name" "$attached" "$windows" "$created"
+    done <<< "$sessions"
+}
+
+sg_tmux_choose() {
+    sg_tmux_require || return
+    if [[ -n "${TMUX:-}" ]]; then
+        tmux choose-tree -Zs
+        return
+    fi
+
+    local bootstrap
+    bootstrap="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | sed -n '1p')"
+    if [[ -z "$bootstrap" ]]; then
+        printf 'No tmux sessions. Create one with: sg-tmux new <name>\n' >&2
+        return 1
+    fi
+    tmux attach-session -t "=$bootstrap" \; choose-tree -Zs
+}
+
+sg_tmux_attach() {
+    if [[ "$#" -eq 0 ]]; then
+        sg_tmux_choose
+        return
+    fi
+    if [[ "$#" -ne 1 ]]; then
+        printf 'Usage: sg-tmux attach [name]\n' >&2
+        return 2
+    fi
+    sg_tmux_require || return
+    sg_tmux_validate_name "$1" || return
+    if ! sg_tmux_has_session "$1"; then
+        printf 'Tmux session does not exist: %s\n' "$1" >&2
+        return 1
+    fi
+    sg_tmux_attach_existing "$1"
+}
+
+sg_tmux_shell_join() {
+    local arg quoted joined=""
+    for arg in "$@"; do
+        printf -v quoted '%q' "$arg"
+        joined+="${joined:+ }$quoted"
+    done
+    printf '%s\n' "$joined"
+}
+
+sg_tmux_entry_command() {
+    local mode="$1"
+    shift
+    sg_tmux_shell_join \
+        bash -lc 'source "$1"; shift; sg_tmux_session_entry "$@"' \
+        sg-tmux "$SPARTAN_GATE_DIR/scripts/aliases.sh" "$mode" "$@"
+}
+
+sg_tmux_session_entry() {
+    local mode="${1:-}"
+    shift || true
+    case "$mode" in
+        host)
+            local command_status=0
+            "$@" || command_status=$?
+            if [[ "$command_status" -ne 0 ]]; then
+                printf 'Command exited with status %s; remaining in the host shell.\n' "$command_status" >&2
+            fi
+            exec "${SHELL:-/bin/bash}" -l
+            ;;
+        hermes)
+            sg_hermes_shell_command hermes "$@"
+            ;;
+        *)
+            printf 'Unknown tmux entry mode: %s\n' "${mode:-<empty>}" >&2
+            return 2
+            ;;
+    esac
+}
+
+sg_tmux_start_new() {
+    local name="$1"
+    local mode="$2"
+    local cwd="$3"
+    shift 3
+    local entry=""
+    local -a tmux_args
+
+    case "$mode" in
+        shell)
+            if [[ "$#" -gt 0 ]]; then
+                entry="$(sg_tmux_entry_command host "$@")" || return
+            fi
+            ;;
+        host|hermes)
+            entry="$(sg_tmux_entry_command "$mode" "$@")" || return
+            ;;
+        *)
+            printf 'Unknown tmux launch mode: %s\n' "$mode" >&2
+            return 2
+            ;;
+    esac
+
+    if [[ -n "${TMUX:-}" ]]; then
+        tmux_args=(new-session -d -s "$name" -c "$cwd")
+    else
+        tmux_args=(new-session -s "$name" -c "$cwd")
+    fi
+    [[ -n "$entry" ]] && tmux_args+=("$entry")
+
+    if ! tmux "${tmux_args[@]}"; then
+        if sg_tmux_has_session "$name"; then
+            sg_tmux_attach_existing "$name"
+        else
+            return 1
+        fi
+        return
+    fi
+    if [[ -n "${TMUX:-}" ]]; then
+        tmux switch-client -t "=$name"
+    fi
+}
+
+sg_tmux_new() {
+    if [[ "$#" -lt 1 ]]; then
+        printf 'Usage: sg-tmux new <name> [-- command args...]\n' >&2
+        return 2
+    fi
+    sg_tmux_require || return
+    local name="$1"
+    shift
+    sg_tmux_validate_name "$name" || return
+    if sg_tmux_has_session "$name"; then
+        printf 'Attaching to existing tmux session: %s\n' "$name"
+        sg_tmux_attach_existing "$name"
+        return
+    fi
+    [[ "${1:-}" == "--" ]] && shift
+    sg_tmux_start_new "$name" shell "$PWD" "$@"
+}
+
+sg_tmux_codex() {
+    if [[ "$#" -lt 1 ]]; then
+        printf 'Usage: sg-tmux codex <name> [codex-args...]\n' >&2
+        return 2
+    fi
+    sg_tmux_require || return
+    local name="$1"
+    shift
+    sg_tmux_validate_name "$name" || return
+    if sg_tmux_has_session "$name"; then
+        printf 'Attaching to existing tmux session: %s\n' "$name"
+        sg_tmux_attach_existing "$name"
+        return
+    fi
+    local codex_bin
+    codex_bin="$(command -v codex)" || {
+        printf 'codex is not installed or not available on PATH.\n' >&2
+        return 127
+    }
+    if [[ ! -x "$codex_bin" ]]; then
+        printf 'codex did not resolve to an executable file: %s\n' "$codex_bin" >&2
+        return 127
+    fi
+    sg_tmux_start_new "$name" host "$PWD" "$codex_bin" "$@"
+}
+
+sg_tmux_hermes() {
+    if [[ "$#" -lt 1 ]]; then
+        printf 'Usage: sg-tmux hermes <name> [hermes-args...]\n' >&2
+        return 2
+    fi
+    sg_tmux_require || return
+    local name="$1"
+    shift
+    sg_tmux_validate_name "$name" || return
+    if sg_tmux_has_session "$name"; then
+        printf 'Attaching to existing tmux session: %s\n' "$name"
+        sg_tmux_attach_existing "$name"
+        return
+    fi
+    if ! sg_hermes_runtime_user >/dev/null; then
+        printf 'The Hermes container is not running or its runtime user is unavailable.\n' >&2
+        return 1
+    fi
+    sg_tmux_start_new "$name" hermes "$PWD" "$@"
+}
+
+sg_tmux() {
+    local command="${1:-}"
+    case "$command" in
+        ""|-h|--help|help) sg_tmux_help ;;
+        new) shift; sg_tmux_new "$@" ;;
+        list) shift; sg_tmux_list "$@" ;;
+        attach) shift; sg_tmux_attach "$@" ;;
+        choose) shift; sg_tmux_choose "$@" ;;
+        keys) shift; sg_tmux_keys "$@" ;;
+        codex) shift; sg_tmux_codex "$@" ;;
+        hermes) shift; sg_tmux_hermes "$@" ;;
+        *)
+            printf 'Unknown sg-tmux command: %s\n\n' "$command" >&2
+            sg_tmux_help >&2
+            return 2
+            ;;
+    esac
 }
 
 # Google Meet plugin wrapper. It normalizes "leave" to "stop", preserves the
@@ -1762,6 +2072,257 @@ async function request(path, options = {}) {
 });
 '
 }
+sg_camofox_viewport_check() {
+    local key width height
+    key="$(sg_env_value CAMOFOX_ACCESS_KEY change-me-camofox-access-key)"
+    width="${1:-390}"
+    height="${2:-844}"
+    sg_compose exec -T \
+        -e CAMOFOX_VIEWPORT_KEY="$key" \
+        -e CAMOFOX_VIEWPORT_WIDTH="$width" \
+        -e CAMOFOX_VIEWPORT_HEIGHT="$height" \
+        hermes python3 -c '
+import base64
+import http.server
+import json
+import os
+import socketserver
+import struct
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BASE = "http://camofox:9377"
+KEY = os.environ.get("CAMOFOX_VIEWPORT_KEY", "")
+WIDTH = int(os.environ.get("CAMOFOX_VIEWPORT_WIDTH", "390"))
+HEIGHT = int(os.environ.get("CAMOFOX_VIEWPORT_HEIGHT", "844"))
+USER_ID = f"spartan-viewport-smoke-{int(time.time() * 1000)}"
+SESSION_KEY = "viewport-smoke"
+HTML = "<html><head><title>spartan viewport diagnostic</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head><body>viewport diagnostic</body></html>"
+DIAGNOSTIC_URL = None
+BOOT_URL = None
+VIEWPORT_EXPR = """(() => ({
+  href: String(location.href).slice(0, 160),
+  title: document.title,
+  readyState: document.readyState,
+  innerWidth: window.innerWidth,
+  innerHeight: window.innerHeight,
+  outerWidth: window.outerWidth,
+  outerHeight: window.outerHeight,
+  screenWidth: window.screen ? window.screen.width : null,
+  screenHeight: window.screen ? window.screen.height : null,
+  visualViewportWidth: window.visualViewport ? window.visualViewport.width : null,
+  visualViewportHeight: window.visualViewport ? window.visualViewport.height : null,
+  devicePixelRatio: window.devicePixelRatio,
+  maxWidth767: window.matchMedia("(max-width: 767px)").matches,
+  maxWidth430: window.matchMedia("(max-width: 430px)").matches,
+  userAgent: navigator.userAgent,
+  hasTouch: (navigator.maxTouchPoints || 0) > 0
+}))()"""
+
+tabs = []
+cleanup_errors = []
+diagnostic_server = None
+
+
+class DiagnosticHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        payload = HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, _format, *args):
+        return
+
+
+def start_diagnostic_server():
+    global diagnostic_server, DIAGNOSTIC_URL, BOOT_URL
+    diagnostic_server = socketserver.ThreadingTCPServer(("0.0.0.0", 0), DiagnosticHandler)
+    diagnostic_server.daemon_threads = True
+    diagnostic_port = diagnostic_server.server_address[1]
+    DIAGNOSTIC_URL = f"http://hermes:{diagnostic_port}/diagnostic"
+    BOOT_URL = f"http://hermes:{diagnostic_port}/boot"
+    threading.Thread(target=diagnostic_server.serve_forever, daemon=True).start()
+
+
+def enc(value):
+    return urllib.parse.quote(str(value), safe="")
+
+
+def request(method, path, body=None, raw=False, timeout=30):
+    data = None
+    headers = {}
+    if KEY:
+        headers["Authorization"] = f"Bearer {KEY}"
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            content = response.read()
+            content_type = response.headers.get("content-type", "")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        raise RuntimeError(f"{method} {path} -> {exc.code}: {detail[:500]}") from exc
+    if raw:
+        if "application/json" in content_type:
+            payload = json.loads(content.decode("utf-8") or "{}")
+            blob = ""
+            for key in ("screenshot", "image", "data", "base64"):
+                if payload.get(key):
+                    blob = str(payload[key])
+                    break
+            if blob.startswith("data:"):
+                blob = blob.split(",", 1)[1]
+            return base64.b64decode(blob) if blob else b""
+        return content
+    text = content.decode("utf-8", "replace")
+    return json.loads(text) if text else None
+
+
+def extract_result(payload):
+    if isinstance(payload, dict):
+        for key in ("result", "value", "data"):
+            if key in payload:
+                return payload[key]
+    return payload
+
+
+def extract_tab_id(payload):
+    candidates = []
+    if isinstance(payload, dict):
+        candidates.extend([payload.get("tabId"), payload.get("id"), payload.get("targetId")])
+        tab = payload.get("tab")
+        if isinstance(tab, dict):
+            candidates.extend([tab.get("tabId"), tab.get("id"), tab.get("targetId")])
+    for candidate in candidates:
+        if candidate:
+            return str(candidate)
+    raise RuntimeError(f"Camofox did not return a tab id: {payload}")
+
+
+def create_tab(url, extra=None):
+    body = {"userId": USER_ID, "sessionKey": SESSION_KEY, "url": url}
+    if extra:
+        body.update(extra)
+    tab_id = extract_tab_id(request("POST", "/tabs", body, timeout=60))
+    tabs.append(tab_id)
+    return tab_id
+
+
+def navigate(tab_id, url):
+    return request("POST", f"/tabs/{enc(tab_id)}/navigate", {"userId": USER_ID, "url": url, "waitUntil": "domcontentloaded", "timeout": 10000}, timeout=30)
+
+
+def set_viewport(tab_id, reload_value=False):
+    return request("POST", f"/tabs/{enc(tab_id)}/spartan/viewport", {"userId": USER_ID, "width": WIDTH, "height": HEIGHT, "reload": reload_value, "relaunch": True}, timeout=60)
+
+
+def image_dimensions(data):
+    result = {"bytes": len(data)}
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        result.update({"format": "png", "width": struct.unpack(">I", data[16:20])[0], "height": struct.unpack(">I", data[20:24])[0]})
+    return result
+
+
+def matches(effective):
+    return bool(
+        isinstance(effective, dict)
+        and abs(int(effective.get("innerWidth", -999999)) - WIDTH) <= 2
+        and abs(int(effective.get("innerHeight", -999999)) - HEIGHT) <= 2
+        and effective.get("maxWidth767") is True
+    )
+
+
+def screenshot_matches(screenshot, effective):
+    if not isinstance(screenshot, dict) or not isinstance(effective, dict):
+        return False
+    if screenshot.get("bytes", 0) <= 0 or screenshot.get("format") != "png":
+        return False
+    try:
+        width = int(screenshot.get("width"))
+        height = int(screenshot.get("height"))
+        inner_width = float(effective.get("innerWidth"))
+        inner_height = float(effective.get("innerHeight"))
+        dpr = float(effective.get("devicePixelRatio") or 1)
+    except (TypeError, ValueError):
+        return False
+    candidates = ((inner_width, inner_height), (inner_width * dpr, inner_height * dpr))
+    return any(abs(width - round(candidate_width)) <= 3 and abs(height - round(candidate_height)) <= 3 for candidate_width, candidate_height in candidates)
+
+
+def collect(tab_id, viewport_response=None):
+    effective = extract_result(request("POST", f"/tabs/{enc(tab_id)}/evaluate", {"userId": USER_ID, "expression": VIEWPORT_EXPR}, timeout=30))
+    screenshot = image_dimensions(request("GET", f"/tabs/{enc(tab_id)}/screenshot?userId={enc(USER_ID)}&fullPage=false", raw=True, timeout=30))
+    runtime_matched = matches(effective)
+    screenshot_matched = screenshot_matches(screenshot, effective)
+    return {"viewportResponse": viewport_response, "effective": effective, "screenshot": screenshot, "runtimeMatched": runtime_matched, "screenshotMatched": screenshot_matched, "matched": runtime_matched and screenshot_matched}
+
+
+def run_variant(name, required, func):
+    record = {"name": name, "required": required}
+    try:
+        record.update(func())
+        record["ok"] = record.get("matched") is True or not required
+    except Exception as exc:
+        record.update({"ok": False, "matched": False, "error": str(exc)})
+    return record
+
+
+def openapi_summary():
+    try:
+        payload = request("GET", "/openapi.json", timeout=10)
+        paths = payload.get("paths", {}) if isinstance(payload, dict) else {}
+        viewport_paths = sorted(path for path in paths if "viewport" in path.lower() or "device" in path.lower())
+        return {"ok": True, "viewportPaths": viewport_paths}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def cleanup():
+    for tab_id in list(reversed(tabs)):
+        try:
+            request("DELETE", f"/tabs/{enc(tab_id)}", {"userId": USER_ID}, timeout=10)
+        except Exception as exc:
+            cleanup_errors.append(f"tab {tab_id}: {exc}")
+    try:
+        request("DELETE", f"/sessions/{enc(USER_ID)}", timeout=10)
+    except Exception as exc:
+        cleanup_errors.append(f"session {USER_ID}: {exc}")
+    if diagnostic_server is not None:
+        diagnostic_server.shutdown()
+        diagnostic_server.server_close()
+
+
+summary = {"ok": False, "base": BASE, "userId": USER_ID, "requested": {"width": WIDTH, "height": HEIGHT}, "diagnosticUrl": None, "openapi": None, "variants": []}
+try:
+    start_diagnostic_server()
+    summary["diagnosticUrl"] = DIAGNOSTIC_URL
+    summary["openapi"] = openapi_summary()
+    summary["variants"].append(run_variant("set-before-navigate", True, lambda: (lambda tab_id: (lambda viewport_response: (navigate(tab_id, DIAGNOSTIC_URL), collect(tab_id, viewport_response))[1])(set_viewport(tab_id)))(create_tab(BOOT_URL))))
+    summary["variants"].append(run_variant("set-after-navigate", True, lambda: (lambda tab_id: (lambda viewport_response: collect(tab_id, viewport_response))(set_viewport(tab_id)))(create_tab(DIAGNOSTIC_URL))))
+    summary["variants"].append(run_variant("set-then-reload", True, lambda: (lambda tab_id: (lambda viewport_response: collect(tab_id, viewport_response))(set_viewport(tab_id, True)))(create_tab(DIAGNOSTIC_URL))))
+    summary["variants"].append(run_variant("create-with-viewport-observed", False, lambda: collect(create_tab(DIAGNOSTIC_URL, {"viewport": {"width": WIDTH, "height": HEIGHT}}))))
+    summary["ok"] = all(item.get("matched") for item in summary["variants"] if item.get("required"))
+except Exception as exc:
+    summary["fatalError"] = str(exc)
+finally:
+    cleanup()
+    if cleanup_errors:
+        summary["cleanupErrors"] = cleanup_errors
+
+print(json.dumps(summary, indent=2, sort_keys=True))
+raise SystemExit(0 if summary.get("ok") else 1)
+'
+}
+
 sg_camofox_url() {
     local enabled
     printf 'Camofox internal: http://camofox:9377\n'
@@ -1790,6 +2351,7 @@ sg_browser() {
         camofox-reset) shift; sg_camofox_profile_reset "$@" ;;
         camofox-health) shift; sg_camofox_health "$@" ;;
         camofox-smoke) shift; sg_camofox_smoke "$@" ;;
+        camofox-viewport-check) shift; sg_camofox_viewport_check "$@" ;;
         camofox-url) shift; sg_camofox_url "$@" ;;
         *)
             printf 'Unknown sg-browser command: %s\n\n' "$command" >&2
@@ -1821,6 +2383,7 @@ sg-hermes() { sg_hermes "$@"; }
 sg-browser() { sg_browser "$@"; }
 sg-meet() { sg_meet "$@"; }
 sg-disk() { sg_disk "$@"; }
+sg-tmux() { sg_tmux "$@"; }
 sg-priv() { sg_priv "$@"; }
 sg-up() { sg_up "$@"; }
 sg-build-up() { sg_build_up "$@"; }
@@ -1879,6 +2442,7 @@ sg-gog-check() { sg_gog_check "$@"; }
 sg-gog-login() { sg_gog_login "$@"; }
 sg-camofox-health() { sg_camofox_health "$@"; }
 sg-camofox-smoke() { sg_camofox_smoke "$@"; }
+sg-camofox-viewport-check() { sg_camofox_viewport_check "$@"; }
 sg-camofox-url() { sg_camofox_url "$@"; }
 
 # Optional private shell customizations. Keep host-specific aliases, paths, and

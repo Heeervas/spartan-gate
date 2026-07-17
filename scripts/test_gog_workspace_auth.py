@@ -54,7 +54,7 @@ class GogWorkspaceAuthTests(unittest.TestCase):
             "gog",
             f"""#!/usr/bin/env bash
 {{
-  printf 'gog'
+  printf 'host-gog'
   printf ' %s' "$@"
   printf '\\n'
   printf 'XDG_CONFIG_HOME=%s\\n' "$XDG_CONFIG_HOME"
@@ -75,8 +75,21 @@ fi
 printf 'docker' >> {self.log}
 printf ' %s' "$@" >> {self.log}
 printf '\\n' >> {self.log}
+args=" $* "
 last="${{@: -1}}"
 state={self.root / 'workspace-authed'}
+if [[ "$args" == *" gog login "* ]]; then
+  IFS= read -r _gog_callback || true
+  exit 0
+fi
+if [[ "$args" == *" gog auth list --check --json "* ]]; then
+  if [[ "${{DOCKER_SCOPE_MODE:-complete}}" == "missing" ]]; then
+    printf '%s\\n' '{{"accounts":[{{"email":"person@example.com","scopes":["scope-a"]}}]}}'
+  else
+    printf '%s\\n' '{{"accounts":[{{"email":"person@example.com","scopes":["scope-a","scope-b","https://www.googleapis.com/auth/analytics.readonly","https://www.googleapis.com/auth/tagmanager.readonly","https://www.googleapis.com/auth/tagmanager.edit.containers","https://www.googleapis.com/auth/tagmanager.edit.containerversions","https://www.googleapis.com/auth/script.projects","https://www.googleapis.com/auth/script.deployments","https://www.googleapis.com/auth/script.processes","https://www.googleapis.com/auth/script.metrics"]}}]}}'
+  fi
+  exit 0
+fi
 if [[ "$last" == "--auth-url" ]]; then
   printf 'https://accounts.example/auth\\n'
   exit 0
@@ -93,9 +106,10 @@ exit 0
 """,
         )
 
-    def run_script(self, input_text=""):
+    def run_script(self, input_text="", extra_env=None):
         env = os.environ.copy()
         env["PATH"] = f"{self.bin_dir}:{env['PATH']}"
+        env.update(extra_env or {})
         return subprocess.run(
             [self.script],
             cwd=self.root,
@@ -110,11 +124,13 @@ exit 0
         self.write_env("GOGCLI_EXTRA_SCOPES='scope-a,scope-b'")
         self.write_stubs()
 
-        result = self.run_script("CODE_FROM_BROWSER\n")
+        result = self.run_script("GOG_CALLBACK\nCODE_FROM_BROWSER\n")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.log.read_text(encoding="utf-8")
-        self.assertIn(f"gog auth credentials set {self.client_secret}", calls)
+        self.assertIn("docker exec -i -u 1000:1000", calls)
+        self.assertIn("gog auth credentials set", calls)
+        self.assertNotIn(str(self.client_secret), calls)
         self.assertIn(
             "gog login person@example.com --services "
             "gmail,calendar,chat,classroom,drive,docs,slides,contacts,tasks,"
@@ -122,7 +138,7 @@ exit 0
             "--force-consent --manual",
             calls,
         )
-        self.assertIn("gog auth list --check", calls)
+        self.assertIn("gog auth list --check --json", calls)
         self.assertIn("gog --account person@example.com gmail labels list", calls)
         self.assertIn(
             "docker exec -u 1000:1000 -e HOME=/opt/data -e HERMES_HOME=/opt/data "
@@ -132,7 +148,7 @@ exit 0
         self.assertIn(" --check", calls)
         self.assertIn(" --auth-url", calls)
         self.assertIn(" --auth-code CODE_FROM_BROWSER", calls)
-        self.assertIn(f"XDG_CONFIG_HOME={self.root / 'shared'}", calls)
+        self.assertNotIn("host-gog", calls)
         self.assertNotIn("super-secret-password", result.stdout)
         self.assertNotIn("super-secret-password", result.stderr)
         self.assertNotIn("super-secret-password", calls)
@@ -141,7 +157,7 @@ exit 0
         self.write_env()
         self.write_stubs()
 
-        result = self.run_script("CODE_FROM_BROWSER\n")
+        result = self.run_script("GOG_CALLBACK\nCODE_FROM_BROWSER\n")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.log.read_text(encoding="utf-8")
@@ -159,6 +175,20 @@ exit 0
         self.assertIn("https://www.googleapis.com/auth/script.deployments", calls)
         self.assertIn("https://www.googleapis.com/auth/script.processes", calls)
         self.assertIn("https://www.googleapis.com/auth/script.metrics", calls)
+
+    def test_missing_requested_scope_fails_before_workspace_reauth(self):
+        self.write_env("GOGCLI_EXTRA_SCOPES='scope-a,scope-b'")
+        self.write_stubs()
+
+        result = self.run_script(
+            "GOG_CALLBACK\nCODE_FROM_BROWSER\n",
+            extra_env={"DOCKER_SCOPE_MODE": "missing"},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing requested OAuth scopes: scope-b", result.stderr)
+        calls = self.log.read_text(encoding="utf-8")
+        self.assertNotIn("--auth-url", calls)
 
     def test_missing_required_env_fails_before_external_commands(self):
         self.write_env()
@@ -192,7 +222,10 @@ printf 'docker %s\\n' "$*" >> {self.log}
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("spartan_gate_hermes is not running", result.stderr)
-        self.assertNotIn("up -d hermes", self.log.read_text(encoding="utf-8"))
+        calls = self.log.read_text(encoding="utf-8") if self.log.exists() else ""
+        self.assertNotIn("host-gog", calls)
+        self.assertNotIn("auth credentials set", calls)
+        self.assertNotIn("up -d hermes", calls)
 
 
 if __name__ == "__main__":

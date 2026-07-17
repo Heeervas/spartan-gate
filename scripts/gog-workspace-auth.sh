@@ -57,9 +57,7 @@ hermes_runtime_user() {
     "$docker_bin" exec -u root "$hermes_container" sh -lc 'printf "%s:%s\n" "${SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}" "${SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}"'
 }
 
-workspace_setup() {
-    local runtime_user
-    runtime_user="$(hermes_runtime_user)" || die "could not resolve Hermes runtime user in $hermes_container"
+hermes_exec() {
     "$docker_bin" exec \
         -u "$runtime_user" \
         -e HOME=/opt/data \
@@ -67,18 +65,78 @@ workspace_setup() {
         -e USER=hermes \
         -e LOGNAME=hermes \
         "$hermes_container" \
-        python3 "$WORKSPACE_SETUP" "$@"
+        "$@"
+}
+
+hermes_exec_i() {
+    local interactive_args=(-i)
+    if [[ -t 0 && -t 1 ]]; then
+        interactive_args+=(-t)
+    fi
+    "$docker_bin" exec "${interactive_args[@]}" \
+        -u "$runtime_user" \
+        -e HOME=/opt/data \
+        -e HERMES_HOME=/opt/data \
+        -e USER=hermes \
+        -e LOGNAME=hermes \
+        "$hermes_container" \
+        "$@"
+}
+
+workspace_setup() {
+    hermes_exec python3 "$WORKSPACE_SETUP" "$@"
+}
+
+set_gog_credentials() {
+    hermes_exec_i sh -eu -c '
+credential_file="$(mktemp /tmp/gogcli-credentials.XXXXXX.json)"
+trap '\''rm -f "$credential_file"'\'' EXIT HUP INT TERM
+chmod 600 "$credential_file"
+cat > "$credential_file"
+gog auth credentials set "$credential_file"
+' < "$gogcli_client_secret_path"
+}
+
+verify_requested_scopes() {
+    local auth_json="$1"
+    python3 -c '
+import json
+import sys
+
+account, requested_csv = sys.argv[1:]
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError) as exc:
+    print(f"Error: GogCLI returned invalid auth JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+records = [
+    record
+    for record in payload.get("accounts", [])
+    if isinstance(record, dict) and record.get("email") == account
+]
+if not records:
+    print(f"Error: GogCLI auth result does not contain the configured account: {account}", file=sys.stderr)
+    raise SystemExit(1)
+
+record = next((item for item in records if item.get("client") == "default"), records[0])
+stored = set(record.get("scopes") or [])
+requested = [scope.strip() for scope in requested_csv.split(",") if scope.strip()]
+missing = [scope for scope in requested if scope not in stored]
+if missing:
+    print("Error: missing requested OAuth scopes: " + ", ".join(missing), file=sys.stderr)
+    raise SystemExit(1)
+' "$gogcli_account" "$gogcli_extra_scopes" <<< "$auth_json"
 }
 
 env_file="$(default_env_file)"
 [[ -f "$env_file" ]] || die "private env file not found: $env_file"
 
-gog_bin="${GOG_BIN:-gog}"
 docker_bin="${DOCKER_BIN:-docker}"
 hermes_container="${SPARTAN_HERMES_CONTAINER:-spartan_gate_hermes}"
 
-require_command "$gog_bin"
 require_command "$docker_bin"
+require_command python3
 
 gogcli_data_path="$(env_value SPARTAN_GOGCLI_DATA_PATH)"
 gog_keyring_password="$(env_value GOG_KEYRING_PASSWORD)"
@@ -92,34 +150,26 @@ require_value GOGCLI_ACCOUNT "$gogcli_account"
 require_value GOGCLI_CLIENT_SECRET_PATH "$gogcli_client_secret_path"
 [[ -f "$gogcli_client_secret_path" ]] || die "GOGCLI_CLIENT_SECRET_PATH does not exist: $gogcli_client_secret_path"
 
-mkdir -p "$gogcli_data_path"
-
-export XDG_CONFIG_HOME
-XDG_CONFIG_HOME="$(dirname "$gogcli_data_path")"
-export GOG_KEYRING_BACKEND=file
-export GOG_KEYRING_PASSWORD="$gog_keyring_password"
-export GOOGLE_PROJECT_ID
-GOOGLE_PROJECT_ID="$(env_value GOOGLE_PROJECT_ID)"
-export GOOGLE_CLOUD_PROJECT
-GOOGLE_CLOUD_PROJECT="$(env_value GOOGLE_CLOUD_PROJECT)"
+if [[ "$("$docker_bin" inspect -f '{{.State.Running}}' "$hermes_container" 2>/dev/null || true)" != "true" ]]; then
+    die "$hermes_container is not running; start Hermes before running Google Workspace auth"
+fi
+runtime_user="$(hermes_runtime_user)" || die "could not resolve Hermes runtime user in $hermes_container"
 
 printf 'Configuring GogCLI shared store at %s\n' "$gogcli_data_path"
-"$gog_bin" auth credentials set "$gogcli_client_secret_path"
+set_gog_credentials
 
-printf 'Starting GogCLI login for %s\n' "$gogcli_account"
-"$gog_bin" login "$gogcli_account" \
+printf 'Starting GogCLI login for %s with the Hermes runtime CLI\n' "$gogcli_account"
+hermes_exec_i gog login "$gogcli_account" \
     --services "$DEFAULT_GOGCLI_SERVICES" \
     --extra-scopes "$gogcli_extra_scopes" \
     --force-consent \
     --manual
 
 printf 'Checking GogCLI refresh token\n'
-"$gog_bin" auth list --check
-"$gog_bin" --account "$gogcli_account" gmail labels list
-
-if [[ "$("$docker_bin" inspect -f '{{.State.Running}}' "$hermes_container" 2>/dev/null || true)" != "true" ]]; then
-    die "$hermes_container is not running; start Hermes before running Google Workspace auth"
-fi
+auth_json="$(hermes_exec gog auth list --check --json)"
+verify_requested_scopes "$auth_json"
+hermes_exec gog --account "$gogcli_account" gmail labels list
+printf 'GogCLI refresh token and requested OAuth scopes are valid\n'
 
 printf 'Checking Google Workspace token in %s\n' "$hermes_container"
 if workspace_setup --check; then

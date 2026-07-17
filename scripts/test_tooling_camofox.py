@@ -141,6 +141,14 @@ class CamofoxContractTests(unittest.TestCase):
         self.assertIn("SPARTAN_ROUTE_DATA_PATH", source)
         self.assertIn("need_dir infra/spartan-route", source)
 
+    def test_doctor_requires_private_websocket_edge_tokens(self):
+        source = (ROOT / "scripts" / "doctor.sh").read_text()
+        self.assertIn("BROWSERLESS_EDGE_TOKEN CADDY_CAMOFOX_EDGE_TOKEN CADDY_WS_EDGE_TOKEN", source)
+        self.assertIn("missing required private edge token", source)
+        self.assertIn("invalid private edge token (expected 64 lowercase hex)", source)
+        self.assertIn("Caddy edge tokens must differ", source)
+        self.assertIn('env_value "$env_file" "$key"', source)
+
     def test_novnc_https_has_no_raw_ip_fallback_and_checks_reachability(self):
         source = (ROOT / "scripts" / "aliases.sh").read_text()
         start = source.index("sg_camofox_novnc_url()")
@@ -156,6 +164,44 @@ class CamofoxContractTests(unittest.TestCase):
         source = (ROOT / "infra" / "caddy" / "Caddyfile").read_text()
         self.assertIn(":26080 {", source)
         self.assertIn("reverse_proxy http://camofox:6080", source)
+
+    def test_camofox_image_does_not_install_unused_xdotool_resize_dependency(self):
+        source = (ROOT / "infra" / "camofox" / "Dockerfile").read_text()
+        self.assertNotIn("xdotool", source)
+
+    def test_camofox_viewport_check_runs_from_hermes_over_service_dns(self):
+        source = (ROOT / "scripts" / "aliases.sh").read_text()
+        start = source.index("sg_camofox_viewport_check()")
+        end = source.index("sg_camofox_url()", start)
+        helper = source[start:end]
+        self.assertIn("hermes python3 -c", helper)
+        self.assertIn('BASE = "http://camofox:9377"', helper)
+        self.assertNotIn("http://127.0.0.1:9377", helper)
+        self.assertIn("CAMOFOX_VIEWPORT_KEY", helper)
+        self.assertIn('headers["Authorization"] = f"Bearer {KEY}"', helper)
+        self.assertIn('"set-before-navigate"', helper)
+        self.assertIn('"set-after-navigate"', helper)
+        self.assertIn('"set-then-reload"', helper)
+        self.assertIn('"create-with-viewport-observed"', helper)
+        self.assertIn('http.server', helper)
+        self.assertIn('socketserver.ThreadingTCPServer', helper)
+        self.assertIn('DIAGNOSTIC_URL = f"http://hermes:{diagnostic_port}/diagnostic"', helper)
+        self.assertIn('create_tab(BOOT_URL)', helper)
+        self.assertNotIn('data:text/html', helper)
+        self.assertNotIn('about:blank', helper)
+        self.assertIn('"GET", f"/tabs/{enc(tab_id)}/screenshot?userId={enc(USER_ID)}&fullPage=false"', helper)
+        self.assertIn('"relaunch": True', helper)
+        self.assertNotIn('"POST", f"/tabs/{enc(tab_id)}/screenshot"', helper)
+        self.assertIn('def screenshot_matches(', helper)
+        self.assertIn('"viewportResponse"', helper)
+        self.assertIn('"runtimeMatched"', helper)
+        self.assertIn('"screenshotMatched"', helper)
+        self.assertIn('"matched": runtime_matched and screenshot_matched', helper)
+        self.assertIn('f"/sessions/{enc(USER_ID)}"', helper)
+        self.assertIn('USER_ID = f"spartan-viewport-smoke-', helper)
+        self.assertNotIn('CAMOFOX_USER_ID', helper)
+        self.assertNotIn('spartan-camofox-main', helper)
+        self.assertNotIn('spartan-camofox-alt', helper)
 
 
 class AliasHelpTests(unittest.TestCase):
@@ -185,6 +231,7 @@ class AliasHelpTests(unittest.TestCase):
             ("sg route -h", "Spartan Route helpers"),
             ("sg-route -h", "Spartan Route helpers"),
             ("sg-hermes -h", "Hermes helpers"),
+            ("sg-tmux -h", "Tmux helpers"),
             ("sg-browser -h", "Browser helpers"),
             ("sg-meet -h", "Meet helpers"),
             ("sg-disk -h", "Disk helpers"),
@@ -193,6 +240,27 @@ class AliasHelpTests(unittest.TestCase):
                 result = self.run_sourced(command)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(expected, result.stdout)
+
+    def test_camofox_viewport_helper_is_discoverable(self):
+        result = self.run_sourced("sg-browser -h; declare -F sg-camofox-viewport-check sg_camofox_viewport_check")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sg-browser camofox-viewport-check [width height]", result.stdout)
+        self.assertIn("sg-camofox-viewport-check", result.stdout)
+        self.assertIn("sg_camofox_viewport_check", result.stdout)
+
+    def test_tmux_help_and_navigation_keys_are_discoverable(self):
+        result = self.run_sourced(
+            "sg-tmux -h; sg-tmux keys; "
+            "declare -F sg-tmux sg_tmux sg_tmux_choose sg_tmux_codex sg_tmux_hermes"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sg-tmux attach [name]", result.stdout)
+        self.assertIn("sg-tmux hermes <name> [hermes-args...]", result.stdout)
+        self.assertIn("Ctrl-b s", result.stdout)
+        self.assertIn("Ctrl-b (", result.stdout)
+        self.assertIn("sg_tmux_choose", result.stdout)
 
     def test_existing_disk_wrappers_remain_defined(self):
         result = self.run_sourced(
@@ -317,7 +385,7 @@ class AliasHelpTests(unittest.TestCase):
     def write_docker_stub(self, runtime_user="1000:1000"):
         bin_dir = self.root / "bin"
         log = self.root / "docker.log"
-        bin_dir.mkdir()
+        bin_dir.mkdir(exist_ok=True)
         (bin_dir / "docker").write_text(
             f"""#!/usr/bin/env bash
 printf 'docker' >> {log}
@@ -332,9 +400,45 @@ fi
         (bin_dir / "docker").chmod(0o755)
         return bin_dir, log
 
-    def run_sourced_with_path(self, command, bin_dir):
+    def write_tmux_stub(self):
+        bin_dir = self.root / "bin"
+        log = self.root / "tmux.log"
+        bin_dir.mkdir(exist_ok=True)
+        (bin_dir / "tmux").write_text(
+            f"""#!/usr/bin/env bash
+printf 'tmux' >> {log}
+printf ' <%q>' "$@" >> {log}
+printf '\n' >> {log}
+case "$1" in
+  has-session)
+    [[ "${{TMUX_STUB_HAS_SESSION:-0}}" == "1" ]]
+    ;;
+  list-sessions)
+    if [[ "${{TMUX_STUB_EMPTY:-0}}" == "1" ]]; then
+      exit 1
+    fi
+    if [[ "$3" == '#{{session_name}}' ]]; then
+      printf 'alpha\nbeta\n'
+    else
+      printf 'alpha|1|2|2026-07-17 12:00:00\n'
+      printf 'beta|0|1|2026-07-17 13:00:00\n'
+    fi
+    ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        (bin_dir / "tmux").chmod(0o755)
+        (bin_dir / "codex").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        (bin_dir / "codex").chmod(0o755)
+        return bin_dir, log
+
+    def run_sourced_with_path(self, command, bin_dir, env_updates=None):
         env = os.environ.copy()
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env.pop("TMUX", None)
+        env.pop("TMUX_PANE", None)
+        env.update(env_updates or {})
         return subprocess.run(
             ["bash", "-lc", f"source scripts/aliases.sh; {command}"],
             cwd=self.root,
@@ -343,6 +447,91 @@ fi
             capture_output=True,
             check=False,
         )
+
+    def test_tmux_choose_uses_native_tree_outside_and_inside_tmux(self):
+        bin_dir, log = self.write_tmux_stub()
+
+        outside = self.run_sourced_with_path("sg-tmux choose", bin_dir)
+        self.assertEqual(outside.returncode, 0, outside.stderr)
+        outside_calls = log.read_text(encoding="utf-8")
+        self.assertIn("<attach-session> <-t> <=alpha> <\\;> <choose-tree> <-Zs>", outside_calls)
+
+        log.write_text("", encoding="utf-8")
+        inside = self.run_sourced_with_path("sg-tmux choose", bin_dir, {"TMUX": "stub"})
+        self.assertEqual(inside.returncode, 0, inside.stderr)
+        self.assertIn("tmux <choose-tree> <-Zs>", log.read_text(encoding="utf-8"))
+
+    def test_tmux_list_formats_session_metadata(self):
+        bin_dir, _ = self.write_tmux_stub()
+
+        result = self.run_sourced_with_path("sg-tmux list", bin_dir)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("NAME", result.stdout)
+        self.assertIn("ATTACHED", result.stdout)
+        self.assertIn("alpha", result.stdout)
+        self.assertIn("2026-07-17 13:00:00", result.stdout)
+
+    def test_tmux_attach_switches_clients_when_already_inside_tmux(self):
+        bin_dir, log = self.write_tmux_stub()
+
+        result = self.run_sourced_with_path(
+            "sg-tmux attach alpha",
+            bin_dir,
+            {"TMUX": "stub", "TMUX_STUB_HAS_SESSION": "1"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = log.read_text(encoding="utf-8")
+        self.assertIn("tmux <switch-client> <-t> <=alpha>", calls)
+        self.assertNotIn("<attach-session>", calls)
+
+    def test_tmux_codex_uses_current_directory_and_reuses_existing_session(self):
+        bin_dir, log = self.write_tmux_stub()
+
+        created = self.run_sourced_with_path("sg-tmux codex codex-work -p deep", bin_dir)
+        self.assertEqual(created.returncode, 0, created.stderr)
+        calls = log.read_text(encoding="utf-8")
+        self.assertIn(f"<new-session> <-s> <codex-work> <-c> <{self.root}>", calls)
+        self.assertIn(f"{bin_dir / 'codex'}", calls)
+        self.assertIn("-p", calls)
+        self.assertIn("deep", calls)
+
+        log.write_text("", encoding="utf-8")
+        reused = self.run_sourced_with_path(
+            "sg-tmux codex codex-work -p ignored",
+            bin_dir,
+            {"TMUX_STUB_HAS_SESSION": "1"},
+        )
+        self.assertEqual(reused.returncode, 0, reused.stderr)
+        reuse_calls = log.read_text(encoding="utf-8")
+        self.assertIn("tmux <attach-session> <-t> <=codex-work>", reuse_calls)
+        self.assertNotIn("<new-session>", reuse_calls)
+
+    def test_tmux_hermes_entry_forwards_exact_cli_shape(self):
+        for arguments, expected in (
+            ("", "<hermes>"),
+            ("chat", "<hermes><chat>"),
+            ("-p coach chat", "<hermes><-p><coach><chat>"),
+            ("-p coach sessions browse", "<hermes><-p><coach><sessions><browse>"),
+        ):
+            with self.subTest(arguments=arguments):
+                command = (
+                    "sg_hermes_shell_command() { printf '<%s>' \"$@\"; }; "
+                    f"sg_tmux_session_entry hermes {arguments}"
+                )
+                result = self.run_sourced(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
+
+    def test_tmux_rejects_ambiguous_session_names_before_launch(self):
+        bin_dir, log = self.write_tmux_stub()
+
+        result = self.run_sourced_with_path("sg-tmux new bad:name", bin_dir)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Invalid tmux session name", result.stderr)
+        self.assertFalse(log.exists())
 
     def test_hermes_helpers_exec_as_runtime_user(self):
         bin_dir, log = self.write_docker_stub("1000:1000")

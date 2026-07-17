@@ -106,17 +106,17 @@ docker compose -f infra/compose/compose.yml --env-file .env config
 Spartan Gate includes optional shell helpers so you do not have to repeat the
 full Docker Compose command.
 
-From the repo root:
+Load the helpers without changing the current directory:
 
 ```sh
-cd /path/to/spartan-gate
-source scripts/aliases.sh
+source /path/to/spartan-gate/scripts/aliases.sh
 ```
-To persist the helpers, replace /path/to/spartan-gate with your real absolute repo path and add the matching line to your shell rc:
+To persist the helpers, replace `/path/to/spartan-gate` with your real absolute
+repo path and add the matching line to your shell rc:
 
 ```sh
-echo 'cd /path/to/spartan-gate && source scripts/aliases.sh' >> ~/.bashrc
-echo 'cd /path/to/spartan-gate && source scripts/aliases.sh' >> ~/.zshrc
+echo 'source /path/to/spartan-gate/scripts/aliases.sh' >> ~/.bashrc
+echo 'source /path/to/spartan-gate/scripts/aliases.sh' >> ~/.zshrc
 ```
 
 Then open a new terminal, or reload your shell rc:
