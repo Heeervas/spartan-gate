@@ -89,6 +89,7 @@
       font: inherit;
     }
     .toolbar { margin-bottom: 18px; }
+    .token-field { display: grid; gap: 4px; min-width: 240px; }
     .grid {
       display: grid;
       grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -261,17 +262,21 @@
   <header>
     <div class="wrap top">
       <h1>Spartan Route</h1>
-      <nav>
-        <a class="current" href="/dashboard">Routing</a>
+      <nav aria-label="Dashboard">
+        <a class="current" href="/dashboard" aria-current="page">Routing</a>
         <a href="/dashboard-codex">Codex</a>
+        <a href="/dashboard-config">Config</a>
       </nav>
     </div>
   </header>
   <main class="wrap">
     <div class="toolbar">
-      <input id="token" type="password" autocomplete="off" placeholder="Bearer token">
+      <label class="token-field" for="token">
+        <span class="label">Bearer token</span>
+        <input id="token" type="password" autocomplete="off">
+      </label>
       <div class="actions">
-        <button id="save">Save</button>
+        <button id="save">Use token</button>
         <button id="collapse">Collapse</button>
         <button id="refresh" class="primary">Refresh</button>
       </div>
@@ -280,7 +285,7 @@
     <section>
       <div class="section-head">
         <h2>Sessions</h2>
-        <span class="muted" id="status"></span>
+        <span class="muted" id="status" role="status" aria-live="polite"></span>
       </div>
       <div id="sessions"></div>
     </section>
@@ -422,8 +427,12 @@
     }
     async function getJson(path) {
       const response = await fetch(path, { headers: headers() });
-      if (!response.ok) throw new Error(`${path} HTTP ${response.status}`);
-      return await response.json();
+      let payload = null;
+      try { payload = await response.json(); } catch (_error) { payload = null; }
+      if (!response.ok) {
+        throw new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
+      }
+      return payload;
     }
     async function loadTurn(turnId, target) {
       target.innerHTML = '<p class="muted">Loading turn...</p>';

@@ -15,9 +15,13 @@ function readDefaultConfig(): DefaultConfig {
 }
 
 describe('Codex model metadata', () => {
-    it('keeps GPT-5.4 family context windows aligned with current OpenAI docs', () => {
+    it('keeps Codex model context windows aligned with current OpenAI docs', () => {
         const config = readDefaultConfig();
 
+        for (const modelId of ['codex/gpt-5.6', 'codex/gpt-5.6-sol', 'codex/gpt-5.6-terra', 'codex/gpt-5.6-luna']) {
+            expect(getModelEntry(modelId)?.maxContext).toBe(1050000);
+            expect(config.contextOverrides?.[modelId]).toBe(1050000);
+        }
         expect(getModelEntry('codex/gpt-5.4-mini')?.maxContext).toBe(400000);
         expect(config.contextOverrides?.['codex/gpt-5.4-mini']).toBe(400000);
         expect(getModelEntry('codex/gpt-5.4')?.maxContext).toBe(1050000);
@@ -41,5 +45,8 @@ describe('Codex model metadata', () => {
             fallback: 'codex/gpt-5.4',
         });
         expect(snapshot.modelCatalog.some((model) => model.id === 'codex/gpt-5.5' && model.enabled)).toBe(true);
+        for (const modelId of ['codex/gpt-5.6', 'codex/gpt-5.6-sol', 'codex/gpt-5.6-terra', 'codex/gpt-5.6-luna']) {
+            expect(snapshot.modelCatalog.some((model) => model.id === modelId && model.enabled)).toBe(true);
+        }
     });
 });

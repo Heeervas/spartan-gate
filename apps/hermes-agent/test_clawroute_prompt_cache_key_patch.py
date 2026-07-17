@@ -98,6 +98,68 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
         self.assertEqual(kwargs["extra_body"]["prompt_cache_key"], "hermes:session-123")
         self.assertEqual(kwargs["reasoning_effort"], "high")
 
+    def test_raw_ultra_overrides_upstream_gpt56_max_only_for_clawroute(self):
+        module = load_module()
+        source = "\n".join([
+            "class ChatCompletionsTransport:",
+            "    def build_kwargs(self, model, messages, **params):",
+            '        profile = params.get("provider_profile")',
+            "        if profile:",
+            "            return self._build_kwargs_from_profile(",
+            "                profile, model, messages, None, params",
+            "            )",
+            "        api_kwargs = {}",
+            "        return api_kwargs",
+            "",
+            "    def _build_kwargs_from_profile(self, profile, model, messages, tools, params):",
+            '        return {"model": model, "messages": messages, "reasoning_effort": "max"}',
+            "",
+        ])
+        patched, changed = module.patch_source(source)
+        self.assertTrue(changed)
+        namespace = {}
+        exec(patched, namespace)
+
+        kwargs = namespace["ChatCompletionsTransport"]().build_kwargs(
+            "gpt-5.6-sol",
+            [{"role": "user", "content": "hello"}],
+            provider_profile=object(),
+            reasoning_config={"effort": "ultra"},
+        )
+
+        self.assertEqual(kwargs["reasoning_effort"], "ultra")
+
+    def test_direct_provider_keeps_existing_reasoning_effort(self):
+        module = load_module()
+        source = "\n".join([
+            "class ChatCompletionsTransport:",
+            "    def build_kwargs(self, model, messages, **params):",
+            '        profile = params.get("provider_profile")',
+            "        if profile:",
+            "            return self._build_kwargs_from_profile(",
+            "                profile, model, messages, None, params",
+            "            )",
+            "        api_kwargs = {}",
+            "        return api_kwargs",
+            "",
+            "    def _build_kwargs_from_profile(self, profile, model, messages, tools, params):",
+            '        return {"base_url": "https://api.openai.com/v1", "reasoning_effort": "max"}',
+            "",
+        ])
+        patched, changed = module.patch_source(source)
+        self.assertTrue(changed)
+        namespace = {}
+        exec(patched, namespace)
+
+        kwargs = namespace["ChatCompletionsTransport"]().build_kwargs(
+            "gpt-5.6",
+            [{"role": "user", "content": "hello"}],
+            provider_profile=object(),
+            reasoning_config={"effort": "ultra"},
+        )
+
+        self.assertEqual(kwargs["reasoning_effort"], "max")
+
     def test_legacy_path_does_not_inject_without_clawroute_base_url(self):
         module = load_module()
         source = "\n".join([

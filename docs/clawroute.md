@@ -38,12 +38,23 @@ That means a running Spartan Gate stack reads provider/model routing from
 through the public Compose file.
 
 Keep publishable routing defaults in `config/clawroute/`. Put private provider
-tokens in `.env` or `private/env/local.env`, not in JSON config files.
+tokens in `.env` or `private/env/local.env`, not in JSON config files. The
+Codex catalog can expose selectable GPT-5.6 entries without making them default
+routes; the checked-in Codex provider profile remains on GPT-5.5/GPT-5.4 until
+an operator intentionally changes tier mappings.
+
+Spartan Route also provides authenticated live overrides at
+`/dashboard-config`. These overrides cover only the four primary models used by
+the active `clawroute/auto` classifier, are stored in `spartan-route.db`, and
+never modify this read-only directory. Resetting the dashboard override restores
+the file-loaded mappings. Use the JSON files for publishable defaults and the
+dashboard for local runtime intent.
 
 ## Quick Rule
 
 - Legacy ClawRoute code change: edit `packages/clawroute/`.
 - L4 router code change: edit `infra/spartan-route/`.
-- Runtime model/provider policy: edit `config/clawroute/`.
+- Publishable model/provider defaults: edit `config/clawroute/`.
+- Live L4 auto-routing override: use `/dashboard-config`.
 - Secret or host-specific auth: edit `private/env/local.env` or
   `private/compose.local.yml`.

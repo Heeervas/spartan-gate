@@ -103,6 +103,29 @@ describe('Provider discovery', () => {
         expect(afterV1Body.data.find((model: { id: string }) => model.id === 'openai/gpt-discovery-preview')).toBeUndefined();
     });
 
+    it('discovers bundled Codex GPT-5.6 models without provider HTTP calls', async () => {
+        const discover = await app.request('/api/admin/models/discover', postJson({ provider: 'codex' }));
+        expect(discover.status).toBe(200);
+        const body = await discover.json();
+        const ids = body.candidates.map((candidate: { id: string }) => candidate.id);
+
+        expect(ids).toEqual(expect.arrayContaining([
+            'codex/gpt-5.6',
+            'codex/gpt-5.6-sol',
+            'codex/gpt-5.6-terra',
+            'codex/gpt-5.6-luna',
+        ]));
+        expect(body.candidates.find((candidate: { id: string }) => candidate.id === 'codex/gpt-5.6-luna')).toMatchObject({
+            provider: 'codex',
+            discoveryOnly: false,
+            maxContext: 1050000,
+            toolCapable: true,
+            multimodal: true,
+            enabled: true,
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it('rejects unknown provider ids before discovery runs', async () => {
         const response = await app.request('/api/admin/models/discover', postJson({ provider: 'foo' }));
         const body = await response.json();

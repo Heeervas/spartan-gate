@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -20,6 +21,8 @@ from spartan_route.app import (
     SpartanRouteState,
     STATE_KEY,
     build_request_shape_diagnostics,
+    build_routing_policy_snapshot,
+    classify_codex_slot_health,
     compare_session_trace,
     create_app,
     execute_chat,
@@ -27,6 +30,7 @@ from spartan_route.app import (
     log_request,
     prompt_preview_from_request,
     request_prompt_cache_key_source,
+    route_request,
     request_shape_snapshot,
 )
 from spartan_route.config import ModelEntry, SpartanRouteConfig
@@ -131,6 +135,10 @@ def test_config() -> SpartanRouteConfig:
     models = {
         "anthropic/test": ModelEntry("anthropic/test", "anthropic"),
         "openai/gpt-test": ModelEntry("openai/gpt-test", "openai"),
+        "codex/gpt-5.6": ModelEntry("codex/gpt-5.6", "codex", max_context=1_050_000, multimodal=True),
+        "codex/gpt-5.6-sol": ModelEntry("codex/gpt-5.6-sol", "codex", max_context=1_050_000, multimodal=True),
+        "codex/gpt-5.6-terra": ModelEntry("codex/gpt-5.6-terra", "codex", max_context=1_050_000, multimodal=True),
+        "codex/gpt-5.6-luna": ModelEntry("codex/gpt-5.6-luna", "codex", max_context=1_050_000, multimodal=True),
         "codex/gpt-5.5": ModelEntry("codex/gpt-5.5", "codex"),
         "codex/gpt-5.4": ModelEntry("codex/gpt-5.4", "codex"),
         "codex/gpt-5.4-mini": ModelEntry("codex/gpt-5.4-mini", "codex"),
@@ -145,12 +153,102 @@ def test_config() -> SpartanRouteConfig:
         log_content=False,
         db_path=":memory:",
         config_dir=Path("."),
-        web_dir=Path("infra/spartan-route/web"),
+        web_dir=Path(__file__).resolve().parent / "web",
         provider_profile="codex",
         baseline_model="codex/gpt-5.5",
         tier_models=tier_models,
         models=models,
     )
+
+
+class RoutingPolicyTests(unittest.TestCase):
+    def test_policy_uses_complete_valid_override_and_rejects_invalid_set(self) -> None:
+        store = TelemetryStore(":memory:")
+        config = test_config()
+        override = {
+            "heartbeat": "codex/gpt-5.6",
+            "simple": "codex/gpt-5.6-sol",
+            "moderate": "codex/gpt-5.6-terra",
+            "complex": "codex/gpt-5.6-luna",
+        }
+        try:
+            base = build_routing_policy_snapshot(config, store)
+            self.assertEqual(base.source, "file")
+            self.assertIsNone(base.warning)
+
+            store.replace_routing_model_overrides(override)
+            effective = build_routing_policy_snapshot(config, store)
+            self.assertEqual(dict(effective.tier_models), override)
+            self.assertEqual(effective.source, "runtime_override")
+            self.assertNotEqual(base.etag, effective.etag)
+
+            store._conn.execute(
+                "UPDATE routing_model_overrides SET model_id = ? WHERE tier = ?",
+                ("missing/model", "moderate"),
+            )
+            store._conn.commit()
+            rejected = build_routing_policy_snapshot(config, store)
+            self.assertEqual(rejected.source, "file")
+            self.assertIsNotNone(rejected.warning)
+            self.assertEqual(
+                rejected.tier_models["moderate"],
+                config.tier_models["moderate"]["primary"],
+            )
+        finally:
+            store.close()
+
+    def test_every_classifier_tier_uses_one_policy_snapshot(self) -> None:
+        config = test_config()
+        policy = {
+            "heartbeat": "codex/gpt-5.4-mini",
+            "simple": "codex/gpt-5.4",
+            "moderate": "codex/gpt-5.5",
+            "complex": "codex/gpt-5.6",
+        }
+        cases = [
+            ("heartbeat", {"model": "clawroute/auto", "messages": [{"role": "user", "content": "ping"}]}),
+            ("simple", {"model": "clawroute/auto", "messages": [{"role": "user", "content": "word " * 100}]}),
+            ("moderate", {"model": "clawroute/auto", "messages": [{"role": "user", "content": "word " * 5000}]}),
+            ("complex", {"model": "clawroute/auto", "messages": [{"role": "user", "content": "build"}], "tools": [{"type": "function"}]}),
+        ]
+        for expected_tier, body in cases:
+            with self.subTest(tier=expected_tier):
+                route = route_request(config, body, policy)
+                self.assertEqual(route.tier, expected_tier)
+                self.assertEqual(route.actual_model, policy[expected_tier])
+
+
+class CodexHealthTests(unittest.TestCase):
+    def test_slot_health_precedence(self) -> None:
+        healthy = {
+            "slotIndex": 2,
+            "routingEnabled": True,
+            "authAvailable": True,
+            "rateLimitedUntil": 0,
+            "transientUntil": 0,
+        }
+        cases = [
+            ("disabled", {**healthy, "routingEnabled": False, "authAvailable": False}, [], [], False, "disabled"),
+            ("usage failure", healthy, [{"slotIndex": 2, "message": "private upstream"}], [], False, "failed"),
+            ("reset failure", healthy, [], [{"slotIndex": 2, "message": "private upstream"}], False, "failed"),
+            ("auth failure", {**healthy, "authAvailable": False}, [], [], False, "failed"),
+            ("rate cooldown", {**healthy, "authAvailable": False, "rateLimitedUntil": 1100}, [], [], False, "unavailable"),
+            ("transient cooldown", {**healthy, "transientUntil": 1100}, [], [], False, "unavailable"),
+            ("cached error", healthy, [{"slotIndex": 2, "message": "old"}], [], True, "history"),
+            ("healthy", healthy, [], [], False, "healthy"),
+        ]
+        for label, slot, slot_errors, reset_errors, cached, expected in cases:
+            with self.subTest(label=label):
+                result = classify_codex_slot_health(
+                    slot,
+                    slot_errors=slot_errors,
+                    reset_credit_errors=reset_errors,
+                    cached=cached,
+                    now=1000,
+                )
+                self.assertEqual(result["healthStatus"], expected)
+                self.assertEqual(result["healthCached"], cached and bool(slot_errors or reset_errors))
+                self.assertNotIn("private upstream", result["healthReasons"])
 
 
 class AppTests(unittest.IsolatedAsyncioTestCase):
@@ -176,7 +274,11 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         models = await self.client.get("/v1/models")
         self.assertEqual(models.status, 200)
         payload = await models.json()
-        self.assertIn("custom-1/clawroute/auto", [item["id"] for item in payload["data"]])
+        model_ids = [item["id"] for item in payload["data"]]
+        self.assertIn("custom-1/clawroute/auto", model_ids)
+        self.assertIn("spartan-route/clawroute/auto", model_ids)
+        for model_id in ("codex/gpt-5.6", "codex/gpt-5.6-sol", "codex/gpt-5.6-terra", "codex/gpt-5.6-luna"):
+            self.assertIn(model_id, model_ids)
 
     async def test_api_requires_bearer_token(self) -> None:
         missing = await self.client.get("/api/routing/live")
@@ -185,6 +287,231 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(query_token.status, 401)
         ok = await self.client.get("/api/routing/live", headers={"Authorization": "Bearer secret"})
         self.assertEqual(ok.status, 200)
+
+    async def test_config_api_is_authenticated_and_applies_immediately(self) -> None:
+        unauthorized = await self.client.get("/api/config/routing")
+        self.assertEqual(unauthorized.status, 401)
+
+        auth = {"Authorization": "Bearer secret"}
+        current = await self.client.get("/api/config/routing", headers=auth)
+        self.assertEqual(current.status, 200)
+        current_payload = await current.json()
+        self.assertEqual(
+            [tier["id"] for tier in current_payload["editableTiers"]],
+            ["heartbeat", "simple", "moderate", "complex"],
+        )
+        etag = current.headers["ETag"]
+        mapping = {
+            "heartbeat": "codex/gpt-5.6",
+            "simple": "codex/gpt-5.6-sol",
+            "moderate": "codex/gpt-5.6-terra",
+            "complex": "codex/gpt-5.6-luna",
+        }
+        updated = await self.client.put(
+            "/api/config/routing",
+            headers={**auth, "If-Match": etag},
+            json={"tiers": mapping},
+        )
+        self.assertEqual(updated.status, 200)
+        self.assertEqual((await updated.json())["effective"], mapping)
+        self.assertNotEqual(updated.headers["ETag"], etag)
+
+        state = self.app[STATE_KEY]
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        routed = await self.client.post(
+            "/v1/chat/completions",
+            headers=auth,
+            json={
+                "model": "clawroute/auto",
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+        self.assertEqual(routed.status, 200)
+        self.assertEqual(fake_codex.calls[0]["model_id"], "codex/gpt-5.6")
+
+        stale = await self.client.put(
+            "/api/config/routing",
+            headers={**auth, "If-Match": etag},
+            json={"tiers": mapping},
+        )
+        self.assertEqual(stale.status, 412)
+        self.assertEqual((await stale.json())["error"]["code"], "config_revision_conflict")
+
+        reset = await self.client.delete(
+            "/api/config/routing",
+            headers={**auth, "If-Match": updated.headers["ETag"]},
+        )
+        self.assertEqual(reset.status, 200)
+        self.assertEqual((await reset.json())["overrides"], {})
+
+    async def test_config_api_rejects_ineligible_and_unbounded_updates(self) -> None:
+        auth = {"Authorization": "Bearer secret"}
+        current = await self.client.get("/api/config/routing", headers=auth)
+        etag = current.headers["ETag"]
+
+        missing_precondition = await self.client.put(
+            "/api/config/routing",
+            headers=auth,
+            json={"tiers": {}},
+        )
+        self.assertEqual(missing_precondition.status, 428)
+
+        invalid = await self.client.put(
+            "/api/config/routing",
+            headers={**auth, "If-Match": etag},
+            json={"tiers": {tier: "anthropic/test" for tier in ("heartbeat", "simple", "moderate", "complex")}},
+        )
+        self.assertEqual(invalid.status, 400)
+        self.assertEqual((await invalid.json())["error"]["code"], "routing_model_not_eligible")
+        self.assertEqual(self.app[STATE_KEY].routing_policy.etag, etag)
+
+        oversized = await self.client.put(
+            "/api/config/routing",
+            headers={**auth, "If-Match": etag, "Content-Type": "application/json"},
+            data=b"{" + b"x" * 20000 + b"}",
+        )
+        self.assertEqual(oversized.status, 413)
+
+        valid_body = json.dumps({
+            "tiers": {
+                tier: "codex/gpt-5.5"
+                for tier in ("heartbeat", "simple", "moderate", "complex")
+            }
+        }).encode("utf-8")
+
+        async def chunked_body():
+            yield valid_body
+            yield b" " * 20000
+
+        chunked = await self.client.put(
+            "/api/config/routing",
+            headers={**auth, "If-Match": etag, "Content-Type": "application/json"},
+            data=chunked_body(),
+        )
+        self.assertEqual(chunked.status, 413)
+        self.assertEqual(self.app[STATE_KEY].routing_policy.etag, etag)
+
+    async def test_config_mutations_serialize_and_publish_committed_state(self) -> None:
+        auth = {"Authorization": "Bearer secret"}
+        current = await self.client.get("/api/config/routing", headers=auth)
+        etag = current.headers["ETag"]
+        first_mapping = {
+            "heartbeat": "codex/gpt-5.6",
+            "simple": "codex/gpt-5.6-sol",
+            "moderate": "codex/gpt-5.6-terra",
+            "complex": "codex/gpt-5.6-luna",
+        }
+        second_mapping = {
+            "heartbeat": "codex/gpt-5.4-mini",
+            "simple": "codex/gpt-5.4",
+            "moderate": "codex/gpt-5.5",
+            "complex": "codex/gpt-5.6",
+        }
+
+        first, second = await asyncio.gather(
+            self.client.put(
+                "/api/config/routing",
+                headers={**auth, "If-Match": etag},
+                json={"tiers": first_mapping},
+            ),
+            self.client.put(
+                "/api/config/routing",
+                headers={**auth, "If-Match": etag},
+                json={"tiers": second_mapping},
+            ),
+        )
+        self.assertEqual(sorted((first.status, second.status)), [200, 412])
+        await first.read()
+        await second.read()
+
+        published = await self.client.get("/api/config/routing", headers=auth)
+        published_payload = await published.json()
+        self.assertIn(published_payload["effective"], (first_mapping, second_mapping))
+        self.assertEqual(
+            {row["tier"]: row["model_id"] for row in self.store.routing_model_override_rows()},
+            published_payload["effective"],
+        )
+
+        put_response, delete_response = await asyncio.gather(
+            self.client.put(
+                "/api/config/routing",
+                headers={**auth, "If-Match": published.headers["ETag"]},
+                json={"tiers": second_mapping},
+            ),
+            self.client.delete(
+                "/api/config/routing",
+                headers={**auth, "If-Match": published.headers["ETag"]},
+            ),
+        )
+        self.assertEqual(sorted((put_response.status, delete_response.status)), [200, 412])
+        await put_response.read()
+        await delete_response.read()
+
+        final = await self.client.get("/api/config/routing", headers=auth)
+        final_payload = await final.json()
+        persisted = {
+            row["tier"]: row["model_id"]
+            for row in self.store.routing_model_override_rows()
+        }
+        self.assertEqual(persisted, final_payload["overrides"])
+        self.assertEqual(
+            dict(self.app[STATE_KEY].routing_policy.tier_models),
+            final_payload["effective"],
+        )
+
+
+    async def test_config_persistence_failures_preserve_policy_and_etag(self) -> None:
+        auth = {"Authorization": "Bearer secret"}
+        current = await self.client.get("/api/config/routing", headers=auth)
+        etag = current.headers["ETag"]
+        mapping = {
+            "heartbeat": "codex/gpt-5.6",
+            "simple": "codex/gpt-5.6-sol",
+            "moderate": "codex/gpt-5.6-terra",
+            "complex": "codex/gpt-5.6-luna",
+        }
+
+        with patch.object(
+            self.store,
+            "replace_routing_model_overrides",
+            side_effect=RuntimeError("private sqlite detail"),
+        ):
+            failed_put = await self.client.put(
+                "/api/config/routing",
+                headers={**auth, "If-Match": etag},
+                json={"tiers": mapping},
+            )
+        self.assertEqual(failed_put.status, 503)
+        self.assertEqual(failed_put.headers["ETag"], etag)
+        put_payload = await failed_put.json()
+        self.assertEqual(put_payload["error"]["code"], "config_persistence_failed")
+        self.assertNotIn("private sqlite detail", json.dumps(put_payload))
+        self.assertEqual(self.app[STATE_KEY].routing_policy.etag, etag)
+
+        with patch.object(
+            self.store,
+            "delete_routing_model_overrides",
+            side_effect=RuntimeError("private sqlite detail"),
+        ):
+            failed_delete = await self.client.delete(
+                "/api/config/routing",
+                headers={**auth, "If-Match": etag},
+            )
+        self.assertEqual(failed_delete.status, 503)
+        self.assertEqual(failed_delete.headers["ETag"], etag)
+        self.assertEqual(self.app[STATE_KEY].routing_policy.etag, etag)
+
+
+    async def test_config_dashboard_is_served_with_auth(self) -> None:
+        unauthorized = await self.client.get("/dashboard-config")
+        self.assertEqual(unauthorized.status, 401)
+        response = await self.client.get(
+            "/dashboard-config",
+            headers={"Authorization": "Bearer secret"},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertIn("Spartan Route Config", await response.text())
 
     async def test_stats_include_today_latency(self) -> None:
         self.store.log_routing(RoutingLogEntry(
@@ -253,6 +580,88 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 503)
         payload = await response.json()
         self.assertEqual(payload["error"]["code"], "provider_not_supported")
+
+    async def test_ultra_is_logged_and_rejected_before_codex_for_both_apis_and_stream_modes(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        original_queue = state.queue
+        capture = CaptureQueue()
+        state.queue = capture
+        auth = {"Authorization": "Bearer secret"}
+
+        try:
+            scenarios = (
+                ("/v1/chat/completions", False, {
+                    "model": "codex/gpt-5.6-sol",
+                    "messages": [{"role": "user", "content": "solve"}],
+                }),
+                ("/v1/chat/completions", True, {
+                    "model": "codex/gpt-5.6-sol",
+                    "messages": [{"role": "user", "content": "solve"}],
+                }),
+                ("/v1/responses", False, {
+                    "model": "codex/gpt-5.6-sol",
+                    "input": "solve",
+                }),
+                ("/v1/responses", True, {
+                    "model": "codex/gpt-5.6-sol",
+                    "input": "solve",
+                }),
+            )
+            for endpoint, stream, base_body in scenarios:
+                with self.subTest(endpoint=endpoint, stream=stream):
+                    response = await self.client.post(
+                        endpoint,
+                        headers=auth,
+                        json={**base_body, "stream": stream, "reasoning_effort": "ultra"},
+                    )
+                    self.assertEqual(response.status, 400)
+                    payload = await response.json()
+                    self.assertEqual(payload["error"]["type"], "invalid_request_error")
+                    self.assertEqual(payload["error"]["code"], "codex_ultra_requires_app_server")
+        finally:
+            state.queue = original_queue
+
+        self.assertEqual(fake_codex.calls, [])
+        self.assertEqual(len(capture.entries), 4)
+        for entry in capture.entries:
+            self.assertEqual(entry.error, "codex_ultra_requires_app_server")
+            self.assertEqual(entry.requested_reasoning_effort, "ultra")
+            self.assertIsNone(entry.selected_codex_slot_index)
+            self.assertIsNone(entry.selected_codex_account_key)
+
+    async def test_max_rejects_non_gpt56_and_reaches_gpt56(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        auth = {"Authorization": "Bearer secret"}
+
+        rejected = await self.client.post(
+            "/v1/chat/completions",
+            headers=auth,
+            json={
+                "model": "codex/gpt-5.5",
+                "messages": [{"role": "user", "content": "solve"}],
+                "reasoning_effort": "max",
+            },
+        )
+        self.assertEqual(rejected.status, 400)
+        self.assertEqual((await rejected.json())["error"]["code"], "codex_max_requires_gpt_5_6")
+        self.assertEqual(fake_codex.calls, [])
+
+        accepted = await self.client.post(
+            "/v1/chat/completions",
+            headers=auth,
+            json={
+                "model": "codex/gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "solve"}],
+                "reasoning_effort": "max",
+            },
+        )
+        self.assertEqual(accepted.status, 200)
+        self.assertEqual(len(fake_codex.calls), 1)
+        self.assertEqual(fake_codex.calls[0]["request"]["reasoning_effort"], "max")
 
     async def test_cache_lineage_uses_effective_key_and_stays_private(self) -> None:
         state = self.app[STATE_KEY]
@@ -870,6 +1279,39 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("slot-only", html)
         self.assertIn("active-lease-strip", html)
         self.assertNotIn("<h2>Slots</h2>", html)
+
+
+    def test_dashboard_navigation_and_config_contract_are_consistent(self) -> None:
+        web_dir = Path(__file__).resolve().parent / "web"
+        routing = (web_dir / "dashboard.html").read_text(encoding="utf-8")
+        codex = (web_dir / "dashboard-codex.html").read_text(encoding="utf-8")
+        config = (web_dir / "dashboard-config.html").read_text(encoding="utf-8")
+
+        for html in (routing, codex, config):
+            self.assertIn('href="/dashboard-config"', html)
+            self.assertIn("Bearer token", html)
+            self.assertIn("Use token", html)
+            self.assertIn('aria-current="page"', html)
+        self.assertIn("/api/config/routing", config)
+        self.assertIn("If-Match", config)
+        self.assertIn("beforeunload", config)
+        self.assertIn("textContent", config)
+        self.assertNotIn("localStorage", config)
+        self.assertIn("[mode, payload.warning].filter(Boolean)", config)
+
+    def test_codex_dashboard_marks_only_backend_failed_health_red(self) -> None:
+        html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
+
+        self.assertIn(".account.health-failed", html)
+        self.assertIn("function accountHealth", html)
+        self.assertIn("healthStatus", html)
+        self.assertIn("healthReasons", html)
+        self.assertIn("min-width: 0;\n    }\n    .account.health-failed", html)
+        self.assertNotIn('<div class="slot-row">\n      const tone', html)
+        self.assertIn("const tone = slot.healthStatus", html)
+        self.assertIn("health-badge", html)
+        self.assertIn("account-health", html)
+        self.assertIn("textContent = summary", html)
 
 
 if __name__ == "__main__":

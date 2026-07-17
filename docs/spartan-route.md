@@ -50,6 +50,8 @@ Relevant files:
   persistent slot routing controls, daily usage-cache percentage, latency, active
   leases, reset countdowns, and mandatory reset-credit showcase.
 - `infra/compose/compose.yml`: full-stack baseline service and Hermes wiring.
+- `infra/spartan-route/web/dashboard-config.html`: authenticated runtime model
+  overrides for the active `clawroute/auto` classifier tiers.
 - `infra/compose/compose.spartan-route.yml`: compatibility no-op overlay for
   older commands that still include it.
 - `infra/compose/tiers/compose.spartan-route.yml`: tier-helper side-by-side
@@ -60,7 +62,23 @@ Kept in v1:
 
 - OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, `/v1/models`,
   `/v1/images/generations`, and `/v1/images/edits`.
-- `clawroute/auto` and `custom-1/clawroute/auto` model aliases for Hermes.
+- Native Hermes `openai-api` provider discovery through `OPENAI_BASE_URL`.
+- Profile `.env` route keys may reference `${OPENAI_API_KEY}` or legacy
+  `${CUSTOM_1_API_KEY}`; those two route-key aliases delegate to the named
+  container environment key. References to unrelated keys remain literal and
+  are never expanded.
+- `clawroute/auto`, `custom-1/clawroute/auto`, and `spartan-route/clawroute/auto` model aliases for Hermes compatibility.
+- Selectable Codex GPT-5.6 catalog entries for manual Hermes sessions:
+  `codex/gpt-5.6`, `codex/gpt-5.6-sol`, `codex/gpt-5.6-terra`, and
+  `codex/gpt-5.6-luna`. The Codex provider profile still defaults to
+  `codex/gpt-5.5` until these variants are promoted explicitly.
+- `reasoning_effort=max` is accepted only for GPT-5.6 variants and is sent to
+  Codex exactly as `reasoning.effort=max`. Other Codex model families receive
+  `400 codex_max_requires_gpt_5_6` before slot selection.
+- `reasoning_effort=ultra` is never silently downgraded to `max`. Chat
+  Completions and Responses, streaming or non-streaming, return
+  `400 codex_ultra_requires_app_server`, log the attempt, and do not select a
+  Codex slot.
 - Multiple Codex auth slots from `OPENAI_CODEX_AUTH_PATHS`.
 - Prompt-cache keys based on explicit `prompt_cache_key`, `user`, or stable
   system/tool prefix shape.
@@ -177,8 +195,46 @@ Reliability contract:
   request by default, which keeps the stable prefix smaller and less volatile.
   Set `SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING=1` only as a rollback switch.
 
-Cut from v1 on purpose:
+## Dashboard Runtime Routing Overrides
 
+`/dashboard-config` edits the primary model used by `clawroute/auto` for the
+four tiers the current classifier emits: `heartbeat`, `simple`, `moderate`, and
+`complex`. It does not expose the dormant frontier tiers or configured fallback
+fields as active controls.
+
+The page and its API use the normal dashboard bearer-token contract:
+
+- `GET /api/config/routing` returns file defaults, runtime overrides, effective
+  mappings, eligible models, non-secret readiness, limitations, and an `ETag`.
+- `PUT /api/config/routing` requires the current `ETag` in `If-Match` and saves
+  one complete four-tier mapping.
+- `DELETE /api/config/routing` requires the same precondition and resets all
+  four tiers to the file-loaded defaults.
+
+Dashboard changes are stored in `routing_model_overrides` in
+`spartan-route.db`; the read-only `config/clawroute` mount is never written.
+The service validates the whole stored set at startup. An incomplete, unknown,
+disabled, non-tool, or unsupported-provider target causes the entire override
+to be ignored in favor of file defaults, with an authenticated dashboard
+warning. Updates and resets are serialized and transactional, and stale browser
+tabs receive `412 config_revision_conflict` instead of overwriting newer state.
+
+The Codex dashboard also classifies each slot as healthy, failed, unavailable,
+history, or disabled. Only a current failure on a routing-enabled slot makes the
+account card red; the card also shows a `Failed` badge and text reason. Active
+cooldowns are warnings, cached-only errors are history, and operator-disabled
+slots remain neutral.
+
+Provider credentials, Codex tokens, raw auth data, and slot paths are not
+returned by the Config API. Query-string bearer tokens remain unsupported.
+
+## Cut From V1 On Purpose
+
+- Authentic OpenAI Ultra execution is deferred. Hermes main currently exposes
+  the selector and app-server scaffolding, but the upstream multi-agent
+  integration is still under review. Spartan Route therefore fails closed
+  instead of translating ordinary OpenAI-compatible requests into `max`.
+  The reviewed implementation plan is `plans/ultra-bridge/plan.md`.
 - Balance-loader scheduling, early activation, manual slot activation, capacity
   multipliers, cold-migration approval flow, cache-miss breaker, alerting, and
   the analysis dashboard.
@@ -223,9 +279,10 @@ sg exec hermes hermes plugins list --plain --no-bundled | rg spartan-cache-linea
 ```
 
 The plugin owns Spartan Route cache lineage metadata. It can preserve visible
-`reasoning_effort` request fields, but the existing Hermes transport patch is
-still required for `reasoning_config` forwarding paths that middleware cannot
-observe; do not remove that patch as part of the plugin rollout.
+`reasoning_effort` request fields, but it cannot observe the original
+`reasoning_config` after Hermes has normalized provider profiles. The transport
+patch therefore preserves raw `max`/`ultra` only for Spartan Route requests;
+do not remove it until Hermes provides an equivalent pre-normalization hook.
 
 Spartan Route is exposed through Caddy on `CLAWROUTE_EDGE_PORT`, default
 `18790`, for compatibility with existing router URLs. Private HTTPS stacks

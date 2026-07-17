@@ -8,11 +8,13 @@ from typing import Any
 
 from .util import parse_bool, parse_int
 
-TIERS = (
+AUTO_ROUTING_TIERS = (
     "heartbeat",
     "simple",
     "moderate",
     "complex",
+)
+TIERS = (*AUTO_ROUTING_TIERS,
     "frontier-sonnet",
     "frontier-opus",
 )
@@ -73,6 +75,10 @@ DEFAULT_TIER_MODELS: dict[str, dict[str, str]] = {
 
 
 DEFAULT_MODELS: dict[str, ModelEntry] = {
+    "codex/gpt-5.6": ModelEntry("codex/gpt-5.6", "codex", max_context=1_050_000, tool_capable=True, multimodal=True),
+    "codex/gpt-5.6-sol": ModelEntry("codex/gpt-5.6-sol", "codex", max_context=1_050_000, tool_capable=True, multimodal=True),
+    "codex/gpt-5.6-terra": ModelEntry("codex/gpt-5.6-terra", "codex", max_context=1_050_000, tool_capable=True, multimodal=True),
+    "codex/gpt-5.6-luna": ModelEntry("codex/gpt-5.6-luna", "codex", max_context=1_050_000, tool_capable=True, multimodal=True),
     "codex/gpt-5.5": ModelEntry("codex/gpt-5.5", "codex", max_context=1_050_000, tool_capable=True, multimodal=True),
     "codex/gpt-5.4": ModelEntry("codex/gpt-5.4", "codex", max_context=1_050_000, tool_capable=True, multimodal=True),
     "codex/gpt-5.4-mini": ModelEntry("codex/gpt-5.4-mini", "codex", max_context=400_000, tool_capable=True, multimodal=True),

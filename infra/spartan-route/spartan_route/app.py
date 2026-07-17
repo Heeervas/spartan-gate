@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import os
@@ -9,14 +11,15 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable
+from types import MappingProxyType
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 
 from aiohttp import ClientSession, ClientTimeout, FormData, web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.web_request import FileField
 
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
-from .config import ModelEntry, SpartanRouteConfig, load_config
+from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import (
     json_error,
@@ -62,6 +65,16 @@ class ExecutionResult:
     total_response_time_ms: int | None = None
 
 
+@dataclass(frozen=True)
+class RoutingPolicySnapshot:
+    tier_models: Mapping[str, str]
+    overrides: Mapping[str, str]
+    source: str
+    updated_at: str | None
+    warning: str | None
+    etag: str
+
+
 @dataclass
 class SpartanRouteState:
     config: SpartanRouteConfig
@@ -70,6 +83,8 @@ class SpartanRouteState:
     session: ClientSession | None = None
     codex: CodexRouter | None = None
     recent_session_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
+    routing_policy: RoutingPolicySnapshot | None = None
+    routing_policy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cache_guard: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -86,6 +101,8 @@ CACHE_STALL_ERROR_CODES = {"codex_stream_timeout", "codex_stream_error", "codex_
 SPARTAN_CACHE_LINEAGE_FIELD = "spartan_cache_lineage"
 SPARTAN_CACHE_LINEAGE_REASON_FIELD = "spartan_cache_lineage_reason"
 SPARTAN_PRIVATE_REQUEST_FIELDS = {SPARTAN_CACHE_LINEAGE_FIELD, SPARTAN_CACHE_LINEAGE_REASON_FIELD}
+CODEX_ULTRA_REQUIRES_APP_SERVER_CODE = "codex_ultra_requires_app_server"
+CODEX_MAX_REQUIRES_GPT56_CODE = "codex_max_requires_gpt_5_6"
 
 
 def provider_for_model(model_id: str) -> str:
@@ -110,9 +127,99 @@ def provider_for_model(model_id: str) -> str:
     return "openai"
 
 
+IMPLEMENTED_CHAT_PROVIDERS = frozenset({"codex", "openai", "openrouter", "ollama"})
+INVALID_ROUTING_OVERRIDE_WARNING = (
+    "Stored routing override is invalid; file defaults are active."
+)
+
+
+def file_routing_models(config: SpartanRouteConfig) -> dict[str, str]:
+    return {
+        tier: config.tier_models[tier]["primary"]
+        for tier in AUTO_ROUTING_TIERS
+    }
+
+
+def model_is_routing_eligible(config: SpartanRouteConfig, model_id: str) -> bool:
+    entry = config.models.get(model_id)
+    return bool(
+        entry
+        and entry.enabled
+        and entry.tool_capable
+        and entry.provider in IMPLEMENTED_CHAT_PROVIDERS
+    )
+
+
+def _routing_policy_etag(
+    effective: Mapping[str, str],
+    overrides: Mapping[str, str],
+    updated_at: str | None,
+) -> str:
+    canonical = stable_json({
+        "effective": dict(effective),
+        "overrides": dict(overrides),
+        "updatedAt": updated_at,
+    })
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f'"{digest}"'
+
+
+def make_routing_policy_snapshot(
+    config: SpartanRouteConfig,
+    overrides: Mapping[str, str] | None = None,
+    *,
+    updated_at: str | None = None,
+    warning: str | None = None,
+) -> RoutingPolicySnapshot:
+    file_models = file_routing_models(config)
+    override_models = dict(overrides or {})
+    effective = override_models if override_models else file_models
+    return RoutingPolicySnapshot(
+        tier_models=MappingProxyType(dict(effective)),
+        overrides=MappingProxyType(override_models),
+        source="runtime_override" if override_models else "file",
+        updated_at=updated_at,
+        warning=warning,
+        etag=_routing_policy_etag(effective, override_models, updated_at),
+    )
+
+
+def build_routing_policy_snapshot(
+    config: SpartanRouteConfig,
+    telemetry: TelemetryStore,
+) -> RoutingPolicySnapshot:
+    rows = telemetry.routing_model_override_rows()
+    if not rows:
+        return make_routing_policy_snapshot(config)
+
+    try:
+        tiers = {str(row["tier"]) for row in rows}
+        if len(rows) != len(AUTO_ROUTING_TIERS) or tiers != set(AUTO_ROUTING_TIERS):
+            raise ValueError("invalid tier set")
+        overrides = {
+            str(row["tier"]): str(row["model_id"])
+            for row in rows
+        }
+        if not all(model_is_routing_eligible(config, model_id) for model_id in overrides.values()):
+            raise ValueError("ineligible model")
+        updated_at = max(str(row["updated_at"]) for row in rows)
+    except (KeyError, TypeError, ValueError):
+        return make_routing_policy_snapshot(
+            config,
+            warning=INVALID_ROUTING_OVERRIDE_WARNING,
+        )
+    return make_routing_policy_snapshot(
+        config,
+        overrides,
+        updated_at=updated_at,
+    )
+
+
 def normalize_model_id(model_id: Any) -> str:
     model = str(model_id or "clawroute/auto")
-    return model.removeprefix("custom-1/")
+    for prefix in ("custom-1/", "spartan-route/"):
+        model = model.removeprefix(prefix)
+    return model
 
 
 def classify_request(body: dict[str, Any]) -> tuple[str, str, float]:
@@ -131,7 +238,11 @@ def classify_request(body: dict[str, Any]) -> tuple[str, str, float]:
     return "moderate", "medium context request", 0.7
 
 
-def route_request(config: SpartanRouteConfig, body: dict[str, Any]) -> RoutedRequest:
+def route_request(
+    config: SpartanRouteConfig,
+    body: dict[str, Any],
+    tier_primary_models: Mapping[str, str] | None = None,
+) -> RoutedRequest:
     original = str(body.get("model") or "clawroute/auto")
     normalized = normalize_model_id(original)
     tier = "passthrough"
@@ -139,7 +250,11 @@ def route_request(config: SpartanRouteConfig, body: dict[str, Any]) -> RoutedReq
 
     if normalized in {"clawroute/auto", "auto"}:
         tier, reason, _confidence = classify_request(body)
-        routed = config.tier_models.get(tier, {}).get("primary") or config.baseline_model
+        routed = (
+            (tier_primary_models or {}).get(tier)
+            or config.tier_models.get(tier, {}).get("primary")
+            or config.baseline_model
+        )
     else:
         routed = normalized
 
@@ -331,6 +446,26 @@ async def execute_provider_chat(
     return result
 
 
+def codex_reasoning_validation_error(body: Mapping[str, Any], model_id: str) -> ExecutionResult | None:
+    effort = str(body.get("reasoning_effort") or "").strip().lower()
+    if effort == "ultra":
+        code = CODEX_ULTRA_REQUIRES_APP_SERVER_CODE
+        message = (
+            "Ultra requires the stateful Codex app-server bridge; "
+            "Spartan Route will not silently downgrade it to max."
+        )
+    elif effort == "max" and "gpt-5.6" not in model_id.lower():
+        code = CODEX_MAX_REQUIRES_GPT56_CODE
+        message = "Codex reasoning effort max is supported only for GPT-5.6 models."
+    else:
+        return None
+    return ExecutionResult(
+        status=400,
+        body={"error": {"message": message, "type": "invalid_request_error", "code": code}},
+        error=code,
+    )
+
+
 async def execute_chat(
     state: SpartanRouteState,
     body: dict[str, Any],
@@ -342,6 +477,9 @@ async def execute_chat(
 ) -> ExecutionResult:
     upstream_body = strip_private_spartan_fields(body)
     if route.provider == "codex":
+        reasoning_error = codex_reasoning_validation_error(upstream_body, route.actual_model)
+        if reasoning_error is not None:
+            return reasoning_error
         if state.codex is None:
             return ExecutionResult(503, body=json_error("Codex router is not ready", 503, "codex_unavailable")[0], error="codex_unavailable")
         codex_result: CodexCallResult = await state.codex.execute_chat(
@@ -1154,7 +1292,8 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
     session_id = session_id_from_request(body, prompt_cache_key)
     effective_prompt_cache_key = request_effective_prompt_cache_key(body, session_id, prompt_cache_key)
     turn_id = resolve_turn_id(body, session_id, request_id)
-    route = route_request(state.config, body)
+    policy = state.routing_policy
+    route = route_request(state.config, body, policy.tier_models if policy else None)
     result = await execute_chat(state, body, route, bool(body.get("stream")), session_id, effective_prompt_cache_key, request_id)
     return await write_execution_response(
         request,
@@ -1180,7 +1319,8 @@ async def responses(request: web.Request) -> web.StreamResponse:
     session_id = session_id_from_request(chat_body, prompt_cache_key)
     effective_prompt_cache_key = request_effective_prompt_cache_key(chat_body, session_id, prompt_cache_key)
     turn_id = resolve_turn_id(chat_body, session_id, request_id)
-    route = route_request(state.config, chat_body)
+    policy = state.routing_policy
+    route = route_request(state.config, chat_body, policy.tier_models if policy else None)
     wants_stream = bool(body.get("stream"))
     result = await execute_chat(state, chat_body, route, wants_stream, session_id, effective_prompt_cache_key, request_id)
 
@@ -1415,7 +1555,15 @@ async def models(request: web.Request) -> web.Response:
         "multimodal": True,
         "description": "Auto-routes with spartan-route v1 policy",
     }
-    return web.json_response({"object": "list", "data": [auto, {**auto, "id": "custom-1/clawroute/auto"}, *[model_payload(m) for m in state.config.models.values() if m.enabled]]})
+    return web.json_response({
+        "object": "list",
+        "data": [
+            auto,
+            {**auto, "id": "custom-1/clawroute/auto"},
+            {**auto, "id": "spartan-route/clawroute/auto"},
+            *[model_payload(m) for m in state.config.models.values() if m.enabled],
+        ],
+    })
 
 
 async def model_detail(request: web.Request) -> web.Response:
@@ -1427,6 +1575,291 @@ async def model_detail(request: web.Request) -> web.Response:
     if not entry:
         return response_json_error(f"The model '{request.match_info['model_id']}' does not exist", 404, "model_not_found", "invalid_request_error")
     return web.json_response({"id": entry.id, "object": "model", "owned_by": entry.provider, "max_context": entry.max_context, "tool_capable": entry.tool_capable, "multimodal": entry.multimodal})
+
+
+ROUTING_TIER_PRESENTATION = {
+    "heartbeat": ("Heartbeat", "Small health-check-sized requests"),
+    "simple": ("Simple", "Small requests up to about 4,000 estimated tokens"),
+    "moderate": ("Moderate", "Medium-context requests"),
+    "complex": ("Complex", "Tools, large context, or engineering-heavy prompts"),
+}
+CONFIG_BODY_MAX_BYTES = 16 * 1024
+MODEL_ID_MAX_CHARS = 256
+
+
+def effective_routing_policy(state: SpartanRouteState) -> RoutingPolicySnapshot:
+    if state.routing_policy is None:
+        state.routing_policy = build_routing_policy_snapshot(state.config, state.telemetry)
+    return state.routing_policy
+
+
+def model_readiness(state: SpartanRouteState, entry: ModelEntry) -> str:
+    if entry.provider == "codex":
+        return "configured" if state.codex and getattr(state.codex, "slots", []) else "no_codex_slots"
+    if entry.provider == "ollama":
+        return "configured"
+    if entry.provider in {"openai", "openrouter"}:
+        return "configured" if state.config.api_key(entry.provider) else "missing_credentials"
+    return "provider_not_supported"
+
+
+def routing_config_document(state: SpartanRouteState) -> dict[str, Any]:
+    policy = effective_routing_policy(state)
+    file_defaults = file_routing_models(state.config)
+    return {
+        "editableTiers": [
+            {
+                "id": tier,
+                "label": ROUTING_TIER_PRESENTATION[tier][0],
+                "rule": ROUTING_TIER_PRESENTATION[tier][1],
+            }
+            for tier in AUTO_ROUTING_TIERS
+        ],
+        "fileDefaults": file_defaults,
+        "overrides": dict(policy.overrides),
+        "effective": dict(policy.tier_models),
+        "sources": {
+            tier: "runtime_override" if tier in policy.overrides else "file"
+            for tier in AUTO_ROUTING_TIERS
+        },
+        "updatedAt": policy.updated_at,
+        "warning": policy.warning,
+        "etag": policy.etag,
+        "enabled": state.config.enabled,
+        "dryRun": state.config.dry_run,
+        "limitations": [
+            "Fallback models are not executed by Spartan Route v1.",
+            "Frontier tiers are configured but are not emitted by the v1 classifier.",
+        ],
+        "models": [
+            {
+                "id": entry.id,
+                "provider": entry.provider,
+                "maxContext": entry.max_context,
+                "toolCapable": entry.tool_capable,
+                "multimodal": entry.multimodal,
+                "enabled": entry.enabled,
+                "eligible": model_is_routing_eligible(state.config, entry.id),
+                "readiness": model_readiness(state, entry),
+            }
+            for entry in state.config.models.values()
+        ],
+    }
+
+
+def routing_config_response(state: SpartanRouteState, status: int = 200) -> web.Response:
+    policy = effective_routing_policy(state)
+    return web.json_response(
+        routing_config_document(state),
+        status=status,
+        headers={"ETag": policy.etag, "Cache-Control": "no-store"},
+    )
+
+
+def routing_precondition_error(
+    state: SpartanRouteState,
+    message: str,
+    status: int,
+    code: str,
+) -> web.Response:
+    response = response_json_error(message, status, code, "conflict_error")
+    response.headers["ETag"] = effective_routing_policy(state).etag
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def routing_persistence_error(
+    state: SpartanRouteState,
+    message: str,
+) -> web.Response:
+    response = response_json_error(
+        message,
+        503,
+        "config_persistence_failed",
+    )
+    response.headers["ETag"] = effective_routing_policy(state).etag
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+async def read_bounded_json_object(
+    request: web.Request,
+    max_bytes: int = CONFIG_BODY_MAX_BYTES,
+) -> dict[str, Any] | web.Response:
+    content_length = request.content_length
+    if content_length is not None and content_length > max_bytes:
+        return response_json_error(
+            "Configuration request is too large.",
+            413,
+            "config_payload_too_large",
+            "invalid_request_error",
+        )
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await request.content.read(min(8192, max_bytes + 1 - total))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            return response_json_error(
+                "Configuration request is too large.",
+                413,
+                "config_payload_too_large",
+                "invalid_request_error",
+            )
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    try:
+        body = json.loads(data)
+    except Exception:
+        return response_json_error(
+            "Invalid JSON body.",
+            400,
+            "invalid_json",
+            "invalid_request_error",
+        )
+    if not isinstance(body, dict):
+        return response_json_error(
+            "JSON body must be an object.",
+            400,
+            "invalid_request",
+            "invalid_request_error",
+        )
+    return body
+
+
+def validate_routing_config_body(
+    config: SpartanRouteConfig,
+    body: dict[str, Any],
+) -> tuple[dict[str, str] | None, web.Response | None]:
+    if set(body) != {"tiers"} or not isinstance(body.get("tiers"), dict):
+        return None, response_json_error(
+            "Configuration must contain exactly one tiers object.",
+            400,
+            "invalid_routing_config_shape",
+            "invalid_request_error",
+        )
+    tiers = body["tiers"]
+    if set(tiers) != set(AUTO_ROUTING_TIERS):
+        return None, response_json_error(
+            "Configuration must include exactly the editable routing tiers.",
+            400,
+            "invalid_routing_tier_set",
+            "invalid_request_error",
+        )
+    validated: dict[str, str] = {}
+    for tier in AUTO_ROUTING_TIERS:
+        model_id = tiers.get(tier)
+        if (
+            not isinstance(model_id, str)
+            or not model_id
+            or model_id != model_id.strip()
+            or len(model_id) > MODEL_ID_MAX_CHARS
+        ):
+            return None, response_json_error(
+                "Each routing tier must contain a bounded model id.",
+                400,
+                "invalid_routing_model_id",
+                "invalid_request_error",
+            )
+        if normalize_model_id(model_id) in {"auto", "clawroute/auto"}:
+            return None, response_json_error(
+                "Auto aliases cannot be used as routing targets.",
+                400,
+                "recursive_routing_model",
+                "invalid_request_error",
+            )
+        if not model_is_routing_eligible(config, model_id):
+            return None, response_json_error(
+                "One or more routing targets are not eligible.",
+                400,
+                "routing_model_not_eligible",
+                "invalid_request_error",
+            )
+        validated[tier] = model_id
+    return validated, None
+
+
+async def api_config_routing_get(request: web.Request) -> web.Response:
+    return routing_config_response(get_state(request))
+
+
+async def api_config_routing_put(request: web.Request) -> web.Response:
+    state = get_state(request)
+    if_match = request.headers.get("If-Match")
+    if not if_match:
+        return routing_precondition_error(
+            state,
+            "If-Match is required for configuration updates.",
+            428,
+            "config_precondition_required",
+        )
+    body = await read_bounded_json_object(request)
+    if isinstance(body, web.Response):
+        return body
+    mapping, error = validate_routing_config_body(state.config, body)
+    if error is not None or mapping is None:
+        return error or response_json_error(
+            "Invalid routing configuration.",
+            400,
+            "invalid_routing_config",
+            "invalid_request_error",
+        )
+
+    async with state.routing_policy_lock:
+        current = effective_routing_policy(state)
+        if if_match != current.etag:
+            return routing_precondition_error(
+                state,
+                "Routing configuration changed; reload before saving.",
+                412,
+                "config_revision_conflict",
+            )
+        try:
+            updated_at = state.telemetry.replace_routing_model_overrides(mapping)
+        except Exception:
+            return routing_persistence_error(
+                state,
+                "Routing configuration could not be persisted.",
+            )
+        state.routing_policy = make_routing_policy_snapshot(
+            state.config,
+            mapping,
+            updated_at=updated_at,
+        )
+    return routing_config_response(state)
+
+
+async def api_config_routing_delete(request: web.Request) -> web.Response:
+    state = get_state(request)
+    if_match = request.headers.get("If-Match")
+    if not if_match:
+        return routing_precondition_error(
+            state,
+            "If-Match is required for configuration reset.",
+            428,
+            "config_precondition_required",
+        )
+
+    async with state.routing_policy_lock:
+        current = effective_routing_policy(state)
+        if if_match != current.etag:
+            return routing_precondition_error(
+                state,
+                "Routing configuration changed; reload before resetting.",
+                412,
+                "config_revision_conflict",
+            )
+        try:
+            state.telemetry.delete_routing_model_overrides()
+        except Exception:
+            return routing_persistence_error(
+                state,
+                "Routing configuration could not be reset.",
+            )
+        state.routing_policy = make_routing_policy_snapshot(state.config)
+    return routing_config_response(state)
 
 
 async def api_models(request: web.Request) -> web.Response:
@@ -1520,14 +1953,102 @@ async def api_codex_cache_day(request: web.Request) -> web.Response:
     return web.json_response({"days": state.telemetry.daily_cache_rows()})
 
 
+def classify_codex_slot_health(
+    slot: Mapping[str, Any],
+    *,
+    slot_errors: list[dict[str, Any]],
+    reset_credit_errors: list[dict[str, Any]],
+    cached: bool,
+    now: float | None = None,
+) -> dict[str, Any]:
+    slot_index = int(slot.get("slotIndex") or 0)
+    now_value = time.time() if now is None else now
+
+    def matches(error: Mapping[str, Any]) -> bool:
+        try:
+            return int(error.get("slotIndex")) == slot_index
+        except (TypeError, ValueError):
+            return False
+
+    has_slot_error = any(matches(error) for error in slot_errors)
+    has_reset_error = any(matches(error) for error in reset_credit_errors)
+    has_check_error = has_slot_error or has_reset_error
+    cached_error = bool(cached and has_check_error)
+    rate_limited = parse_float(slot.get("rateLimitedUntil"), 0.0) > now_value
+    transient = parse_float(slot.get("transientUntil"), 0.0) > now_value
+
+    if not bool(slot.get("routingEnabled", True)):
+        status = "disabled"
+        reasons = ["Routing disabled by operator"]
+    elif has_check_error and not cached:
+        status = "failed"
+        reasons = []
+        if has_slot_error:
+            reasons.append("Usage check failed")
+        if has_reset_error:
+            reasons.append("Reset-credit check failed")
+    elif rate_limited or transient:
+        status = "unavailable"
+        reasons = []
+        if rate_limited:
+            reasons.append("Rate-limit cooldown active")
+        if transient:
+            reasons.append("Transient error cooldown active")
+    elif not bool(slot.get("authAvailable")):
+        status = "failed"
+        reasons = ["Authentication unavailable"]
+    elif cached_error:
+        status = "history"
+        reasons = []
+        if has_slot_error:
+            reasons.append("Previous usage check failed")
+        if has_reset_error:
+            reasons.append("Previous reset-credit check failed")
+    else:
+        status = "healthy"
+        reasons = ["Ready"]
+
+    return {
+        "healthStatus": status,
+        "healthReasons": reasons,
+        "healthCached": cached_error,
+    }
+
+
+def codex_slots_with_health(
+    payload: Mapping[str, Any],
+    slots: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    slot_errors = payload.get("slotErrors")
+    reset_errors = payload.get("resetCreditErrors")
+    safe_slot_errors = slot_errors if isinstance(slot_errors, list) else []
+    safe_reset_errors = reset_errors if isinstance(reset_errors, list) else []
+    cached = bool(payload.get("cached"))
+    return [
+        {
+            **slot,
+            **classify_codex_slot_health(
+                slot,
+                slot_errors=safe_slot_errors,
+                reset_credit_errors=safe_reset_errors,
+                cached=cached,
+            ),
+        }
+        for slot in slots
+    ]
+
+
 async def api_codex_usage(request: web.Request) -> web.Response:
     state = get_state(request)
     if state.codex is None:
         return response_json_error("Codex router is not ready", 503, "codex_unavailable")
     payload = await state.codex.usage_snapshot(force=request.query.get("force") == "true")
     payload["cacheDaily"] = state.telemetry.daily_cache_rows()
-    payload["slots"] = state.codex.slot_status(include_paths=True)
-    payload["balancer"] = state.codex.balancer_status(include_paths=True)
+    balancer = state.codex.balancer_status(include_paths=True)
+    slots = codex_slots_with_health(payload, state.codex.slot_status(include_paths=True))
+    balancer["slots"] = slots
+    payload["slots"] = slots
+    payload["balancer"] = balancer
     return web.json_response(payload)
 
 
@@ -1540,8 +2061,11 @@ async def api_codex_usage_slot(request: web.Request) -> web.Response:
         return response_json_error("Codex slot not found", 404, "slot_not_found", "invalid_request_error")
     payload = await state.codex.usage_snapshot(force=True, slot_indexes={slot_index})
     payload["cacheDaily"] = state.telemetry.daily_cache_rows()
-    payload["slots"] = state.codex.slot_status(include_paths=True)
-    payload["balancer"] = state.codex.balancer_status(include_paths=True)
+    balancer = state.codex.balancer_status(include_paths=True)
+    slots = codex_slots_with_health(payload, state.codex.slot_status(include_paths=True))
+    balancer["slots"] = slots
+    payload["slots"] = slots
+    payload["balancer"] = balancer
     return web.json_response(payload)
 
 
@@ -1577,7 +2101,13 @@ async def api_codex_balancer_slot(request: web.Request) -> web.Response:
 
 async def dashboard_file(request: web.Request) -> web.StreamResponse:
     state = get_state(request)
-    name = "dashboard-codex.html" if request.path == "/dashboard-codex" else "dashboard.html"
+    name = {
+        "/dashboard": "dashboard.html",
+        "/dashboard-codex": "dashboard-codex.html",
+        "/dashboard-config": "dashboard-config.html",
+    }.get(request.path)
+    if name is None:
+        return response_json_error("Dashboard not found", 404, "dashboard_not_found")
     path = (state.config.web_dir / name).resolve()
     if not path.exists() or not path.is_file():
         return response_json_error(f"Dashboard file not found: {name}", 404, "dashboard_not_found")
@@ -1631,7 +2161,16 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     config = config or load_config()
     telemetry = telemetry or TelemetryStore(config.db_path)
     app = web.Application(middlewares=[auth_middleware], client_max_size=64 * 1024 * 1024)
-    app[STATE_KEY] = SpartanRouteState(config=config, telemetry=telemetry, queue=TelemetryQueue(telemetry))
+    app.router.add_get("/dashboard-config", dashboard_file)
+    app.router.add_get("/api/config/routing", api_config_routing_get)
+    app.router.add_put("/api/config/routing", api_config_routing_put)
+    app.router.add_delete("/api/config/routing", api_config_routing_delete)
+    app[STATE_KEY] = SpartanRouteState(
+        config=config,
+        telemetry=telemetry,
+        queue=TelemetryQueue(telemetry),
+        routing_policy=build_routing_policy_snapshot(config, telemetry),
+    )
     app.on_startup.append(startup)
     app.on_cleanup.append(cleanup)
     app.router.add_get("/health", health)

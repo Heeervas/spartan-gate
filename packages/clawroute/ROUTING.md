@@ -127,6 +127,10 @@ These still require a process restart for file edits to take effect:
 
 The bundled model catalog now includes:
 
+- `codex/gpt-5.6` (local alias for upstream `gpt-5.6`, which aliases Sol)
+- `codex/gpt-5.6-sol`
+- `codex/gpt-5.6-terra`
+- `codex/gpt-5.6-luna`
 - `codex/gpt-5.5`
 - `codex/gpt-5.4`
 - `codex/gpt-5.4-mini`
@@ -144,9 +148,9 @@ The Codex provider profile defaults are now:
 | `frontier-sonnet` | `codex/gpt-5.5` | `codex/gpt-5.4` |
 | `frontier-opus` | `codex/gpt-5.5` | `codex/gpt-5.4` |
 
-The default context overrides pin `codex/gpt-5.5` and `codex/gpt-5.4` to 1,050,000 tokens and `codex/gpt-5.4-mini` to 400,000.
+The default context overrides pin the GPT-5.6 variants, `codex/gpt-5.5`, and `codex/gpt-5.4` to 1,050,000 tokens and `codex/gpt-5.4-mini` to 400,000.
 
-`codex/gpt-5.5` remains enabled in the catalog, is the bundled baseline model for the Codex profile, and is available through `/v1/models` for explicit client-side selection.
+`codex/gpt-5.5` remains enabled in the catalog, is the bundled baseline model for the Codex profile, and is available through `/v1/models` for explicit client-side selection. GPT-5.6 variants are also enabled in the catalog for manual session selection or discovery, but the checked-in Codex provider profile does not route to them by default.
 
 ## Admin Model Management
 

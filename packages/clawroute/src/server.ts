@@ -28,7 +28,7 @@ import { createAuthMiddleware } from './auth.js';
 import { classifyRequest, explainClassification } from './classifier.js';
 import { routeRequest } from './router.js';
 import { executeRequest, executePassthrough } from './executor.js';
-import { cloneModelCatalog, deleteModel, getEnabledModelsFromCatalog, getModelEntryFromCatalog, getModelEntryStrictFromCatalog, registerModel } from './models.js';
+import { cloneModelCatalog, deleteModel, getEnabledModelsFromCatalog, getModelEntryFromCatalog, getModelEntryStrictFromCatalog, isClawRouteVirtualModel, registerModel } from './models.js';
 import {
     getCodexAnalysis,
     approveCodexColdMigrationDecision,
@@ -1600,11 +1600,12 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
         return c.json({
             object: 'list',
             data: [
-                // Virtual models — agents can select these to let ClawRoute
+                // Virtual models — agents can select these to let the route
                 // classify and route to the best model automatically. Hermes
                 // discovers the named custom provider form.
                 buildAutoModel('clawroute/auto'),
                 buildAutoModel('custom-1/clawroute/auto'),
+                buildAutoModel('spartan-route/clawroute/auto'),
                 ...models.map(m => ({
                     id: m.id,
                     object: 'model',
@@ -1626,8 +1627,7 @@ export function createApp(config: ClawRouteConfig, options: CreateAppOptions = {
         const runtimeSnapshot = getRuntimeSnapshot();
         const modelId = c.req.param('id');
 
-        // Virtual model: clawroute/auto
-        if (modelId === 'clawroute/auto' || modelId === 'custom-1/clawroute/auto') {
+        if (isClawRouteVirtualModel(modelId)) {
             return c.json({
                 id: modelId,
                 object: 'model',

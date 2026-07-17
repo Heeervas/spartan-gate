@@ -189,6 +189,22 @@ class StreamingCloseRouter(CodexRouter):
         return result
 
 
+class CaptureModelNameRouter(CodexRouter):
+    def __init__(self):
+        self.slots = [CodexSlot(0, auth=CodexAuth("token", account_id="acct"))]
+        self.leases = {}
+        self.refresh_locks = {}
+        self.telemetry = None
+        self.captured: dict[str, Any] | None = None
+
+    async def choose_slot(self, _affinity_key, _excluded_slots, _excluded_accounts):
+        return self.slots[0], self.slots[0].auth
+
+    async def _single_chat_call(self, body, model_id, model_name, _wants_stream, _slot, _auth):
+        self.captured = {"body": body, "model_id": model_id, "model_name": model_name}
+        return CodexCallResult(status=200, body={"ok": True}, completed=True)
+
+
 class RecoveringRouter(CodexRouter):
     def __init__(self, *, transient_until: float = 0, rate_limited_until: float = 0):
         self.slots = [CodexSlot(0, auth=CodexAuth("token", account_id="acct"))]
@@ -372,6 +388,18 @@ class CodexTests(unittest.TestCase):
 
         self.assertEqual(normalize_tool_choice(request["tool_choice"]), {"type": "function", "name": "lookup"})
         self.assertEqual(body["tool_choice"], {"type": "function", "name": "lookup"})
+
+    def test_gpt56_max_is_sent_as_exact_reasoning_effort(self) -> None:
+        body = build_codex_request_body(
+            {
+                "messages": [{"role": "user", "content": "solve"}],
+                "reasoning_effort": " MAX ",
+            },
+            "gpt-5.6-sol",
+            None,
+        )
+
+        self.assertEqual(body["reasoning"], {"effort": "max"})
 
     def test_normalize_reset_credits_builds_api_and_db_shapes(self) -> None:
         payload = {
@@ -785,6 +813,24 @@ class CodexTests(unittest.TestCase):
         self.assertIn("event: error", body)
         self.assertEqual(result.error, "server_error")
         self.assertGreater(slot.transient_until, time.time())
+
+    def test_execute_chat_strips_codex_prefix_for_gpt56_variant(self) -> None:
+        router = CaptureModelNameRouter()
+
+        result = asyncio_run(router.execute_chat(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            "codex/gpt-5.6-luna",
+            False,
+            "session",
+            None,
+            "request",
+        ))
+
+        self.assertEqual(result.status, 200)
+        self.assertIsNotNone(router.captured)
+        self.assertEqual(router.captured["model_id"], "codex/gpt-5.6-luna")
+        self.assertEqual(router.captured["model_name"], "gpt-5.6-luna")
+        self.assertEqual(router.captured["body"]["model"], "gpt-5.6-luna")
 
     def test_single_chat_call_uses_header_timeout_without_body_total_timeout(self) -> None:
         response = FakeResponse([

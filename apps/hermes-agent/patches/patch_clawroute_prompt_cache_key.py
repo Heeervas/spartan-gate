@@ -88,7 +88,7 @@ def patch_source(source: str) -> tuple[str, bool]:
         '        extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")',
         '        api_kwargs["extra_body"] = extra_body',
         '    reasoning_config = params.get("reasoning_config")',
-        '    if "reasoning_effort" not in api_kwargs and isinstance(reasoning_config, dict):',
+        '    if isinstance(reasoning_config, dict):',
         '        if reasoning_config.get("enabled") is not False:',
         '            effort = str(reasoning_config.get("effort") or "medium").strip().lower()',
         "            if effort:",

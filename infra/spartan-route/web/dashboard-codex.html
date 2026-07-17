@@ -95,6 +95,7 @@
       font: inherit;
     }
     section { margin-top: 18px; }
+    .token-field { display: grid; gap: 4px; min-width: 240px; }
     .grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -107,6 +108,18 @@
       padding: 14px;
       min-width: 0;
     }
+    .account.health-failed { border: 2px solid var(--bad); }
+    .account.health-unavailable { border-color: var(--warn); }
+    .account.health-history { border-style: dashed; }
+    .account.health-disabled { opacity: .78; }
+    .account-health {
+      margin-bottom: 10px;
+      border-left: 3px solid var(--line);
+      padding: 7px 9px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .health-failed .account-health { border-left-color: var(--bad); color: var(--bad); }
     .muted, .label {
       color: var(--muted);
       font-size: 12px;
@@ -237,17 +250,21 @@
   <header>
     <div class="wrap top">
       <h1>Spartan Route Codex</h1>
-      <nav>
+      <nav aria-label="Dashboard">
         <a href="/dashboard">Routing</a>
-        <a class="current" href="/dashboard-codex">Codex</a>
+        <a class="current" href="/dashboard-codex" aria-current="page">Codex</a>
+        <a href="/dashboard-config">Config</a>
       </nav>
     </div>
   </header>
   <main class="wrap">
     <div class="toolbar">
-      <input id="token" type="password" autocomplete="off" placeholder="Bearer token">
+      <label class="token-field" for="token">
+        <span class="label">Bearer token</span>
+        <input id="token" type="password" autocomplete="off">
+      </label>
       <div class="actions">
-        <button id="save">Save</button>
+        <button id="save">Use token</button>
         <button id="force">Refresh Live</button>
         <button id="refresh" class="primary">Refresh</button>
       </div>
@@ -256,7 +273,7 @@
     <section>
       <div class="section-head">
         <h2>Usage and Slots</h2>
-        <span class="muted" id="usage-status"></span>
+        <span class="muted" id="usage-status" role="status" aria-live="polite"></span>
       </div>
       <div class="grid" id="accounts"></div>
     </section>
@@ -409,11 +426,12 @@
       return `${routing} · ${auth}${cooldownText !== '-' ? ` · cooldown ${cooldownText}` : ''}${mismatch}`;
     }
     function renderSlotControls(slot) {
+      const tone = slot.healthStatus === 'failed' ? 'bad' : (slot.healthStatus === 'unavailable' ? 'warn' : (slot.healthStatus === 'healthy' ? 'good' : 'muted'));
       return `<div class="slot-row">
         <div class="slot-row-main">
           <strong>slot ${esc(slot.slotIndex)}</strong>
           <div class="muted">${esc(slot.accountKey || '-')} · ${esc(slot.slotPath || slot.slotPathHash || 'no path')}</div>
-          <div class="muted ${slot.routingEnabled ? 'good' : 'bad'}">${esc(slotStateLine(slot))}</div>
+          <div class="${tone}">${esc(slotStateLine(slot))}</div>
         </div>
         <div class="slot-actions">
           <button data-action="toggle" data-slot="${esc(slot.slotIndex)}" data-next="${slot.routingEnabled ? 'false' : 'true'}" class="${slot.routingEnabled ? 'danger' : ''}">${esc(slot.routingEnabled ? 'Disable' : 'Enable')}</button>
@@ -480,20 +498,48 @@
       if (account.slotOnly) return '<span class="pill warn">slot-only</span>';
       return `<span class="pill">${esc(account.source || 'usage')}</span>${account.stale ? '<span class="pill warn">stale</span>' : ''}`;
     }
+    function accountHealth(account) {
+      const slots = account.slots || [];
+      const enabled = slots.filter(slot => slot.healthStatus !== 'disabled');
+      if (!slots.length) {
+        return { status: 'history', label: 'No slot state', reasons: ['No configured slot metadata'], slotIndexes: [] };
+      }
+      if (!enabled.length) {
+        return { status: 'disabled', label: 'Disabled', reasons: ['All linked slots are disabled'], slotIndexes: slots.map(slot => slot.slotIndex) };
+      }
+      const priority = { healthy: 0, history: 1, unavailable: 2, failed: 3 };
+      const status = enabled.reduce((current, slot) => {
+        const candidate = slot.healthStatus || 'healthy';
+        return (priority[candidate] || 0) > (priority[current] || 0) ? candidate : current;
+      }, 'healthy');
+      const affected = enabled.filter(slot => (slot.healthStatus || 'healthy') === status);
+      const reasons = [...new Set(affected.flatMap(slot => slot.healthReasons || []))];
+      const labels = { failed: 'Failed', unavailable: 'Unavailable', history: 'History', disabled: 'Disabled', healthy: 'Healthy' };
+      return {
+        status,
+        label: labels[status] || 'Unknown',
+        reasons: reasons.length ? reasons : ['Ready'],
+        slotIndexes: affected.map(slot => slot.slotIndex),
+      };
+    }
     function renderAccountCards(accounts, slots = [], leases = []) {
       const cards = mergeAccountCards(accounts, slots);
+      const healthRows = [];
       accountsEl.innerHTML = cards.map(account => {
         const credits = account.resetCredits;
         const slotsHtml = (account.slots || []).map(renderSlotControls).join('');
-        return `<article class="account${account.slotOnly ? ' slot-only' : ''}">
+        const health = accountHealth(account);
+        healthRows.push(health);
+        return `<article class="account health-${health.status}${account.slotOnly ? ' slot-only' : ''}">
           <div class="account-head">
             <div class="account-meta">
               <h3>${esc(account.accountKey || 'unknown')}</h3>
               <div class="muted">slots ${(account.slotIndexes || []).map(esc).join(', ') || '-'}</div>
               <div class="muted">${esc(slotPathText(account.slotPaths))}</div>
             </div>
-            <div class="badge-row">${sourceBadge(account)}</div>
+            <div class="badge-row">${sourceBadge(account)}<span class="pill health-badge"></span></div>
           </div>
+          <div class="account-health" role="status"></div>
           <div class="rings">
             ${ring('5h', account.fiveHour)}
             ${ring('1w', account.weekly)}
@@ -503,6 +549,13 @@
           ${slotsHtml || '<div class="slot-row muted">No configured slot metadata.</div>'}
         </article>`;
       }).join('') || '<div class="panel muted">No usage telemetry yet.</div>';
+      accountsEl.querySelectorAll('article.account').forEach((element, index) => {
+        const health = healthRows[index];
+        const slotsText = health.slotIndexes.length ? ` · slots ${health.slotIndexes.join(', ')}` : '';
+        const summary = `${health.label}${slotsText}: ${health.reasons.join('; ')}`;
+        element.querySelector('.health-badge').textContent = health.label;
+        element.querySelector('.account-health').textContent = summary;
+      });
       updateCountdowns();
     }
     function latencyCell(row) {
@@ -546,14 +599,37 @@
         <td>${esc(fmtTime(lease.nominalExpiresAt))}</td>
       </tr>`).join('') || '<tr><td colspan="5" class="muted">No active cache leases.</td></tr>';
     }
+    function showError(message) {
+      errorsEl.replaceChildren();
+      if (!message) return;
+      const panel = document.createElement('div');
+      panel.className = 'panel bad';
+      panel.setAttribute('role', 'alert');
+      panel.textContent = message;
+      errorsEl.appendChild(panel);
+    }
     function renderErrors(payload) {
       const errors = [...(payload.slotErrors || []), ...(payload.resetCreditErrors || [])];
-      errorsEl.innerHTML = errors.length ? `<div class="panel bad">${errors.map(e => `slot ${esc(e.slotIndex)}: ${esc(e.message)}`).join('<br>')}</div>` : '';
+      errorsEl.replaceChildren();
+      if (!errors.length) return;
+      const panel = document.createElement('div');
+      panel.className = 'panel bad';
+      panel.setAttribute('role', 'alert');
+      errors.forEach(error => {
+        const line = document.createElement('div');
+        line.textContent = `slot ${error.slotIndex}: ${error.message}`;
+        panel.appendChild(line);
+      });
+      errorsEl.appendChild(panel);
     }
     async function fetchJson(path, options = {}) {
       const response = await fetch(path, options);
-      if (!response.ok) throw new Error(`${path} HTTP ${response.status}`);
-      return await response.json();
+      let payload = null;
+      try { payload = await response.json(); } catch (_error) { payload = null; }
+      if (!response.ok) {
+        throw new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
+      }
+      return payload;
     }
     async function patchSlot(slotIndex, enabled) {
       await fetchJson(`/api/codex/balancer/slots/${slotIndex}`, {
@@ -573,7 +649,9 @@
     accountsEl.addEventListener('click', async event => {
       const button = event.target.closest('button[data-action]');
       if (!button) return;
+      const originalLabel = button.textContent;
       button.disabled = true;
+      button.textContent = 'Working…';
       try {
         if (button.dataset.action === 'toggle') {
           await patchSlot(button.dataset.slot, button.dataset.next === 'true');
@@ -581,9 +659,10 @@
           await forceSlot(button.dataset.slot);
         }
       } catch (error) {
-        errorsEl.innerHTML = `<div class="panel bad">${esc(error.message)}</div>`;
+        showError(error.message);
       } finally {
         button.disabled = false;
+        button.textContent = originalLabel;
       }
     });
     function renderPayload(payload) {
@@ -608,7 +687,7 @@
         renderPayload(payload);
       } catch (error) {
         usageStatus.textContent = '';
-        errorsEl.innerHTML = `<div class="panel bad">${esc(error.message)}</div>`;
+        showError(error.message);
       }
     }
     setInterval(updateCountdowns, 1000);

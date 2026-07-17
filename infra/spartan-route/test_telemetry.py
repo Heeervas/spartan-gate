@@ -390,6 +390,175 @@ class TelemetryTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_routing_model_overrides_are_empty_by_default(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            self.assertEqual(store.routing_model_override_rows(), [])
+        finally:
+            store.close()
+
+    def test_routing_model_overrides_round_trip_complete_mapping(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            mapping = {
+                "heartbeat": "codex/gpt-5.1-mini",
+                "simple": "codex/gpt-5.2",
+                "moderate": "codex/gpt-5.4",
+                "complex": "codex/gpt-5.6",
+            }
+            store.replace_routing_model_overrides(mapping)
+
+            rows = store.routing_model_override_rows()
+            self.assertEqual(
+                [(row["tier"], row["model_id"]) for row in rows],
+                sorted(mapping.items()),
+            )
+            self.assertTrue(all(row["updated_at"] for row in rows))
+            self.assertEqual(len({row["updated_at"] for row in rows}), 1)
+        finally:
+            store.close()
+
+    def test_routing_model_override_replace_is_atomic_and_removes_old_rows(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.replace_routing_model_overrides({
+                "heartbeat": "old/heartbeat",
+                "simple": "old/simple",
+                "moderate": "old/moderate",
+                "complex": "old/complex",
+            })
+
+            replacement = {
+                "heartbeat": "new/heartbeat",
+                "simple": "new/simple",
+                "moderate": "new/moderate",
+                "complex": "new/complex",
+            }
+            store.replace_routing_model_overrides(replacement)
+
+            self.assertEqual(
+                {
+                    row["tier"]: row["model_id"]
+                    for row in store.routing_model_override_rows()
+                },
+                replacement,
+            )
+        finally:
+            store.close()
+
+    def test_routing_model_overrides_survive_store_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "spartan-route.db")
+            mapping = {
+                "heartbeat": "codex/gpt-5.1-mini",
+                "simple": "codex/gpt-5.2",
+                "moderate": "codex/gpt-5.4",
+                "complex": "codex/gpt-5.6",
+            }
+            first = TelemetryStore(db_path)
+            first.replace_routing_model_overrides(mapping)
+            first.close()
+
+            reopened = TelemetryStore(db_path)
+            try:
+                self.assertEqual(
+                    {row["tier"]: row["model_id"] for row in reopened.routing_model_override_rows()},
+                    mapping,
+                )
+            finally:
+                reopened.close()
+
+    def test_delete_routing_model_overrides_resets_complete_set(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.replace_routing_model_overrides({
+                "heartbeat": "codex/gpt-5.1-mini",
+                "simple": "codex/gpt-5.2",
+                "moderate": "codex/gpt-5.4",
+                "complex": "codex/gpt-5.6",
+            })
+
+            store.delete_routing_model_overrides()
+
+            self.assertEqual(store.routing_model_override_rows(), [])
+            store.delete_routing_model_overrides()
+            self.assertEqual(store.routing_model_override_rows(), [])
+        finally:
+            store.close()
+
+    def test_routing_model_override_read_exposes_incomplete_and_extra_rows(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store._conn.executemany(
+                """
+                INSERT INTO routing_model_overrides (tier, model_id, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                [
+                    ("heartbeat", "codex/gpt-5.1-mini", "2026-07-10T09:00:00Z"),
+                    ("future", "codex/gpt-future", "2026-07-10T09:00:00Z"),
+                ],
+            )
+            store._conn.commit()
+
+            self.assertEqual(
+                store.routing_model_override_rows(),
+                [
+                    {
+                        "tier": "future",
+                        "model_id": "codex/gpt-future",
+                        "updated_at": "2026-07-10T09:00:00Z",
+                    },
+                    {
+                        "tier": "heartbeat",
+                        "model_id": "codex/gpt-5.1-mini",
+                        "updated_at": "2026-07-10T09:00:00Z",
+                    },
+                ],
+            )
+        finally:
+            store.close()
+
+    def test_routing_model_override_replace_rolls_back_on_insert_failure(self) -> None:
+        store = TelemetryStore(":memory:")
+        original = {
+            "heartbeat": "old/heartbeat",
+            "simple": "old/simple",
+            "moderate": "old/moderate",
+            "complex": "old/complex",
+        }
+        try:
+            store.replace_routing_model_overrides(original)
+            store._conn.execute(
+                """
+                CREATE TRIGGER fail_routing_override_insert
+                BEFORE INSERT ON routing_model_overrides
+                WHEN NEW.tier = 'moderate'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected insert failure');
+                END
+                """
+            )
+            store._conn.commit()
+
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "injected insert failure"):
+                store.replace_routing_model_overrides({
+                    "heartbeat": "new/heartbeat",
+                    "simple": "new/simple",
+                    "moderate": "new/moderate",
+                    "complex": "new/complex",
+                })
+
+            self.assertEqual(
+                {
+                    row["tier"]: row["model_id"]
+                    for row in store.routing_model_override_rows()
+                },
+                original,
+            )
+        finally:
+            store.close()
+
     def test_reset_credit_snapshots_round_trip(self) -> None:
         store = TelemetryStore(":memory:")
         try:

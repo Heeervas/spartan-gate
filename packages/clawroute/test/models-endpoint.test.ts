@@ -122,27 +122,43 @@ describe('Model Endpoints', () => {
             expect(typeof model.multimodal).toBe('boolean');
         });
 
-        it('should expose bundled codex/gpt-5.5 in the resolved catalog', async () => {
+        it('should expose bundled codex GPT-5.5 and GPT-5.6 models in the resolved catalog', async () => {
             const res = await app.request('/v1/models');
             const body = await res.json();
+            const ids = body.data.map((entry: { id: string }) => entry.id);
 
-            const model = body.data.find((entry: { id: string }) => entry.id === 'codex/gpt-5.5');
+            expect(ids).toEqual(expect.arrayContaining([
+                'codex/gpt-5.5',
+                'codex/gpt-5.6',
+                'codex/gpt-5.6-sol',
+                'codex/gpt-5.6-terra',
+                'codex/gpt-5.6-luna',
+            ]));
+            const model = body.data.find((entry: { id: string }) => entry.id === 'codex/gpt-5.6-luna');
 
             expect(model).toMatchObject({
-                id: 'codex/gpt-5.5',
+                id: 'codex/gpt-5.6-luna',
                 owned_by: 'codex',
                 tool_capable: true,
+                context_length: 1050000,
             });
         });
 
-        it('should expose the Hermes named ClawRoute auto model alias', async () => {
+        it('should expose the Hermes named route auto model aliases', async () => {
             const res = await app.request('/v1/models');
             const body = await res.json();
 
-            const model = body.data.find((entry: { id: string }) => entry.id === 'custom-1/clawroute/auto');
+            const legacy = body.data.find((entry: { id: string }) => entry.id === 'custom-1/clawroute/auto');
+            const spartanRoute = body.data.find((entry: { id: string }) => entry.id === 'spartan-route/clawroute/auto');
 
-            expect(model).toMatchObject({
+            expect(legacy).toMatchObject({
                 id: 'custom-1/clawroute/auto',
+                owned_by: 'clawroute',
+                tool_capable: true,
+                multimodal: true,
+            });
+            expect(spartanRoute).toMatchObject({
+                id: 'spartan-route/clawroute/auto',
                 owned_by: 'clawroute',
                 tool_capable: true,
                 multimodal: true,
@@ -209,13 +225,13 @@ describe('Model Endpoints', () => {
             expect(body.object).toBe('model');
         });
 
-        it('should return the Hermes named ClawRoute auto model alias', async () => {
-            const res = await app.request('/v1/models/custom-1/clawroute/auto');
+        it.each(['custom-1/clawroute/auto', 'spartan-route/clawroute/auto'])('should return the Hermes named route auto model alias %s', async (id) => {
+            const res = await app.request(`/v1/models/${id}`);
             const body = await res.json();
 
             expect(res.status).toBe(200);
             expect(body).toMatchObject({
-                id: 'custom-1/clawroute/auto',
+                id,
                 owned_by: 'clawroute',
                 tool_capable: true,
             });

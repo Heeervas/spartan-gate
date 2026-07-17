@@ -376,7 +376,9 @@ def build_codex_request_body(request: dict[str, Any], model_name: str, prompt_ca
     if "tool_choice" in request:
         body["tool_choice"] = normalize_tool_choice(request["tool_choice"])
     if isinstance(request.get("reasoning_effort"), str):
-        body["reasoning"] = {"effort": request["reasoning_effort"]}
+        effort = request["reasoning_effort"].strip().lower()
+        if effort:
+            body["reasoning"] = {"effort": effort}
     return body
 
 

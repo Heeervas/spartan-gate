@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spartan Route Config</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f7f5;
+      --panel: #ffffff;
+      --text: #202124;
+      --muted: #636a67;
+      --line: #d9dfdc;
+      --accent: #146b58;
+      --good: #237b3b;
+      --warn: #9a5b00;
+      --bad: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #151716;
+        --panel: #202321;
+        --text: #eff2ef;
+        --muted: #a9b0ab;
+        --line: #383d3a;
+        --accent: #56c2a8;
+        --good: #7bd88f;
+        --warn: #e5ad4f;
+        --bad: #ff897d;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header { background: var(--panel); border-bottom: 1px solid var(--line); }
+    .wrap { width: min(1120px, calc(100vw - 32px)); margin: 0 auto; }
+    .top, .toolbar, .actions, .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .top { padding: 18px 0; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 0; font-size: 22px; }
+    h2 { margin-bottom: 0; font-size: 16px; }
+    h3 { margin-bottom: 4px; font-size: 14px; }
+    nav, .actions { display: flex; align-items: center; gap: 8px; }
+    nav a, button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 8px 10px;
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    nav a[aria-current="page"], button.primary {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button.danger { border-color: var(--bad); color: var(--bad); }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    main { padding: 22px 0 40px; }
+    .toolbar { margin-bottom: 18px; }
+    .token-field { display: grid; gap: 4px; min-width: 260px; }
+    .label, .muted { color: var(--muted); font-size: 12px; }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 9px 10px;
+      font: inherit;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin-top: 14px;
+    }
+    .banner { border-left: 4px solid var(--warn); }
+    .banner.bad { border-left-color: var(--bad); color: var(--text); }
+    .banner.good { border-left-color: var(--good); color: var(--text); }
+    .hidden { display: none; }
+    .tier-list { display: grid; gap: 0; margin-top: 12px; }
+    .tier-row {
+      display: grid;
+      grid-template-columns: minmax(150px, .8fr) minmax(240px, 1.35fr) minmax(180px, 1fr);
+      gap: 16px;
+      align-items: center;
+      padding: 14px 0;
+      border-top: 1px solid var(--line);
+    }
+    .tier-row:first-child { border-top: 0; }
+    .tier-meta { display: grid; gap: 3px; }
+    .source { color: var(--accent); font-size: 12px; }
+    .readiness.warn { color: var(--warn); }
+    .limitations { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
+    .dirty { color: var(--warn); font-weight: 600; }
+    @media (max-width: 760px) {
+      .toolbar { display: grid; grid-template-columns: 1fr; }
+      .token-field { min-width: 0; }
+      .tier-row { grid-template-columns: 1fr; gap: 8px; }
+      nav { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap top">
+      <h1>Spartan Route Config</h1>
+      <nav aria-label="Dashboard">
+        <a href="/dashboard">Routing</a>
+        <a href="/dashboard-codex">Codex</a>
+        <a href="/dashboard-config" aria-current="page">Config</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="toolbar">
+      <label class="token-field" for="token">
+        <span class="label">Bearer token</span>
+        <input id="token" type="password" autocomplete="off">
+      </label>
+      <div class="actions">
+        <button id="use-token">Use token</button>
+        <button id="reload">Reload</button>
+      </div>
+    </div>
+
+    <section class="panel" aria-labelledby="routing-title">
+      <div class="section-head">
+        <div>
+          <h2 id="routing-title">Auto routing models</h2>
+          <div class="muted">Changes apply immediately and persist in Spartan Route's database.</div>
+        </div>
+        <span id="status" class="muted" role="status" aria-live="polite"></span>
+      </div>
+      <div id="mode-warning" class="panel banner hidden" role="status"></div>
+      <div id="error" class="panel banner bad hidden" role="alert"></div>
+      <div id="success" class="panel banner good hidden" role="status"></div>
+      <div id="tiers" class="tier-list" aria-busy="true"></div>
+      <div class="actions">
+        <button id="reset" class="danger" disabled>Reset to file defaults</button>
+        <span id="dirty" class="muted"></span>
+        <button id="save" class="primary" disabled>Save changes</button>
+      </div>
+      <ul id="limitations" class="limitations"></ul>
+    </section>
+  </main>
+  <script>
+    const tokenInput = document.getElementById('token');
+    const tiersEl = document.getElementById('tiers');
+    const statusEl = document.getElementById('status');
+    const errorEl = document.getElementById('error');
+    const successEl = document.getElementById('success');
+    const modeWarningEl = document.getElementById('mode-warning');
+    const dirtyEl = document.getElementById('dirty');
+    const saveButton = document.getElementById('save');
+    const resetButton = document.getElementById('reset');
+    const limitationsEl = document.getElementById('limitations');
+
+    let documentState = null;
+    let etag = null;
+    let draft = {};
+    let dirty = false;
+    let busy = false;
+
+    tokenInput.value = sessionStorage.getItem('spartanRouteToken') || '';
+
+    function headers(json = false) {
+      const token = tokenInput.value.trim();
+      const result = token ? { Authorization: `Bearer ${token}` } : {};
+      if (json) result['Content-Type'] = 'application/json';
+      return result;
+    }
+
+    function setMessage(element, message) {
+      element.textContent = message || '';
+      element.classList.toggle('hidden', !message);
+    }
+
+    async function request(path, options = {}) {
+      const response = await fetch(path, options);
+      let payload = null;
+      try { payload = await response.json(); } catch (_error) { payload = null; }
+      if (!response.ok) {
+        const message = payload?.error?.message || `${path} HTTP ${response.status}`;
+        const error = new Error(message);
+        error.status = response.status;
+        error.code = payload?.error?.code || 'request_failed';
+        error.etag = response.headers.get('ETag');
+        throw error;
+      }
+      return { payload, etag: response.headers.get('ETag') || payload?.etag || null };
+    }
+
+    function markDirty(next) {
+      dirty = next;
+      dirtyEl.textContent = dirty ? 'Unsaved changes' : '';
+      dirtyEl.className = dirty ? 'dirty' : 'muted';
+      saveButton.disabled = busy || !dirty;
+    }
+
+    function eligibleModels() {
+      return (documentState?.models || [])
+        .filter(model => model.eligible)
+        .sort((left, right) => left.id.localeCompare(right.id));
+    }
+
+    function addText(parent, className, text) {
+      const node = document.createElement('div');
+      node.className = className;
+      node.textContent = text;
+      parent.appendChild(node);
+      return node;
+    }
+
+    function render() {
+      tiersEl.replaceChildren();
+      limitationsEl.replaceChildren();
+      const models = eligibleModels();
+      const readiness = new Map((documentState?.models || []).map(model => [model.id, model.readiness]));
+
+      for (const tier of documentState?.editableTiers || []) {
+        const row = document.createElement('div');
+        row.className = 'tier-row';
+
+        const identity = document.createElement('div');
+        identity.className = 'tier-meta';
+        const heading = document.createElement('h3');
+        heading.textContent = tier.label;
+        identity.appendChild(heading);
+        addText(identity, 'muted', tier.rule);
+
+        const control = document.createElement('label');
+        control.className = 'tier-meta';
+        const controlLabel = document.createElement('span');
+        controlLabel.className = 'label';
+        controlLabel.textContent = 'Effective model';
+        const select = document.createElement('select');
+        select.dataset.tier = tier.id;
+        select.setAttribute('aria-label', `${tier.label} model`);
+        for (const model of models) {
+          const option = document.createElement('option');
+          option.value = model.id;
+          option.textContent = `${model.id} · ${model.provider}`;
+          select.appendChild(option);
+        }
+        if (!models.some(model => model.id === draft[tier.id])) {
+          const option = document.createElement('option');
+          option.value = draft[tier.id] || '';
+          option.textContent = `${draft[tier.id] || 'Unavailable'} · not eligible to save`;
+          option.disabled = true;
+          select.prepend(option);
+        }
+        select.value = draft[tier.id] || '';
+        select.disabled = busy;
+        select.addEventListener('change', () => {
+          draft[tier.id] = select.value;
+          markDirty(JSON.stringify(draft) !== JSON.stringify(documentState.effective));
+          render();
+        });
+        control.append(controlLabel, select);
+
+        const metadata = document.createElement('div');
+        metadata.className = 'tier-meta';
+        addText(metadata, 'muted', `File default: ${documentState.fileDefaults[tier.id]}`);
+        addText(metadata, 'source', `Source: ${documentState.sources[tier.id]}`);
+        const ready = readiness.get(draft[tier.id]) || 'unknown';
+        addText(metadata, ready === 'configured' ? 'readiness' : 'readiness warn', `Readiness: ${ready.replaceAll('_', ' ')}`);
+
+        row.append(identity, control, metadata);
+        tiersEl.appendChild(row);
+      }
+
+      for (const limitation of documentState?.limitations || []) {
+        const item = document.createElement('li');
+        item.textContent = limitation;
+        limitationsEl.appendChild(item);
+      }
+
+      tiersEl.setAttribute('aria-busy', busy ? 'true' : 'false');
+      resetButton.disabled = busy || !Object.keys(documentState?.overrides || {}).length;
+      markDirty(dirty);
+    }
+
+    function renderDocument(payload, nextEtag) {
+      documentState = payload;
+      etag = nextEtag;
+      draft = { ...payload.effective };
+      dirty = false;
+      const mode = !payload.enabled
+        ? 'Routing is disabled; auto requests currently use the baseline model.'
+        : payload.dryRun
+          ? 'Dry-run mode is active; saved choices are recorded but not used upstream.'
+          : '';
+      setMessage(modeWarningEl, [mode, payload.warning].filter(Boolean).join(' '));
+      setMessage(errorEl, '');
+      statusEl.textContent = payload.updatedAt
+        ? `Runtime override · ${new Date(payload.updatedAt).toLocaleString()}`
+        : 'File defaults';
+      render();
+    }
+
+    async function load() {
+      busy = true;
+      statusEl.textContent = 'Loading…';
+      setMessage(errorEl, '');
+      if (documentState) render();
+      try {
+        const result = await request('/api/config/routing', { headers: headers() });
+        renderDocument(result.payload, result.etag);
+      } catch (error) {
+        statusEl.textContent = '';
+        setMessage(errorEl, error.message);
+      } finally {
+        busy = false;
+        if (documentState) render();
+      }
+    }
+
+    async function save() {
+      if (!dirty || busy) return;
+      busy = true;
+      render();
+      setMessage(errorEl, '');
+      setMessage(successEl, '');
+      try {
+        const result = await request('/api/config/routing', {
+          method: 'PUT',
+          headers: { ...headers(true), 'If-Match': etag },
+          body: JSON.stringify({ tiers: draft }),
+        });
+        renderDocument(result.payload, result.etag);
+        setMessage(successEl, 'Routing models saved and active.');
+      } catch (error) {
+        if (error.status === 412) {
+          setMessage(errorEl, 'Configuration changed in another tab. Your selections are preserved; reload before saving.');
+        } else {
+          setMessage(errorEl, error.message);
+        }
+      } finally {
+        busy = false;
+        render();
+      }
+    }
+
+    async function reset() {
+      if (busy) return;
+      busy = true;
+      render();
+      setMessage(errorEl, '');
+      setMessage(successEl, '');
+      try {
+        const result = await request('/api/config/routing', {
+          method: 'DELETE',
+          headers: { ...headers(), 'If-Match': etag },
+        });
+        renderDocument(result.payload, result.etag);
+        setMessage(successEl, 'Runtime override removed. File defaults are active.');
+      } catch (error) {
+        if (error.status === 412) {
+          setMessage(errorEl, 'Configuration changed in another tab. Reload before resetting.');
+        } else {
+          setMessage(errorEl, error.message);
+        }
+      } finally {
+        busy = false;
+        render();
+      }
+    }
+
+    document.getElementById('use-token').onclick = () => {
+      sessionStorage.setItem('spartanRouteToken', tokenInput.value.trim());
+      load();
+    };
+    document.getElementById('reload').onclick = () => load();
+    saveButton.onclick = () => save();
+    resetButton.onclick = () => reset();
+    window.addEventListener('beforeunload', event => {
+      if (!dirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    });
+    load();
+  </script>
+</body>
+</html>

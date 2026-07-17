@@ -160,6 +160,11 @@ class TelemetryStore:
                     auth_fingerprint_hash TEXT,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS routing_model_overrides (
+                    tier TEXT PRIMARY KEY,
+                    model_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_routing_log_session ON routing_log(session_id, id);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_turn ON routing_log(turn_id, id);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_time ON routing_log(timestamp);
@@ -511,6 +516,51 @@ class TelemetryStore:
         with self._lock:
             row = self._conn.execute("SELECT * FROM codex_slot_overrides WHERE slot_index = ?", (int(slot_index),)).fetchone()
         return self._slot_override_from_row(dict(row)) if row else None
+
+    def routing_model_override_rows(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT tier, model_id, updated_at
+                FROM routing_model_overrides
+                ORDER BY tier
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def replace_routing_model_overrides(self, mapping: dict[str, str]) -> str:
+        updated_at = now_iso()
+        rows = [
+            (tier, model_id, updated_at)
+            for tier, model_id in sorted(mapping.items())
+        ]
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute("DELETE FROM routing_model_overrides")
+                self._conn.executemany(
+                    """
+                    INSERT INTO routing_model_overrides (tier, model_id, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    rows,
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        return updated_at
+
+    def delete_routing_model_overrides(self) -> None:
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute("DELETE FROM routing_model_overrides")
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def upsert_usage_snapshots(self, records: list[dict[str, Any]]) -> None:
         if not records:
