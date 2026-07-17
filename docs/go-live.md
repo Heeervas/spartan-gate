@@ -38,7 +38,7 @@ for L4. For smaller installs, check only the services in the selected tier.
 ## 3. Network Policy
 
 ```sh
-scripts/whitelist-domain.sh --no-restart example.com
+scripts/whitelist-domain.sh --no-reload example.com
 ```
 
 Then verify allowed domains work through proxy/DNS and non-whitelisted domains fail from a controlled test container.

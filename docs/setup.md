@@ -113,8 +113,8 @@ sg-whitelist-domain 15d docs.example.com  # temporary
 ```
 
 Temporary entries support `m`, `h`, and `d`. Expired entries leave the runtime
-whitelist on the next proxy/DNS recreate or the daily `02:00` Europe/Madrid
-refresh window.
+whitelist on the next proxy/DNS startup, hot reload, explicit fallback recreate,
+or the daily `02:00` Europe/Madrid refresh window.
 
 Validate the private config:
 

@@ -12,6 +12,10 @@ REFRESH_TZ="${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}"
 DOMAINS="/tmp/dns-whitelist-domains.txt"
 SERVERS="/tmp/dnsmasq-whitelist.servers"
 CONF="/tmp/dnsmasq-whitelist.conf"
+TMP_DOMAINS="${DOMAINS}.tmp"
+TMP_SERVERS="${SERVERS}.tmp"
+dns_pid=""
+refresh_pid=""
 
 current_epoch() {
   if [ -n "${SPARTAN_WHITELIST_NOW:-}" ]; then
@@ -111,19 +115,39 @@ normalize_whitelist() {
 }
 
 generate_servers() {
-  : > "$DOMAINS"
-  normalize_whitelist "$PUBLIC_WHITELIST" >> "$DOMAINS"
-  normalize_whitelist "$PRIVATE_WHITELIST" >> "$DOMAINS"
-  sort -u "$DOMAINS" -o "$DOMAINS"
+  : > "$TMP_DOMAINS" || return 1
+  if ! {
+    normalize_whitelist "$PUBLIC_WHITELIST"
+    normalize_whitelist "$PRIVATE_WHITELIST"
+  } >> "$TMP_DOMAINS"; then
+    rm -f "$TMP_DOMAINS" "$TMP_SERVERS"
+    return 1
+  fi
+  if ! sort -u "$TMP_DOMAINS" -o "$TMP_DOMAINS"; then
+    rm -f "$TMP_DOMAINS" "$TMP_SERVERS"
+    return 1
+  fi
 
-  : > "$SERVERS"
+  : > "$TMP_SERVERS" || {
+    rm -f "$TMP_DOMAINS" "$TMP_SERVERS"
+    return 1
+  }
   count=0
   while IFS= read -r domain || [ -n "$domain" ]; do
     [ -n "$domain" ] || continue
-    echo "server=/${domain}/1.1.1.1" >> "$SERVERS"
-    echo "server=/${domain}/8.8.8.8" >> "$SERVERS"
+    echo "server=/${domain}/1.1.1.1" >> "$TMP_SERVERS"
+    echo "server=/${domain}/8.8.8.8" >> "$TMP_SERVERS"
     count=$((count + 1))
-  done < "$DOMAINS"
+  done < "$TMP_DOMAINS"
+
+  if ! mv "$TMP_DOMAINS" "$DOMAINS"; then
+    rm -f "$TMP_DOMAINS" "$TMP_SERVERS"
+    return 1
+  fi
+  if ! mv "$TMP_SERVERS" "$SERVERS"; then
+    rm -f "$TMP_SERVERS"
+    return 1
+  fi
 
   echo ""
   echo "[dns-relay] Loaded ${count} whitelisted domains from public/private fragments"
@@ -162,11 +186,32 @@ refresh_loop() {
 reload_servers() {
   dns_pid="$1"
   if generate_servers; then
-    kill -HUP "$dns_pid" 2>/dev/null || true
+    if [ -n "$dns_pid" ] && kill -0 "$dns_pid" 2>/dev/null; then
+      kill -HUP "$dns_pid" 2>/dev/null || true
+    else
+      echo "[dns-relay] Whitelist regenerated; dnsmasq child is not running" >&2
+    fi
   else
     echo "[dns-relay] Whitelist reload failed; keeping previous runtime whitelist" >&2
+    return 1
   fi
 }
+
+shutdown() {
+  if [ -n "$dns_pid" ]; then
+    kill "$dns_pid" 2>/dev/null || true
+  fi
+  if [ -n "$refresh_pid" ]; then
+    kill "$refresh_pid" 2>/dev/null || true
+  fi
+  if [ -n "$dns_pid" ]; then
+    wait "$dns_pid" 2>/dev/null || true
+  fi
+  exit 143
+}
+
+trap 'reload_servers "$dns_pid" || true' USR1
+trap 'shutdown' INT TERM
 
 generate_servers
 write_config
@@ -181,12 +226,11 @@ dns_pid="$!"
 refresh_loop "$dns_pid" &
 refresh_pid="$!"
 
-trap 'reload_servers "$dns_pid"' USR1
-trap 'kill "$dns_pid" "$refresh_pid" 2>/dev/null || true; wait "$dns_pid" 2>/dev/null || true; exit 143' INT TERM
-
 set +e
 wait "$dns_pid"
 status="$?"
-kill "$refresh_pid" 2>/dev/null || true
-wait "$refresh_pid" 2>/dev/null || true
+if [ -n "$refresh_pid" ]; then
+  kill "$refresh_pid" 2>/dev/null || true
+  wait "$refresh_pid" 2>/dev/null || true
+fi
 exit "$status"

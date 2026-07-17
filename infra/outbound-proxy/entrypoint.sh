@@ -9,6 +9,9 @@ COMBINED_WHITELIST="${SPARTAN_WHITELIST_COMBINED:-/tmp/spartan-whitelist.txt}"
 REFRESH_TIME="${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}"
 REFRESH_TZ="${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}"
 TMP_WHITELIST="${COMBINED_WHITELIST}.tmp"
+NEXT_WHITELIST="${COMBINED_WHITELIST}.next"
+proxy_pid=""
+refresh_pid=""
 
 current_epoch() {
   if [ -n "${SPARTAN_WHITELIST_NOW:-}" ]; then
@@ -121,15 +124,25 @@ filter_pattern() {
 }
 
 generate_whitelist() {
-  : > "$TMP_WHITELIST"
-  {
+  : > "$TMP_WHITELIST" || return 1
+  if ! {
     normalize_whitelist "$PUBLIC_WHITELIST"
     normalize_whitelist "$PRIVATE_WHITELIST"
   } | sort -u | while IFS= read -r domain || [ -n "$domain" ]; do
     [ -n "$domain" ] || continue
     filter_pattern "$domain"
-  done >> "$TMP_WHITELIST"
-  sort -u "$TMP_WHITELIST" > "$COMBINED_WHITELIST"
+  done >> "$TMP_WHITELIST"; then
+    rm -f "$TMP_WHITELIST" "$NEXT_WHITELIST"
+    return 1
+  fi
+  if ! sort -u "$TMP_WHITELIST" > "$NEXT_WHITELIST"; then
+    rm -f "$TMP_WHITELIST" "$NEXT_WHITELIST"
+    return 1
+  fi
+  if ! mv "$NEXT_WHITELIST" "$COMBINED_WHITELIST"; then
+    rm -f "$TMP_WHITELIST" "$NEXT_WHITELIST"
+    return 1
+  fi
   rm -f "$TMP_WHITELIST"
 
   count="$(wc -l < "$COMBINED_WHITELIST" | tr -d '[:space:]')"
@@ -152,11 +165,32 @@ refresh_loop() {
 reload_whitelist() {
   proxy_pid="$1"
   if generate_whitelist; then
-    kill -USR1 "$proxy_pid" 2>/dev/null || true
+    if [ -n "$proxy_pid" ] && kill -0 "$proxy_pid" 2>/dev/null; then
+      kill -USR1 "$proxy_pid" 2>/dev/null || true
+    else
+      echo "[outbound-proxy] Whitelist regenerated; Tinyproxy child is not running" >&2
+    fi
   else
     echo "[outbound-proxy] Whitelist reload failed; keeping previous runtime whitelist" >&2
+    return 1
   fi
 }
+
+shutdown() {
+  if [ -n "$proxy_pid" ]; then
+    kill "$proxy_pid" 2>/dev/null || true
+  fi
+  if [ -n "$refresh_pid" ]; then
+    kill "$refresh_pid" 2>/dev/null || true
+  fi
+  if [ -n "$proxy_pid" ]; then
+    wait "$proxy_pid" 2>/dev/null || true
+  fi
+  exit 143
+}
+
+trap 'reload_whitelist "$proxy_pid" || true' USR1
+trap 'shutdown' INT TERM
 
 generate_whitelist
 
@@ -170,12 +204,11 @@ proxy_pid="$!"
 refresh_loop "$proxy_pid" &
 refresh_pid="$!"
 
-trap 'reload_whitelist "$proxy_pid"' USR1
-trap 'kill "$proxy_pid" "$refresh_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; exit 143' INT TERM
-
 set +e
 wait "$proxy_pid"
 status="$?"
-kill "$refresh_pid" 2>/dev/null || true
-wait "$refresh_pid" 2>/dev/null || true
+if [ -n "$refresh_pid" ]; then
+  kill "$refresh_pid" 2>/dev/null || true
+  wait "$refresh_pid" 2>/dev/null || true
+fi
 exit "$status"

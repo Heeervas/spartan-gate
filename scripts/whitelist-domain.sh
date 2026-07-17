@@ -4,10 +4,10 @@
 # Usage:
 #   scripts/whitelist-domain.sh example.com,api.example.com https://docs.example.com/path
 #   scripts/whitelist-domain.sh 15d example.com
-#   scripts/whitelist-domain.sh --no-restart example.com
+#   scripts/whitelist-domain.sh --no-reload example.com
 #
-# By default this recreates running proxy/dns services so generated whitelist
-# files are rebuilt from the public + private fragments.
+# By default this hot-reloads running proxy/dns services so generated whitelist
+# files are rebuilt from the public + private fragments without container kills.
 
 set -euo pipefail
 
@@ -26,7 +26,7 @@ _default_env_file() {
 WHITELIST="${SPARTAN_WHITELIST_FILE:-$ROOT/private/outbound-proxy/whitelist.private.txt}"
 
 usage() {
-    printf 'Usage: %s [--no-restart] [15m|6h|15d] domain.com[,api.example.com] [more-hosts]\n' "$0" >&2
+    printf 'Usage: %s [--no-reload|--no-restart] [--recreate-on-reload-failure] [15m|6h|15d] domain.com[,api.example.com] [more-hosts]\n' "$0" >&2
 }
 
 trim_spaces() {
@@ -205,33 +205,41 @@ compose_cmd() {
     docker compose "${args[@]}" "$@"
 }
 
-restart_consumers() {
+reload_consumers() {
     command -v docker >/dev/null 2>&1 || {
         printf '[whitelist] Docker is not available; reload proxy/dns manually if the stack is running.\n'
-        return 0
+        return 1
     }
 
     local running service
     running="$(compose_cmd ps --services --status running 2>/dev/null || true)"
 
-    local -a restart_services=()
+    local -a reload_services=()
     for service in proxy dns; do
         if printf '%s\n' "$running" | grep -Fxq "$service"; then
-            restart_services+=("$service")
+            reload_services+=("$service")
         fi
     done
 
-    if [[ "${#restart_services[@]}" -eq 0 ]]; then
+    if [[ "${#reload_services[@]}" -eq 0 ]]; then
         printf '[whitelist] No running proxy/dns services found; nothing reloaded.\n'
         return 0
     fi
 
-    printf '[whitelist] Signaling running services: %s\n' "${restart_services[*]}"
+    printf '[whitelist] Hot-reloading running services: %s\n' "${reload_services[*]}"
+    local -a failed_services=()
     local -a fallback_services=()
-    for service in "${restart_services[@]}"; do
-        if ! compose_cmd kill -s USR1 "$service"; then
-            printf '[whitelist] Signal reload failed for %s; will recreate it.\n' "$service" >&2
-            fallback_services+=("$service")
+    for service in "${reload_services[@]}"; do
+        if compose_cmd exec -T "$service" sh -c 'kill -USR1 1'; then
+            printf '[whitelist] Reload signal delivered: %s\n' "$service"
+        else
+            failed_services+=("$service")
+            if [[ "$recreate_on_reload_failure" == true ]]; then
+                printf '[whitelist] Reload failed for %s; will recreate it as requested.\n' "$service" >&2
+                fallback_services+=("$service")
+            else
+                printf '[whitelist] Reload failed for %s; existing runtime policy remains active.\n' "$service" >&2
+            fi
         fi
     done
 
@@ -239,14 +247,35 @@ restart_consumers() {
         printf '[whitelist] Recreating fallback services: %s\n' "${fallback_services[*]}"
         compose_cmd up -d --no-build --force-recreate --no-deps "${fallback_services[@]}"
     fi
+
+    if [[ "${#failed_services[@]}" -gt 0 && "$recreate_on_reload_failure" != true ]]; then
+        return 1
+    fi
 }
 
-restart=true
+reload=true
+recreate_on_reload_failure=false
+case "${SPARTAN_WHITELIST_RELOAD_FALLBACK:-}" in
+    "")
+        ;;
+    recreate)
+        recreate_on_reload_failure=true
+        ;;
+    none|fail)
+        ;;
+    *)
+        printf '[whitelist] Invalid SPARTAN_WHITELIST_RELOAD_FALLBACK: %s (expected recreate, none, or fail)\n' "$SPARTAN_WHITELIST_RELOAD_FALLBACK" >&2
+        exit 1
+        ;;
+esac
 declare -a inputs=()
 for arg in "$@"; do
     case "$arg" in
-        --no-restart)
-            restart=false
+        --no-reload|--no-restart)
+            reload=false
+            ;;
+        --recreate-on-reload-failure)
+            recreate_on_reload_failure=true
             ;;
         -h|--help)
             usage
@@ -359,6 +388,6 @@ for domain in "${domains[@]}"; do
     fi
 done
 
-if [[ "$restart" == true ]]; then
-    restart_consumers
+if [[ "$reload" == true ]]; then
+    reload_consumers
 fi

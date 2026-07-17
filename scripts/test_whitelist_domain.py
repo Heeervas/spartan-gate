@@ -27,7 +27,7 @@ class WhitelistDomainTests(unittest.TestCase):
             check=False,
         )
 
-    def fake_docker_bin(self, *, kill_fail_service=None):
+    def fake_docker_bin(self, *, reload_fail_service=None):
         bin_dir = pathlib.Path(self.tmp.name) / "bin"
         bin_dir.mkdir(exist_ok=True)
         log = pathlib.Path(self.tmp.name) / "docker.log"
@@ -37,26 +37,33 @@ class WhitelistDomainTests(unittest.TestCase):
             "printf '%s\\n' \"$*\" >> \"$FAKE_DOCKER_LOG\"\n"
             "case \" $* \" in\n"
             "  *' ps --services --status running '*) printf 'proxy\\ndns\\n'; exit 0 ;;\n"
-            "  *' kill -s USR1 '*)\n"
+            "  *' kill -s USR1 '*) exit 9 ;;\n"
+            "  *' exec -T '*)\n"
             "    service=''\n"
-            "    for arg in \"$@\"; do service=\"$arg\"; done\n"
-            "    if [ -n \"$FAKE_DOCKER_KILL_FAIL_SERVICE\" ] && [ \"$service\" = \"$FAKE_DOCKER_KILL_FAIL_SERVICE\" ]; then exit 1; fi\n"
+            "    previous=''\n"
+            "    for arg in \"$@\"; do\n"
+            "      if [ \"$previous\" = '-T' ]; then service=\"$arg\"; break; fi\n"
+            "      previous=\"$arg\"\n"
+            "    done\n"
+            "    if [ -n \"$FAKE_DOCKER_RELOAD_FAIL_SERVICE\" ] && [ \"$service\" = \"$FAKE_DOCKER_RELOAD_FAIL_SERVICE\" ]; then exit 1; fi\n"
             "    exit 0 ;;\n"
             "  *' up -d --no-build --force-recreate --no-deps '*) exit 0 ;;\n"
             "esac\n"
             "exit 0\n"
         )
         docker.chmod(0o755)
-        return bin_dir, log, kill_fail_service or ""
+        return bin_dir, log, reload_fail_service or ""
 
-    def run_helper_with_fake_docker(self, *args, kill_fail_service=None):
-        bin_dir, log, fail_service = self.fake_docker_bin(kill_fail_service=kill_fail_service)
+    def run_helper_with_fake_docker(self, *args, reload_fail_service=None, extra_env=None):
+        bin_dir, log, fail_service = self.fake_docker_bin(reload_fail_service=reload_fail_service)
         env = os.environ.copy()
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
         env["FAKE_DOCKER_LOG"] = str(log)
-        env["FAKE_DOCKER_KILL_FAIL_SERVICE"] = fail_service
+        env["FAKE_DOCKER_RELOAD_FAIL_SERVICE"] = fail_service
         env["SPARTAN_WHITELIST_FILE"] = str(self.whitelist)
         env["SPARTAN_WHITELIST_NOW"] = str(NOW)
+        if extra_env:
+            env.update(extra_env)
         result = subprocess.run(
             ["bash", str(SCRIPT), *args],
             cwd=ROOT,
@@ -190,21 +197,74 @@ class WhitelistDomainTests(unittest.TestCase):
         result, calls = self.run_helper_with_fake_docker("example.com")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Signaling running services: proxy dns", result.stdout)
-        self.assertIn("kill -s USR1 proxy", calls)
-        self.assertIn("kill -s USR1 dns", calls)
+        self.assertIn("Hot-reloading running services: proxy dns", result.stdout)
+        self.assertIn("exec -T proxy sh -c kill -USR1 1", calls)
+        self.assertIn("exec -T dns sh -c kill -USR1 1", calls)
+        self.assertIn("Reload signal delivered: proxy", result.stdout)
+        self.assertIn("Reload signal delivered: dns", result.stdout)
+        self.assertNotIn("kill -s USR1", calls)
         self.assertNotIn("--force-recreate", calls)
 
-    def test_runtime_update_recreates_only_failed_reload_service(self):
-        result, calls = self.run_helper_with_fake_docker("example.com", kill_fail_service="proxy")
+    def test_runtime_update_failure_does_not_recreate_by_default(self):
+        result, calls = self.run_helper_with_fake_docker("example.com", reload_fail_service="proxy")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Reload failed for proxy; existing runtime policy remains active.", result.stderr)
+        self.assertIn("exec -T proxy sh -c kill -USR1 1", calls)
+        self.assertIn("exec -T dns sh -c kill -USR1 1", calls)
+        self.assertNotIn("--force-recreate", calls)
+
+    def test_runtime_update_can_recreate_only_failed_reload_service_when_requested(self):
+        result, calls = self.run_helper_with_fake_docker(
+            "--recreate-on-reload-failure",
+            "example.com",
+            reload_fail_service="proxy",
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Signal reload failed for proxy", result.stderr)
+        self.assertIn("Reload failed for proxy; will recreate it as requested.", result.stderr)
         self.assertIn("Recreating fallback services: proxy", result.stdout)
-        self.assertIn("kill -s USR1 proxy", calls)
-        self.assertIn("kill -s USR1 dns", calls)
+        self.assertIn("exec -T proxy sh -c kill -USR1 1", calls)
+        self.assertIn("exec -T dns sh -c kill -USR1 1", calls)
         self.assertIn("up -d --no-build --force-recreate --no-deps proxy", calls)
         self.assertNotIn("up -d --no-build --force-recreate --no-deps dns", calls)
+
+    def test_runtime_update_can_recreate_failed_reload_service_from_env(self):
+        result, calls = self.run_helper_with_fake_docker(
+            "example.com",
+            reload_fail_service="dns",
+            extra_env={"SPARTAN_WHITELIST_RELOAD_FALLBACK": "recreate"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Recreating fallback services: dns", result.stdout)
+        self.assertIn("up -d --no-build --force-recreate --no-deps dns", calls)
+        self.assertNotIn("up -d --no-build --force-recreate --no-deps proxy", calls)
+
+    def test_no_reload_alias_skips_runtime_update(self):
+        result, calls = self.run_helper_with_fake_docker("--no-reload", "example.com")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Added permanent: example.com", result.stdout)
+        self.assertEqual(calls, "")
+
+    def test_no_restart_alias_still_skips_runtime_update(self):
+        result, calls = self.run_helper_with_fake_docker("--no-restart", "example.com")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Added permanent: example.com", result.stdout)
+        self.assertEqual(calls, "")
+
+    def test_invalid_reload_fallback_env_fails_before_file_write(self):
+        result, calls = self.run_helper_with_fake_docker(
+            "example.com",
+            extra_env={"SPARTAN_WHITELIST_RELOAD_FALLBACK": "restart"},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Invalid SPARTAN_WHITELIST_RELOAD_FALLBACK", result.stderr)
+        self.assertFalse(self.whitelist.exists())
+        self.assertEqual(calls, "")
 
 
 class WhitelistRuntimeGenerationTests(unittest.TestCase):
