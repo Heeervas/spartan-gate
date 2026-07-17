@@ -23,6 +23,14 @@ Public env docs describe names and behavior only. Real values and machine-specif
   edge; these variables keep the internal dashboard process from failing closed.
 - `CADDY_AUTH_USER`: Basic Auth username.
 - `CADDY_AUTH_HASH`: Caddy password hash.
+- `SPARTAN_CADDY_PASSWORD`: optional installer-managed plaintext corresponding
+  to `CADDY_AUTH_HASH`. Existing hash-only installs remain valid; the installer
+  does not invent a mismatched plaintext or rotate the hash silently.
+- `CADDY_CAMOFOX_EDGE_TOKEN`: 64-lowercase-hex secret for the one-hour
+  Camofox/noVNC HTTP and WebSocket session minted after Basic Auth.
+- `CADDY_WS_EDGE_TOKEN`: historical name for the separate 64-lowercase-hex
+  session secret shared by generated Hermes preview listeners. It authorizes
+  their subsequent HTTP assets and WebSockets after one successful Basic Auth.
 - `BROWSERLESS_EDGE_TOKEN`: generated edge token added to Browserless debugger
   WebSocket URLs by the profile-live helper. It prevents unauthenticated
   Browserless WebSocket upgrades without relying on browser Basic Auth for the
@@ -76,14 +84,35 @@ gateway port during preflight.
 Hermes profiles are not Browserless profiles. Hermes profiles control gateway
 and agent configuration; Browserless profiles control Chromium login state.
 
+## Pocket TTS
+
+Pocket TTS is an optional Compose profile, not a Spartan Gate layer or addon.
+Add `pocket-tts` to the existing `COMPOSE_PROFILES` value; keep the selected
+browser profile in the same comma-separated list.
+
+- `POCKET_TTS_IMAGE`: local sidecar image, default
+  `spartan-gate-pocket-tts:2.1.0`.
+- `POCKET_TTS_DATA_PATH`: private host path for the versioned model cache.
+- `POCKET_TTS_MAX_TEXT_LENGTH`: sidecar request limit, default `5000`.
+- `POCKET_TTS_MIN_FREE_BEFORE_BYTES`: prefetch start guard, default 8 GiB.
+- `POCKET_TTS_MIN_FREE_AFTER_BYTES`: download/activation guard, default 5 GiB.
+
+The normal `pocket-tts` profile is offline and requires an already active
+cache. `pocket-tts-bootstrap` is a one-shot download profile used only by
+`sg run --rm pocket-tts-prefetch`; do not keep it in `COMPOSE_PROFILES`.
+
 ## Browserless
 
 - `BROWSERLESS_TOKEN`: internal bearer token shared between Browserless,
   Hermes, and Caddy. Do not expose it in profile-live URLs; Caddy injects it
   only when proxying to Browserless.
-- `BROWSERLESS_IMAGE`: Browserless container image, default
-  `ghcr.io/browserless/chromium:v2.51.0`. Pin this in private env during
-  incidents before recreating Browserless.
+- `BROWSERLESS_BASE_IMAGE`: pinned upstream Browserless image used as the base
+  for the local wrapper, default `ghcr.io/browserless/chromium:v2.51.0`.
+- `BROWSERLESS_IMAGE`: final local Spartan Gate Browserless wrapper image,
+  default `spartan-gate-browserless:2.51.0`. Compose builds it from
+  `BROWSERLESS_BASE_IMAGE`; the wrapper installs the Onest fonts used by
+  Chromium and capture/PDF tooling. Pin both variables in private env during
+  incidents before rebuilding or recreating Browserless.
 - `BROWSERLESS_PROFILE`: named Chromium login profile exposed as Hermes browser
   profile `main`, default `main`. The normal/default browser path is ephemeral
   and does not use this `userDataDir`.
@@ -443,5 +472,8 @@ the private extension by default and accepts an optional TTL such as `15m`,
 `6h`, or `15d` before the domain list. Runtime whitelist refresh defaults to
 `SPARTAN_WHITELIST_REFRESH_TIME=02:00` and
 `SPARTAN_WHITELIST_REFRESH_TZ=Europe/Madrid`; expired entries are ignored at
-startup, helper-triggered hot reloads, fallback recreates, and that daily
-refresh window.
+startup, helper-triggered hot reloads, explicit fallback recreates, and that
+daily refresh window. Set `SPARTAN_WHITELIST_RELOAD_FALLBACK=recreate` only
+when `sg-whitelist-domain` should recreate a running `proxy` or `dns` service
+after reload delivery fails; the default leaves the previous runtime policy
+active and exits non-zero.

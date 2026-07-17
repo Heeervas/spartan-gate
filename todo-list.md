@@ -1,6 +1,6 @@
 # Task List
 
-Last updated: 2026-07-02
+Last updated: 2026-07-16
 
 ## In Progress
 
@@ -9,6 +9,10 @@ Last updated: 2026-07-02
 ## Backlog
 
 - [ ] Review Browserless hardening follow-ups and convert publishable items into public issues or tracked docs.
+- [ ] Discovery: evaluate a fixed Spanish-from-Spain Pocket TTS voice from a
+  consented, suitably licensed recording, exported to a private versioned
+  `.safetensors` voice state. Preserve the offline, read-only runtime with no
+  dynamic voice uploads, fallback provider, or Hermes rebuild.
 
 ## Done
 - [x] Review and commit uncommitted Hermes/Camofox and Reader cleanup.

@@ -54,6 +54,48 @@ sg up -d hermes
 sg-logs-hermes
 ```
 
+## Pocket TTS
+
+Pocket TTS 2.1.0 runs as an optional local English/Spanish sidecar. Hermes
+uses its existing command-provider interface, so activation does not rebuild
+the Hermes image. The defaults are Anna for English and Eponine for Spanish;
+automatic detection is heuristic, so prefix short or ambiguous text with
+`[en]` or `[es]` to force the language.
+
+Set the private cache path and add `pocket-tts` to the existing browser profile
+in `private/env/local.env`. Keep at least 8 GiB free before the first prefetch:
+
+```env
+COMPOSE_PROFILES=camofox,pocket-tts
+POCKET_TTS_DATA_PATH=/absolute/private/path/pocket-tts
+POCKET_TTS_IMAGE=spartan-gate-pocket-tts:2.1.0
+```
+
+Build only the sidecar, prefetch the public non-cloning assets, then enable the
+Hermes command provider:
+
+```sh
+sg build pocket-tts
+sg run --rm pocket-tts-prefetch
+scripts/configure-pocket-tts.py \
+  --enable \
+  --config /absolute/private/path/hermes/config.yaml
+```
+
+Start/recreate only the affected services from existing images:
+
+```sh
+sg up -d --no-build pocket-tts
+sg up -d --no-build --force-recreate hermes
+sg ps pocket-tts hermes
+```
+
+The configuration helper is idempotent, keeps the first pre-Pocket config
+backup, and restores the previous provider with `--disable`. A stopped or
+unhealthy sidecar returns an explicit `pocket-tts` error; Hermes does not fall
+through to Edge TTS. See `infra/pocket-tts/README.md` for validation and
+rollback details.
+
 ## Raw Compose Start
 
 The tier helper path is preferred because it selects the expected Compose files
@@ -111,6 +153,7 @@ docker compose -f infra/compose/compose.yml logs -f proxy dns browserless
 source scripts/aliases.sh
 sg -h
 sg-hermes -h
+sg-tmux -h
 sg-browser -h
 sg-meet -h
 sg-disk -h
@@ -151,6 +194,47 @@ sg-disk overview
 sg-disk top /var 2 30
 sg-disk apport
 sg-disk spartan
+```
+
+### Interactive tmux sessions
+
+The public `sg-tmux` group and the personal shortcuts in
+`private/aliases.local.sh` cover the normal session workflow:
+
+```sh
+tnew scratch                         # named interactive shell
+tcodex gate-work -p deep             # Codex in the current directory
+thermes h-default                    # runs: hermes
+thermes h-chat chat                  # runs: hermes chat
+thermes h-coach -p coach chat        # runs: hermes -p coach chat
+thermes h-browser -p coach sessions browse
+tlist
+tattach gate-work                    # attach an exact session
+tattach                              # native interactive session tree
+tchoose                              # same native tree explicitly
+tkeys                                # print the navigation keys
+```
+
+The first `thermes` argument is only the tmux session name. Every remaining
+argument is forwarded to Hermes in the same order; the helper never infers a
+profile or inserts `chat`. After Hermes exits, the pane remains in the Hermes
+container shell. After Codex exits, its pane remains in a host login shell.
+
+Within tmux, use `Ctrl-b s` for the native session tree, `Ctrl-b (` and
+`Ctrl-b )` for previous/next session, `Ctrl-b L` for the last-used session,
+and `Ctrl-b d` to detach. Creating or launching with an existing name switches
+or attaches to that session without starting a duplicate process.
+
+`sg-gog-login` requires a running Hermes container and performs GogCLI auth
+with the GogCLI version installed in Hermes, so the host CLI cannot write an
+older credential format into the shared store. In the manual browser flow,
+paste the complete final callback URL into the terminal after Google sign-in;
+the browser sign-in alone does not complete the refresh-token exchange. The
+helper fails unless the stored grant contains every scope requested through
+`GOGCLI_EXTRA_SCOPES`. Verify the active grant at any time with:
+
+```sh
+sg-gog-check --json
 ```
 
 `sg-up-core`, `sg-up-hermes`, and `sg-up-private-hermes` remain as compatibility
@@ -228,6 +312,12 @@ Use Camofox profiles when Hermes should reuse a manual website login through
 Camofox browser tools. Camofox noVNC is exposed through the private Caddy edge
 on `CAMOFOX_NOVNC_PORT`; the helper starts Caddy, verifies internal noVNC and
 checks that the public listener responds before printing the URL.
+Safari may omit Basic Auth on WebSockets and on noVNC module requests. Caddy
+therefore exchanges one successful Basic Auth for a one-hour, host-only,
+HttpOnly session covering later HTTP assets and the WebSocket. Camofox uses the
+dedicated `CADDY_CAMOFOX_EDGE_TOKEN`; missing or invalid WebSocket sessions fail
+closed without reopening Safari's authentication dialog. Edge cookies and the
+Basic `Authorization` header are removed before requests reach Camofox.
 
 ```sh
 sg-camofox-profile-live main https://accounts.google.com
@@ -290,14 +380,25 @@ sg-whitelist-domain 15d vendor.example.com
 ```
 
 The helper writes to the private file by default and hot-reloads running
-`proxy`/`dns` services with `USR1` so the generated merged whitelist is rebuilt
-without recreating those containers. If signal reload fails for a running
-service, the helper recreates only that failed service as a fallback. If the
-stack is stopped, the next `sg-up` will load the merged whitelist. Temporary
-entries are ignored after their timestamp expires on the next startup, hot
-reload, fallback recreate, or the daily runtime refresh at `02:00`
-Europe/Madrid. The private file is not automatically pruned, so expired lines
-can remain as history.
+`proxy`/`dns` services by executing an in-container `USR1` signal. The normal
+path does not use `docker compose kill` and does not recreate containers. If
+reload delivery fails, the helper exits non-zero and the previous runtime policy
+remains active; the private file still contains the requested entry for the next
+successful reload or startup. Use `--no-reload` to write only without touching
+running services; legacy `--no-restart` is accepted as the same operation. Use
+`--recreate-on-reload-failure` or
+`SPARTAN_WHITELIST_RELOAD_FALLBACK=recreate` only when an explicit disruptive
+fallback is acceptable. Temporary entries are ignored after their timestamp
+expires on the next startup, hot reload, explicit fallback recreate, or the
+daily runtime refresh at `02:00` Europe/Madrid. The private file is not
+automatically pruned, so expired lines can remain as history.
+
+After updating Spartan Gate source that changes proxy/DNS entrypoints, roll only
+those services to load the new reload handlers:
+
+```sh
+sg up -d --build proxy dns
+```
 
 ## HTTPS Edge
 
@@ -307,6 +408,15 @@ When `SPARTAN_EDGE_SCHEME=https`, `sg-urls` prints HTTPS URLs. Use the hostname 
 sg-caddy-validate
 sg-restart-caddy
 sg-urls
+```
+
+Existing private listeners created before the full Safari session contract can
+be migrated transactionally. The helper preflights all files, keeps `.bak`
+copies, validates the installed candidate as a set, rolls back on failure, and
+recreates only Caddy:
+
+```sh
+scripts/migrate_caddy_safari_session.py
 ```
 
 ## Backup

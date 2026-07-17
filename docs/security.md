@@ -8,6 +8,13 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
 
 - Hermes is internal-network only.
 - Browserless and Camofox are internal-network only and configured to use Tinyproxy.
+- Pocket TTS runtime is internal-network only, has no published port, proxy,
+  external network, Hugging Face token, arbitrary voice URL, or voice-upload
+  endpoint. It reads a versioned cache and runs with Hugging Face offline mode.
+  The one-shot prefetch service is the only Pocket component with controlled
+  download access through Tinyproxy and DNS. Prefetch uses public non-cloning
+  weights, requires disk headroom before and after download, and activates a
+  complete cache atomically.
 - DNS forwarding is whitelist based.
 - Tinyproxy denies non-whitelisted destinations.
 - Reader only allows GET, blocks private/internal targets, revalidates the
@@ -21,6 +28,14 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   carry a generated `BROWSERLESS_EDGE_TOKEN` as a short edge authorization
   guard, while Caddy still injects the internal `BROWSERLESS_TOKEN` only toward
   Browserless.
+- Camofox noVNC and `sg-add-port` listeners mint one-hour, host-only,
+  HttpOnly, SameSite=Strict sessions only after successful Caddy Basic Auth. A
+  valid session authorizes subsequent HTTP assets and WebSockets, avoiding
+  Safari Basic Auth loops; invalid WebSockets fail with a non-challenging `401`.
+  Camofox uses a distinct `CADDY_CAMOFOX_EDGE_TOKEN`; Hermes preview ports share
+  `CADDY_WS_EDGE_TOKEN` as one operator trust boundary. Both must be 64 lowercase
+  hex, are stripped with legacy edge cookies and `Authorization` before proxying,
+  and use `Secure` on HTTPS.
 - The Hermes dashboard keeps same-origin `/api/*` and `/ws/*` requests
   pass-through behind the localhost/private edge. Protect it with local binding,
   Tailscale/private exposure, and Hermes' own application controls; do not
@@ -62,6 +77,9 @@ Keep service ownership explicit when changing security-sensitive behavior:
   input and must not be turned directly into tool actions.
 - Browserless and Camofox are separate browser modes. Do not claim an inactive
   browser Compose profile remains available.
+- Pocket TTS owns local speech synthesis and its versioned model cache. Hermes
+  consumes it through a fixed command client; a sidecar failure must remain an
+  explicit error rather than falling through to a cloud speech provider.
 - Caddy owns authenticated edge routing and public host bindings.
 
 ## Secrets

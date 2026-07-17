@@ -4,6 +4,16 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Made Camofox/noVNC and generated Hermes previews compatible with Safari by
+  exchanging one successful Caddy Basic Auth for a one-hour HttpOnly session
+  covering subsequent HTTP assets and WebSockets; invalid WebSockets still fail
+  closed without another browser auth challenge.
+- Split Camofox and Hermes-preview session secrets, added fail-closed 64-hex
+  startup validation, legacy-cookie removal, transactional private migration,
+  and upstream credential stripping.
+- Added generated `CADDY_WS_EDGE_TOKEN` wiring and private preflight checks,
+  replaced the active Browserless placeholder edge token, and kept existing
+  Caddy hash-only installs from receiving a fabricated plaintext password.
 - Made Spartan Route the normal L4/full-stack router, kept existing
   `CLAWROUTE_TOKEN`/`CLAWROUTE_EDGE_PORT` compatibility, and left ClawRoute as
   the legacy lower-tier addon/source package.
