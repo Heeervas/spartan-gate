@@ -149,6 +149,63 @@ returns the single new download captured for that tab. Bridge invocation and
 download capture run under Camofox's per-tab lock so navigation, close, and
 concurrent clip operations cannot race the request.
 
+## Runtime Viewport
+
+Spartan Gate adds an authenticated runtime viewport route for tabs created by
+Camofox. Use it when Hermes or an operator needs responsive CSS to see a mobile
+viewport, not just a narrow screenshot crop:
+
+```http
+POST /tabs/{tabId}/spartan/viewport
+Authorization: Bearer <CAMOFOX_ACCESS_KEY>
+Content-Type: application/json
+
+{
+  "userId": "spartan-camofox-main",
+  "width": 390,
+  "height": 844,
+  "reload": false,
+  "relaunch": true
+}
+```
+
+The Spartan route verifies tab ownership, runs under Camofox's per-tab lock,
+and first tries Playwright `page.setViewportSize`. Firefox/Camoufox does not
+always apply that live resize to the runtime viewport. When `relaunch: true` is
+present, Spartan Gate restarts the shared Camofox browser with Camoufox's
+launch-time `window` option sized so the page runtime sees the requested inner
+viewport, then recreates the same `tabId` and reopens the current HTTP/HTTPS
+URL. `/tabs/{tabId}/viewport` is also routed through this verified Spartan
+handler. The original upstream handler is displaced to a fail-closed `410
+upstream_viewport_disabled` route because it only returned requested
+width/height without proving effective runtime dimensions. If
+`window.innerWidth` or `window.innerHeight` still does not match, the route fails
+with `viewport_mismatch` instead of returning a misleading `ok`.
+
+Launch-window relaunch is a shared browser operation and closes other active
+Camofox sessions/tabs. Omit `relaunch` to keep the route non-destructive; it
+will fail closed with a hint when live resize does not take effect. Use scratch
+sessions for diagnostics.
+
+Live `deviceScaleFactor`, `isMobile`, touch, and `userAgent` changes are not
+claimed. Requests containing those fields fail with
+`unsupported_viewport_options` until Camofox supports them safely.
+
+Hermes-path diagnostic:
+
+```sh
+source scripts/aliases.sh
+sg-camofox-viewport-check 390 844
+```
+
+The diagnostic runs inside the `hermes` container against
+`http://camofox:9377`, creates a scratch `spartan-viewport-smoke-*` session,
+checks viewport-before-navigation, viewport-after-navigation, viewport-then-
+reload, and create-with-viewport observation, captures `fullPage=false`
+screenshot dimensions, verifies the screenshot is non-empty and dimensionally
+matches the effective viewport, records viewport strategy and before/effective
+dimensions, and deletes the scratch session.
+
 ## noVNC
 
 The Camofox VNC plugin is disabled by default:

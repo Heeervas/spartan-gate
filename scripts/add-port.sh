@@ -102,22 +102,74 @@ touch "$CADDY_PORTS_FILE"
 marker="# spartan-gate:add-port:${container_port}"
 edge_scheme="$(env_value SPARTAN_EDGE_SCHEME http)"
 tls_line=""
+cookie_secure=""
 if [[ "$edge_scheme" == "https" ]]; then
     tls_line=$'\ttls {$SPARTAN_CADDY_TLS_CERT_FILE:/certs/cert.pem} {$SPARTAN_CADDY_TLS_KEY_FILE:/certs/key.pem}\n\n'
+    cookie_secure="; Secure"
 fi
 
 if grep -Fq "$marker" "$CADDY_PORTS_FILE"; then
+    if ! awk -v marker="$marker" '
+        $0 == marker { found = 1; in_block = 1; next }
+        in_block && /^# spartan-gate:add-port:/ { exit }
+        in_block && /spartan_edge_apps/ { compatible = 1 }
+        END { exit !(found && compatible) }
+    ' "$CADDY_PORTS_FILE"; then
+        printf '[add-port] Existing listener for container port %s uses legacy or incomplete Safari session authentication.\n' "$container_port" >&2
+        printf '[add-port] Back up %s, remove only the %s block, then rerun this command to regenerate it safely.\n' \
+            "$CADDY_PORTS_FILE" "$marker" >&2
+        exit 1
+    fi
     printf '[add-port] Caddy listener already exists for container port %s\n' "$container_port"
 else
     cat >> "$CADDY_PORTS_FILE" <<EOF
 
 $marker
 :${container_port} {
-${tls_line}\tbasic_auth {
-\t\t{\$CADDY_AUTH_USER:admin} {\$CADDY_AUTH_HASH}
-\t}
+${tls_line}	@spartan_app_websocket {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
 
-\treverse_proxy http://hermes:${container_port}
+	@spartan_app_session_authorized {
+		vars {cookie.spartan_edge_apps} {\$CADDY_WS_EDGE_TOKEN}
+	}
+
+	@spartan_app_only_edge_cookies {
+		header_regexp Cookie "^[ \t]*((spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*[; \t]*)+\$"
+	}
+
+	handle @spartan_app_session_authorized {
+		route {
+			header +Set-Cookie "spartan_ws_edge=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict${cookie_secure}"
+			request_header @spartan_app_only_edge_cookies -Cookie
+			request_header Cookie "^([ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*(;[ \t]*)?)+" ""
+			request_header Cookie ";[ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*" ""
+			request_header -Authorization
+			reverse_proxy http://hermes:${container_port}
+		}
+	}
+
+	handle @spartan_app_websocket {
+		respond "Unauthorized" 401
+	}
+
+	handle {
+		route {
+			basic_auth {
+				{\$CADDY_AUTH_USER:admin} {\$CADDY_AUTH_HASH}
+			}
+			header {
+				+Set-Cookie "spartan_edge_apps={\$CADDY_WS_EDGE_TOKEN}; Path=/; Max-Age=3600; HttpOnly; SameSite=Strict${cookie_secure}"
+				+Set-Cookie "spartan_ws_edge=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict${cookie_secure}"
+			}
+			request_header @spartan_app_only_edge_cookies -Cookie
+			request_header Cookie "^([ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*(;[ \t]*)?)+" ""
+			request_header Cookie ";[ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*" ""
+			request_header -Authorization
+			reverse_proxy http://hermes:${container_port}
+		}
+	}
 }
 EOF
     printf '[add-port] Added Caddy listener for container port %s\n' "$container_port"

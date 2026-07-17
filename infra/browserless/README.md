@@ -1,6 +1,9 @@
-Browserless is provided by the public `ghcr.io/browserless/chromium` image in
-Compose. The image is configured with `BROWSERLESS_IMAGE`; pin it in private env
-before incident recreates.
+Compose builds a local Browserless wrapper from the public
+`ghcr.io/browserless/chromium` image. The wrapper installs the complete Onest
+TTF release and refreshes Fontconfig so Chromium, capture, and PDF rendering
+can use it without runtime installation. Set `BROWSERLESS_BASE_IMAGE` to pin
+the upstream input and `BROWSERLESS_IMAGE` to name or pin the final local
+image; pin both in private env before incident rebuilds or recreates.
 
 This directory is reserved for local launch policy, debugger patches, or Browserless-specific hardening that belongs in the public Spartan Gate infrastructure.
 

@@ -3,12 +3,20 @@ const fs = require('fs');
 const path = 'server.js';
 let source = fs.readFileSync(path, 'utf8');
 
+const spartanChildProcessRequire = "const spartanChildProcess = require('child_process');\n";
+const spartanChildProcessImport = "import * as spartanChildProcess from 'child_process';\n";
+
+source = source.replaceAll(spartanChildProcessRequire, '');
+source = source.replaceAll(spartanChildProcessImport, '');
+
 const helperMarker = `let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
 `;
 const helper = `${helperMarker}
 const spartanObsidianClipperBridgeToken = crypto.randomBytes(32).toString('hex');
+const spartanViewportRelaunchLock = { tail: Promise.resolve() };
+let spartanLaunchViewportWindow = null;
 
 function spartanIsObsidianClipperAddon(addonPath) {
   const manifestPath = \`\${addonPath}/manifest.json\`;
@@ -111,6 +119,19 @@ function camofoxAddonPaths() {
 }
 `;
 
+const spartanViewportGlobalsMarker = "const spartanObsidianClipperBridgeToken = crypto.randomBytes(32).toString('hex');\n";
+source = source.replaceAll("const spartanViewportWindowLock = { tail: Promise.resolve() };\n", '');
+source = source.replaceAll("const spartanViewportRelaunchLock = { tail: Promise.resolve() };\nlet spartanLaunchViewportWindow = null;\n", '');
+if (!source.includes('const spartanViewportRelaunchLock') && source.includes('function camofoxAddonPaths()')) {
+  if (!source.includes(spartanViewportGlobalsMarker)) {
+    throw new Error('expected Camofox Spartan helper globals marker not found');
+  }
+  source = source.replace(
+    spartanViewportGlobalsMarker,
+    spartanViewportGlobalsMarker + "const spartanViewportRelaunchLock = { tail: Promise.resolve() };\nlet spartanLaunchViewportWindow = null;\n",
+  );
+}
+
 if (!source.includes('function camofoxAddonPaths()')) {
   if (!source.includes(helperMarker)) {
     throw new Error('expected Camofox browser globals marker not found');
@@ -168,12 +189,120 @@ const launchMarker = `        enable_cache: true,
         proxy: launchProxy,`;
 const launchReplacement = `        enable_cache: true,
         addons: addonPaths,
+        window: spartanLaunchViewportWindow?.window,
         proxy: launchProxy,`;
 if (!source.includes('        addons: addonPaths,')) {
   if (!source.includes(launchMarker)) {
     throw new Error('expected Camofox launchOptions marker not found');
   }
   source = source.replace(launchMarker, launchReplacement);
+}
+if (!source.includes('        window: spartanLaunchViewportWindow?.window,')) {
+  const windowLaunchMarker = `        addons: addonPaths,
+        proxy: launchProxy,`;
+  const windowLaunchReplacement = `        addons: addonPaths,
+        window: spartanLaunchViewportWindow?.window,
+        proxy: launchProxy,`;
+  if (!source.includes(windowLaunchMarker)) {
+    throw new Error('expected Camofox launchOptions window marker not found');
+  }
+  source = source.replace(windowLaunchMarker, windowLaunchReplacement);
+}
+
+function spartanFindCallExpressionEnd(text, start) {
+  const open = text.indexOf('(', start);
+  if (open === -1) return -1;
+
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = open; index < text.length; index++) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (lineComment) {
+      if (char === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        index++;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      lineComment = true;
+      index++;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      blockComment = true;
+      index++;
+      continue;
+    }
+    if (char === '\'' || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') {
+      depth++;
+      continue;
+    }
+    if (char === ')') {
+      depth--;
+      if (depth === 0) {
+        let end = index + 1;
+        while (end < text.length && /\s/.test(text[end])) end++;
+        if (text[end] === ';') end++;
+        return end;
+      }
+    }
+  }
+  return -1;
+}
+
+function spartanReplaceFirstRouteCall(text, prefixes, replacement) {
+  for (const prefix of prefixes) {
+    const start = text.indexOf(prefix);
+    if (start === -1) continue;
+    const end = spartanFindCallExpressionEnd(text, start);
+    if (end === -1) throw new Error('expected Camofox viewport route call end not found');
+    return { source: text.slice(0, start) + replacement + text.slice(end), replaced: true };
+  }
+  return { source: text, replaced: false };
+}
+
+const upstreamViewportDisabledRoute = `app.post('/tabs/:tabId/upstream-viewport-disabled', authMiddleware(), async (_req, res) => {
+  res.status(410).json({
+    ok: false,
+    error: 'The upstream viewport route is disabled because it does not verify effective runtime dimensions; use /tabs/{tabId}/spartan/viewport',
+    code: 'upstream_viewport_disabled',
+  });
+});
+`;
+if (!source.includes("code: 'upstream_viewport_disabled'")) {
+  const replaced = spartanReplaceFirstRouteCall(source, [
+    "app.post('/tabs/:tabId/viewport',",
+    'app.post("/tabs/:tabId/viewport",',
+    "app.post('/tabs/:tabId/upstream-viewport-disabled',",
+    'app.post("/tabs/:tabId/upstream-viewport-disabled",',
+  ], upstreamViewportDisabledRoute);
+  source = replaced.source;
 }
 
 const clipperRouteMarker = `// Get captured downloads`;
@@ -323,6 +452,289 @@ if (!source.includes('/tabs/:tabId/extensions/obsidian-web-clipper/clip')) {
     throw new Error('expected Camofox downloads route marker not found');
   }
   source = source.replace(clipperRouteMarker, clipperRoute);
+}
+
+const viewportRouteMarker = `function spartanDownloadRecordKey(record) {`;
+const viewportRouteOnly = `function spartanViewportBody(req) {
+  const payload = req.body?.viewport && typeof req.body.viewport === 'object'
+    ? req.body.viewport
+    : (req.body || {});
+  return payload;
+}
+
+function spartanParseViewportInteger(value, name, min, max) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    const err = new Error('Invalid viewport ' + name + '; expected integer ' + min + '-' + max);
+    err.statusCode = 400;
+    err.code = 'invalid_viewport';
+    throw err;
+  }
+  return parsed;
+}
+
+function spartanUnsupportedViewportOptions(payload, rootPayload = null) {
+  const names = ['deviceScaleFactor', 'isMobile', 'hasTouch', 'touch', 'userAgent'];
+  const found = new Set();
+  for (const candidate of [payload, rootPayload]) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(candidate, name)) found.add(name);
+    }
+  }
+  return Array.from(found);
+}
+
+function spartanViewportError(message, statusCode, code) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.code = code;
+  return err;
+}
+
+function spartanSleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function spartanViewportMatches(requested, effective) {
+  return Math.abs(Number(effective?.innerWidth) - requested.width) <= 2
+    && Math.abs(Number(effective?.innerHeight) - requested.height) <= 2;
+}
+
+function spartanNativeOuterTarget(requested, effective) {
+  const chromeWidth = Math.max(0, Number(effective?.outerWidth || 0) - Number(effective?.innerWidth || 0));
+  const chromeHeight = Math.max(0, Number(effective?.outerHeight || 0) - Number(effective?.innerHeight || 0));
+  return {
+    width: requested.width + chromeWidth,
+    height: requested.height + chromeHeight,
+    chromeWidth,
+    chromeHeight,
+  };
+}
+
+function spartanWithViewportRelaunchLock(callback) {
+  const run = spartanViewportRelaunchLock.tail.catch(() => undefined).then(callback);
+  spartanViewportRelaunchLock.tail = run.catch(() => undefined);
+  return run;
+}
+
+async function spartanEvaluateViewport(page) {
+  return await page.evaluate(() => ({
+    href: String(location.href).slice(0, 160),
+    title: document.title,
+    readyState: document.readyState,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    outerWidth: window.outerWidth,
+    outerHeight: window.outerHeight,
+    screenWidth: window.screen?.width ?? null,
+    screenHeight: window.screen?.height ?? null,
+    visualViewportWidth: window.visualViewport?.width ?? null,
+    visualViewportHeight: window.visualViewport?.height ?? null,
+    devicePixelRatio: window.devicePixelRatio,
+    maxWidth767: window.matchMedia('(max-width: 767px)').matches,
+    maxWidth430: window.matchMedia('(max-width: 430px)').matches,
+    userAgent: navigator.userAgent,
+    hasTouch: (navigator.maxTouchPoints || 0) > 0,
+  }));
+}
+
+async function spartanRelaunchViewportTab({ userId, sessionKey, tabId, tabState, requested, effective, timeoutMs }) {
+  const resumeUrl = String(tabState.page?.url?.() || '');
+  const canResumeUrl = /^https?:\/\//i.test(resumeUrl);
+  const target = spartanNativeOuterTarget(requested, effective);
+  const launchWindow = [target.width, target.height];
+  spartanLaunchViewportWindow = {
+    requested,
+    window: launchWindow,
+    chromeWidth: target.chromeWidth,
+    chromeHeight: target.chromeHeight,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await closeAllSessions('viewport_relaunch', { clearDownloads: true, clearLocks: true });
+  await closeBrowserFully('viewport_relaunch');
+  browserLaunchPromise = null;
+  await ensureBrowser();
+
+  const session = await getSession(userId);
+  const group = getTabGroup(session, sessionKey);
+  const page = await session.context.newPage();
+  if (typeof page.setViewportSize === 'function') {
+    await page.setViewportSize(requested);
+  }
+  const nextTabState = createTabState(page);
+  nextTabState.lastRequestedUrl = canResumeUrl ? resumeUrl : null;
+  attachDownloadListener(nextTabState, tabId, log, pluginEvents, userId);
+  group.set(tabId, nextTabState);
+  attachPopupHandler(page, userId, sessionKey);
+  refreshActiveTabsGauge();
+
+  if (canResumeUrl) {
+    await page.goto(resumeUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    nextTabState.visitedUrls.add(resumeUrl);
+  }
+
+  const relaunchedEffective = await spartanEvaluateViewport(page);
+  return {
+    strategy: 'camoufoxLaunchWindow',
+    effective: relaunchedEffective,
+    relaunch: {
+      resumeUrl: canResumeUrl ? resumeUrl : null,
+      requested,
+      launchWindow,
+      chromeWidth: target.chromeWidth,
+      chromeHeight: target.chromeHeight,
+      closesOtherSessions: true,
+    },
+  };
+}
+
+app.post(['/tabs/:tabId/spartan/viewport', '/tabs/:tabId/viewport'], authMiddleware(), async (req, res) => {
+  let requested = null;
+  let before = null;
+  let effective = null;
+  let strategy = 'pageViewport';
+  const attempts = [];
+  try {
+    const userId = req.body?.userId || req.query?.userId;
+    if (!userId) return res.status(400).json({ ok: false, error: 'userId is required', code: 'missing_user_id' });
+
+    const normalizedUserId = normalizeUserId(userId);
+    const session = sessions.get(normalizedUserId);
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) {
+      const owner = spartanFindTabOwner(req.params.tabId);
+      if (owner) {
+        return res.status(403).json({ ok: false, error: 'Tab does not belong to requested userId', code: 'tab_user_mismatch' });
+      }
+      return tabNotFoundResponse(res, req.params.tabId);
+    }
+
+    const payload = spartanViewportBody(req);
+    requested = {
+      width: spartanParseViewportInteger(payload.width, 'width', 100, 4096),
+      height: spartanParseViewportInteger(payload.height, 'height', 100, 4096),
+    };
+
+    const unsupported = spartanUnsupportedViewportOptions(payload, req.body || {});
+    if (unsupported.length > 0) {
+      const err = new Error('Unsupported live viewport option(s): ' + unsupported.join(', '));
+      err.statusCode = 400;
+      err.code = 'unsupported_viewport_options';
+      throw err;
+    }
+
+    const timeoutMsRaw = Number(payload.timeoutMs);
+    const timeoutMs = Number.isFinite(timeoutMsRaw)
+      ? Math.min(Math.max(timeoutMsRaw, 1000), 60000)
+      : 10000;
+
+    const { tabState } = found;
+    tabState.toolCalls++;
+    session.lastAccess = Date.now();
+
+    const result = await withTabLock(req.params.tabId, async () => {
+      if (typeof tabState.page?.setViewportSize !== 'function') {
+        const err = new Error('Camofox page does not support live viewport resizing');
+        err.statusCode = 501;
+        err.code = 'viewport_resize_unsupported';
+        throw err;
+      }
+
+      const page = tabState.page;
+      const shouldReload = payload.reload === true && typeof page.reload === 'function';
+      before = await spartanEvaluateViewport(page);
+      await page.setViewportSize(requested);
+      effective = await spartanEvaluateViewport(page);
+      attempts.push({ strategy: 'pageViewport', effective });
+      if (spartanViewportMatches(requested, effective)) {
+        if (shouldReload) {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: timeoutMs });
+          effective = await spartanEvaluateViewport(page);
+          attempts.push({ strategy: 'pageViewportReload', effective });
+        }
+        if (spartanViewportMatches(requested, effective)) return { strategy: 'pageViewport', effective };
+      }
+
+      if (payload.relaunch === true) {
+        strategy = 'camoufoxLaunchWindow';
+        return await spartanWithViewportRelaunchLock(async () => {
+          const relaunched = await spartanRelaunchViewportTab({
+            userId: normalizedUserId,
+            sessionKey: found.listItemId,
+            tabId: req.params.tabId,
+            tabState,
+            requested,
+            effective,
+            timeoutMs,
+          });
+          attempts.push({ strategy: 'camoufoxLaunchWindow', relaunch: relaunched.relaunch, effective: relaunched.effective });
+          return relaunched;
+        });
+      }
+
+      return { strategy: 'pageViewport', effective };
+    });
+
+    strategy = result.strategy;
+    effective = result.effective;
+    if (!spartanViewportMatches(requested, effective)) {
+      const err = new Error('Viewport did not take effect in page runtime');
+      err.statusCode = 409;
+      err.code = 'viewport_mismatch';
+      err.requested = requested;
+      err.before = before;
+      err.effective = effective;
+      err.strategy = strategy;
+      err.attempts = attempts;
+      err.relaunchSupported = true;
+      err.relaunchRequired = payload.relaunch !== true;
+      err.hint = payload.relaunch === true
+        ? 'Camoufox launch window relaunch completed but runtime dimensions still did not match'
+        : 'Retry with relaunch=true to restart Camoufox with a launch-time window size';
+      throw err;
+    }
+
+    res.json({
+      ok: true,
+      tabId: req.params.tabId,
+      userId: normalizedUserId,
+      requested,
+      before,
+      effective,
+      strategy,
+      attempts,
+      relaunch: result.relaunch || undefined,
+    });
+  } catch (err) {
+    failuresTotal.labels(classifyError(err), 'viewport').inc();
+    log('error', 'viewport resize failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message, code: err.code, strategy });
+    res.status(err.statusCode || 500).json({
+      ok: false,
+      error: safeError(err),
+      code: err.code || 'viewport_failed',
+      requested: err.requested || requested || undefined,
+      before: err.before || before || undefined,
+      effective: err.effective || effective || undefined,
+      strategy: err.strategy || strategy || undefined,
+      attempts: err.attempts || attempts || undefined,
+      relaunchSupported: err.relaunchSupported || undefined,
+      relaunchRequired: err.relaunchRequired || undefined,
+      hint: err.hint || undefined,
+    });
+  }
+});
+
+${viewportRouteMarker}`;
+if (!source.includes('/tabs/:tabId/viewport')) {
+  if (!source.includes('function spartanFindTabOwner(tabId)')) {
+    throw new Error('expected Camofox tab owner helper marker not found');
+  }
+  if (!source.includes(viewportRouteMarker)) {
+    throw new Error('expected Camofox viewport route marker not found');
+  }
+  source = source.replace(viewportRouteMarker, viewportRouteOnly);
 }
 
 const navigateProxyErrorPattern = /(\n\s*} else \{\n)(\s*)throw navErr;\n(\s*}\n\s*})/;

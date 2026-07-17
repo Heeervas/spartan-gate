@@ -9,8 +9,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PATCHER = ROOT / "infra" / "camofox" / "patch-server.js"
 
 SERVER_FIXTURE = """\
-const crypto = require('crypto');
-const fs = require('fs');
+import crypto from 'crypto';
+import fs from 'fs';
 const app = { post() {}, delete() {} };
 const sessions = new Map();
 const tabLocks = new Map();
@@ -76,6 +76,10 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
   }
 });
 
+app.post('/tabs/:tabId/viewport', async (req, res) => {
+  res.json({ ok: true, width: req.body?.width, height: req.body?.height });
+});
+
 // Get captured downloads
 
 app.delete('/tabs/:tabId', async (req, res) => {
@@ -116,7 +120,8 @@ class CamofoxPatchServerTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp_dir.name)
-        shutil.copy2(PATCHER, self.root / "patch-server.js")
+        shutil.copy2(PATCHER, self.root / "patch-server.cjs")
+        (self.root / "package.json").write_text('{"type":"module"}\n')
         self.server = self.root / "server.js"
         self.server.write_text(SERVER_FIXTURE)
 
@@ -125,7 +130,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
 
     def run_patcher(self):
         return subprocess.run(
-            ["node", "patch-server.js"],
+            ["node", "patch-server.cjs"],
             cwd=self.root,
             text=True,
             capture_output=True,
@@ -146,6 +151,45 @@ class CamofoxPatchServerTests(unittest.TestCase):
         )
         self.assertIn("spartanFindTabOwner(req.params.tabId)", patched)
         self.assertIn("code: 'tab_user_mismatch'", patched)
+        self.assertIn(
+            "app.post(['/tabs/:tabId/spartan/viewport', '/tabs/:tabId/viewport'], "
+            "authMiddleware(), async (req, res) =>",
+            patched,
+        )
+        self.assertIn("app.post('/tabs/:tabId/upstream-viewport-disabled'", patched)
+        self.assertIn("code: 'upstream_viewport_disabled'", patched)
+        self.assertNotIn("app.post('/tabs/:tabId/viewport', async", patched)
+        self.assertNotIn("app.post('/tabs/:tabId/upstream-viewport-disabled', async", patched)
+        self.assertNotIn("width: req.body?.width", patched)
+        self.assertNotIn("import * as spartanChildProcess from 'child_process';", patched)
+        self.assertNotIn("require('child_process')", patched)
+        self.assertIn("page.setViewportSize(requested)", patched)
+        self.assertIn("window: spartanLaunchViewportWindow?.window", patched)
+        self.assertIn("const spartanViewportRelaunchLock = { tail: Promise.resolve() };", patched)
+        self.assertIn("let spartanLaunchViewportWindow = null;", patched)
+        self.assertIn("spartanWithViewportRelaunchLock", patched)
+        self.assertIn("spartanRelaunchViewportTab", patched)
+        self.assertIn("closeAllSessions('viewport_relaunch'", patched)
+        self.assertIn("closeBrowserFully('viewport_relaunch'", patched)
+        self.assertIn("await page.setViewportSize(requested);", patched)
+        self.assertIn("strategy: 'camoufoxLaunchWindow'", patched)
+        self.assertIn("relaunchSupported", patched)
+        self.assertIn("relaunchRequired", patched)
+        self.assertNotIn("xdotool", patched)
+        self.assertNotIn("spartanChildProcess.spawnSync", patched)
+        self.assertIn("err.code = 'viewport_mismatch'", patched)
+        self.assertIn("unsupported_viewport_options", patched)
+        self.assertIn("spartanUnsupportedViewportOptions(payload, req.body || {})", patched)
+        self.assertIn("Retry with relaunch=true", patched)
+        self.assertIn("failuresTotal.labels(classifyError(err), 'viewport').inc();", patched)
+        viewport_route = patched.split("app.post(['/tabs/:tabId/spartan/viewport'", 1)[1].split(
+            "function spartanDownloadRecordKey",
+            1,
+        )[0]
+        self.assertIn("await withTabLock(req.params.tabId, async () =>", viewport_route)
+        self.assertIn("await withTabLock(req.params.tabId, async () =>", viewport_route)
+        self.assertIn("strategy = 'camoufoxLaunchWindow'", viewport_route)
+        self.assertIn("payload.relaunch === true", viewport_route)
         self.assertIn("err.code = 'clipper_bridge_timeout'", patched)
         self.assertIn("navErr.code = 'proxy_forbidden'", patched)
         self.assertIn("navErr.statusCode = 403", patched)
@@ -169,6 +213,61 @@ class CamofoxPatchServerTests(unittest.TestCase):
         second = self.run_patcher()
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.server.read_text(), patched)
+
+    def test_migrates_already_patched_server_without_viewport_route(self):
+        first = self.run_patcher()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        patched = self.server.read_text()
+        start = patched.index("function spartanViewportBody(req)")
+        end = patched.index("function spartanDownloadRecordKey(record)")
+        legacy = patched[:start] + patched[end:]
+        self.assertNotIn("/tabs/:tabId/viewport", legacy)
+        self.server.write_text(legacy)
+
+        second = self.run_patcher()
+
+        self.assertEqual(second.returncode, 0, second.stderr)
+        migrated = self.server.read_text()
+        self.assertIn("/tabs/:tabId/viewport", migrated)
+        self.assertIn("page.setViewportSize(requested)", migrated)
+        self.assertIn("spartanRelaunchViewportTab", migrated)
+        self.assertIn("spartanLaunchViewportWindow", migrated)
+        self.assertIn("closeBrowserFully('viewport_relaunch'", migrated)
+        self.assertIn("unsupported_viewport_options", migrated)
+        self.assertIn("spartanUnsupportedViewportOptions(payload, req.body || {})", migrated)
+        self.assertIn("Retry with relaunch=true", migrated)
+        self.assertNotIn("import * as spartanChildProcess from 'child_process';", migrated)
+        self.assertNotIn("require('child_process')", migrated)
+
+    def test_removes_legacy_child_process_helper_when_migrating(self):
+        first = self.run_patcher()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        patched = self.server.read_text()
+        legacy = patched.replace(
+            "const spartanViewportRelaunchLock = { tail: Promise.resolve() };",
+            "const spartanChildProcess = require('child_process');\nconst spartanViewportWindowLock = { tail: Promise.resolve() };\nconst spartanViewportRelaunchLock = { tail: Promise.resolve() };",
+            1,
+        )
+        self.assertIn("require('child_process')", legacy)
+        self.assertIn("spartanViewportWindowLock", legacy)
+        self.server.write_text(legacy)
+
+        second = self.run_patcher()
+
+        self.assertEqual(second.returncode, 0, second.stderr)
+        migrated = self.server.read_text()
+        self.assertNotIn("import * as spartanChildProcess from 'child_process';", migrated)
+        self.assertNotIn("require('child_process')", migrated)
+        self.assertNotIn("spartanViewportWindowLock", migrated)
+        self.assertIn("spartanViewportRelaunchLock", migrated)
+        syntax = subprocess.run(
+            ["node", "--check", "server.js"],
+            cwd=self.root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
 
     def test_does_not_write_a_partial_patch_when_an_anchor_is_missing(self):
         original = SERVER_FIXTURE.replace("// Get captured downloads", "// missing")

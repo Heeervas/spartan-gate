@@ -5,8 +5,8 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const patch = path.join(__dirname, 'patch-server.js');
-const fixture = `const fs = require('fs');
-const crypto = require('crypto');
+const fixture = `import fs from 'fs';
+import crypto from 'crypto';
 const reporter = {};
 const CONFIG = { nodeEnv: 'production' };
 function isProxyError() { return true; }
@@ -52,6 +52,9 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     }
   }
 });
+app.post('/tabs/:tabId/viewport', async (req, res) => {
+  res.json({ ok: true, width: req.body?.width, height: req.body?.height });
+});
 // Get captured downloads
 
 async function closeBrowser() {
@@ -72,6 +75,7 @@ function runPatch(cwd) {
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'spartan-camofox-patch-'));
 try {
   const serverPath = path.join(temp, 'server.js');
+  fs.writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
   fs.writeFileSync(serverPath, fixture);
   runPatch(temp);
   const once = fs.readFileSync(serverPath, 'utf8');
@@ -81,6 +85,32 @@ try {
   assert.strictEqual(twice, once, 'patch must be idempotent');
   assert.match(once, /authMiddleware\(\)/, 'clip route must require bearer auth');
   assert.match(once, /tab_user_mismatch/, 'clip route must reject another user owner');
+  assert.match(
+    once,
+    /app\.post\(\['\/tabs\/:tabId\/spartan\/viewport', '\/tabs\/:tabId\/viewport'\], authMiddleware\(\)/,
+    'viewport route must require bearer auth',
+  );
+  assert.match(once, /app\.post\('\/tabs\/:tabId\/upstream-viewport-disabled'/, 'lying upstream viewport route must be disabled');
+  assert.match(once, /upstream_viewport_disabled/, 'renamed upstream viewport route must fail closed');
+  assert.doesNotMatch(once, /app\.post\('\/tabs\/:tabId\/viewport', async/, 'unverified upstream viewport route must not keep the public path');
+  assert.doesNotMatch(once, /app\.post\('\/tabs\/:tabId\/upstream-viewport-disabled', async/, 'renamed upstream viewport route must not keep the original live body');
+  assert.doesNotMatch(once, /width: req\.body\?\.width/, 'renamed upstream viewport route body must be removed');
+  assert.doesNotMatch(once, /import \* as spartanChildProcess from 'child_process';/, 'generated server should not keep unused child_process imports');
+  assert.doesNotMatch(once, /require\('child_process'\)/, 'generated ESM server must not use CommonJS require');
+  assert.match(once, /page\.setViewportSize\(requested\)/, 'viewport route must first try live page viewport resize');
+  assert.match(once, /window: spartanLaunchViewportWindow\?\.window/, 'browser relaunch must pass Camoufox launch window');
+  assert.match(once, /spartanViewportRelaunchLock/, 'viewport relaunch must be serialized');
+  assert.match(once, /spartanRelaunchViewportTab/, 'viewport route must support explicit relaunch');
+  assert.match(once, /closeAllSessions\('viewport_relaunch'/, 'viewport relaunch must close existing browser sessions explicitly');
+  assert.match(once, /closeBrowserFully\('viewport_relaunch'/, 'viewport relaunch must restart the browser for launch-time window sizing');
+  assert.match(once, /await page\.setViewportSize\(requested\);/, 'relaunched pages must set Playwright viewport for screenshot dimensions');
+  assert.match(once, /camoufoxLaunchWindow/, 'viewport relaunch response must expose the launch-window strategy');
+  assert.doesNotMatch(once, /xdotool/, 'viewport route must not depend on ineffective xdotool resizing');
+  assert.match(once, /spartanEvaluateViewport\(page\)/, 'viewport route must return runtime dimensions');
+  assert.match(once, /spartanUnsupportedViewportOptions\(payload, req\.body \|\| \{\}\)/, 'unsupported device emulation options must be checked at root and nested viewport levels');
+  assert.match(once, /unsupported_viewport_options/, 'unsupported device emulation options must fail explicitly');
+  assert.match(once, /Retry with relaunch=true/, 'viewport mismatch should tell callers how to request relaunch mode');
+  assert.match(once, /viewport_mismatch/, 'viewport route must fail when runtime dimensions do not match');
   assert.match(
     once,
     /await withTabLock\(req\.params\.tabId,[\s\S]*spartanInvokeObsidianClipperBridge/,
@@ -100,6 +130,8 @@ try {
   assert.match(once, /err\.code = 'clipper_bridge_timeout'/, 'clipper bridge timeouts must return a semantic code');
   assert.match(once, /if \(err\.code\) return err\.message;/, 'coded errors must keep actionable messages');
   assert.match(once, /body\.code = err\.code/, 'global errors must include semantic codes in the response body');
+  const syntax = spawnSync(process.execPath, ['--check', serverPath], { cwd: temp, encoding: 'utf8' });
+  assert.strictEqual(syntax.status, 0, syntax.stderr);
   console.log('patch-server tests: ok');
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
