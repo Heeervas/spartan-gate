@@ -391,13 +391,20 @@ sg-whitelist-domain 15d vendor.example.com
 
 The helper writes to the private file by default and hot-reloads running
 `proxy`/`dns` services by executing an in-container `USR1` signal. The normal
-path does not use `docker compose kill` and does not recreate containers. If
-the helper cannot deliver that outer request, it exits non-zero and the
-previous runtime policy remains active; the private file still contains the
+path does not use `docker compose kill` and does not recreate containers. Before
+replacing the private file, the helper validates the byte limit for each public
+or private fragment and the combined normalized active-entry limit. Defaults are
+262144 bytes per fragment and 2048 active unique domains; configure them with
+`SPARTAN_WHITELIST_MAX_BYTES` and `SPARTAN_WHITELIST_MAX_ENTRIES`.
+
+If the helper cannot deliver its outer reload request, it exits non-zero and
+the previous runtime policy remains active; the private file still contains the
 requested entry for the next successful reload or startup. Once a refresh is
 accepted inside a container, regeneration failure, scheduled-time evaluation
-failure, or failure to signal Tinyproxy/dnsmasq is treated as policy-freshness
-loss: the service exits and Docker must restart it through fail-closed startup.
+failure, or failure to signal Tinyproxy/dnsmasq restores the complete previous
+generated policy set, then exits so Docker restarts the service through
+fail-closed startup. DNS treats its server and dnsmasq fragments as one
+transaction, so it never deliberately leaves a mixed generation installed.
 Use `--no-reload` to write only without touching running services; legacy
 `--no-restart` is accepted as the same operation. Use
 `--recreate-on-reload-failure` or

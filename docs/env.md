@@ -515,6 +515,14 @@ startup, helper-triggered hot reloads, explicit fallback recreates, and that
 daily refresh window. The time must be an exact 24-hour `HH:MM` value and the
 timezone must name an installed file below `/usr/share/zoneinfo`; traversal,
 missing files, and malformed values fail startup and `scripts/doctor.sh`.
+Each public or private fragment is capped by
+`SPARTAN_WHITELIST_MAX_BYTES=262144` (valid range 1–16777216), and their
+combined normalized, active, unique domains are capped by
+`SPARTAN_WHITELIST_MAX_ENTRIES=2048` (valid range 1–65536). Proxy, DNS, and
+`scripts/whitelist-domain.sh` reject malformed settings or overflow before
+replacing a live artifact or private candidate. DNS stages and validates both
+generated artifacts as one policy set; partial installation or child reload
+failure restores the complete previous set.
 If an in-container scheduled or signal-triggered refresh cannot regenerate the
 policy or signal its child, the service exits so Docker restarts it through the
 same fail-closed startup path. Set

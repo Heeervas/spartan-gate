@@ -9,15 +9,28 @@ PUBLIC_WHITELIST="${SPARTAN_DNS_WHITELIST_PUBLIC:-/etc/dns-whitelist.public.txt}
 PRIVATE_WHITELIST="${SPARTAN_DNS_WHITELIST_PRIVATE:-/etc/dns-whitelist.private.txt}"
 REFRESH_TIME="${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}"
 REFRESH_TZ="${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}"
-DOMAINS="/tmp/dns-whitelist-domains.txt"
-SERVERS="/tmp/dnsmasq-whitelist.servers"
-CONF="/tmp/dnsmasq-whitelist.conf"
+MAX_POLICY_BYTES="${SPARTAN_WHITELIST_MAX_BYTES:-262144}"
+MAX_POLICY_ENTRIES="${SPARTAN_WHITELIST_MAX_ENTRIES:-2048}"
+if [ -n "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" ] && [ -n "${SPARTAN_WHITELIST_TEST_ARTIFACT_DIR:-}" ]; then
+  DOMAINS="${SPARTAN_WHITELIST_TEST_ARTIFACT_DIR}/domains.txt"
+  SERVERS="${SPARTAN_WHITELIST_TEST_ARTIFACT_DIR}/servers.conf"
+  CONF="${SPARTAN_WHITELIST_TEST_ARTIFACT_DIR}/dnsmasq.conf"
+else
+  DOMAINS="/tmp/dns-whitelist-domains.txt"
+  SERVERS="/tmp/dnsmasq-whitelist.servers"
+  CONF="/tmp/dnsmasq-whitelist.conf"
+fi
 TMP_DOMAINS="${DOMAINS}.tmp"
 TMP_SERVERS="${SERVERS}.tmp"
+ROLLBACK_DOMAINS="${DOMAINS}.rollback"
+ROLLBACK_SERVERS="${SERVERS}.rollback"
 dns_pid=""
 refresh_pid=""
 supervisor_pid="$$"
 refresh_performed=0
+had_domains=0
+had_servers=0
+generated_count=0
 
 current_epoch() {
   if [ -n "${SPARTAN_WHITELIST_NOW:-}" ]; then
@@ -52,6 +65,48 @@ validate_refresh_config() {
     echo "[dns-relay] Invalid SPARTAN_WHITELIST_REFRESH_TZ; expected an installed traversal-free timezone" >&2
     return 1
   fi
+}
+
+valid_policy_limit() {
+  value="$1"
+  maximum="$2"
+  case "$value" in ""|*[!0-9]*) return 1 ;; esac
+  [ "${#value}" -le 8 ] || return 1
+  [ "$value" -ge 1 ] && [ "$value" -le "$maximum" ]
+}
+
+validate_policy_config() {
+  if ! valid_policy_limit "$MAX_POLICY_BYTES" 16777216; then
+    echo "[dns-relay] Invalid SPARTAN_WHITELIST_MAX_BYTES; expected 1-16777216" >&2
+    return 1
+  fi
+  if ! valid_policy_limit "$MAX_POLICY_ENTRIES" 65536; then
+    echo "[dns-relay] Invalid SPARTAN_WHITELIST_MAX_ENTRIES; expected 1-65536" >&2
+    return 1
+  fi
+}
+
+validate_policy_input_file() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  if ! bytes="$(wc -c < "$file" | tr -d '[:space:]')"; then
+    echo "[dns-relay] Could not measure whitelist input" >&2
+    return 1
+  fi
+  case "$bytes" in ""|*[!0-9]*)
+    echo "[dns-relay] Invalid whitelist byte count" >&2
+    return 1
+    ;;
+  esac
+  if [ "$bytes" -gt "$MAX_POLICY_BYTES" ]; then
+    echo "[dns-relay] Whitelist input exceeds byte limit ${MAX_POLICY_BYTES}" >&2
+    return 1
+  fi
+}
+
+validate_policy_inputs() {
+  validate_policy_input_file "$PUBLIC_WHITELIST" || return 1
+  validate_policy_input_file "$PRIVATE_WHITELIST" || return 1
 }
 
 current_refresh_time() {
@@ -151,45 +206,149 @@ normalize_whitelist() {
   done < "$file"
 }
 
-generate_servers() {
-  : > "$TMP_DOMAINS" || return 1
+cleanup_server_staging() {
+  rm -f "$TMP_DOMAINS" "$TMP_SERVERS" 2>/dev/null || true
+}
+
+stage_servers() {
+  cleanup_server_staging
+  validate_policy_inputs || return 1
+
   if ! {
     normalize_whitelist "$PUBLIC_WHITELIST"
     normalize_whitelist "$PRIVATE_WHITELIST"
-  } >> "$TMP_DOMAINS"; then
-    rm -f "$TMP_DOMAINS" "$TMP_SERVERS"
+  } | sort -u > "$TMP_DOMAINS"; then
+    cleanup_server_staging
     return 1
   fi
-  if ! sort -u "$TMP_DOMAINS" -o "$TMP_DOMAINS"; then
-    rm -f "$TMP_DOMAINS" "$TMP_SERVERS"
+
+  if ! generated_count="$(wc -l < "$TMP_DOMAINS" | tr -d '[:space:]')"; then
+    cleanup_server_staging
+    return 1
+  fi
+  case "$generated_count" in ""|*[!0-9]*)
+    cleanup_server_staging
+    return 1
+    ;;
+  esac
+  if [ "$generated_count" -gt "$MAX_POLICY_ENTRIES" ]; then
+    echo "[dns-relay] Normalized whitelist exceeds entry limit ${MAX_POLICY_ENTRIES}" >&2
+    cleanup_server_staging
     return 1
   fi
 
   : > "$TMP_SERVERS" || {
-    rm -f "$TMP_DOMAINS" "$TMP_SERVERS"
+    cleanup_server_staging
     return 1
   }
-  count=0
   while IFS= read -r domain || [ -n "$domain" ]; do
     [ -n "$domain" ] || continue
     echo "server=/${domain}/1.1.1.1" >> "$TMP_SERVERS"
     echo "server=/${domain}/8.8.8.8" >> "$TMP_SERVERS"
-    count=$((count + 1))
   done < "$TMP_DOMAINS"
 
-  if ! mv "$TMP_DOMAINS" "$DOMAINS"; then
-    rm -f "$TMP_DOMAINS" "$TMP_SERVERS"
+  if ! server_lines="$(wc -l < "$TMP_SERVERS" | tr -d '[:space:]')"; then
+    cleanup_server_staging
     return 1
   fi
-  if ! mv "$TMP_SERVERS" "$SERVERS"; then
-    rm -f "$TMP_SERVERS"
+  case "$server_lines" in ""|*[!0-9]*)
+    cleanup_server_staging
+    return 1
+    ;;
+  esac
+  if [ "$server_lines" -ne "$((generated_count * 2))" ]; then
+    echo "[dns-relay] Generated DNS artifact validation failed" >&2
+    cleanup_server_staging
     return 1
   fi
+}
 
+backup_server_artifacts() {
+  had_domains=0
+  had_servers=0
+  rm -f "$ROLLBACK_DOMAINS" "$ROLLBACK_SERVERS" 2>/dev/null || true
+  if [ -f "$DOMAINS" ]; then
+    if ! cp "$DOMAINS" "$ROLLBACK_DOMAINS"; then
+      echo "[dns-relay] Could not stage domain-list rollback" >&2
+      return 1
+    fi
+    had_domains=1
+  fi
+  if [ -f "$SERVERS" ]; then
+    if ! cp "$SERVERS" "$ROLLBACK_SERVERS"; then
+      echo "[dns-relay] Could not stage server-list rollback" >&2
+      rm -f "$ROLLBACK_DOMAINS" 2>/dev/null || true
+      return 1
+    fi
+    had_servers=1
+  fi
+}
+
+restore_server_artifact() {
+  had_artifact="$1"
+  rollback_file="$2"
+  live_file="$3"
+  if [ "$had_artifact" -eq 1 ]; then
+    [ -f "$rollback_file" ] && mv "$rollback_file" "$live_file"
+  else
+    rm -f "$live_file"
+  fi
+}
+
+rollback_server_artifacts() {
+  status=0
+  if ! restore_server_artifact "$had_domains" "$ROLLBACK_DOMAINS" "$DOMAINS"; then
+    echo "[dns-relay] Domain-list rollback failed" >&2
+    status=1
+  fi
+  if ! restore_server_artifact "$had_servers" "$ROLLBACK_SERVERS" "$SERVERS"; then
+    echo "[dns-relay] Server-list rollback failed" >&2
+    status=1
+  fi
+  cleanup_server_staging
+  return "$status"
+}
+
+commit_server_artifacts() {
+  if ! rm -f "$ROLLBACK_DOMAINS" "$ROLLBACK_SERVERS"; then
+    echo "[dns-relay] Could not finalize DNS policy transaction" >&2
+    return 1
+  fi
+  had_domains=0
+  had_servers=0
   echo ""
-  echo "[dns-relay] Loaded ${count} whitelisted domains from public/private fragments"
+  echo "[dns-relay] Loaded ${generated_count} whitelisted domains from public/private fragments"
   echo "[dns-relay] All other DNS queries will be REFUSED"
   echo ""
+}
+
+install_server_artifact() {
+  install_index="$1"
+  source_file="$2"
+  live_file="$3"
+  if [ "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" = "scheduled-refresh" ] &&
+     [ "${SPARTAN_WHITELIST_TEST_FAIL_INSTALL_AT:-0}" = "$install_index" ]; then
+    return 1
+  fi
+  mv "$source_file" "$live_file"
+}
+
+generate_servers() {
+  stage_servers || return 1
+  if ! backup_server_artifacts; then
+    cleanup_server_staging
+    return 1
+  fi
+  if ! install_server_artifact 1 "$TMP_DOMAINS" "$DOMAINS"; then
+    echo "[dns-relay] DNS policy install failed at artifact 1" >&2
+    rollback_server_artifacts || true
+    return 1
+  fi
+  if ! install_server_artifact 2 "$TMP_SERVERS" "$SERVERS"; then
+    echo "[dns-relay] DNS policy install failed at artifact 2" >&2
+    rollback_server_artifacts || true
+    return 1
+  fi
 }
 
 write_config() {
@@ -224,14 +383,21 @@ reload_servers() {
   fi
   if [ -z "$dns_pid" ] || ! kill -0 "$dns_pid" 2>/dev/null; then
     echo "[dns-relay] Whitelist regenerated; dnsmasq child is not running" >&2
+    rollback_server_artifacts || true
     return 1
   fi
   if [ "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" = "scheduled-refresh" ] && [ "${SPARTAN_WHITELIST_TEST_SIGNAL_FAILURE:-0}" = "1" ]; then
     echo "[dns-relay] Whitelist regenerated but dnsmasq reload signaling failed" >&2
+    rollback_server_artifacts || true
     return 1
   fi
   if ! kill -HUP "$dns_pid" 2>/dev/null; then
     echo "[dns-relay] Whitelist regenerated but dnsmasq reload signaling failed" >&2
+    rollback_server_artifacts || true
+    return 1
+  fi
+  if ! commit_server_artifacts; then
+    rollback_server_artifacts || true
     return 1
   fi
 }
@@ -298,6 +464,7 @@ trap 'handle_reload' USR1
 trap 'shutdown' INT TERM
 
 validate_refresh_config
+validate_policy_config
 
 case "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" in
   validate)
@@ -310,6 +477,7 @@ case "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" in
 esac
 
 generate_servers
+commit_server_artifacts
 write_config
 
 if [ "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" = "generate" ]; then

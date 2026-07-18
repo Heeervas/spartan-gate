@@ -20,6 +20,8 @@ services:
     environment:
       SPARTAN_WHITELIST_REFRESH_TIME: ${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}
       SPARTAN_WHITELIST_REFRESH_TZ: ${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}
+      SPARTAN_WHITELIST_MAX_BYTES: ${SPARTAN_WHITELIST_MAX_BYTES:-262144}
+      SPARTAN_WHITELIST_MAX_ENTRIES: ${SPARTAN_WHITELIST_MAX_ENTRIES:-2048}
     volumes:
       - ../../outbound-proxy/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
       - ../../outbound-proxy/whitelist.txt:/etc/tinyproxy/whitelist.public.txt:ro
@@ -45,6 +47,8 @@ services:
     environment:
       SPARTAN_WHITELIST_REFRESH_TIME: ${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}
       SPARTAN_WHITELIST_REFRESH_TZ: ${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}
+      SPARTAN_WHITELIST_MAX_BYTES: ${SPARTAN_WHITELIST_MAX_BYTES:-262144}
+      SPARTAN_WHITELIST_MAX_ENTRIES: ${SPARTAN_WHITELIST_MAX_ENTRIES:-2048}
     volumes:
       - ../../dns/entrypoint.sh:/entrypoint.sh:ro
       - ../../outbound-proxy/whitelist.txt:/etc/dns-whitelist.public.txt:ro

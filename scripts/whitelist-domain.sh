@@ -24,18 +24,17 @@ _default_env_file() {
     fi
 }
 WHITELIST="${SPARTAN_WHITELIST_FILE:-$ROOT/private/outbound-proxy/whitelist.private.txt}"
+PUBLIC_WHITELIST_FILE="${SPARTAN_WHITELIST_PUBLIC_FILE:-$ROOT/infra/outbound-proxy/whitelist.txt}"
 
 usage() {
     printf 'Usage: %s [--no-reload|--no-restart] [--recreate-on-reload-failure] [15m|6h|15d] domain.com[,api.example.com] [more-hosts]\n' "$0" >&2
 }
 
-trim_spaces() {
-    printf '%s' "$1" | tr -d '[:space:]'
-}
+NORMALIZED_HOST=""
 
-normalize_host() {
-    local value
-    value="$(trim_spaces "$1")"
+set_normalized_host() {
+    local value="$1"
+    value="${value//[[:space:]]/}"
     value="${value,,}"
     value="${value#http://}"
     value="${value#https://}"
@@ -50,8 +49,12 @@ normalize_host() {
         [[ "${value##*:}" =~ ^[0-9]+$ ]] || return 1
         value="${value%%:*}"
     fi
-    value="${value%.}"
-    printf '%s\n' "$value"
+    NORMALIZED_HOST="${value%.}"
+}
+
+normalize_host() {
+    set_normalized_host "$1" || return 1
+    printf '%s\n' "$NORMALIZED_HOST"
 }
 
 valid_ipv4() {
@@ -130,6 +133,109 @@ format_expiry() {
     else
         printf '%s\n' "$epoch"
     fi
+}
+
+policy_env_value() {
+    local env_file="$1"
+    local key="$2"
+    sed -n "s/^${key}=//p" "$env_file" | tail -n 1 | sed "s/^'//; s/'$//; s/^\"//; s/\"$//"
+}
+
+load_policy_limit() {
+    local name="$1"
+    local default_value="$2"
+    local env_file value
+    value="${!name:-}"
+    if [[ -z "$value" ]]; then
+        env_file="$(_default_env_file)"
+        if [[ -f "$env_file" ]]; then
+            value="$(policy_env_value "$env_file" "$name")"
+        elif [[ -f "$ROOT/.env" ]]; then
+            value="$(policy_env_value "$ROOT/.env" "$name")"
+        fi
+    fi
+    printf '%s\n' "${value:-$default_value}"
+}
+
+valid_policy_limit() {
+    local value="$1"
+    local maximum="$2"
+    [[ "$value" =~ ^[0-9]{1,8}$ ]] || return 1
+    ((10#$value >= 1 && 10#$value <= maximum))
+}
+
+validate_policy_limits() {
+    if ! valid_policy_limit "$MAX_POLICY_BYTES" 16777216; then
+        printf '[whitelist] Invalid SPARTAN_WHITELIST_MAX_BYTES (expected 1-16777216)\n' >&2
+        return 1
+    fi
+    if ! valid_policy_limit "$MAX_POLICY_ENTRIES" 65536; then
+        printf '[whitelist] Invalid SPARTAN_WHITELIST_MAX_ENTRIES (expected 1-65536)\n' >&2
+        return 1
+    fi
+}
+
+validate_policy_file_bytes() {
+    local file="$1"
+    local bytes
+    [[ -f "$file" ]] || return 0
+    bytes="$(wc -c < "$file" | tr -d '[:space:]')" || return 1
+    [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
+    if ((10#$bytes > MAX_POLICY_BYTES)); then
+        printf '[whitelist] Policy file exceeds byte limit %s\n' "$MAX_POLICY_BYTES" >&2
+        return 1
+    fi
+}
+
+policy_line_is_active() {
+    local line="$1"
+    local runtime_now="$2"
+    local expiry
+    if [[ "$line" != *sg-expires-at=* ]]; then
+        return 0
+    fi
+    expiry="${line#*sg-expires-at=}"
+    expiry="${expiry%% *}"
+    [[ "$expiry" =~ ^[0-9]{1,10}$ ]] || return 1
+    ((10#$expiry > runtime_now))
+}
+
+validate_policy_entry_limit() {
+    local private_candidate="$1"
+    local runtime_now line domain file
+    local count=0
+    local -A active_domains=()
+
+    runtime_now="$(now_epoch)"
+    [[ "$runtime_now" =~ ^[0-9]{1,10}$ ]] || {
+        printf '[whitelist] Invalid current epoch for policy validation\n' >&2
+        return 1
+    }
+    runtime_now=$((10#$runtime_now))
+
+    for file in "$PUBLIC_WHITELIST_FILE" "$private_candidate"; do
+        [[ -f "$file" ]] || continue
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            policy_line_is_active "$line" "$runtime_now" || continue
+            set_normalized_host "${line%%#*}" || continue
+            domain="$NORMALIZED_HOST"
+            valid_host "$domain" || continue
+            [[ -n "${active_domains[$domain]:-}" ]] && continue
+            active_domains[$domain]=1
+            count=$((count + 1))
+            if ((count > MAX_POLICY_ENTRIES)); then
+                printf '[whitelist] Normalized policy exceeds entry limit %s\n' "$MAX_POLICY_ENTRIES" >&2
+                return 1
+            fi
+        done < "$file"
+    done
+}
+
+validate_policy_candidate() {
+    local private_candidate="$1"
+    validate_policy_file_bytes "$PUBLIC_WHITELIST_FILE" || return 1
+    validate_policy_file_bytes "$private_candidate" || return 1
+    validate_policy_entry_limit "$private_candidate" || return 1
 }
 
 compose_cmd() {
@@ -252,6 +358,12 @@ if [[ "${#inputs[@]}" -eq 0 ]]; then
     exit 1
 fi
 
+MAX_POLICY_BYTES="$(load_policy_limit SPARTAN_WHITELIST_MAX_BYTES 262144)"
+MAX_POLICY_ENTRIES="$(load_policy_limit SPARTAN_WHITELIST_MAX_ENTRIES 2048)"
+validate_policy_limits
+MAX_POLICY_BYTES=$((10#$MAX_POLICY_BYTES))
+MAX_POLICY_ENTRIES=$((10#$MAX_POLICY_ENTRIES))
+
 expires_at=""
 if [[ -n "$ttl" ]]; then
     ttl_seconds="$(parse_ttl_seconds "$ttl")"
@@ -267,16 +379,16 @@ mkdir -p "$(dirname "$WHITELIST")"
 exec 9>"${WHITELIST}.lock"
 flock -x 9
 
-if [[ ! -f "$WHITELIST" ]]; then
-    {
-        printf '# Private outbound whitelist extension.\n'
-        printf '# This file is merged with infra/outbound-proxy/whitelist.txt at container startup.\n'
-    } > "$WHITELIST"
-    printf '[whitelist] Created private whitelist file: %s\n' "$WHITELIST"
-fi
-
 declare -A seen=()
 declare -a domains=()
+declare -a whitelist_lines=()
+
+if [[ -f "$WHITELIST" ]]; then
+    validate_policy_candidate "$WHITELIST"
+else
+    whitelist_lines+=("# Private outbound whitelist extension.")
+    whitelist_lines+=("# This file is merged with infra/outbound-proxy/whitelist.txt at container startup.")
+fi
 
 for arg in "${inputs[@]}"; do
     IFS=',' read -r -a raw_values <<< "$arg"
@@ -303,29 +415,30 @@ fi
 
 declare -A requested=()
 declare -A states=()
-declare -a whitelist_lines=()
 for domain in "${domains[@]}"; do
     requested[$domain]=1
     states[$domain]="missing"
 done
 
-while IFS= read -r line || [[ -n "$line" ]]; do
-    whitelist_lines+=("$line")
-    existing="$(line_domain "$line")"
-    [[ -n "$existing" && -n "${requested[$existing]:-}" ]] || continue
+if [[ -f "$WHITELIST" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        whitelist_lines+=("$line")
+        existing="$(line_domain "$line")"
+        [[ -n "$existing" && -n "${requested[$existing]:-}" ]] || continue
 
-    expiry="$(line_expiry "$line")"
-    if [[ "$line" == *sg-expires-at=* && -z "$expiry" ]]; then
-        if [[ "${states[$existing]}" != "permanent" ]]; then
+        expiry="$(line_expiry "$line")"
+        if [[ "$line" == *sg-expires-at=* && -z "$expiry" ]]; then
+            if [[ "${states[$existing]}" != "permanent" ]]; then
+                states[$existing]="temporary"
+            fi
+            # Malformed expiry markers are inactive at runtime; treat them as replaceable.
+        elif [[ -z "$expiry" ]]; then
+            states[$existing]="permanent"
+        elif [[ "${states[$existing]}" != "permanent" ]]; then
             states[$existing]="temporary"
         fi
-        # Malformed expiry markers are inactive at runtime; treat them as replaceable.
-    elif [[ -z "$expiry" ]]; then
-        states[$existing]="permanent"
-    elif [[ "${states[$existing]}" != "permanent" ]]; then
-        states[$existing]="temporary"
-    fi
-done < "$WHITELIST"
+    done < "$WHITELIST"
+fi
 
 declare -A replacements=()
 declare -A status_messages=()
@@ -384,7 +497,15 @@ if [[ "${#replacements[@]}" -gt 0 ]]; then
         fi
     done
 
-    mv "$tmp" "$WHITELIST"
+    if ! validate_policy_candidate "$tmp"; then
+        rm -f "$tmp"
+        exit 1
+    fi
+    if ! mv "$tmp" "$WHITELIST"; then
+        rm -f "$tmp"
+        printf '[whitelist] Atomic policy replacement failed\n' >&2
+        exit 1
+    fi
 fi
 
 for domain in "${domains[@]}"; do

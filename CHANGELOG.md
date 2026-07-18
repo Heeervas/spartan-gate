@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Bounded public/private egress-policy fragments and normalized active entries
+  before host or container replacement; made proxy and DNS generation
+  candidate-first, made DNS install its full artifact set transactionally, and
+  restored the complete prior policy on partial installation or child reload
+  failure before exiting through the fail-closed restart path.
 - Replaced Reader's single-threaded server with a fixed worker pool, bounded
   pending admission, immediate `503` shedding, and deadlock-free signal
   shutdown; rejected URL userinfo, redacted target paths/queries from all

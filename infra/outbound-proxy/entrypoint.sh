@@ -8,12 +8,18 @@ PRIVATE_WHITELIST="${SPARTAN_WHITELIST_PRIVATE:-/etc/tinyproxy/whitelist.private
 COMBINED_WHITELIST="${SPARTAN_WHITELIST_COMBINED:-/tmp/spartan-whitelist.txt}"
 REFRESH_TIME="${SPARTAN_WHITELIST_REFRESH_TIME:-02:00}"
 REFRESH_TZ="${SPARTAN_WHITELIST_REFRESH_TZ:-Europe/Madrid}"
+MAX_POLICY_BYTES="${SPARTAN_WHITELIST_MAX_BYTES:-262144}"
+MAX_POLICY_ENTRIES="${SPARTAN_WHITELIST_MAX_ENTRIES:-2048}"
 TMP_WHITELIST="${COMBINED_WHITELIST}.tmp"
 NEXT_WHITELIST="${COMBINED_WHITELIST}.next"
+TMP_DOMAINS="${COMBINED_WHITELIST}.domains.tmp"
+ROLLBACK_WHITELIST="${COMBINED_WHITELIST}.rollback"
 proxy_pid=""
 refresh_pid=""
 supervisor_pid="$$"
 refresh_performed=0
+had_whitelist=0
+generated_count=0
 
 current_epoch() {
   if [ -n "${SPARTAN_WHITELIST_NOW:-}" ]; then
@@ -48,6 +54,48 @@ validate_refresh_config() {
     echo "[outbound-proxy] Invalid SPARTAN_WHITELIST_REFRESH_TZ; expected an installed traversal-free timezone" >&2
     return 1
   fi
+}
+
+valid_policy_limit() {
+  value="$1"
+  maximum="$2"
+  case "$value" in ""|*[!0-9]*) return 1 ;; esac
+  [ "${#value}" -le 8 ] || return 1
+  [ "$value" -ge 1 ] && [ "$value" -le "$maximum" ]
+}
+
+validate_policy_config() {
+  if ! valid_policy_limit "$MAX_POLICY_BYTES" 16777216; then
+    echo "[outbound-proxy] Invalid SPARTAN_WHITELIST_MAX_BYTES; expected 1-16777216" >&2
+    return 1
+  fi
+  if ! valid_policy_limit "$MAX_POLICY_ENTRIES" 65536; then
+    echo "[outbound-proxy] Invalid SPARTAN_WHITELIST_MAX_ENTRIES; expected 1-65536" >&2
+    return 1
+  fi
+}
+
+validate_policy_input_file() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  if ! bytes="$(wc -c < "$file" | tr -d '[:space:]')"; then
+    echo "[outbound-proxy] Could not measure whitelist input" >&2
+    return 1
+  fi
+  case "$bytes" in ""|*[!0-9]*)
+    echo "[outbound-proxy] Invalid whitelist byte count" >&2
+    return 1
+    ;;
+  esac
+  if [ "$bytes" -gt "$MAX_POLICY_BYTES" ]; then
+    echo "[outbound-proxy] Whitelist input exceeds byte limit ${MAX_POLICY_BYTES}" >&2
+    return 1
+  fi
+}
+
+validate_policy_inputs() {
+  validate_policy_input_file "$PUBLIC_WHITELIST" || return 1
+  validate_policy_input_file "$PRIVATE_WHITELIST" || return 1
 }
 
 current_refresh_time() {
@@ -160,30 +208,99 @@ filter_pattern() {
   esac
 }
 
-generate_whitelist() {
-  : > "$TMP_WHITELIST" || return 1
+cleanup_whitelist_staging() {
+  rm -f "$TMP_DOMAINS" "$TMP_WHITELIST" "$NEXT_WHITELIST" 2>/dev/null || true
+}
+
+stage_whitelist() {
+  cleanup_whitelist_staging
+  validate_policy_inputs || return 1
+
   if ! {
     normalize_whitelist "$PUBLIC_WHITELIST"
     normalize_whitelist "$PRIVATE_WHITELIST"
-  } | sort -u | while IFS= read -r domain || [ -n "$domain" ]; do
-    [ -n "$domain" ] || continue
-    filter_pattern "$domain"
-  done >> "$TMP_WHITELIST"; then
-    rm -f "$TMP_WHITELIST" "$NEXT_WHITELIST"
+  } | sort -u > "$TMP_DOMAINS"; then
+    cleanup_whitelist_staging
     return 1
   fi
+
+  if ! generated_count="$(wc -l < "$TMP_DOMAINS" | tr -d '[:space:]')"; then
+    cleanup_whitelist_staging
+    return 1
+  fi
+  case "$generated_count" in ""|*[!0-9]*)
+    cleanup_whitelist_staging
+    return 1
+    ;;
+  esac
+  if [ "$generated_count" -gt "$MAX_POLICY_ENTRIES" ]; then
+    echo "[outbound-proxy] Normalized whitelist exceeds entry limit ${MAX_POLICY_ENTRIES}" >&2
+    cleanup_whitelist_staging
+    return 1
+  fi
+
+  : > "$TMP_WHITELIST" || {
+    cleanup_whitelist_staging
+    return 1
+  }
+  while IFS= read -r domain || [ -n "$domain" ]; do
+    [ -n "$domain" ] || continue
+    filter_pattern "$domain"
+  done < "$TMP_DOMAINS" >> "$TMP_WHITELIST"
   if ! sort -u "$TMP_WHITELIST" > "$NEXT_WHITELIST"; then
-    rm -f "$TMP_WHITELIST" "$NEXT_WHITELIST"
+    cleanup_whitelist_staging
+    return 1
+  fi
+  rm -f "$TMP_DOMAINS" "$TMP_WHITELIST"
+}
+
+backup_whitelist() {
+  had_whitelist=0
+  rm -f "$ROLLBACK_WHITELIST" 2>/dev/null || true
+  if [ -f "$COMBINED_WHITELIST" ]; then
+    if ! cp "$COMBINED_WHITELIST" "$ROLLBACK_WHITELIST"; then
+      echo "[outbound-proxy] Could not stage runtime whitelist rollback" >&2
+      return 1
+    fi
+    had_whitelist=1
+  fi
+}
+
+rollback_whitelist() {
+  status=0
+  if [ "$had_whitelist" -eq 1 ]; then
+    if [ ! -f "$ROLLBACK_WHITELIST" ] || ! mv "$ROLLBACK_WHITELIST" "$COMBINED_WHITELIST"; then
+      echo "[outbound-proxy] Runtime whitelist rollback failed" >&2
+      status=1
+    fi
+  elif ! rm -f "$COMBINED_WHITELIST"; then
+    echo "[outbound-proxy] Runtime whitelist rollback failed" >&2
+    status=1
+  fi
+  cleanup_whitelist_staging
+  return "$status"
+}
+
+commit_whitelist() {
+  if ! rm -f "$ROLLBACK_WHITELIST"; then
+    echo "[outbound-proxy] Could not finalize runtime whitelist transaction" >&2
+    return 1
+  fi
+  had_whitelist=0
+  echo "[outbound-proxy] Loaded ${generated_count} whitelisted domains from public/private fragments"
+}
+
+generate_whitelist() {
+  stage_whitelist || return 1
+  if ! backup_whitelist; then
+    cleanup_whitelist_staging
     return 1
   fi
   if ! mv "$NEXT_WHITELIST" "$COMBINED_WHITELIST"; then
-    rm -f "$TMP_WHITELIST" "$NEXT_WHITELIST"
+    echo "[outbound-proxy] Runtime whitelist install failed" >&2
+    rollback_whitelist || true
     return 1
   fi
-  rm -f "$TMP_WHITELIST"
-
-  count="$(wc -l < "$COMBINED_WHITELIST" | tr -d '[:space:]')"
-  echo "[outbound-proxy] Loaded ${count} whitelisted domains from public/private fragments"
 }
 
 policy_freshness_lost() {
@@ -203,14 +320,21 @@ reload_whitelist() {
   fi
   if [ -z "$proxy_pid" ] || ! kill -0 "$proxy_pid" 2>/dev/null; then
     echo "[outbound-proxy] Whitelist regenerated; Tinyproxy child is not running" >&2
+    rollback_whitelist || true
     return 1
   fi
   if [ "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" = "scheduled-refresh" ] && [ "${SPARTAN_WHITELIST_TEST_SIGNAL_FAILURE:-0}" = "1" ]; then
     echo "[outbound-proxy] Whitelist regenerated but Tinyproxy reload signaling failed" >&2
+    rollback_whitelist || true
     return 1
   fi
   if ! kill -USR1 "$proxy_pid" 2>/dev/null; then
     echo "[outbound-proxy] Whitelist regenerated but Tinyproxy reload signaling failed" >&2
+    rollback_whitelist || true
+    return 1
+  fi
+  if ! commit_whitelist; then
+    rollback_whitelist || true
     return 1
   fi
 }
@@ -277,6 +401,7 @@ trap 'handle_reload' USR1
 trap 'shutdown' INT TERM
 
 validate_refresh_config
+validate_policy_config
 
 case "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" in
   validate)
@@ -289,6 +414,7 @@ case "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" in
 esac
 
 generate_whitelist
+commit_whitelist
 
 if [ "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" = "generate" ]; then
   cat "$COMBINED_WHITELIST"

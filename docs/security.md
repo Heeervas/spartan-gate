@@ -121,6 +121,13 @@ The public whitelist is only a generic baseline. Local/project/personal domains
 belong in `private/outbound-proxy/whitelist.private.txt`; do not publish your
 real browsing or integration inventory by adding it to `infra/outbound-proxy/whitelist.txt`.
 
+Whitelist generation is bounded before live replacement: each public/private
+fragment defaults to a 256 KiB ceiling and the merged policy to 2048 normalized
+active unique domains. Proxy and DNS generate complete candidates before
+installation. DNS commits its two generated files as a single policy set, and
+install or child-signal failure restores the complete previous generation
+before the service exits into the fail-closed restart path.
+
 ## Logging
 
 Keep `CLAWROUTE_LOG_CONTENT=false` unless you are debugging the router in a

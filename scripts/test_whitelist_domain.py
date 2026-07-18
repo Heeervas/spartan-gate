@@ -14,10 +14,12 @@ NOW = 1_700_000_000
 
 
 class WhitelistDomainTests(unittest.TestCase):
-    def run_helper(self, *args, whitelist=None, now=NOW):
+    def run_helper(self, *args, whitelist=None, now=NOW, extra_env=None):
         env = os.environ.copy()
         env["SPARTAN_WHITELIST_FILE"] = str(whitelist or self.whitelist)
         env["SPARTAN_WHITELIST_NOW"] = str(now)
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             ["bash", str(SCRIPT), "--no-restart", *args],
             cwd=ROOT,
@@ -197,6 +199,55 @@ class WhitelistDomainTests(unittest.TestCase):
         self.assertEqual(self.whitelist.read_text(), original)
         self.assertNotIn("Added permanent", result.stdout)
 
+    def test_invalid_policy_limits_fail_before_first_write(self):
+        cases = [
+            ("SPARTAN_WHITELIST_MAX_BYTES", "0"),
+            ("SPARTAN_WHITELIST_MAX_BYTES", "many"),
+            ("SPARTAN_WHITELIST_MAX_ENTRIES", "-1"),
+            ("SPARTAN_WHITELIST_MAX_ENTRIES", "999999999"),
+        ]
+        for name, value in cases:
+            with self.subTest(name=name, value=value):
+                result = self.run_helper(
+                    "example.com",
+                    extra_env={name: value},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(name, result.stderr)
+                self.assertFalse(self.whitelist.exists())
+                self.assertFalse(pathlib.Path(f"{self.whitelist}.lock").exists())
+
+    def test_candidate_over_byte_limit_preserves_private_policy(self):
+        original = "a.example\n"
+        self.whitelist.write_text(original)
+        result = self.run_helper(
+            "bbbb.example",
+            extra_env={"SPARTAN_WHITELIST_MAX_BYTES": "20"},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("byte limit", result.stderr)
+        self.assertEqual(self.whitelist.read_text(), original)
+        self.assertNotIn("Added permanent", result.stdout)
+
+    def test_candidate_over_entry_limit_preserves_private_policy(self):
+        original = "a.example\n"
+        self.whitelist.write_text(original)
+        public = pathlib.Path(self.tmp.name) / "public.txt"
+        public.write_text("")
+        result = self.run_helper(
+            "b.example",
+            extra_env={
+                "SPARTAN_WHITELIST_MAX_ENTRIES": "1",
+                "SPARTAN_WHITELIST_PUBLIC_FILE": str(public),
+            },
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("entry limit", result.stderr)
+        self.assertEqual(self.whitelist.read_text(), original)
+        self.assertNotIn("Added permanent", result.stdout)
+
     def test_updates_temporary_entry(self):
         self.run_helper("15m", "example.com")
         result = self.run_helper("6h", "example.com")
@@ -356,6 +407,11 @@ class WhitelistRuntimeGenerationTests(unittest.TestCase):
         self.public = self.root / "public.txt"
         self.private = self.root / "private.txt"
         self.combined = self.root / "combined.txt"
+        self.dns_artifact_dir = self.root / "dns-artifacts"
+        self.dns_artifact_dir.mkdir()
+        self.dns_domains = self.dns_artifact_dir / "domains.txt"
+        self.dns_servers = self.dns_artifact_dir / "servers.conf"
+        self.dns_conf = self.dns_artifact_dir / "dnsmasq.conf"
         self.public.write_text("public.example.com\n")
         self.private.write_text(
             "future.example.com # sg-expires-at=1700000060 sg-ttl=1m\n"
@@ -413,7 +469,28 @@ class WhitelistRuntimeGenerationTests(unittest.TestCase):
         return {
             "SPARTAN_DNS_WHITELIST_PUBLIC": str(self.public),
             "SPARTAN_DNS_WHITELIST_PRIVATE": str(self.private),
+            "SPARTAN_WHITELIST_TEST_ARTIFACT_DIR": str(self.dns_artifact_dir),
         }
+
+    def seed_runtime_artifacts(self, entrypoint):
+        if entrypoint == PROXY_ENTRYPOINT:
+            self.combined.write_text("old-proxy-policy\n")
+            return
+        self.dns_domains.write_text("old.example\n")
+        self.dns_servers.write_text("server=/old.example/192.0.2.53\n")
+
+    def assert_runtime_artifacts_restored(self, entrypoint):
+        if entrypoint == PROXY_ENTRYPOINT:
+            self.assertEqual(self.combined.read_text(), "old-proxy-policy\n")
+            self.assertFalse(pathlib.Path(f"{self.combined}.rollback").exists())
+            return
+        self.assertEqual(self.dns_domains.read_text(), "old.example\n")
+        self.assertEqual(
+            self.dns_servers.read_text(),
+            "server=/old.example/192.0.2.53\n",
+        )
+        self.assertFalse(pathlib.Path(f"{self.dns_domains}.rollback").exists())
+        self.assertFalse(pathlib.Path(f"{self.dns_servers}.rollback").exists())
 
     def failed_mv_bin(self):
         bin_dir = self.root / "failed-mv-bin"
@@ -484,6 +561,91 @@ class WhitelistRuntimeGenerationTests(unittest.TestCase):
         self.assertNotIn("invalid-trailing.example.com", result.stdout)
         self.assertNotIn("1.2.3.999", result.stdout)
         self.assertNotIn("2001", result.stdout)
+
+    def test_policy_limits_are_validated_before_generation(self):
+        cases = [
+            ("SPARTAN_WHITELIST_MAX_BYTES", "0"),
+            ("SPARTAN_WHITELIST_MAX_BYTES", "many"),
+            ("SPARTAN_WHITELIST_MAX_ENTRIES", "-1"),
+            ("SPARTAN_WHITELIST_MAX_ENTRIES", "999999999"),
+        ]
+        for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
+            for name, value in cases:
+                with self.subTest(entrypoint=entrypoint, name=name, value=value):
+                    env = self.runtime_paths(entrypoint)
+                    env.update(
+                        {
+                            name: value,
+                            "SPARTAN_WHITELIST_REFRESH_TIME": "02:00",
+                            "SPARTAN_WHITELIST_REFRESH_TZ": "UTC",
+                        }
+                    )
+                    result = self.run_entrypoint_mode(entrypoint, "validate", env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(name, result.stderr)
+
+    def test_oversized_input_preserves_previous_runtime_artifacts(self):
+        self.public.write_text("a" * 33 + "\n")
+        self.private.write_text("")
+        for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
+            with self.subTest(entrypoint=entrypoint):
+                self.seed_runtime_artifacts(entrypoint)
+                env = self.runtime_paths(entrypoint)
+                env.update(
+                    {
+                        "SPARTAN_WHITELIST_MAX_BYTES": "32",
+                        "SPARTAN_WHITELIST_MAX_ENTRIES": "10",
+                    }
+                )
+                result = self.run_entrypoint_generate(entrypoint, env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("byte limit", result.stderr)
+                self.assert_runtime_artifacts_restored(entrypoint)
+
+    def test_too_many_normalized_entries_preserve_previous_runtime_artifacts(self):
+        self.public.write_text("a.example\nb.example\nc.example\n")
+        self.private.write_text("")
+        for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
+            with self.subTest(entrypoint=entrypoint):
+                self.seed_runtime_artifacts(entrypoint)
+                env = self.runtime_paths(entrypoint)
+                env.update(
+                    {
+                        "SPARTAN_WHITELIST_MAX_BYTES": "1024",
+                        "SPARTAN_WHITELIST_MAX_ENTRIES": "2",
+                    }
+                )
+                result = self.run_entrypoint_generate(entrypoint, env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("entry limit", result.stderr)
+                self.assert_runtime_artifacts_restored(entrypoint)
+
+    def test_dns_second_install_failure_restores_complete_previous_set(self):
+        self.public.write_text("new.example\n")
+        self.private.write_text("")
+        self.seed_runtime_artifacts(DNS_ENTRYPOINT)
+        child = subprocess.Popen(["sleep", "30"])
+        try:
+            env = self.runtime_paths(DNS_ENTRYPOINT)
+            env.update(
+                {
+                    "SPARTAN_WHITELIST_REFRESH_TIME": "02:00",
+                    "SPARTAN_WHITELIST_REFRESH_TZ": "UTC",
+                    "SPARTAN_WHITELIST_REFRESH_NOW": "02:00",
+                    "SPARTAN_WHITELIST_TEST_CHILD_PID": str(child.pid),
+                    "SPARTAN_WHITELIST_TEST_FAIL_INSTALL_AT": "2",
+                }
+            )
+            result = self.run_entrypoint_mode(DNS_ENTRYPOINT, "scheduled-refresh", env)
+            self.assertEqual(result.returncode, 143)
+            self.assertIn("install failed", result.stderr)
+            self.assertIn("Policy freshness lost", result.stderr)
+            child.wait(timeout=5)
+            self.assert_runtime_artifacts_restored(DNS_ENTRYPOINT)
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)
 
     def test_refresh_time_is_validated_before_service_start(self):
         invalid_times = ["2:00", "24:00", "00:60", "02:0", "tomorrow"]
@@ -565,6 +727,7 @@ class WhitelistRuntimeGenerationTests(unittest.TestCase):
     def test_child_signal_failure_terminates_supervisor_and_child(self):
         for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
             with self.subTest(entrypoint=entrypoint):
+                self.seed_runtime_artifacts(entrypoint)
                 child = subprocess.Popen(["sleep", "30"])
                 try:
                     env = self.runtime_paths(entrypoint)
@@ -583,6 +746,7 @@ class WhitelistRuntimeGenerationTests(unittest.TestCase):
                     self.assertIn("Policy freshness lost", result.stderr)
                     child.wait(timeout=5)
                     self.assertIsNotNone(child.returncode)
+                    self.assert_runtime_artifacts_restored(entrypoint)
                 finally:
                     if child.poll() is None:
                         child.terminate()
