@@ -325,8 +325,10 @@ class TelemetryStore:
                     """
                     SELECT timestamp
                     FROM routing_log
-                    WHERE julianday(timestamp) IS NOT NULL
-                    ORDER BY julianday(timestamp), id
+                    WHERE julianday(timestamp) = (
+                        SELECT min(julianday(timestamp))
+                        FROM routing_log
+                    )
                     LIMIT 1
                     """
                 ).fetchone()
@@ -363,98 +365,171 @@ class TelemetryStore:
         return dict(self._retention_status)
 
     def _rebuild_rollups_unlocked(self) -> None:
-        self._conn.execute("DELETE FROM routing_daily_rollups")
-        self._conn.execute(
+        rollups: dict[tuple[str, str, str, str, str], list[Any]] = {}
+        cursor = self._conn.execute(
             """
-            INSERT INTO routing_daily_rollups (
-                day, actual_model, tier, request_api_kind, requested_reasoning_effort,
-                requests, input_tokens, cached_input_tokens, output_tokens
-            )
-            SELECT
-                substr(timestamp, 1, 10),
-                actual_model,
-                tier,
-                request_api_kind,
-                coalesce(requested_reasoning_effort, ''),
-                count(*),
-                coalesce(sum(input_tokens), 0),
-                coalesce(sum(cached_input_tokens), 0),
-                coalesce(sum(output_tokens), 0)
+            SELECT substr(timestamp, 1, 10) AS day,
+                   actual_model,
+                   tier,
+                   request_api_kind,
+                   coalesce(requested_reasoning_effort, '') AS requested_reasoning_effort,
+                   input_tokens,
+                   cached_input_tokens,
+                   output_tokens
             FROM routing_log
-            GROUP BY
-                substr(timestamp, 1, 10), actual_model, tier,
-                request_api_kind, coalesce(requested_reasoning_effort, '')
             """
         )
+        for raw_row in cursor:
+            row = dict(raw_row)
+            key = (
+                str(row["day"]),
+                str(row["actual_model"]),
+                str(row["tier"]),
+                str(row["request_api_kind"]),
+                str(row["requested_reasoning_effort"]),
+            )
+            aggregate = rollups.get(key)
+            if aggregate is None:
+                aggregate = [*key, 0, 0, 0, 0]
+                rollups[key] = aggregate
+            aggregate[5] += 1
+            aggregate[6] += int(row["input_tokens"] or 0)
+            aggregate[7] += int(row["cached_input_tokens"] or 0)
+            aggregate[8] += int(row["output_tokens"] or 0)
+
+        self._conn.execute("DELETE FROM routing_daily_rollups")
+        if rollups:
+            self._conn.executemany(
+                """
+                INSERT INTO routing_daily_rollups (
+                    day, actual_model, tier, request_api_kind, requested_reasoning_effort,
+                    requests, input_tokens, cached_input_tokens, output_tokens
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rollups.values(),
+            )
 
     def daily_cache_rows(self) -> list[dict[str, Any]]:
+        by_day: dict[str | None, dict[str, Any]] = {}
         with self._lock:
-            rows = self._conn.execute(
+            cursor = self._conn.execute(
                 """
-                WITH codex_rows AS (
-                    SELECT date(timestamp) AS day,
-                           input_tokens,
-                           cached_input_tokens,
-                           response_time_ms,
-                           upstream_response_time_ms,
-                           total_response_time_ms,
-                           error,
-                           CASE
-                               WHEN json_extract(context_info, '$.usage_seen') = 1 THEN 1
-                               ELSE 0
-                           END AS usage_seen,
-                           CASE
-                               WHEN json_extract(context_info, '$.cache_likely') = 1 THEN 1
-                               ELSE 0
-                           END AS cache_likely,
-                           CASE
-                               WHEN json_extract(context_info, '$.cache_low') = 1 THEN 1
-                               ELSE 0
-                           END AS cache_low
-                    FROM routing_log
-                    WHERE actual_model LIKE 'codex/%'
-                )
-                SELECT day,
-                       sum(usage_seen) AS requests,
-                       count(*) AS logged_requests,
-                       coalesce(sum(CASE WHEN usage_seen = 1 THEN input_tokens ELSE 0 END), 0) AS input_tokens,
-                       coalesce(sum(CASE WHEN usage_seen = 1 THEN cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
-                       coalesce(sum(cache_likely), 0) AS cache_likely_requests,
-                       coalesce(sum(CASE WHEN cache_likely = 1 THEN input_tokens ELSE 0 END), 0) AS cache_likely_input_tokens,
-                       coalesce(sum(CASE WHEN cache_likely = 1 THEN cached_input_tokens ELSE 0 END), 0) AS cache_likely_cached_input_tokens,
-                       CASE
-                           WHEN coalesce(sum(CASE WHEN cache_likely = 1 THEN input_tokens ELSE 0 END), 0) > 0
-                           THEN (
-                               100.0
-                               * coalesce(sum(CASE WHEN cache_likely = 1 THEN cached_input_tokens ELSE 0 END), 0)
-                               / coalesce(sum(CASE WHEN cache_likely = 1 THEN input_tokens ELSE 0 END), 0)
-                           )
-                           ELSE 0
-                       END AS cache_likely_hit_percent,
-                       coalesce(sum(cache_low), 0) AS cache_low_requests,
-                       coalesce(sum(CASE WHEN cache_low = 1 THEN input_tokens ELSE 0 END), 0) AS cache_low_input_tokens,
-                       sum(CASE WHEN coalesce(error, '') <> '' THEN 1 ELSE 0 END) AS errors,
-                       sum(CASE WHEN usage_seen = 0 THEN 1 ELSE 0 END) AS usage_missing_requests,
-                       CASE
-                           WHEN sum(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN 1 ELSE 0 END) > 0
-                           THEN avg(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN upstream_response_time_ms END)
-                           ELSE avg(NULLIF(response_time_ms, 0))
-                       END AS avg_response_time_ms,
-                       CASE
-                           WHEN sum(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN 1 ELSE 0 END) > 0
-                           THEN max(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN upstream_response_time_ms END)
-                           ELSE max(NULLIF(response_time_ms, 0))
-                       END AS max_response_time_ms,
-                       avg(coalesce(NULLIF(total_response_time_ms, 0), NULLIF(response_time_ms, 0))) AS avg_total_response_time_ms,
-                       max(coalesce(NULLIF(total_response_time_ms, 0), NULLIF(response_time_ms, 0))) AS max_total_response_time_ms,
-                       sum(CASE WHEN NULLIF(upstream_response_time_ms, 0) IS NOT NULL THEN 1 ELSE 0 END) AS split_latency_requests,
-                       sum(CASE WHEN upstream_response_time_ms IS NULL AND total_response_time_ms IS NULL THEN 1 ELSE 0 END) AS legacy_latency_requests
-                FROM codex_rows
-                GROUP BY day
-                ORDER BY day
+                SELECT date(timestamp) AS day,
+                       input_tokens,
+                       cached_input_tokens,
+                       response_time_ms,
+                       upstream_response_time_ms,
+                       total_response_time_ms,
+                       error,
+                       context_info
+                FROM routing_log
+                WHERE actual_model LIKE 'codex/%'
                 """
-            ).fetchall()
-        return [dict(row) for row in rows]
+            )
+            for raw_row in cursor:
+                row = dict(raw_row)
+                day = row["day"]
+                aggregate = by_day.get(day)
+                if aggregate is None:
+                    aggregate = {
+                        "day": day,
+                        "requests": 0,
+                        "logged_requests": 0,
+                        "input_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "cache_likely_requests": 0,
+                        "cache_likely_input_tokens": 0,
+                        "cache_likely_cached_input_tokens": 0,
+                        "cache_low_requests": 0,
+                        "cache_low_input_tokens": 0,
+                        "errors": 0,
+                        "usage_missing_requests": 0,
+                        "split_latency_requests": 0,
+                        "legacy_latency_requests": 0,
+                        "_response_sum": 0,
+                        "_response_count": 0,
+                        "_response_max": None,
+                        "_upstream_sum": 0,
+                        "_upstream_count": 0,
+                        "_upstream_max": None,
+                        "_total_sum": 0,
+                        "_total_count": 0,
+                        "_total_max": None,
+                    }
+                    by_day[day] = aggregate
+
+                aggregate["logged_requests"] += 1
+                context = self._row_context(row)
+                usage_seen = self._sqlite_json_flag(context.get("usage_seen"))
+                cache_likely = self._sqlite_json_flag(context.get("cache_likely"))
+                cache_low = self._sqlite_json_flag(context.get("cache_low"))
+                input_tokens = int(row.get("input_tokens") or 0)
+                cached_tokens = int(row.get("cached_input_tokens") or 0)
+                if usage_seen:
+                    aggregate["requests"] += 1
+                    aggregate["input_tokens"] += input_tokens
+                    aggregate["cached_input_tokens"] += cached_tokens
+                else:
+                    aggregate["usage_missing_requests"] += 1
+                if cache_likely:
+                    aggregate["cache_likely_requests"] += 1
+                    aggregate["cache_likely_input_tokens"] += input_tokens
+                    aggregate["cache_likely_cached_input_tokens"] += cached_tokens
+                if cache_low:
+                    aggregate["cache_low_requests"] += 1
+                    aggregate["cache_low_input_tokens"] += input_tokens
+                if row.get("error") not in (None, ""):
+                    aggregate["errors"] += 1
+
+                response = int(row.get("response_time_ms") or 0)
+                upstream_raw = row.get("upstream_response_time_ms")
+                total_raw = row.get("total_response_time_ms")
+                upstream = int(upstream_raw or 0)
+                total = int(total_raw or 0) or response
+                if response:
+                    aggregate["_response_sum"] += response
+                    aggregate["_response_count"] += 1
+                    aggregate["_response_max"] = max(aggregate["_response_max"] or response, response)
+                if upstream:
+                    aggregate["_upstream_sum"] += upstream
+                    aggregate["_upstream_count"] += 1
+                    aggregate["_upstream_max"] = max(aggregate["_upstream_max"] or upstream, upstream)
+                    aggregate["split_latency_requests"] += 1
+                if total:
+                    aggregate["_total_sum"] += total
+                    aggregate["_total_count"] += 1
+                    aggregate["_total_max"] = max(aggregate["_total_max"] or total, total)
+                if upstream_raw is None and total_raw is None:
+                    aggregate["legacy_latency_requests"] += 1
+
+        rows = []
+        for day in sorted(by_day, key=lambda value: (value is not None, value or "")):
+            aggregate = by_day[day]
+            likely_input = int(aggregate["cache_likely_input_tokens"])
+            aggregate["cache_likely_hit_percent"] = (
+                aggregate["cache_likely_cached_input_tokens"] / likely_input * 100
+                if likely_input
+                else 0
+            )
+            if aggregate["_upstream_count"]:
+                latency_prefix = "_upstream"
+            else:
+                latency_prefix = "_response"
+            latency_count = int(aggregate[f"{latency_prefix}_count"])
+            aggregate["avg_response_time_ms"] = (
+                aggregate[f"{latency_prefix}_sum"] / latency_count if latency_count else None
+            )
+            aggregate["max_response_time_ms"] = aggregate[f"{latency_prefix}_max"]
+            total_count = int(aggregate["_total_count"])
+            aggregate["avg_total_response_time_ms"] = (
+                aggregate["_total_sum"] / total_count if total_count else None
+            )
+            aggregate["max_total_response_time_ms"] = aggregate["_total_max"]
+            for key in tuple(aggregate):
+                if key.startswith("_"):
+                    del aggregate[key]
+            rows.append(aggregate)
+        return rows
 
     def today_summary(self, day: str | None = None) -> dict[str, Any]:
         current_day = day or datetime.now(timezone.utc).date().isoformat()
@@ -928,6 +1003,9 @@ class TelemetryStore:
             except json.JSONDecodeError:
                 return {}
         return {}
+
+    def _sqlite_json_flag(self, value: Any) -> bool:
+        return not isinstance(value, str) and value == 1
 
     def _row_latency_values(self, row: dict[str, Any]) -> tuple[int, int, bool]:
         response = int(row.get("response_time_ms") or 0)

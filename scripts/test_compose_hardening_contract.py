@@ -193,6 +193,10 @@ class ComposeHardeningContractTests(unittest.TestCase):
                         service["environment"]["PYTHONDONTWRITEBYTECODE"],
                         "1",
                     )
+                    self.assertIn(
+                        "/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777",
+                        service["tmpfs"],
+                    )
 
     def test_caddy_uses_only_image_required_capability_and_is_ready(self):
         for label, rendered in self.renders.items():

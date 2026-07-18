@@ -611,6 +611,122 @@ class TelemetryTests(unittest.TestCase):
 
 
 class TelemetryRetentionTests(unittest.TestCase):
+    def test_oldest_retained_timestamp_preserves_timezone_order_without_sorting(self) -> None:
+        store = TelemetryStore(":memory:", retention_days=30, routing_row_cap=10)
+        try:
+            earlier = "2026-07-01T01:00:00+02:00"
+            store.log_routing(routing_entry(earlier, "offset-earlier"))
+            store.log_routing(routing_entry("2026-07-01T00:30:00Z", "lexical-earlier"))
+
+            traced: list[str] = []
+            store._conn.set_trace_callback(traced.append)
+            report = store.enforce_routing_retention(
+                now=datetime(2026, 7, 2, tzinfo=timezone.utc),
+                force_rebuild=True,
+            )
+            store._conn.set_trace_callback(None)
+
+            self.assertEqual(report["oldestRetainedAt"], earlier)
+            oldest_queries = [
+                statement
+                for statement in traced
+                if "oldest" not in statement.lower()
+                and "SELECT" in statement.upper()
+                and "timestamp" in statement
+                and "FROM routing_log" in statement
+            ]
+            self.assertFalse(any("ORDER BY julianday" in statement for statement in oldest_queries))
+        finally:
+            store.close()
+
+    def test_row_cap_aggregation_avoids_sqlite_group_sort_spills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "spartan-route.db")
+            store = TelemetryStore(db_path, retention_days=30, routing_row_cap=50_000)
+            try:
+                padding = "x" * 1024
+                context = (
+                    '{"usage_seen":true,"cache_likely":true,'
+                    f'"cache_low":false,"padding":"{padding}"}}'
+                )
+                store._conn.executemany(
+                    """
+                    INSERT INTO routing_log (
+                        timestamp, original_model, routed_model, actual_model, tier,
+                        input_tokens, cached_input_tokens, output_tokens,
+                        response_time_ms, upstream_response_time_ms, total_response_time_ms,
+                        context_info, request_api_kind, requested_reasoning_effort
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        (
+                            f"2026-07-{(index % 30) + 1:02d}T{index % 24:02d}:00:00Z",
+                            "clawroute/auto",
+                            "codex/gpt-5.5",
+                            "codex/gpt-5.5",
+                            "complex",
+                            100,
+                            25,
+                            10,
+                            100,
+                            50,
+                            100,
+                            context,
+                            "chat_completions",
+                            "high",
+                        )
+                        for index in range(50_000)
+                    ),
+                )
+                store._conn.commit()
+                store._conn.execute("PRAGMA temp_store=FILE")
+
+                traced: list[str] = []
+                store._conn.set_trace_callback(traced.append)
+                rows = store.daily_cache_rows()
+                report = store.enforce_routing_retention(
+                    now=datetime(2026, 7, 31, tzinfo=timezone.utc),
+                    force_rebuild=True,
+                )
+                store._conn.set_trace_callback(None)
+
+                self.assertEqual(sum(row["logged_requests"] for row in rows), 50_000)
+                self.assertEqual(sum(row["requests"] for row in rows), 50_000)
+                self.assertEqual(sum(row["input_tokens"] for row in rows), 5_000_000)
+                self.assertEqual(report["rowsAfter"], 50_000)
+                rollup = store._conn.execute(
+                    "SELECT count(*) AS groups, sum(requests) AS requests FROM routing_daily_rollups"
+                ).fetchone()
+                self.assertEqual(int(rollup["requests"]), 50_000)
+                self.assertLessEqual(int(rollup["groups"]), 30)
+
+                spill_sql = [
+                    statement
+                    for statement in traced
+                    if "routing_log" in statement
+                    and ("GROUP BY" in statement.upper() or "ORDER BY DAY" in statement.upper())
+                ]
+                self.assertEqual(spill_sql, [])
+                source_reads = {
+                    statement
+                    for statement in traced
+                    if statement.lstrip().upper().startswith("SELECT")
+                    and "FROM routing_log" in statement
+                    and ("date(timestamp)" in statement or "substr(timestamp" in statement)
+                }
+                self.assertEqual(len(source_reads), 2)
+                for statement in source_reads:
+                    with self.subTest(statement=statement.splitlines()[1].strip()):
+                        plan = store._conn.execute(
+                            f"EXPLAIN QUERY PLAN {statement}"
+                        ).fetchall()
+                        self.assertFalse(
+                            any("TEMP B-TREE" in str(row[3]).upper() for row in plan),
+                            plan,
+                        )
+            finally:
+                store.close()
+
     def test_age_and_row_cap_pruning_rebuilds_rollups_deterministically(self) -> None:
         store = TelemetryStore(":memory:", retention_days=30, routing_row_cap=3)
         try:

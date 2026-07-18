@@ -7,6 +7,9 @@ All notable changes to Spartan Gate are documented here.
   rebuild, doctor, and L4 install paths; added a stopped-state exact-file
   migration with verified backup and rollback, replacing recursive data-root
   ownership repair while keeping newly created SQLite files private.
+- Replaced Spartan Route's SQLite sort/group telemetry aggregation with
+  streaming aggregation over the retained 50,000-row window, keeping daily
+  cache and rollup rebuilds within the service's fixed 32 MiB temporary mount.
 - Made L4 Hermes health reflect the complete gate path by requiring its local
   API, Tinyproxy, and Spartan Route to remain reachable, with bounded retries
   that tolerate short dependency restarts while surfacing persistent internal

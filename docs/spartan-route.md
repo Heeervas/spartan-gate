@@ -101,7 +101,10 @@ Kept in v1:
   after bounded write batches. Pruning and derived `routing_daily_rollups`
   rebuilds share one immediate transaction; Codex snapshot history, current
   snapshots, reset credits, slot state, and routing overrides remain intact.
-- Daily usage-cache rows from retained `routing_log` data.
+- Daily usage-cache rows and rollup rebuilds stream over the retained
+  `routing_log` window and aggregate in bounded process memory. They do not ask
+  SQLite to materialize temporary group/sort tables, so the service's fixed
+  32 MiB `/tmp` mount does not scale with telemetry history.
 - Today's dashboard latency from logged request rows. For new rows,
   `response_time_ms`/`responseTimeMs` means first upstream response time, while
   `total_response_time_ms`/`totalResponseTimeMs` means full request or stream
