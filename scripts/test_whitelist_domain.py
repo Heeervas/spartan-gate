@@ -1,6 +1,7 @@
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -53,6 +54,22 @@ class WhitelistDomainTests(unittest.TestCase):
         )
         docker.chmod(0o755)
         return bin_dir, log, reload_fail_service or ""
+
+    def fake_mv_bin(self, *, fail=False):
+        bin_dir = pathlib.Path(self.tmp.name) / "mv-bin"
+        bin_dir.mkdir(exist_ok=True)
+        log = pathlib.Path(self.tmp.name) / "mv.log"
+        real_mv = shutil.which("mv")
+        self.assertIsNotNone(real_mv)
+        fake_mv = bin_dir / "mv"
+        script = "#!/bin/sh\nprintf 'mv\\n' >> \"$FAKE_MV_LOG\"\n"
+        if fail:
+            script += "exit 9\n"
+        else:
+            script += f'exec "{real_mv}" "$@"\n'
+        fake_mv.write_text(script)
+        fake_mv.chmod(0o755)
+        return bin_dir, log
 
     def run_helper_with_fake_docker(self, *args, reload_fail_service=None, extra_env=None):
         bin_dir, log, fail_service = self.fake_docker_bin(reload_fail_service=reload_fail_service)
@@ -118,6 +135,67 @@ class WhitelistDomainTests(unittest.TestCase):
         self.assertIn("a.example.com # sg-expires-at=1701296000 sg-ttl=15d", content)
         self.assertIn("b.example.com # sg-expires-at=1701296000 sg-ttl=15d", content)
         self.assertIn("c.example.com # sg-expires-at=1701296000 sg-ttl=15d", content)
+
+    def test_comma_separated_batch_rewrites_whitelist_once(self):
+        self.whitelist.write_text("# Existing whitelist.\n")
+        bin_dir, log = self.fake_mv_bin()
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["FAKE_MV_LOG"] = str(log)
+        env["SPARTAN_WHITELIST_FILE"] = str(self.whitelist)
+        env["SPARTAN_WHITELIST_NOW"] = str(NOW)
+        result = subprocess.run(
+            [
+                "bash",
+                str(SCRIPT),
+                "--no-reload",
+                "a.example.com,b.example.com,c.example.com",
+            ],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.read_text().splitlines(), ["mv"])
+        self.assertEqual(
+            self.line_domains()[-3:],
+            ["a.example.com", "b.example.com", "c.example.com"],
+        )
+
+    def test_failed_batch_replacement_does_not_report_success(self):
+        original = "# Existing whitelist.\nexisting.example.com\n"
+        self.whitelist.write_text(original)
+        bin_dir, log = self.fake_mv_bin(fail=True)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["FAKE_MV_LOG"] = str(log)
+        env["SPARTAN_WHITELIST_FILE"] = str(self.whitelist)
+        env["SPARTAN_WHITELIST_NOW"] = str(NOW)
+        result = subprocess.run(
+            [
+                "bash",
+                str(SCRIPT),
+                "--no-reload",
+                "a.example.com,b.example.com",
+            ],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(log.read_text().splitlines(), ["mv"])
+        self.assertEqual(self.whitelist.read_text(), original)
+        self.assertNotIn("Added permanent", result.stdout)
 
     def test_updates_temporary_entry(self):
         self.run_helper("15m", "example.com")
@@ -194,12 +272,16 @@ class WhitelistDomainTests(unittest.TestCase):
             self.assertIn(f"host-{index}.example.com", content)
 
     def test_runtime_update_signals_proxy_and_dns_without_recreate(self):
-        result, calls = self.run_helper_with_fake_docker("example.com")
+        result, calls = self.run_helper_with_fake_docker(
+            "a.example.com,b.example.com,c.example.com"
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Hot-reloading running services: proxy dns", result.stdout)
         self.assertIn("exec -T proxy sh -c kill -USR1 1", calls)
         self.assertIn("exec -T dns sh -c kill -USR1 1", calls)
+        self.assertEqual(calls.count("exec -T proxy sh -c kill -USR1 1"), 1)
+        self.assertEqual(calls.count("exec -T dns sh -c kill -USR1 1"), 1)
         self.assertIn("Reload signal delivered: proxy", result.stdout)
         self.assertIn("Reload signal delivered: dns", result.stdout)
         self.assertNotIn("kill -s USR1", calls)

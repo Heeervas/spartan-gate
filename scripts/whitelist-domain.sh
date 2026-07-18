@@ -123,60 +123,6 @@ line_expiry() {
     fi
 }
 
-domain_state() {
-    local domain="$1"
-    local line existing expiry state="missing"
-
-    [[ -f "$WHITELIST" ]] || {
-        printf 'missing\n'
-        return 0
-    }
-
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        existing="$(line_domain "$line")"
-        [[ "$existing" == "$domain" ]] || continue
-        expiry="$(line_expiry "$line")"
-        if [[ "$line" == *sg-expires-at=* && -z "$expiry" ]]; then
-            state="temporary"
-            # Malformed expiry markers are inactive at runtime; treat them as replaceable.
-            continue
-        fi
-        if [[ -z "$expiry" ]]; then
-            printf 'permanent\n'
-            return 0
-        fi
-        state="temporary"
-    done < "$WHITELIST"
-
-    printf '%s\n' "$state"
-}
-
-upsert_domain_line() {
-    local domain="$1"
-    local replacement="$2"
-    local tmp
-    tmp="$(mktemp "${WHITELIST}.tmp.XXXXXX")"
-
-    local line existing wrote=false
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        existing="$(line_domain "$line")"
-        if [[ "$existing" == "$domain" ]]; then
-            if [[ "$wrote" == false ]]; then
-                printf '%s\n' "$replacement" >> "$tmp"
-                wrote=true
-            fi
-            continue
-        fi
-        printf '%s\n' "$line" >> "$tmp"
-    done < "$WHITELIST"
-
-    if [[ "$wrote" == false ]]; then
-        printf '%s\n' "$replacement" >> "$tmp"
-    fi
-
-    mv "$tmp" "$WHITELIST"
-}
-
 format_expiry() {
     local epoch="$1"
     if date -u -d "@$epoch" '+%Y-%m-%dT%H:%M:%SZ' >/dev/null 2>&1; then
@@ -355,37 +301,94 @@ if [[ "${#domains[@]}" -eq 0 ]]; then
     exit 1
 fi
 
+declare -A requested=()
+declare -A states=()
+declare -a whitelist_lines=()
 for domain in "${domains[@]}"; do
-    state="$(domain_state "$domain")"
+    requested[$domain]=1
+    states[$domain]="missing"
+done
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+    whitelist_lines+=("$line")
+    existing="$(line_domain "$line")"
+    [[ -n "$existing" && -n "${requested[$existing]:-}" ]] || continue
+
+    expiry="$(line_expiry "$line")"
+    if [[ "$line" == *sg-expires-at=* && -z "$expiry" ]]; then
+        if [[ "${states[$existing]}" != "permanent" ]]; then
+            states[$existing]="temporary"
+        fi
+        # Malformed expiry markers are inactive at runtime; treat them as replaceable.
+    elif [[ -z "$expiry" ]]; then
+        states[$existing]="permanent"
+    elif [[ "${states[$existing]}" != "permanent" ]]; then
+        states[$existing]="temporary"
+    fi
+done < "$WHITELIST"
+
+declare -A replacements=()
+declare -A status_messages=()
+for domain in "${domains[@]}"; do
+    state="${states[$domain]}"
     if [[ -z "$ttl" ]]; then
         case "$state" in
             permanent)
-                printf '[whitelist] Already permanent: %s\n' "$domain"
+                status_messages[$domain]="Already permanent: $domain"
                 ;;
             temporary)
-                upsert_domain_line "$domain" "$domain"
-                printf '[whitelist] Promoted to permanent: %s\n' "$domain"
+                replacements[$domain]="$domain"
+                status_messages[$domain]="Promoted to permanent: $domain"
                 ;;
             *)
-                upsert_domain_line "$domain" "$domain"
-                printf '[whitelist] Added permanent: %s\n' "$domain"
+                replacements[$domain]="$domain"
+                status_messages[$domain]="Added permanent: $domain"
                 ;;
         esac
     else
         case "$state" in
             permanent)
-                printf '[whitelist] Already permanent: %s\n' "$domain"
+                status_messages[$domain]="Already permanent: $domain"
                 ;;
             temporary)
-                upsert_domain_line "$domain" "$domain # sg-expires-at=$expires_at sg-ttl=$ttl"
-                printf '[whitelist] Updated temporary: %s expires at %s\n' "$domain" "$(format_expiry "$expires_at")"
+                replacements[$domain]="$domain # sg-expires-at=$expires_at sg-ttl=$ttl"
+                status_messages[$domain]="Updated temporary: $domain expires at $(format_expiry "$expires_at")"
                 ;;
             *)
-                upsert_domain_line "$domain" "$domain # sg-expires-at=$expires_at sg-ttl=$ttl"
-                printf '[whitelist] Added temporary: %s expires at %s\n' "$domain" "$(format_expiry "$expires_at")"
+                replacements[$domain]="$domain # sg-expires-at=$expires_at sg-ttl=$ttl"
+                status_messages[$domain]="Added temporary: $domain expires at $(format_expiry "$expires_at")"
                 ;;
         esac
     fi
+done
+
+if [[ "${#replacements[@]}" -gt 0 ]]; then
+    tmp="$(mktemp "${WHITELIST}.tmp.XXXXXX")"
+    declare -A wrote=()
+
+    for line in "${whitelist_lines[@]}"; do
+        existing="$(line_domain "$line")"
+        if [[ -n "$existing" && -n "${replacements[$existing]:-}" ]]; then
+            if [[ -z "${wrote[$existing]:-}" ]]; then
+                printf '%s\n' "${replacements[$existing]}" >> "$tmp"
+                wrote[$existing]=1
+            fi
+            continue
+        fi
+        printf '%s\n' "$line" >> "$tmp"
+    done
+
+    for domain in "${domains[@]}"; do
+        if [[ -n "${replacements[$domain]:-}" && -z "${wrote[$domain]:-}" ]]; then
+            printf '%s\n' "${replacements[$domain]}" >> "$tmp"
+        fi
+    done
+
+    mv "$tmp" "$WHITELIST"
+fi
+
+for domain in "${domains[@]}"; do
+    printf '[whitelist] %s\n' "${status_messages[$domain]}"
 done
 
 if [[ "$reload" == true ]]; then
