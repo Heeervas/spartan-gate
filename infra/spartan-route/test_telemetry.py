@@ -1,14 +1,35 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from spartan_route.telemetry import RoutingLogEntry, TelemetryStore
+from spartan_route.telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
+
+
+def routing_entry(timestamp: str, request_id: str | None = None) -> RoutingLogEntry:
+    return RoutingLogEntry(
+        timestamp=timestamp,
+        original_model="clawroute/auto",
+        routed_model="codex/gpt-5.5",
+        actual_model="codex/gpt-5.5",
+        tier="complex",
+        input_tokens=100,
+        cached_input_tokens=25,
+        output_tokens=10,
+        session_id="session",
+        request_id=request_id or timestamp,
+        turn_id="turn",
+        context_info='{"usage_seen":true}',
+    )
 
 
 class TelemetryTests(unittest.TestCase):
@@ -587,6 +608,236 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(snapshots["acct"]["credits"][0]["creditKey"], "credit")
         finally:
             store.close()
+
+
+class TelemetryRetentionTests(unittest.TestCase):
+    def test_age_and_row_cap_pruning_rebuilds_rollups_deterministically(self) -> None:
+        store = TelemetryStore(":memory:", retention_days=30, routing_row_cap=3)
+        try:
+            for timestamp in (
+                "2026-05-01T00:00:00Z",
+                "2026-06-17T23:59:59Z",
+                "2026-06-20T00:00:00Z",
+                "2026-07-01T00:00:00Z",
+                "2026-07-02T00:00:00Z",
+                "2026-07-03T00:00:00Z",
+            ):
+                store.log_routing(routing_entry(timestamp))
+
+            report = store.enforce_routing_retention(
+                now=datetime(2026, 7, 18, tzinfo=timezone.utc),
+                force_rebuild=True,
+            )
+
+            timestamps = [
+                row["timestamp"]
+                for row in store._conn.execute(
+                    "SELECT timestamp FROM routing_log ORDER BY id"
+                ).fetchall()
+            ]
+            self.assertEqual(
+                timestamps,
+                [
+                    "2026-07-01T00:00:00Z",
+                    "2026-07-02T00:00:00Z",
+                    "2026-07-03T00:00:00Z",
+                ],
+            )
+            self.assertEqual(report["agePrunedRows"], 2)
+            self.assertEqual(report["rowCapPrunedRows"], 1)
+            self.assertEqual(report["rowsAfter"], 3)
+            self.assertTrue(report["rowCapShortenedHistory"])
+            rollup = store._conn.execute(
+                "SELECT count(*) AS days, sum(requests) AS requests FROM routing_daily_rollups"
+            ).fetchone()
+            self.assertEqual(dict(rollup), {"days": 3, "requests": 3})
+        finally:
+            store.close()
+
+    def test_retention_rolls_back_routing_rows_when_rollup_rebuild_fails(self) -> None:
+        store = TelemetryStore(":memory:", retention_days=30, routing_row_cap=10)
+        try:
+            store.log_routing(routing_entry("2026-05-01T00:00:00Z", "old"))
+            store.log_routing(routing_entry("2026-07-01T00:00:00Z", "new"))
+            store._conn.execute(
+                """
+                CREATE TRIGGER fail_rollup_rebuild
+                BEFORE DELETE ON routing_daily_rollups
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected rollup failure');
+                END
+                """
+            )
+            store._conn.commit()
+
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "injected rollup failure"):
+                store.enforce_routing_retention(
+                    now=datetime(2026, 7, 18, tzinfo=timezone.utc),
+                    force_rebuild=True,
+                )
+
+            self.assertEqual(
+                store._conn.execute("SELECT count(*) FROM routing_log").fetchone()[0],
+                2,
+            )
+            self.assertEqual(
+                store._conn.execute(
+                    "SELECT coalesce(sum(requests), 0) FROM routing_daily_rollups"
+                ).fetchone()[0],
+                2,
+            )
+        finally:
+            store.close()
+
+    def test_retention_preserves_codex_history_and_control_state(self) -> None:
+        store = TelemetryStore(":memory:", retention_days=30, routing_row_cap=1)
+        try:
+            store.log_routing(routing_entry("2026-07-01T00:00:00Z", "first"))
+            store.log_routing(routing_entry("2026-07-02T00:00:00Z", "second"))
+            usage = {
+                "account_key": "acct",
+                "slot_index": 0,
+                "window": "weekly",
+                "used_percent": 10,
+                "reset_at": "2026-07-20T00:00:00Z",
+                "window_minutes": 10080,
+            }
+            store.upsert_usage_snapshots([usage])
+            store.upsert_usage_snapshots([{**usage, "used_percent": 20}])
+            store.set_slot_routing_enabled(0, False, account_key="acct")
+            store.replace_routing_model_overrides({"complex": "codex/gpt-5.5"})
+            store.upsert_reset_credits([
+                {
+                    "account_key": "acct",
+                    "slot_index": 0,
+                    "available_count": 1,
+                    "details_available": False,
+                    "credits": [],
+                }
+            ])
+
+            store.enforce_routing_retention(
+                now=datetime(2026, 7, 18, tzinfo=timezone.utc),
+                force_rebuild=True,
+            )
+
+            self.assertEqual(
+                store._conn.execute(
+                    "SELECT count(*) FROM codex_usage_snapshot_history"
+                ).fetchone()[0],
+                2,
+            )
+            self.assertEqual(len(store.usage_snapshots()), 1)
+            self.assertFalse(store.slot_routing_override(0)["routingEnabled"])
+            self.assertEqual(
+                store.routing_model_override_rows()[0]["model_id"],
+                "codex/gpt-5.5",
+            )
+            self.assertEqual(
+                store.reset_credit_snapshots()["acct"]["availableCount"],
+                1,
+            )
+        finally:
+            store.close()
+
+
+class QueueTestStore:
+    def __init__(
+        self,
+        *,
+        fail_first: bool = False,
+        delay: float = 0.0,
+        block: bool = False,
+    ) -> None:
+        self.fail_first = fail_first
+        self.delay = delay
+        self.block = block
+        self.attempts = 0
+        self.written: list[RoutingLogEntry] = []
+        self.prune_calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def log_routing(self, entry: RoutingLogEntry) -> None:
+        self.attempts += 1
+        if self.block:
+            self.started.set()
+            self.release.wait(timeout=1)
+        if self.delay:
+            time.sleep(self.delay)
+        if self.fail_first and self.attempts == 1:
+            raise sqlite3.OperationalError("injected write failure")
+        self.written.append(entry)
+
+    def enforce_routing_retention(self) -> dict[str, object]:
+        self.prune_calls += 1
+        return self.retention_status()
+
+    def retention_status(self) -> dict[str, object]:
+        return {
+            "retentionDays": 30,
+            "rowCap": 50_000,
+            "rowsAfter": len(self.written),
+            "rowCapShortenedHistory": False,
+        }
+
+
+class TelemetryQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_saturation_drops_only_telemetry(self) -> None:
+        queue = TelemetryQueue(QueueTestStore(), capacity=2)
+
+        self.assertTrue(queue.log(routing_entry("2026-07-01T00:00:00Z", "one")))
+        self.assertTrue(queue.log(routing_entry("2026-07-01T00:00:01Z", "two")))
+        self.assertFalse(queue.log(routing_entry("2026-07-01T00:00:02Z", "three")))
+
+        status = queue.status()
+        self.assertEqual(status["depth"], 2)
+        self.assertEqual(status["capacity"], 2)
+        self.assertEqual(status["drops"], 1)
+        self.assertEqual(status["writeFailures"], 0)
+
+    async def test_worker_recovers_from_database_errors_and_prunes_by_batch(self) -> None:
+        store = QueueTestStore(fail_first=True)
+        queue = TelemetryQueue(store, capacity=4, retention_batch_size=1)
+        queue.start()
+        queue.log(routing_entry("2026-07-01T00:00:00Z", "failed"))
+        queue.log(routing_entry("2026-07-01T00:00:01Z", "written"))
+
+        self.assertTrue(await queue.stop(timeout=1))
+
+        self.assertEqual([entry.request_id for entry in store.written], ["written"])
+        self.assertEqual(store.prune_calls, 1)
+        self.assertEqual(queue.status()["writeFailures"], 1)
+        self.assertFalse(queue.status()["workerRunning"])
+
+    async def test_normal_shutdown_drains_accepted_entries(self) -> None:
+        store = QueueTestStore(delay=0.01)
+        queue = TelemetryQueue(store, capacity=4)
+        queue.start()
+        for index in range(3):
+            queue.log(routing_entry(f"2026-07-01T00:00:0{index}Z", str(index)))
+
+        self.assertTrue(await queue.stop(timeout=1))
+        self.assertEqual([entry.request_id for entry in store.written], ["0", "1", "2"])
+        self.assertEqual(queue.status()["depth"], 0)
+
+    async def test_shutdown_timeout_is_bounded_and_counts_pending_drops(self) -> None:
+        store = QueueTestStore(block=True)
+        queue = TelemetryQueue(store, capacity=3)
+        queue.start()
+        for index in range(3):
+            queue.log(routing_entry(f"2026-07-01T00:00:0{index}Z", str(index)))
+        self.assertTrue(await asyncio.to_thread(store.started.wait, 1))
+
+        started = time.monotonic()
+        self.assertFalse(await queue.stop(timeout=0.02))
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.25)
+        self.assertEqual(queue.status()["shutdownTimeouts"], 1)
+        self.assertEqual(queue.status()["drops"], 2)
+        store.release.set()
+        await asyncio.sleep(0.05)
 
 
 if __name__ == "__main__":

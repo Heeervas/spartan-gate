@@ -58,6 +58,24 @@ class ConfigTests(unittest.TestCase):
         })
         self.assertEqual(config.db_path, "/tmp/custom.db")
 
+    def test_telemetry_runtime_bounds_are_configurable_and_clamped(self) -> None:
+        config = load_config({
+            "SPARTAN_ROUTE_CONFIG_DIR": "/missing",
+            "SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY": "999999",
+            "SPARTAN_ROUTE_TELEMETRY_RETENTION_BATCH_SIZE": "0",
+            "SPARTAN_ROUTE_TELEMETRY_SHUTDOWN_TIMEOUT_MS": "250",
+        })
+
+        self.assertEqual(config.telemetry_queue_capacity, 8192)
+        self.assertEqual(config.telemetry_retention_batch_size, 1)
+        self.assertEqual(config.telemetry_shutdown_timeout_ms, 250)
+
+        defaults = load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing"})
+        self.assertEqual(defaults.telemetry_queue_capacity, 1024)
+        self.assertEqual(defaults.telemetry_retention_batch_size, 256)
+        self.assertEqual(defaults.telemetry_shutdown_timeout_ms, 5000)
+
+
 
 if __name__ == "__main__":
     unittest.main()

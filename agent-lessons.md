@@ -25,6 +25,9 @@ Last updated: 2026-07-18
 - A log-retention boundary must cover overlay-only service definitions as well
   as the base stack. Sending audit output to bounded container stderr avoids a
   second unrotated file lifecycle.
+- Telemetry must remain subordinate to request handling: bound admission, keep
+  workers alive across write failures, bound shutdown drain time, and prune
+  only rebuildable routing history in one transaction with its rollups.
 
 ## Tooling
 

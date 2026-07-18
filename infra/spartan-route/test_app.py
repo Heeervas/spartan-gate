@@ -271,6 +271,21 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health.status, 200)
         health_payload = await health.json()
         self.assertNotIn("slotPath", health_payload["codexSlots"][0])
+        self.assertEqual(
+            {
+                "depth": health_payload["telemetry"]["depth"],
+                "capacity": health_payload["telemetry"]["capacity"],
+                "drops": health_payload["telemetry"]["drops"],
+                "writeFailures": health_payload["telemetry"]["writeFailures"],
+            },
+            {"depth": 0, "capacity": 1024, "drops": 0, "writeFailures": 0},
+        )
+        self.assertEqual(health_payload["telemetry"]["retention"]["retentionDays"], 30)
+        self.assertEqual(health_payload["telemetry"]["retention"]["rowCap"], 50_000)
+        self.assertNotIn(
+            "oldestRetainedAt",
+            health_payload["telemetry"]["retention"],
+        )
         models = await self.client.get("/v1/models")
         self.assertEqual(models.status, 200)
         payload = await models.json()

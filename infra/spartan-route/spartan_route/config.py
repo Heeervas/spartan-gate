@@ -48,6 +48,9 @@ class SpartanRouteConfig:
     baseline_model: str
     tier_models: dict[str, dict[str, str]]
     models: dict[str, ModelEntry]
+    telemetry_queue_capacity: int = 1024
+    telemetry_retention_batch_size: int = 256
+    telemetry_shutdown_timeout_ms: int = 5000
 
     def api_key(self, provider: str) -> str | None:
         keys = {
@@ -194,4 +197,19 @@ def load_config(env: dict[str, str] | None = None) -> SpartanRouteConfig:
         baseline_model=baseline_model,
         tier_models=tier_models,
         models=_build_model_catalog(tier_models, baseline_model),
+        telemetry_queue_capacity=parse_int(
+            env.get("SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY"),
+            1024,
+            1,
+            8192,
+        ),
+        telemetry_retention_batch_size=parse_int(
+            env.get("SPARTAN_ROUTE_TELEMETRY_RETENTION_BATCH_SIZE"),
+            256,
+            1,
+            1024,
+        ),
+        telemetry_shutdown_timeout_ms=parse_int(
+            env.get("SPARTAN_ROUTE_TELEMETRY_SHUTDOWN_TIMEOUT_MS"), 5000, 100, 60_000
+        ),
     )

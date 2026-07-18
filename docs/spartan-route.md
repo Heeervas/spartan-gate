@@ -93,7 +93,15 @@ Kept in v1:
   includes `actual_size` on the image item.
 - Reset-credit telemetry and dashboard display. V1 only reads and persists
   reset-credit metadata; it never redeems credits.
-- Daily usage-cache rows from `routing_log`.
+- Bounded asynchronous routing telemetry: 1,024 pending rows by default,
+  saturation drops telemetry rather than model requests, database failures do
+  not stop the worker, and normal shutdown drains accepted entries for a
+  bounded interval. Public health exposes counters only, never request data.
+- `routing_log` is pruned to 30 days and at most 50,000 rows at startup and
+  after bounded write batches. Pruning and derived `routing_daily_rollups`
+  rebuilds share one immediate transaction; Codex snapshot history, current
+  snapshots, reset credits, slot state, and routing overrides remain intact.
+- Daily usage-cache rows from retained `routing_log` data.
 - Today's dashboard latency from logged request rows. For new rows,
   `response_time_ms`/`responseTimeMs` means first upstream response time, while
   `total_response_time_ms`/`totalResponseTimeMs` means full request or stream

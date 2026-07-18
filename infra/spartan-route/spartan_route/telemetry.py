@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
+import sys
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .util import now_iso
+
+DEFAULT_RETENTION_DAYS = 30
+DEFAULT_ROUTING_ROW_CAP = 50_000
+DEFAULT_QUEUE_CAPACITY = 1024
+DEFAULT_RETENTION_BATCH_SIZE = 256
+DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -49,17 +57,36 @@ class RoutingLogEntry:
 
 
 class TelemetryStore:
-    def __init__(self, db_path: str):
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
+        routing_row_cap: int = DEFAULT_ROUTING_ROW_CAP,
+    ):
+        if retention_days < 1:
+            raise ValueError("retention_days must be positive")
+        if routing_row_cap < 1:
+            raise ValueError("routing_row_cap must be positive")
         self.db_path = db_path
+        self.retention_days = int(retention_days)
+        self.routing_row_cap = int(routing_row_cap)
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
+        self._retention_status: dict[str, Any] = {}
         self._init_schema()
+        try:
+            self.enforce_routing_retention(force_rebuild=True)
+        except Exception:
+            self._conn.close()
+            raise
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -189,7 +216,7 @@ class TelemetryStore:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def log_routing(self, entry: RoutingLogEntry) -> None:
-        with self._lock:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO routing_log (
@@ -239,6 +266,126 @@ class TelemetryStore:
                 ),
             )
             self._conn.commit()
+
+    def enforce_routing_retention(
+        self,
+        *,
+        now: datetime | None = None,
+        force_rebuild: bool = False,
+    ) -> dict[str, Any]:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        else:
+            current = current.astimezone(timezone.utc)
+        cutoff = current - timedelta(days=self.retention_days)
+        cutoff_text = cutoff.isoformat()
+
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                rows_before = int(
+                    self._conn.execute("SELECT count(*) FROM routing_log").fetchone()[0]
+                )
+                age_cursor = self._conn.execute(
+                    """
+                    DELETE FROM routing_log
+                    WHERE julianday(timestamp) IS NULL
+                       OR julianday(timestamp) < julianday(?)
+                    """,
+                    (cutoff_text,),
+                )
+                age_pruned = max(0, int(age_cursor.rowcount))
+
+                threshold = self._conn.execute(
+                    """
+                    SELECT id
+                    FROM routing_log
+                    ORDER BY id DESC
+                    LIMIT 1 OFFSET ?
+                    """,
+                    (self.routing_row_cap - 1,),
+                ).fetchone()
+                row_cap_pruned = 0
+                if threshold is not None:
+                    cap_cursor = self._conn.execute(
+                        "DELETE FROM routing_log WHERE id < ?",
+                        (int(threshold["id"]),),
+                    )
+                    row_cap_pruned = max(0, int(cap_cursor.rowcount))
+
+                rows_after = int(
+                    self._conn.execute("SELECT count(*) FROM routing_log").fetchone()[0]
+                )
+                rebuild = bool(force_rebuild or age_pruned or row_cap_pruned)
+                if rebuild:
+                    self._rebuild_rollups_unlocked()
+
+                oldest = self._conn.execute(
+                    """
+                    SELECT timestamp
+                    FROM routing_log
+                    WHERE julianday(timestamp) IS NOT NULL
+                    ORDER BY julianday(timestamp), id
+                    LIMIT 1
+                    """
+                ).fetchone()
+                shortened = bool(
+                    rows_after >= self.routing_row_cap
+                    and self._conn.execute(
+                        """
+                        SELECT coalesce(min(julianday(timestamp)) > julianday(?), 0)
+                        FROM routing_log
+                        """,
+                        (cutoff_text,),
+                    ).fetchone()[0]
+                )
+                report = {
+                    "retentionDays": self.retention_days,
+                    "rowCap": self.routing_row_cap,
+                    "rowsBefore": rows_before,
+                    "rowsAfter": rows_after,
+                    "agePrunedRows": age_pruned,
+                    "rowCapPrunedRows": row_cap_pruned,
+                    "rowCapShortenedHistory": shortened,
+                    "oldestRetainedAt": oldest["timestamp"] if oldest else None,
+                    "rollupsRebuilt": rebuild,
+                    "lastEnforcedAt": current.isoformat(),
+                }
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            self._retention_status = report
+            return dict(report)
+
+    def retention_status(self) -> dict[str, Any]:
+        return dict(self._retention_status)
+
+    def _rebuild_rollups_unlocked(self) -> None:
+        self._conn.execute("DELETE FROM routing_daily_rollups")
+        self._conn.execute(
+            """
+            INSERT INTO routing_daily_rollups (
+                day, actual_model, tier, request_api_kind, requested_reasoning_effort,
+                requests, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                substr(timestamp, 1, 10),
+                actual_model,
+                tier,
+                request_api_kind,
+                coalesce(requested_reasoning_effort, ''),
+                count(*),
+                coalesce(sum(input_tokens), 0),
+                coalesce(sum(cached_input_tokens), 0),
+                coalesce(sum(output_tokens), 0)
+            FROM routing_log
+            GROUP BY
+                substr(timestamp, 1, 10), actual_model, tier,
+                request_api_kind, coalesce(requested_reasoning_effort, '')
+            """
+        )
 
     def daily_cache_rows(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -462,7 +609,7 @@ class TelemetryStore:
                 turn["models"] = sorted(turn["models"])
                 turn["tiers"] = sorted(turn["tiers"])
                 turn.pop("lastId", None)
-        return {"sessions": values, "hasMoreSessions": len(sessions) > safe_limit, "retentionDays": 30}
+        return {"sessions": values, "hasMoreSessions": len(sessions) > safe_limit, "retentionDays": self.retention_days}
 
     def turn_requests(self, turn_id: str, limit: int = 200) -> dict[str, Any]:
         safe_limit = max(1, min(200, int(limit)))
@@ -836,26 +983,151 @@ class TelemetryStore:
 
 
 class TelemetryQueue:
-    def __init__(self, store: TelemetryStore):
+    def __init__(
+        self,
+        store: TelemetryStore,
+        *,
+        capacity: int = DEFAULT_QUEUE_CAPACITY,
+        retention_batch_size: int = DEFAULT_RETENTION_BATCH_SIZE,
+        shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+    ):
+        if capacity < 1:
+            raise ValueError("capacity must be positive")
+        if retention_batch_size < 1:
+            raise ValueError("retention_batch_size must be positive")
+        if shutdown_timeout <= 0:
+            raise ValueError("shutdown_timeout must be positive")
         self.store = store
-        self.queue: asyncio.Queue[RoutingLogEntry | None] = asyncio.Queue()
+        self.capacity = int(capacity)
+        self.retention_batch_size = int(retention_batch_size)
+        self.shutdown_timeout = float(shutdown_timeout)
+        self.queue: asyncio.Queue[RoutingLogEntry | None] = asyncio.Queue(maxsize=self.capacity)
         self.task: asyncio.Task[None] | None = None
+        self.drops = 0
+        self.write_failures = 0
+        self.maintenance_failures = 0
+        self.shutdown_timeouts = 0
+        self._successful_writes_since_retention = 0
+        self._accepting = True
 
     def start(self) -> None:
+        if self.task and not self.task.done():
+            return
+        self._accepting = True
         self.task = asyncio.create_task(self._run())
 
-    async def stop(self) -> None:
-        await self.queue.put(None)
-        if self.task:
-            await self.task
+    async def stop(self, timeout: float | None = None) -> bool:
+        self._accepting = False
+        if not self.task:
+            dropped = self._discard_pending()
+            self.drops += dropped
+            return dropped == 0
 
-    def log(self, entry: RoutingLogEntry) -> None:
-        self.queue.put_nowait(entry)
+        limit = self.shutdown_timeout if timeout is None else max(0.0, float(timeout))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + limit
+        try:
+            await asyncio.wait_for(self.queue.join(), timeout=limit)
+            self.queue.put_nowait(None)
+            remaining = max(0.001, deadline - loop.time())
+            await asyncio.wait_for(self.task, timeout=remaining)
+        except TimeoutError:
+            self.shutdown_timeouts += 1
+            self.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.task
+            self.task = None
+            self.drops += self._discard_pending()
+            print(
+                "[spartan-route] telemetry shutdown drain timed out; pending telemetry was dropped",
+                file=sys.stderr,
+            )
+            return False
+
+        self.task = None
+        return True
+
+    def log(self, entry: RoutingLogEntry) -> bool:
+        if not self._accepting:
+            self.drops += 1
+            return False
+        try:
+            self.queue.put_nowait(entry)
+        except asyncio.QueueFull:
+            self.drops += 1
+            return False
+        return True
+
+    def status(self) -> dict[str, Any]:
+        retention = self.store.retention_status()
+        public_retention = {
+            key: retention.get(key)
+            for key in (
+                "retentionDays",
+                "rowCap",
+                "rowsAfter",
+                "agePrunedRows",
+                "rowCapPrunedRows",
+                "rowCapShortenedHistory",
+                "rollupsRebuilt",
+                "lastEnforcedAt",
+            )
+        }
+        return {
+            "depth": self.queue.qsize(),
+            "capacity": self.capacity,
+            "drops": self.drops,
+            "writeFailures": self.write_failures,
+            "maintenanceFailures": self.maintenance_failures,
+            "shutdownTimeouts": self.shutdown_timeouts,
+            "accepting": self._accepting,
+            "workerRunning": bool(self.task and not self.task.done()),
+            "retention": public_retention,
+        }
+
+    def _discard_pending(self) -> int:
+        dropped = 0
+        while True:
+            try:
+                entry = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return dropped
+            if entry is not None:
+                dropped += 1
+            self.queue.task_done()
 
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
             entry = await self.queue.get()
-            if entry is None:
-                return
-            await loop.run_in_executor(None, self.store.log_routing, entry)
+            try:
+                if entry is None:
+                    return
+                try:
+                    await loop.run_in_executor(None, self.store.log_routing, entry)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self.write_failures += 1
+                    print(
+                        f"[spartan-route] telemetry write failed ({type(exc).__name__})",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                self._successful_writes_since_retention += 1
+                if self._successful_writes_since_retention >= self.retention_batch_size:
+                    try:
+                        await loop.run_in_executor(None, self.store.enforce_routing_retention)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        self.maintenance_failures += 1
+                        print(
+                            f"[spartan-route] telemetry retention failed ({type(exc).__name__})",
+                            file=sys.stderr,
+                        )
+                    else:
+                        self._successful_writes_since_retention = 0
+            finally:
+                self.queue.task_done()

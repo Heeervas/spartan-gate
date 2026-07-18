@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Bounded Spartan Route telemetry admission and shutdown draining, kept model
+  requests available under telemetry pressure or database write failure,
+  exposed non-sensitive queue/retention health, and transactionally enforced
+  30-day/50,000-row routing retention without pruning append-only Codex usage
+  history or control state.
 - Bounded every service and overlay with Docker's `local` logging driver,
   configurable 10 MiB x 3-segment defaults, and sent Hermes Python HTTP audit
   output to that bounded stderr stream by default while retaining explicit

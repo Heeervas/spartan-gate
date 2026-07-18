@@ -1888,6 +1888,7 @@ async def health(request: web.Request) -> web.Response:
         "service": "spartan-route",
         "version": "0.1.0",
         "enabled": state.config.enabled,
+        "telemetry": state.queue.status(),
         "codexSlots": state.codex.slot_status() if state.codex else [],
     })
 
@@ -2151,10 +2152,11 @@ async def startup(app: web.Application) -> None:
 
 async def cleanup(app: web.Application) -> None:
     state: SpartanRouteState = app[STATE_KEY]
-    await state.queue.stop()
+    telemetry_drained = await state.queue.stop()
     if state.session:
         await state.session.close()
-    state.telemetry.close()
+    if telemetry_drained:
+        state.telemetry.close()
 
 
 def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetryStore | None = None) -> web.Application:
@@ -2168,7 +2170,12 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     app[STATE_KEY] = SpartanRouteState(
         config=config,
         telemetry=telemetry,
-        queue=TelemetryQueue(telemetry),
+        queue=TelemetryQueue(
+            telemetry,
+            capacity=config.telemetry_queue_capacity,
+            retention_batch_size=config.telemetry_retention_batch_size,
+            shutdown_timeout=config.telemetry_shutdown_timeout_ms / 1000,
+        ),
         routing_policy=build_routing_policy_snapshot(config, telemetry),
     )
     app.on_startup.append(startup)

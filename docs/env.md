@@ -52,7 +52,8 @@ Tailscale binds such as `TAILSCALE_IP=100.x.y.z` belong in your private env file
 - `SPARTAN_LOG_MAX_FILES`: maximum segments retained per service; defaults to
   `3`.
 
-Every public Compose service and overlay uses these bounded settings.
+Every public Compose service and overlay uses these bounded settings. Changing
+either value requires recreating the affected containers.
 
 ## Hermes
 
@@ -294,6 +295,21 @@ own SQLite state. `SPARTAN_ROUTE_DATA_PATH` controls the host data mount and
 `/app/data/spartan-route.db` and does not reuse `clawroute.db`.
 `SPARTAN_CODEX_HOME_PATH` can mount a private Codex home at `/codex-home` while
 leaving `CODEX_HOME` pointed at that container path.
+Spartan Route accepts at most `SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY` pending
+routing rows in memory, default `1024`. Saturation drops telemetry only; model
+requests continue and `/health` reports queue depth, capacity, drops, and write
+failures without request content. `SPARTAN_ROUTE_TELEMETRY_RETENTION_BATCH_SIZE`
+controls the successful-write interval between maintenance runs and defaults to
+`256`. `SPARTAN_ROUTE_TELEMETRY_SHUTDOWN_TIMEOUT_MS` bounds normal shutdown
+draining and defaults to `5000`.
+
+`routing_log` retention is fixed at 30 days with an absolute 50,000-row cap.
+Startup and periodic maintenance prune rows and rebuild
+`routing_daily_rollups` transactionally; current Codex snapshots, append-only
+snapshot history, reset credits, slot state, and routing overrides are not
+pruned. Health reports when the row cap shortens the effective history. Spartan
+Route does not run `VACUUM` automatically.
+
 `SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING=1` is a rollback switch that restores
 replay of prior assistant reasoning into upstream Codex requests; leave it
 unset for the default stable-prefix behavior.
