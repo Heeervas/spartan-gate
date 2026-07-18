@@ -76,6 +76,18 @@ class TelemetryStore:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
+        self._health_lock = threading.Lock()
+        self._health_failures = {
+            "read": 0,
+            "write": 0,
+            "maintenance": 0,
+        }
+        self._unhealthy_operations: dict[str, set[str]] = {
+            "read": set(),
+            "write": set(),
+            "maintenance": set(),
+        }
+        self._last_failure_code: str | None = None
         self._retention_status: dict[str, Any] = {}
         self._init_schema()
         try:
@@ -363,6 +375,38 @@ class TelemetryStore:
 
     def retention_status(self) -> dict[str, Any]:
         return dict(self._retention_status)
+
+    def record_health_failure(self, category: str, operation: str) -> None:
+        if category not in self._health_failures:
+            raise ValueError("invalid telemetry health category")
+        with self._health_lock:
+            self._health_failures[category] += 1
+            self._unhealthy_operations[category].add(operation)
+            self._last_failure_code = f"telemetry_{category}_failed"
+
+    def record_health_success(self, category: str, operation: str) -> None:
+        if category not in self._health_failures:
+            raise ValueError("invalid telemetry health category")
+        with self._health_lock:
+            self._unhealthy_operations[category].discard(operation)
+            if not any(self._unhealthy_operations.values()):
+                self._last_failure_code = None
+
+    def health_status(self) -> dict[str, Any]:
+        with self._health_lock:
+            read_healthy = not self._unhealthy_operations["read"]
+            write_healthy = not self._unhealthy_operations["write"]
+            maintenance_healthy = not self._unhealthy_operations["maintenance"]
+            return {
+                "healthy": read_healthy and write_healthy and maintenance_healthy,
+                "readHealthy": read_healthy,
+                "writeHealthy": write_healthy,
+                "maintenanceHealthy": maintenance_healthy,
+                "readFailures": self._health_failures["read"],
+                "writeFailures": self._health_failures["write"],
+                "maintenanceFailures": self._health_failures["maintenance"],
+                "lastFailureCode": self._last_failure_code,
+            }
 
     def _rebuild_rollups_unlocked(self) -> None:
         rollups: dict[tuple[str, str, str, str, str], list[Any]] = {}
@@ -1187,11 +1231,13 @@ class TelemetryQueue:
                     raise
                 except Exception as exc:
                     self.write_failures += 1
+                    self.store.record_health_failure("write", "routing_log")
                     print(
                         f"[spartan-route] telemetry write failed ({type(exc).__name__})",
                         file=sys.stderr,
                     )
                     continue
+                self.store.record_health_success("write", "routing_log")
 
                 self._successful_writes_since_retention += 1
                 if self._successful_writes_since_retention >= self.retention_batch_size:
@@ -1201,11 +1247,13 @@ class TelemetryQueue:
                         raise
                     except Exception as exc:
                         self.maintenance_failures += 1
+                        self.store.record_health_failure("maintenance", "retention")
                         print(
                             f"[spartan-route] telemetry retention failed ({type(exc).__name__})",
                             file=sys.stderr,
                         )
                     else:
+                        self.store.record_health_success("maintenance", "retention")
                         self._successful_writes_since_retention = 0
             finally:
                 self.queue.task_done()

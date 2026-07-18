@@ -610,17 +610,26 @@
     }
     function renderErrors(payload) {
       const errors = [...(payload.slotErrors || []), ...(payload.resetCreditErrors || [])];
+      const telemetryErrors = payload.telemetryErrors || [];
       errorsEl.replaceChildren();
+      if (telemetryErrors.length) {
+        const telemetryPanel = document.createElement('div');
+        telemetryPanel.className = 'panel warn';
+        telemetryPanel.setAttribute('role', 'status');
+        const operations = [...new Set(telemetryErrors.map(error => error.operation).filter(Boolean))];
+        telemetryPanel.textContent = `Telemetry degraded${operations.length ? ` (${operations.join(', ')})` : ''}. Live usage remains available; history or cache data may be incomplete.`;
+        errorsEl.appendChild(telemetryPanel);
+      }
       if (!errors.length) return;
-      const panel = document.createElement('div');
-      panel.className = 'panel bad';
-      panel.setAttribute('role', 'alert');
+      const upstreamPanel = document.createElement('div');
+      upstreamPanel.className = 'panel bad';
+      upstreamPanel.setAttribute('role', 'alert');
       errors.forEach(error => {
         const line = document.createElement('div');
         line.textContent = `slot ${error.slotIndex}: ${error.message}`;
-        panel.appendChild(line);
+        upstreamPanel.appendChild(line);
       });
-      errorsEl.appendChild(panel);
+      errorsEl.appendChild(upstreamPanel);
     }
     async function fetchJson(path, options = {}) {
       const response = await fetch(path, options);

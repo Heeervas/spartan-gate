@@ -28,6 +28,10 @@ Last updated: 2026-07-18
 - Telemetry must remain subordinate to request handling: bound admission, keep
   workers alive across write failures, bound shutdown drain time, and prune
   only rebuildable routing history in one transaction with its rollups.
+- A successful live upstream response must not become HTTP 500 because its
+  telemetry snapshot or derived-cache read failed. Return sanitized partial
+  metadata, keep inference health ready-but-degraded, and reserve structured
+  503 responses for endpoints that have no non-telemetry result to serve.
 
 ## Tooling
 

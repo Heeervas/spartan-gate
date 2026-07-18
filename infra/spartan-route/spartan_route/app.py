@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -1818,11 +1819,13 @@ async def api_config_routing_put(request: web.Request) -> web.Response:
             )
         try:
             updated_at = state.telemetry.replace_routing_model_overrides(mapping)
-        except Exception:
+        except Exception as exc:
+            record_telemetry_failure(state, "write", "routing_config", exc)
             return routing_persistence_error(
                 state,
                 "Routing configuration could not be persisted.",
             )
+        state.telemetry.record_health_success("write", "routing_config")
         state.routing_policy = make_routing_policy_snapshot(
             state.config,
             mapping,
@@ -1853,11 +1856,13 @@ async def api_config_routing_delete(request: web.Request) -> web.Response:
             )
         try:
             state.telemetry.delete_routing_model_overrides()
-        except Exception:
+        except Exception as exc:
+            record_telemetry_failure(state, "write", "routing_config", exc)
             return routing_persistence_error(
                 state,
                 "Routing configuration could not be reset.",
             )
+        state.telemetry.record_health_success("write", "routing_config")
         state.routing_policy = make_routing_policy_snapshot(state.config)
     return routing_config_response(state)
 
@@ -1881,22 +1886,88 @@ async def api_models(request: web.Request) -> web.Response:
     })
 
 
+def record_telemetry_failure(
+    state: SpartanRouteState,
+    category: str,
+    operation: str,
+    exc: Exception,
+) -> None:
+    state.telemetry.record_health_failure(category, operation)
+    print(
+        f"[spartan-route] telemetry {operation} {category} failed ({type(exc).__name__})",
+        file=sys.stderr,
+    )
+
+
+def telemetry_error(operation: str, code: str = "telemetry_read_failed") -> dict[str, str]:
+    return {"code": code, "operation": operation}
+
+
+def add_telemetry_error(payload: dict[str, Any], error: dict[str, str]) -> None:
+    errors = payload.get("telemetryErrors")
+    if not isinstance(errors, list):
+        errors = []
+        payload["telemetryErrors"] = errors
+    if error not in errors:
+        errors.append(error)
+    payload["partial"] = True
+
+
+def telemetry_unavailable_response() -> web.Response:
+    return response_json_error(
+        "Telemetry is temporarily unavailable.",
+        503,
+        "telemetry_unavailable",
+    )
+
+
+def read_daily_cache_rows(
+    state: SpartanRouteState,
+) -> tuple[list[dict[str, Any]] | None, dict[str, str] | None]:
+    try:
+        rows = state.telemetry.daily_cache_rows()
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "daily_cache", exc)
+        return None, telemetry_error("daily_cache")
+    state.telemetry.record_health_success("read", "daily_cache")
+    return rows, None
+
+
 async def health(request: web.Request) -> web.Response:
     state = get_state(request)
+    codex_slots = []
+    if state.codex:
+        try:
+            codex_slots = state.codex.slot_status()
+        except Exception as exc:
+            record_telemetry_failure(state, "read", "slot_status", exc)
+        else:
+            state.telemetry.record_health_success("read", "slot_status")
+    telemetry_status = state.queue.status()
+    database_status = state.telemetry.health_status()
+    telemetry_status["database"] = database_status
     return web.json_response({
         "ok": True,
+        "degraded": not database_status["healthy"],
         "service": "spartan-route",
         "version": "0.1.0",
         "enabled": state.config.enabled,
-        "telemetry": state.queue.status(),
-        "codexSlots": state.codex.slot_status() if state.codex else [],
+        "telemetry": telemetry_status,
+        "codexSlots": codex_slots,
     })
 
 
 async def stats(request: web.Request) -> web.Response:
     state = get_state(request)
-    rows = state.telemetry.daily_cache_rows()
-    today = state.telemetry.today_summary()
+    rows, error = read_daily_cache_rows(state)
+    if error is not None or rows is None:
+        return telemetry_unavailable_response()
+    try:
+        today = state.telemetry.today_summary()
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "today_summary", exc)
+        return telemetry_unavailable_response()
+    state.telemetry.record_health_success("read", "today_summary")
     totals = {
         "requests": sum(int(row["requests"] or 0) for row in rows),
         "inputTokens": sum(int(row["input_tokens"] or 0) for row in rows),
@@ -1930,7 +2001,17 @@ async def api_routing_live(request: web.Request) -> web.Response:
     limit = int(request.query.get("limit") or "30")
     session_limit = int(request.query.get("sessionLimit") or limit)
     turn_limit = int(request.query.get("turnLimit") or "20")
-    return web.json_response(state.telemetry.live_sessions(limit=limit, session_limit=session_limit, turn_limit=turn_limit))
+    try:
+        payload = state.telemetry.live_sessions(
+            limit=limit,
+            session_limit=session_limit,
+            turn_limit=turn_limit,
+        )
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "routing_live", exc)
+        return telemetry_unavailable_response()
+    state.telemetry.record_health_success("read", "routing_live")
+    return web.json_response(payload)
 
 
 def valid_turn_id(value: str) -> bool:
@@ -1946,12 +2027,21 @@ async def api_routing_turn(request: web.Request) -> web.Response:
     turn_id = request.match_info["turn_id"]
     if not valid_turn_id(turn_id):
         return response_json_error("Invalid turn id", 400, "invalid_turn_id", "invalid_request_error")
-    return web.json_response(state.telemetry.turn_requests(turn_id))
+    try:
+        payload = state.telemetry.turn_requests(turn_id)
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "routing_turn", exc)
+        return telemetry_unavailable_response()
+    state.telemetry.record_health_success("read", "routing_turn")
+    return web.json_response(payload)
 
 
 async def api_codex_cache_day(request: web.Request) -> web.Response:
     state = get_state(request)
-    return web.json_response({"days": state.telemetry.daily_cache_rows()})
+    rows, error = read_daily_cache_rows(state)
+    if error is not None or rows is None:
+        return telemetry_unavailable_response()
+    return web.json_response({"days": rows})
 
 
 def classify_codex_slot_health(
@@ -2039,17 +2129,45 @@ def codex_slots_with_health(
     ]
 
 
+def attach_codex_telemetry(
+    state: SpartanRouteState,
+    payload: dict[str, Any],
+) -> None:
+    rows, error = read_daily_cache_rows(state)
+    if error is not None or rows is None:
+        payload["cacheDaily"] = []
+        add_telemetry_error(payload, error or telemetry_error("daily_cache"))
+    else:
+        payload["cacheDaily"] = rows
+
+    assert state.codex is not None
+    try:
+        balancer = state.codex.balancer_status(include_paths=True)
+        raw_slots = balancer.get("slots")
+        slot_rows = raw_slots if isinstance(raw_slots, list) else []
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "slot_status", exc)
+        add_telemetry_error(payload, telemetry_error("slot_status"))
+        balancer = {
+            "mode": "minimal",
+            "slots": [],
+            "activeLeases": state.codex.lease_status(),
+        }
+        slot_rows = []
+    else:
+        state.telemetry.record_health_success("read", "slot_status")
+    slots = codex_slots_with_health(payload, slot_rows)
+    balancer["slots"] = slots
+    payload["slots"] = slots
+    payload["balancer"] = balancer
+
+
 async def api_codex_usage(request: web.Request) -> web.Response:
     state = get_state(request)
     if state.codex is None:
         return response_json_error("Codex router is not ready", 503, "codex_unavailable")
     payload = await state.codex.usage_snapshot(force=request.query.get("force") == "true")
-    payload["cacheDaily"] = state.telemetry.daily_cache_rows()
-    balancer = state.codex.balancer_status(include_paths=True)
-    slots = codex_slots_with_health(payload, state.codex.slot_status(include_paths=True))
-    balancer["slots"] = slots
-    payload["slots"] = slots
-    payload["balancer"] = balancer
+    attach_codex_telemetry(state, payload)
     return web.json_response(payload)
 
 
@@ -2061,12 +2179,7 @@ async def api_codex_usage_slot(request: web.Request) -> web.Response:
     if not any(slot.index == slot_index for slot in state.codex.slots):
         return response_json_error("Codex slot not found", 404, "slot_not_found", "invalid_request_error")
     payload = await state.codex.usage_snapshot(force=True, slot_indexes={slot_index})
-    payload["cacheDaily"] = state.telemetry.daily_cache_rows()
-    balancer = state.codex.balancer_status(include_paths=True)
-    slots = codex_slots_with_health(payload, state.codex.slot_status(include_paths=True))
-    balancer["slots"] = slots
-    payload["slots"] = slots
-    payload["balancer"] = balancer
+    attach_codex_telemetry(state, payload)
     return web.json_response(payload)
 
 
@@ -2074,7 +2187,13 @@ async def api_codex_balancer(request: web.Request) -> web.Response:
     state = get_state(request)
     if state.codex is None:
         return response_json_error("Codex router is not ready", 503, "codex_unavailable")
-    return web.json_response(state.codex.balancer_status(include_paths=True))
+    try:
+        payload = state.codex.balancer_status(include_paths=True)
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "slot_status", exc)
+        return telemetry_unavailable_response()
+    state.telemetry.record_health_success("read", "slot_status")
+    return web.json_response(payload)
 
 
 async def api_codex_balancer_slot(request: web.Request) -> web.Response:
@@ -2097,7 +2216,17 @@ async def api_codex_balancer_slot(request: web.Request) -> web.Response:
         slot = await state.codex.set_slot_routing_enabled(slot_index, value)
     except IndexError:
         return response_json_error("Codex slot not found", 404, "slot_not_found", "invalid_request_error")
-    return web.json_response({"slot": slot, "balancer": state.codex.balancer_status(include_paths=True)})
+    except Exception as exc:
+        record_telemetry_failure(state, "write", "slot_routing_override", exc)
+        return telemetry_unavailable_response()
+    state.telemetry.record_health_success("write", "slot_routing_override")
+    try:
+        balancer = state.codex.balancer_status(include_paths=True)
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "slot_status", exc)
+        return telemetry_unavailable_response()
+    state.telemetry.record_health_success("read", "slot_status")
+    return web.json_response({"slot": slot, "balancer": balancer})
 
 
 async def dashboard_file(request: web.Request) -> web.StreamResponse:

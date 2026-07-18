@@ -871,6 +871,7 @@ class QueueTestStore:
         self.attempts = 0
         self.written: list[RoutingLogEntry] = []
         self.prune_calls = 0
+        self.health_events: list[tuple[str, str, str]] = []
         self.started = threading.Event()
         self.release = threading.Event()
 
@@ -896,6 +897,12 @@ class QueueTestStore:
             "rowsAfter": len(self.written),
             "rowCapShortenedHistory": False,
         }
+
+    def record_health_failure(self, category: str, operation: str) -> None:
+        self.health_events.append(("failure", category, operation))
+
+    def record_health_success(self, category: str, operation: str) -> None:
+        self.health_events.append(("success", category, operation))
 
 
 class TelemetryQueueTests(unittest.IsolatedAsyncioTestCase):
@@ -925,6 +932,14 @@ class TelemetryQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.prune_calls, 1)
         self.assertEqual(queue.status()["writeFailures"], 1)
         self.assertFalse(queue.status()["workerRunning"])
+        self.assertEqual(
+            store.health_events,
+            [
+                ("failure", "write", "routing_log"),
+                ("success", "write", "routing_log"),
+                ("success", "maintenance", "retention"),
+            ],
+        )
 
     async def test_normal_shutdown_drains_accepted_entries(self) -> None:
         store = QueueTestStore(delay=0.01)

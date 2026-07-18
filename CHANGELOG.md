@@ -10,6 +10,10 @@ All notable changes to Spartan Gate are documented here.
 - Replaced Spartan Route's SQLite sort/group telemetry aggregation with
   streaming aggregation over the retained 50,000-row window, keeping daily
   cache and rollup rebuilds within the service's fixed 32 MiB temporary mount.
+- Kept live Codex usage available when snapshot/reset persistence or cache
+  reads fail, returning sanitized partial metadata instead of HTTP 500;
+  telemetry-only APIs now return a structured 503, health remains ready but
+  reports database degradation, and the Codex dashboard marks partial data.
 - Made L4 Hermes health reflect the complete gate path by requiring its local
   API, Tinyproxy, and Spartan Route to remain reachable, with bounded retries
   that tolerate short dependency restarts while surfacing persistent internal

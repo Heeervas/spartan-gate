@@ -286,6 +286,20 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             "oldestRetainedAt",
             health_payload["telemetry"]["retention"],
         )
+        self.assertFalse(health_payload["degraded"])
+        self.assertEqual(
+            health_payload["telemetry"]["database"],
+            {
+                "healthy": True,
+                "readHealthy": True,
+                "writeHealthy": True,
+                "maintenanceHealthy": True,
+                "readFailures": 0,
+                "writeFailures": 0,
+                "maintenanceFailures": 0,
+                "lastFailureCode": None,
+            },
+        )
         models = await self.client.get("/v1/models")
         self.assertEqual(models.status, 200)
         payload = await models.json()
@@ -551,6 +565,77 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["today"]["cacheLikelyHitPercent"], 50.0)
         self.assertEqual(payload["totals"]["cacheLikelyHitPercent"], 50.0)
         self.assertEqual(payload["dailyCache"][0]["cache_likely_hit_percent"], 50.0)
+
+    async def test_usage_stays_available_when_daily_cache_read_fails(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        state.codex.slots = []
+        auth = {"Authorization": "Bearer secret"}
+
+        with patch.object(
+            self.store,
+            "daily_cache_rows",
+            side_effect=RuntimeError("private sqlite path and detail"),
+        ):
+            response = await self.client.get(
+                "/api/codex/usage?force=true",
+                headers=auth,
+            )
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertTrue(payload["partial"])
+        self.assertEqual(payload["cacheDaily"], [])
+        self.assertEqual(
+            payload["telemetryErrors"],
+            [
+                {
+                    "code": "telemetry_read_failed",
+                    "operation": "daily_cache",
+                }
+            ],
+        )
+        self.assertNotIn("private sqlite", json.dumps(payload))
+
+        health = await self.client.get("/health")
+        self.assertEqual(health.status, 200)
+        health_payload = await health.json()
+        self.assertTrue(health_payload["ok"])
+        self.assertTrue(health_payload["degraded"])
+        self.assertFalse(health_payload["telemetry"]["database"]["readHealthy"])
+
+    async def test_health_stays_ready_when_slot_telemetry_read_fails(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        with patch.object(
+            state.codex,
+            "slot_status",
+            side_effect=RuntimeError("private slot database detail"),
+        ):
+            response = await self.client.get("/health")
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["degraded"])
+        self.assertEqual(payload["codexSlots"], [])
+        self.assertFalse(payload["telemetry"]["database"]["readHealthy"])
+        self.assertNotIn("private slot", json.dumps(payload))
+
+    async def test_telemetry_only_apis_return_sanitized_503_on_read_failure(self) -> None:
+        auth = {"Authorization": "Bearer secret"}
+        with patch.object(
+            self.store,
+            "daily_cache_rows",
+            side_effect=RuntimeError("private sqlite path and detail"),
+        ):
+            for path in ("/stats", "/api/codex/cache/day"):
+                with self.subTest(path=path):
+                    response = await self.client.get(path, headers=auth)
+                    self.assertEqual(response.status, 503)
+                    payload = await response.json()
+                    self.assertEqual(payload["error"]["code"], "telemetry_unavailable")
+                    self.assertNotIn("private sqlite", json.dumps(payload))
 
     async def test_invalid_turn_id_is_rejected_before_query(self) -> None:
         response = await self.client.get(
@@ -1327,6 +1412,8 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("health-badge", html)
         self.assertIn("account-health", html)
         self.assertIn("textContent = summary", html)
+        self.assertIn("telemetryErrors", html)
+        self.assertIn("Telemetry degraded", html)
 
 
 if __name__ == "__main__":

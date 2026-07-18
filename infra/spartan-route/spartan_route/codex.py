@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import struct
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2018,9 +2019,26 @@ class CodexRouter:
         accounts: list[dict[str, Any]] = []
         slot_errors: list[dict[str, Any]] = []
         reset_errors: list[dict[str, Any]] = []
+        telemetry_errors: list[dict[str, str]] = []
         usage_records: list[dict[str, Any]] = []
         reset_records: list[dict[str, Any]] = []
-        persisted_reset = self.telemetry.reset_credit_snapshots()
+        try:
+            persisted_reset = self.telemetry.reset_credit_snapshots()
+        except Exception as exc:
+            self.telemetry.record_health_failure("read", "reset_credit_snapshots")
+            print(
+                f"[spartan-route] telemetry reset-credit read failed ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            persisted_reset = {}
+            telemetry_errors.append(
+                {
+                    "code": "telemetry_read_failed",
+                    "operation": "reset_credit_snapshots",
+                }
+            )
+        else:
+            self.telemetry.record_health_success("read", "reset_credit_snapshots")
         for slot in self.slots:
             if slot_indexes is not None and slot.index not in slot_indexes:
                 continue
@@ -2082,9 +2100,35 @@ class CodexRouter:
             except Exception as exc:
                 reset_errors.append({"slotIndex": slot.index, "source": "persisted" if row["resetCredits"] else "none", "message": str(exc)})
             accounts.append(row)
-        self.telemetry.upsert_usage_snapshots(usage_records)
-        self.telemetry.upsert_reset_credits(reset_records)
-        return {"accounts": accounts, "slotErrors": slot_errors, "resetCreditErrors": reset_errors, "partial": bool(slot_errors or reset_errors)}
+        for operation, persist in (
+            ("usage_snapshots", lambda: self.telemetry.upsert_usage_snapshots(usage_records)),
+            ("reset_credit_snapshots", lambda: self.telemetry.upsert_reset_credits(reset_records)),
+        ):
+            try:
+                persist()
+            except Exception as exc:
+                self.telemetry.record_health_failure("write", operation)
+                print(
+                    f"[spartan-route] telemetry {operation} write failed ({type(exc).__name__})",
+                    file=sys.stderr,
+                )
+                telemetry_errors.append(
+                    {
+                        "code": "telemetry_persistence_failed",
+                        "operation": operation,
+                    }
+                )
+            else:
+                self.telemetry.record_health_success("write", operation)
+        result = {
+            "accounts": accounts,
+            "slotErrors": slot_errors,
+            "resetCreditErrors": reset_errors,
+            "partial": bool(slot_errors or reset_errors or telemetry_errors),
+        }
+        if telemetry_errors:
+            result["telemetryErrors"] = telemetry_errors
+        return result
 
 
 async def parse_sse_response(response: Any) -> AsyncIterator[tuple[str | None, str]]:

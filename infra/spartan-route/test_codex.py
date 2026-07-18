@@ -1041,6 +1041,105 @@ class CodexTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_usage_snapshot_keeps_live_payload_when_persistence_fails(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            session = FakeUsageSession()
+            router = CodexRouter.__new__(CodexRouter)
+            router.session = session
+            router.telemetry = store
+            router.slots = [
+                CodexSlot(
+                    0,
+                    path="/codex-a/auth.json",
+                    auth=CodexAuth("token", account_id="acct"),
+                )
+            ]
+            router.leases = {}
+            router.refresh_locks = {}
+            router._usage_cache = None
+
+            with patch.object(
+                store,
+                "upsert_usage_snapshots",
+                side_effect=RuntimeError("private sqlite path and detail"),
+            ):
+                payload = asyncio_run(router.usage_snapshot(force=True))
+
+            self.assertEqual(len(payload["accounts"]), 1)
+            self.assertTrue(payload["partial"])
+            self.assertEqual(
+                payload["telemetryErrors"],
+                [
+                    {
+                        "code": "telemetry_persistence_failed",
+                        "operation": "usage_snapshots",
+                    }
+                ],
+            )
+            self.assertNotIn("private sqlite", str(payload))
+            self.assertFalse(store.health_status()["writeHealthy"])
+
+            recovered = asyncio_run(router.usage_snapshot(force=True))
+            self.assertFalse(recovered["partial"])
+            self.assertNotIn("telemetryErrors", recovered)
+            self.assertTrue(store.health_status()["writeHealthy"])
+        finally:
+            store.close()
+
+    def test_usage_snapshot_sanitizes_reset_credit_storage_failures(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            router = CodexRouter.__new__(CodexRouter)
+            router.session = FakeUsageSession()
+            router.telemetry = store
+            router.slots = [
+                CodexSlot(0, auth=CodexAuth("token", account_id="acct"))
+            ]
+            router.leases = {}
+            router.refresh_locks = {}
+            router._usage_cache = None
+
+            with (
+                patch.object(
+                    store,
+                    "reset_credit_snapshots",
+                    side_effect=RuntimeError("private reset read detail"),
+                ),
+                patch.object(
+                    store,
+                    "upsert_reset_credits",
+                    side_effect=RuntimeError("private reset write detail"),
+                ),
+            ):
+                payload = asyncio_run(router.usage_snapshot(force=True))
+
+            self.assertEqual(len(payload["accounts"]), 1)
+            self.assertTrue(payload["partial"])
+            self.assertEqual(
+                payload["telemetryErrors"],
+                [
+                    {
+                        "code": "telemetry_read_failed",
+                        "operation": "reset_credit_snapshots",
+                    },
+                    {
+                        "code": "telemetry_persistence_failed",
+                        "operation": "reset_credit_snapshots",
+                    },
+                ],
+            )
+            self.assertNotIn("private reset", str(payload))
+            status = store.health_status()
+            self.assertFalse(status["readHealthy"])
+            self.assertFalse(status["writeHealthy"])
+        finally:
+            store.close()
+
     def test_forced_slot_usage_refresh_clears_recovered_rate_limit(self) -> None:
         from spartan_route.telemetry import TelemetryStore
 

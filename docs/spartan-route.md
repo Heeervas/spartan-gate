@@ -96,7 +96,15 @@ Kept in v1:
 - Bounded asynchronous routing telemetry: 1,024 pending rows by default,
   saturation drops telemetry rather than model requests, database failures do
   not stop the worker, and normal shutdown drains accepted entries for a
-  bounded interval. Public health exposes counters only, never request data.
+  bounded interval. Public health exposes counters and sanitized database
+  read/write/maintenance state only, never request data or database paths.
+- Codex usage endpoints keep a successfully fetched live payload at HTTP 200
+  when snapshot/reset persistence or the daily cache read fails. Such payloads
+  set `partial: true`, include sanitized `telemetryErrors`, and use an empty
+  `cacheDaily` only when that derived data is unavailable. Telemetry-only
+  endpoints return HTTP 503 with `telemetry_unavailable`; `/health` remains
+  HTTP 200 with `degraded: true` while inference can still be served, and the
+  Codex dashboard displays the partial-data state.
 - `routing_log` is pruned to 30 days and at most 50,000 rows at startup and
   after bounded write batches. Pruning and derived `routing_daily_rollups`
   rebuilds share one immediate transaction; Codex snapshot history, current
