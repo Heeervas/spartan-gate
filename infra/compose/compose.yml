@@ -606,7 +606,7 @@ services:
       - spartan_internal
       - pocket_tts_internal
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HERMES_API_PORT:-8642}/health || exit 1"]
+      test: ["CMD-SHELL", "python3 -c \"import os, socket, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('HERMES_API_PORT', '8642') + '/health', timeout=3).read(); socket.create_connection(('proxy', 8888), timeout=3).close(); urllib.request.urlopen('http://spartan-route:18790/health', timeout=3).read()\""]
       interval: 15s
       timeout: 5s
       retries: 3

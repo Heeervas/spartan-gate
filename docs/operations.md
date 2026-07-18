@@ -377,6 +377,10 @@ sg-status
 docker compose -f infra/compose/compose.yml exec spartan-route python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:18790/health').read().decode())"
 ```
 
+Hermes is healthy only when its local API, Tinyproxy, and Spartan Route are
+reachable. Three 15-second retries tolerate expected proxy/DNS restarts for
+roughly 45 seconds while exposing persistent loss of `spartan_internal`.
+
 Reader check:
 
 ```sh

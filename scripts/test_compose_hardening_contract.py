@@ -213,6 +213,18 @@ class ComposeHardeningContractTests(unittest.TestCase):
                 self.assertIn("127.0.0.1:18789", health)
                 self.assertIn("401", health)
 
+    def test_l4_hermes_health_requires_gate_network_after_grace_period(self):
+        service = self.renders["l4"]["services"]["hermes"]
+        healthcheck = service["healthcheck"]
+        health = " ".join(healthcheck["test"])
+        self.assertIn("127.0.0.1", health)
+        self.assertIn("proxy", health)
+        self.assertIn("8888", health)
+        self.assertIn("spartan-route", health)
+        self.assertIn("18790", health)
+        self.assertEqual(healthcheck["interval"], "15s")
+        self.assertEqual(healthcheck["retries"], 3)
+
     def test_clawroute_image_identity_matches_compose_default(self):
         dockerfile = (
             ROOT / "packages" / "clawroute" / "Dockerfile"

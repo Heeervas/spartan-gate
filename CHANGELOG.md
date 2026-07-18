@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Made L4 Hermes health reflect the complete gate path by requiring its local
+  API, Tinyproxy, and Spartan Route to remain reachable, with bounded retries
+  that tolerate short dependency restarts while surfacing persistent internal
+  network loss.
 - Pinned GogCLI and Deno release artifacts to architecture-specific official
   SHA-256 values and verified each download before extraction; replaced
   Camofox's moving uBlock Origin addon URL with an exact AMO-signed release,
