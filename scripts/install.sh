@@ -465,6 +465,14 @@ write_env_file
 write_private_compose
 write_state
 python3 "$ROOT/scripts/private-permissions.py" fix --private-dir "$private_dir" --env-file "$env_file"
+if [[ "$TIER" == "L4" ]]; then
+    route_data_path="$(env_value SPARTAN_ROUTE_DATA_PATH)"
+    route_uid="$(env_value SPARTAN_ROUTE_UID)"
+    route_gid="$(env_value SPARTAN_ROUTE_GID)"
+    python3 "$ROOT/scripts/spartan-route-data.py" prepare \
+        --data-dir "$route_data_path" --uid "$route_uid" --gid "$route_gid" \
+        || die "legacy Spartan Route SQLite state requires sg-spartan-route-data-migrate before L4 can start"
+fi
 
 printf 'Spartan Gate tier %s configured for %s.\n' "$TIER" "$(detect_platform)"
 printf 'Env file: %s\n' "$env_file"

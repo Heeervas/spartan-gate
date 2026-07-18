@@ -25,7 +25,8 @@ for alias_name in \
     sg-priv sg-up sg-build-up sg-down sg-status sg-ps sg-health sg-logs \
     sg-exec sg-config sg-doctor sg-up-core sg-up-hermes \
     sg-up-private-hermes sg-up-full sg-restart-hermes sg-restart-caddy \
-    sg-restart-proxy sg-rebuild-hermes sg-rebuild-clawroute sg-rebuild-spartan-route sg-logs-hermes \
+    sg-restart-proxy sg-rebuild-hermes sg-rebuild-clawroute sg-rebuild-spartan-route \
+    sg-spartan-route-data-check sg-spartan-route-data-migrate sg-logs-hermes \
     sg-logs-clawroute sg-logs-spartan-route sg-hermes-shell sg-hermes-doctor sg-hermes-profile \
     sg-hermes-profiles sg-hermes-profile-create sg-hermes-profile-new sg-hermes-gateway-profile \
     sg-clawroute-shell sg-whitelist-domain sg-add-port sg-reader-test \
@@ -79,6 +80,66 @@ sg_env_value() {
     printf '%s\n' "$default"
 }
 
+sg_spartan_route_data_path() {
+    local raw
+    raw="$(sg_env_value SPARTAN_ROUTE_DATA_PATH "../../runtime/spartan-route")"
+    case "$raw" in
+        /*) printf '%s\n' "$raw" ;;
+        *) printf '%s\n' "$SPARTAN_GATE_DIR/infra/compose/$raw" ;;
+    esac
+}
+
+sg_spartan_route_uid() {
+    sg_env_value SPARTAN_ROUTE_UID "$(sg_env_value HERMES_UID 1000)"
+}
+
+sg_spartan_route_gid() {
+    sg_env_value SPARTAN_ROUTE_GID "$(sg_env_value HERMES_GID 1000)"
+}
+
+sg_spartan_route_data_action() {
+    local action="$1"
+    python3 "$SPARTAN_GATE_DIR/scripts/spartan-route-data.py" "$action" \
+        --data-dir "$(sg_spartan_route_data_path)" \
+        --uid "$(sg_spartan_route_uid)" \
+        --gid "$(sg_spartan_route_gid)"
+}
+
+sg_spartan_route_data_check() {
+    sg_spartan_route_data_action check
+}
+
+sg_spartan_route_data_preflight() {
+    if sg_spartan_route_data_action prepare; then
+        return 0
+    fi
+    printf '%s\n' \
+        'Spartan Route data is incompatible with its configured runtime identity.' \
+        'Stop only Spartan Route, then run sg-spartan-route-data-migrate.' >&2
+    return 1
+}
+
+sg_spartan_route_data_migrate() {
+    local running uid gid
+    running="$(sg_compose ps --status running --services spartan-route 2>/dev/null)" || return 1
+    if [[ -n "$running" ]]; then
+        printf '%s\n' \
+            'Spartan Route must be stopped before its SQLite state is migrated.' \
+            'Run: sg stop spartan-route' >&2
+        return 1
+    fi
+    uid="$(sg_spartan_route_uid)"
+    gid="$(sg_spartan_route_gid)"
+    sg_compose run --rm --no-deps --user 0:0 \
+        --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
+        --entrypoint python3 \
+        -v "$SPARTAN_GATE_DIR/scripts/spartan-route-data.py:/tmp/spartan-route-data.py:ro" \
+        spartan-route /tmp/spartan-route-data.py migrate \
+        --data-dir /app/data --uid "$uid" --gid "$gid" \
+        || return 1
+    sg_spartan_route_data_check
+}
+
 sg_compose() {
     local private_compose="$SPARTAN_GATE_DIR/private/compose.local.yml"
     local env_file
@@ -95,6 +156,9 @@ sg_compose() {
         args+=(--env-file "$SPARTAN_GATE_DIR/.env")
     fi
 
+    if [[ "${1:-}" == "up" ]]; then
+        sg_spartan_route_data_preflight || return 1
+    fi
     docker compose "${args[@]}" "$@"
 }
 
@@ -247,6 +311,9 @@ sg_tier_compose() {
         args+=(--env-file "$SPARTAN_GATE_DIR/.env")
     fi
 
+    if [[ "$tier" == "L4" && "${1:-}" == "up" ]]; then
+        sg_spartan_route_data_preflight || return 1
+    fi
     docker compose "${args[@]}" "$@"
 }
 
@@ -284,6 +351,9 @@ Common commands:
   sg-logs-spartan-route       follow Spartan Route logs
   sg-urls                     print local/remote service URLs
   sg-doctor                   run repository preflight checks
+  sg-spartan-route-data-check verify the fixed SQLite state metadata
+  sg-spartan-route-data-migrate
+                              back up and repair stopped legacy SQLite state
   sg-whitelist-domain <host>  allow an outbound domain temporarily
   sg-reader-test [url]        test the bounded reader service
   sg-gog-login                refresh GogCLI and Google Workspace auth
@@ -2405,6 +2475,8 @@ sg-restart-proxy() { sg_restart_proxy "$@"; }
 sg-rebuild-hermes() { sg_rebuild_hermes "$@"; }
 sg-rebuild-clawroute() { sg_rebuild_clawroute "$@"; }
 sg-rebuild-spartan-route() { sg_rebuild_spartan_route "$@"; }
+sg-spartan-route-data-check() { sg_spartan_route_data_check "$@"; }
+sg-spartan-route-data-migrate() { sg_spartan_route_data_migrate "$@"; }
 sg-logs-hermes() { sg_logs_hermes "$@"; }
 sg-logs-clawroute() { sg_logs_clawroute "$@"; }
 sg-logs-spartan-route() { sg_logs_spartan_route "$@"; }

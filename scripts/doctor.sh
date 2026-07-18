@@ -155,6 +155,25 @@ env_value() {
   sed -n "s/^${key}=//p" "$env_file" | tail -n 1 | sed "s/^'//; s/'$//; s/^\"//; s/\"$//"
 }
 
+check_spartan_route_data() {
+  env_file=$1
+  route_data=$(env_value "$env_file" SPARTAN_ROUTE_DATA_PATH)
+  route_uid=$(env_value "$env_file" SPARTAN_ROUTE_UID)
+  route_gid=$(env_value "$env_file" SPARTAN_ROUTE_GID)
+  test -n "$route_data" || route_data=../../runtime/spartan-route
+  test -n "$route_uid" || route_uid=$(env_value "$env_file" HERMES_UID)
+  test -n "$route_gid" || route_gid=$(env_value "$env_file" HERMES_GID)
+  test -n "$route_uid" || route_uid=1000
+  test -n "$route_gid" || route_gid=1000
+  case "$route_data" in
+    /*) ;;
+    *) route_data="$ROOT/infra/compose/$route_data" ;;
+  esac
+  python3 "$ROOT/scripts/spartan-route-data.py" check \
+    --data-dir "$route_data" --uid "$route_uid" --gid "$route_gid" \
+    || fail "Spartan Route SQLite metadata is incompatible; stop it and run sg-spartan-route-data-migrate"
+}
+
 valid_whitelist_refresh_time() {
   case "$1" in
     [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) return 0 ;;
@@ -568,10 +587,12 @@ if test -f private/compose.local.yml && test -f private/env/local.env; then
   need_file private/outbound-proxy/whitelist.private.txt
   python3 scripts/private-permissions.py check --private-dir private --env-file private/env/local.env \
     || fail "private infrastructure permissions are unsafe"
+  check_spartan_route_data private/env/local.env
   validate_private_env private/env/local.env
   validate_whitelist_refresh_config private/env/local.env
   check_effective_runtime_config private-local -f infra/compose/compose.yml -f private/compose.local.yml --env-file private/env/local.env
 elif test -f .env; then
+  check_spartan_route_data .env
   validate_whitelist_refresh_config .env
   check_effective_runtime_config base-local -f infra/compose/compose.yml --env-file .env
 else

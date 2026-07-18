@@ -210,6 +210,9 @@ class AliasHelpTests(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         (self.root / "scripts").mkdir()
         shutil.copy2(ROOT / "scripts" / "aliases.sh", self.root / "scripts")
+        shutil.copy2(ROOT / "scripts" / "spartan-route-data.py", self.root / "scripts")
+        (self.root / "infra" / "compose" / "tiers").mkdir(parents=True)
+        (self.root / "runtime" / "spartan-route").mkdir(parents=True, mode=0o700)
 
     def tearDown(self):
         self.temp_dir.cleanup()

@@ -321,6 +321,10 @@ non-root identities for Spartan Route and legacy ClawRoute. They inherit
 `1000:1000`; the installer writes the invoking user's values so writable data
 and read-only auth mounts retain host ownership. Both routers use a read-only
 root filesystem with only `/app/data` and a bounded `/tmp` writable.
+Spartan Route creates SQLite files with a private process umask. `sg up`, the
+L4 installer, and doctor validate the fixed SQLite family against that runtime
+identity; use `sg-spartan-route-data-migrate` while the service is stopped for
+legacy root-owned state.
 Spartan Route accepts at most `SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY` pending
 routing rows in memory, default `1024`. Saturation drops telemetry only; model
 requests continue and `/health` reports queue depth, capacity, drops, and write

@@ -61,7 +61,10 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
 - Spartan Route and legacy ClawRoute run as explicit host-matching non-root
   identities, with read-only roots, all capabilities dropped,
   no-new-privileges, bounded temporary storage, and only `/app/data` writable.
-  Router auth/config mounts remain read-only.
+  Router auth/config mounts remain read-only. Spartan Route startup tooling
+  validates its fixed SQLite files before Compose, and the stopped-state
+  migration backs up and repairs only those files without traversing unrelated
+  private content.
 - Every rendered service has a memory and PID ceiling. PID defaults are 512 for
   Hermes and browsers, 256 for routers, 128 for search/proxy/Caddy and Pocket
   TTS, and 64 for DNS/Reader. Lower tiers carry the same Hermes read-only root,

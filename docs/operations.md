@@ -140,20 +140,24 @@ a compatibility alias for older commands. The Codex dashboard includes
 reset-credit telemetry.
 
 Spartan Route releases from before the non-root Compose contract may have
-created root-owned SQLite files. Before the first recreate with this contract,
-stop only the router and re-own its fixed data mount from a one-shot container:
+created root-owned SQLite files. Normal `sg up` and rebuild helpers now stop
+before Compose if the fixed database, WAL, or shared-memory file is unsafe.
+Check or migrate that state with the dedicated helpers:
 
 ```sh
+sg-spartan-route-data-check
 sg stop spartan-route
-sg run --rm --no-deps --user 0:0 --cap-add CHOWN \
-  --cap-add DAC_READ_SEARCH --entrypoint sh spartan-route -c \
-  'chown -R "$SPARTAN_ROUTE_UID:$SPARTAN_ROUTE_GID" /app/data'
-sg up -d spartan-route
+sg-spartan-route-data-migrate
+sg-rebuild-spartan-route
 ```
 
-Fresh installer paths already have the configured owner. Apply the same
-ownership principle to a pre-existing legacy ClawRoute data root before
-enabling its non-root addon.
+The migration refuses to run while Spartan Route is active, validates every
+managed path before writing, makes a verified timestamped SQLite backup, and
+repairs only `spartan-route.db`, `spartan-route.db-wal`,
+`spartan-route.db-shm`, and their data directory. It does not recursively
+traverse other state. Fresh installer paths are prepared with the configured
+owner and private modes. Apply the same ownership principle to a pre-existing
+legacy ClawRoute data root before enabling its non-root addon.
 
 Do not use private commands against old stack data paths unless you are intentionally migrating data. The provided private override should use isolated Spartan Gate paths.
 
