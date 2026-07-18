@@ -9,11 +9,18 @@ agent needs page text without launching a full browser session.
 - Exposes `GET /fetch?url=<encoded-url>`.
 - Allows only HTTP/HTTPS GET requests.
 - Blocks every non-global address, including private, overlay and special-use ranges.
+- Rejects target URLs containing username/password userinfo.
 - Downloads a bounded response and converts HTML to text.
+- Uses a fixed worker pool with a finite pending budget; excess requests receive
+  an immediate `503` rather than creating threads or growing an unbounded queue.
 - Fetches public HTTP(S) pages directly without requiring the Tinyproxy
   whitelist.
 - Is not published to the host; Hermes reaches it on the internal Docker
   network.
+- Runs as fixed UID/GID `10001:10001` with all capabilities dropped,
+  `no-new-privileges`, a read-only root, and a 64-PID Compose ceiling.
+- Logs only sanitized target origins with path/query markers; request access
+  logs never re-emit the encoded fetch target.
 - Marks successful fetch output with `BEGIN_UNTRUSTED_WEB_CONTENT` and
   `END_UNTRUSTED_WEB_CONTENT`, plus `X-Spartan-Content-Trust:
   untrusted-web-content`.
@@ -100,4 +107,8 @@ PY
 - Redirects to non-global or named internal targets are blocked.
 - POST/PUT/DELETE/PATCH are rejected by the reader itself.
 - `file://` and other non-HTTP(S) schemes are rejected.
+- URLs containing `user:password@` or other userinfo are rejected.
+- Requests beyond `READER_WORKERS + READER_MAX_PENDING` receive `503` and
+  `Retry-After: 1`.
+- Invalid port, timeout, worker, or pending-budget values fail startup.
 - JavaScript-only pages return little or no useful text.

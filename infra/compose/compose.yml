@@ -70,15 +70,24 @@ services:
       context: ../reader
     container_name: spartan_gate_reader
     restart: unless-stopped
+    user: "10001:10001"
     read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     tmpfs:
       - /tmp
     mem_limit: 128m
+    pids_limit: 64
     environment:
       # required: internal reader service.
       READER_PORT: 3000
       # recommended: override from private env only if needed.
       READER_TIMEOUT: ${READER_TIMEOUT:-15}
+      # recommended: bounded request execution and pending admission.
+      READER_WORKERS: ${READER_WORKERS:-4}
+      READER_MAX_PENDING: ${READER_MAX_PENDING:-8}
       # required: reader is the controlled direct-GET egress exception for
       # public page text; it must stay unpublished and SSRF-guarded.
       NO_PROXY: "*"

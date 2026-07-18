@@ -3,6 +3,12 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Replaced Reader's single-threaded server with a fixed worker pool, bounded
+  pending admission, immediate `503` shedding, and deadlock-free signal
+  shutdown; rejected URL userinfo, redacted target paths/queries from all
+  logs, validated runtime integers, and dropped the service to fixed UID
+  `10001` with no capabilities, no-new-privileges, read-only root, and a PID
+  ceiling.
 - Validated whitelist refresh times and installed traversal-free timezones in
   doctor and both egress services before child startup, and made scheduled or
   signal-triggered regeneration/signaling failures terminate proxy/DNS so

@@ -55,6 +55,19 @@ Tailscale binds such as `TAILSCALE_IP=100.x.y.z` belong in your private env file
 Every public Compose service and overlay uses these bounded settings. Changing
 either value requires recreating the affected containers.
 
+## Reader
+
+- `READER_TIMEOUT`: per-connection outbound timeout in seconds, default `15`;
+  valid range `1` through `120`.
+- `READER_WORKERS`: fixed request-worker count, default `4`; valid range `1`
+  through `32`.
+- `READER_MAX_PENDING`: requests admitted beyond active workers, default `8`;
+  valid range `0` through `128`. Requests beyond the combined worker and
+  pending budget receive an immediate `503` with `Retry-After: 1`.
+
+Reader validates these settings and its fixed `READER_PORT` before starting
+the listener. Invalid values fail startup instead of silently removing bounds.
+
 ## Hermes
 
 - `SPARTAN_HERMES_DATA_PATH`: private host path mounted as `/opt/data`.

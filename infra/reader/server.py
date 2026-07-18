@@ -10,7 +10,10 @@ Security:
   special-use range before fetch and again for the address used by each
   connection
 - Response size cap: 2 MB download, 100k chars output
-- Audit logging: every request logged with timestamp and query-redacted URL
+- Fixed concurrency: bounded worker and pending-request budgets shed overload
+- URL privacy: userinfo rejected; paths, queries, and access targets redacted
+- Runtime: intended for fixed unprivileged UID, read-only root, no capabilities,
+  no-new-privileges, and a conservative PID ceiling
 """
 
 import os
@@ -21,21 +24,38 @@ import signal
 import socket
 import ssl
 import http.client
+import queue
+import threading
 import urllib.error
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from html.parser import HTMLParser
 from datetime import datetime, timezone
 
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw_value = os.environ.get(name, str(default))
+    try:
+        value = int(raw_value, 10)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be an integer from {minimum} to {maximum}") from exc
+    if value < minimum or value > maximum:
+        raise SystemExit(f"{name} must be an integer from {minimum} to {maximum}")
+    return value
+
+
 MAX_RESPONSE_SIZE = 2 * 1024 * 1024  # 2 MB max download
 MAX_TEXT_LENGTH = 100_000              # 100k chars max response
-LISTEN_PORT = int(os.environ.get("READER_PORT", "3000"))
-REQUEST_TIMEOUT = int(os.environ.get("READER_TIMEOUT", "15"))
+LISTEN_PORT = _bounded_env_int("READER_PORT", 3000, 1, 65_535)
+REQUEST_TIMEOUT = _bounded_env_int("READER_TIMEOUT", 15, 1, 120)
+WORKER_COUNT = _bounded_env_int("READER_WORKERS", 4, 1, 32)
+MAX_PENDING_REQUESTS = _bounded_env_int("READER_MAX_PENDING", 8, 0, 128)
 MAX_REDIRECTS = 5
 UNTRUSTED_BEGIN = "BEGIN_UNTRUSTED_WEB_CONTENT"
 UNTRUSTED_END = "END_UNTRUSTED_WEB_CONTENT"
 UNTRUSTED_HEADER = "untrusted-web-content"
 _ORIGINAL_CREATE_CONNECTION = socket.create_connection
+OVERLOAD_BODY = b"Reader overloaded; retry later\n"
 
 # Internal Docker service names (prevent SSRF to internal services)
 BLOCKED_HOSTNAMES = {
@@ -55,16 +75,32 @@ class BlockedDestination(Exception):
 
 # ── Audit logger ──
 def redact_url_for_log(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    if not parsed.scheme or not parsed.netloc:
-        return url
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "[INVALID_URL]"
+
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not hostname:
+        return "[INVALID_URL]"
+    if re.search(r"[\r\n\s]", hostname):
+        return "[INVALID_URL]"
+
+    hostname = hostname.lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    origin = f"{hostname}:{port}" if port is not None else hostname
+    path = "/" if parsed.path in {"", "/"} else "/[REDACTED_PATH]"
     query = "[REDACTED_QUERY]" if parsed.query else ""
-    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, ""))
+    return urllib.parse.urlunparse((scheme, origin, path, "", query, ""))
 
 
 def audit_log(action: str, url: str = "", detail: str = ""):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    url = redact_url_for_log(url)
+    if url:
+        url = redact_url_for_log(url)
     trunc_url = url[:200] + "…" if len(url) > 200 else url
     parts = [f"[reader-audit] {ts} {action}"]
     if trunc_url:
@@ -130,8 +166,14 @@ def _is_blocked_ip(value: str) -> bool:
 
 def is_blocked(url: str) -> bool:
     """Check whether a URL violates the public global-address boundary."""
-    parsed = urllib.parse.urlparse(url)
+    try:
+        parsed = urllib.parse.urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return True
     if parsed.scheme not in {"http", "https"}:
+        return True
+    if parsed.username is not None or parsed.password is not None:
         return True
 
     hostname = (parsed.hostname or "").lower()
@@ -151,7 +193,8 @@ def is_blocked(url: str) -> bool:
 
     # Resolve every address and fail closed for any non-global result.
     try:
-        infos = socket.getaddrinfo(hostname, parsed.port or 443)
+        default_port = 443 if parsed.scheme == "https" else 80
+        infos = socket.getaddrinfo(hostname, port or default_port)
     except socket.gaierror:
         return True
 
@@ -272,6 +315,97 @@ def extract_text(html_content: str) -> str:
     return text[:MAX_TEXT_LENGTH]
 
 
+class BoundedHTTPServer(HTTPServer):
+    """HTTP server backed by a fixed worker pool and bounded admission."""
+
+    def __init__(
+        self,
+        server_address,
+        handler_class,
+        *,
+        max_workers: int = WORKER_COUNT,
+        max_pending: int = MAX_PENDING_REQUESTS,
+    ):
+        super().__init__(server_address, handler_class)
+        self._closing = threading.Event()
+        self._capacity = threading.BoundedSemaphore(max_workers + max_pending)
+        self._requests = queue.Queue(maxsize=max_workers + max_pending)
+        self._workers = [
+            threading.Thread(
+                target=self._worker_loop,
+                name=f"reader-worker-{index + 1}",
+                daemon=False,
+            )
+            for index in range(max_workers)
+        ]
+        for worker in self._workers:
+            worker.start()
+
+    def process_request(self, request, client_address):
+        if self._closing.is_set() or not self._capacity.acquire(blocking=False):
+            self._reject_overload(request)
+            return
+        try:
+            self._requests.put_nowait((request, client_address))
+        except queue.Full:
+            self._capacity.release()
+            self._reject_overload(request)
+
+    def _worker_loop(self):
+        while True:
+            item = self._requests.get()
+            try:
+                if item is None:
+                    return
+                request, client_address = item
+                try:
+                    self.finish_request(request, client_address)
+                except Exception:
+                    self.handle_error(request, client_address)
+                finally:
+                    self.shutdown_request(request)
+                    self._capacity.release()
+            finally:
+                self._requests.task_done()
+
+    def _reject_overload(self, request):
+        audit_log("OVERLOAD")
+        response = (
+            b"HTTP/1.1 503 Service Unavailable\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"X-Content-Type-Options: nosniff\r\n"
+            b"Retry-After: 1\r\n"
+            b"Connection: close\r\n"
+            + f"Content-Length: {len(OVERLOAD_BODY)}\r\n\r\n".encode("ascii")
+            + OVERLOAD_BODY
+        )
+        try:
+            request.settimeout(1)
+            request.sendall(response)
+        except OSError:
+            pass
+        finally:
+            self.shutdown_request(request)
+
+    def server_close(self):
+        self._closing.set()
+        super().server_close()
+
+        while True:
+            try:
+                request, _client_address = self._requests.get_nowait()
+            except queue.Empty:
+                break
+            self.shutdown_request(request)
+            self._capacity.release()
+            self._requests.task_done()
+
+        for _worker in self._workers:
+            self._requests.put(None)
+        for worker in self._workers:
+            worker.join()
+
+
 class ReaderHandler(BaseHTTPRequestHandler):
     """HTTP Handler – GET only."""
 
@@ -357,22 +491,55 @@ class ReaderHandler(BaseHTTPRequestHandler):
         self.wfile.write(body.encode("utf-8"))
 
     def log_message(self, format, *args):
-        sys.stderr.write(f"[reader-proxy] {args[0]} {args[1]} {args[2]}\n")
+        route = urllib.parse.urlparse(self.path).path
+        if route not in {"/fetch", "/health"}:
+            route = "[other]"
+        method = self.command if self.command in {
+            "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"
+        } else "[other]"
+        status = str(args[1]) if len(args) > 1 and str(args[1]).isdigit() else "-"
+        sys.stderr.write(f"[reader-proxy] {method} {route} {status}\n")
 
 
 def main():
-    server = HTTPServer(("0.0.0.0", LISTEN_PORT), ReaderHandler)
-    print(f"[reader-proxy] Listening on 0.0.0.0:{LISTEN_PORT} (GET-only)",
-          flush=True)
+    server = BoundedHTTPServer(("0.0.0.0", LISTEN_PORT), ReaderHandler)
+    shutdown_requested = threading.Event()
+    serving_stopped = threading.Event()
 
-    def shutdown(sig, frame):
+    def serve():
+        try:
+            server.serve_forever()
+        finally:
+            serving_stopped.set()
+
+    serving_thread = threading.Thread(
+        target=serve,
+        name="reader-accept",
+        daemon=False,
+    )
+
+    def request_shutdown(_sig, _frame):
         print("[reader-proxy] Shutting down...", flush=True)
-        server.shutdown()
+        shutdown_requested.set()
 
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
 
-    server.serve_forever()
+    print(
+        f"[reader-proxy] Listening on 0.0.0.0:{server.server_port} "
+        f"(GET-only, workers={WORKER_COUNT}, pending={MAX_PENDING_REQUESTS})",
+        flush=True,
+    )
+    serving_thread.start()
+    try:
+        while not shutdown_requested.wait(timeout=0.5):
+            if serving_stopped.is_set():
+                break
+    finally:
+        if serving_thread.is_alive():
+            server.shutdown()
+        serving_thread.join()
+        server.server_close()
 
 
 if __name__ == "__main__":

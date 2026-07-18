@@ -19,7 +19,10 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
 - Tinyproxy denies non-whitelisted destinations.
 - Reader only allows GET, permits globally routable destinations, revalidates
   the address used for each outbound connection, and is the narrow direct-egress
-  exception for arbitrary public page text.
+  exception for arbitrary public page text. A fixed worker pool and bounded
+  pending admission shed overload with `503`; the service runs as fixed UID
+  `10001` with no capabilities, no-new-privileges, read-only root, and a PID
+  ceiling.
 - Reader intentionally bypasses the Tinyproxy/DNS domain whitelist. Granting an
   agent Reader access therefore accepts public HTTP/DNS exfiltration through
   destination hostnames, paths, and queries; the control prevents non-global
@@ -120,4 +123,8 @@ real browsing or integration inventory by adding it to `infra/outbound-proxy/whi
 
 ## Logging
 
-Keep `CLAWROUTE_LOG_CONTENT=false` unless you are debugging the router in a private environment and accept the privacy impact. Reader audit logs redact URL query strings, but hosts and paths can still be sensitive; treat logs as private operational data.
+Keep `CLAWROUTE_LOG_CONTENT=false` unless you are debugging the router in a
+private environment and accept the privacy impact. Reader audit logs retain the
+target origin but replace paths and queries with redaction markers, reject
+userinfo, and never include the encoded fetch target in access logs. Public
+hostnames can still be sensitive, so treat logs as private operational data.
