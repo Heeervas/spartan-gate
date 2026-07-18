@@ -91,6 +91,18 @@ exit 2
         self.assertNotIn(values["SPARTAN_CADDY_PASSWORD"], result.stdout)
 
         self.assertEqual(values["BROWSERLESS_PROFILES_GID"], str(os.getgid()))
+        for key in (
+            "SPARTAN_CADDY_UID",
+            "SPARTAN_ROUTE_UID",
+            "SPARTAN_CLAWROUTE_UID",
+        ):
+            self.assertEqual(values[key], str(os.getuid()), key)
+        for key in (
+            "SPARTAN_CADDY_GID",
+            "SPARTAN_ROUTE_GID",
+            "SPARTAN_CLAWROUTE_GID",
+        ):
+            self.assertEqual(values[key], str(os.getgid()), key)
         self.assertEqual(path_mode(self.private_dir), 0o700)
         self.assertEqual(path_mode(self.private_dir / "env"), 0o700)
         self.assertEqual(path_mode(self.private_dir / "env" / "local.env"), 0o600)

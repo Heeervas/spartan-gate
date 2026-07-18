@@ -150,7 +150,11 @@ SPARTAN_CADDY_TLS_CERT_FILE=/certs/cert.pem
 SPARTAN_CADDY_TLS_KEY_FILE=/certs/key.pem
 ```
 
-Then mount the HTTPS Caddyfile and certs from `private/compose.local.yml`. Use the DNS name in the browser. A Tailscale certificate for `machine.tailnet.ts.net` will not validate when opened as `https://100.x.y.z:port`.
+Then mount the HTTPS Caddyfile and certs from `private/compose.local.yml`.
+`SPARTAN_CADDY_UID`/`SPARTAN_CADDY_GID` must match their readable owner;
+the installer sets both to the invoking user. Use the DNS name in the browser.
+A Tailscale certificate for `machine.tailnet.ts.net` will not validate when
+opened as `https://100.x.y.z:port`.
 
 ## First Start
 

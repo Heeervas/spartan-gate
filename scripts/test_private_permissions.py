@@ -38,15 +38,19 @@ class PrivatePermissionsTests(unittest.TestCase):
         self.data = self.root / "data"
         self.hermes = self.data / "hermes"
         self.route = self.data / "spartan-route"
+        self.clawroute = self.data / "clawroute"
         self.browserless = self.data / "browserless-profiles"
         self.camofox = self.data / "camofox"
         self.codex = self.data / "codex-home"
+        self.caddy_certs = self.data / "caddy-certs"
         for path in (
             self.hermes,
             self.route,
+            self.clawroute,
             self.browserless,
             self.camofox,
             self.codex,
+            self.caddy_certs,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -62,10 +66,18 @@ class PrivatePermissionsTests(unittest.TestCase):
                     "SECRET_VALUE='never-print-this-value'",
                     f"SPARTAN_HERMES_DATA_PATH='{self.hermes}'",
                     f"SPARTAN_ROUTE_DATA_PATH='{self.route}'",
+                    f"SPARTAN_CLAWROUTE_DATA_PATH='{self.clawroute}'",
                     f"SPARTAN_BROWSERLESS_PROFILES_PATH='{self.browserless}'",
                     f"SPARTAN_CAMOFOX_DATA_PATH='{self.camofox}'",
                     f"SPARTAN_CODEX_HOME_PATH='{self.codex}'",
+                    f"SPARTAN_CADDY_CERTS_PATH='{self.caddy_certs}'",
                     f"BROWSERLESS_PROFILES_GID='{os.getgid()}'",
+                    f"SPARTAN_CADDY_UID='{os.getuid()}'",
+                    f"SPARTAN_CADDY_GID='{os.getgid()}'",
+                    f"SPARTAN_ROUTE_UID='{os.getuid()}'",
+                    f"SPARTAN_ROUTE_GID='{os.getgid()}'",
+                    f"SPARTAN_CLAWROUTE_UID='{os.getuid()}'",
+                    f"SPARTAN_CLAWROUTE_GID='{os.getgid()}'",
                     "",
                 )
             ),
@@ -128,7 +140,15 @@ class PrivatePermissionsTests(unittest.TestCase):
             path.chmod(0o755)
         for path in (self.env_file, compose, policy, backup_key, archived_key):
             path.chmod(0o664)
-        for path in (self.hermes, self.route, self.browserless, self.camofox, self.codex):
+        for path in (
+            self.hermes,
+            self.route,
+            self.clawroute,
+            self.browserless,
+            self.camofox,
+            self.codex,
+            self.caddy_certs,
+        ):
             path.chmod(0o775)
         profile_cookie.chmod(0o666)
         codex_auth.chmod(0o666)
@@ -143,7 +163,14 @@ class PrivatePermissionsTests(unittest.TestCase):
         self.assertEqual(mode(caddy_dir), 0o700)
         for path in (self.env_file, compose, policy, backup_key, archived_key):
             self.assertEqual(mode(path), 0o600)
-        for path in (self.hermes, self.route, self.camofox, self.codex):
+        for path in (
+            self.hermes,
+            self.route,
+            self.clawroute,
+            self.camofox,
+            self.codex,
+            self.caddy_certs,
+        ):
             self.assertEqual(mode(path), 0o700)
         self.assertEqual(mode(backup_dir), 0o700)
         self.assertEqual(mode(backup_root), 0o755)
@@ -156,6 +183,40 @@ class PrivatePermissionsTests(unittest.TestCase):
 
         check = self.run_script("check")
         self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_service_specific_identities_own_router_and_certificate_roots(self):
+        values = self.env_file.read_text(encoding="utf-8")
+        values += "\n".join(
+            (
+                "SPARTAN_CADDY_UID='4101'",
+                "SPARTAN_CADDY_GID='4102'",
+                "SPARTAN_ROUTE_UID='4201'",
+                "SPARTAN_ROUTE_GID='4202'",
+                "SPARTAN_CLAWROUTE_UID='4301'",
+                "SPARTAN_CLAWROUTE_GID='4302'",
+                "",
+            )
+        )
+        self.env_file.write_text(values, encoding="utf-8")
+
+        permissions = load_permissions_module()
+        targets = {
+            target.label: target
+            for target in permissions.collect_targets(self.private, self.env_file)
+        }
+
+        expected = {
+            "SPARTAN_CADDY_CERTS_PATH": (4101, 4102),
+            "SPARTAN_ROUTE_DATA_PATH": (4201, 4202),
+            "SPARTAN_CLAWROUTE_DATA_PATH": (4301, 4302),
+        }
+        for label, identity in expected.items():
+            with self.subTest(label=label):
+                target = targets[label]
+                self.assertEqual(
+                    (target.expected_uid, target.expected_gid),
+                    identity,
+                )
 
     def test_symlink_preflight_fails_before_any_mode_change(self):
         self.env_file.chmod(0o664)

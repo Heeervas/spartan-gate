@@ -26,6 +26,12 @@ Public env docs describe names and behavior only. Real values and machine-specif
 - `SPARTAN_CADDY_PASSWORD`: optional installer-managed plaintext corresponding
   to `CADDY_AUTH_HASH`. Existing hash-only installs remain valid; the installer
   does not invent a mismatched plaintext or rotate the hash silently.
+- `SPARTAN_CADDY_UID` and `SPARTAN_CADDY_GID`: numeric identity used by
+  Caddy. They inherit `HERMES_UID`/`HERMES_GID` for upgrade compatibility,
+  then default to `1000:1000`. The identity must own or be able to read the
+  mounted Caddyfile and private certificate directory. The installer records the
+  invoking user's identity. Caddy otherwise drops all capabilities; the
+  upstream binary requires `NET_BIND_SERVICE` to remain in its bounding set.
 - `CADDY_CAMOFOX_EDGE_TOKEN`: 64-lowercase-hex secret for the one-hour
   Camofox/noVNC HTTP and WebSocket session minted after Basic Auth.
 - `CADDY_WS_EDGE_TOKEN`: historical name for the separate 64-lowercase-hex
@@ -308,6 +314,13 @@ own SQLite state. `SPARTAN_ROUTE_DATA_PATH` controls the host data mount and
 `/app/data/spartan-route.db` and does not reuse `clawroute.db`.
 `SPARTAN_CODEX_HOME_PATH` can mount a private Codex home at `/codex-home` while
 leaving `CODEX_HOME` pointed at that container path.
+`SPARTAN_ROUTE_UID`/`SPARTAN_ROUTE_GID` and
+`SPARTAN_CLAWROUTE_UID`/`SPARTAN_CLAWROUTE_GID` select the explicit
+non-root identities for Spartan Route and legacy ClawRoute. They inherit
+`HERMES_UID`/`HERMES_GID` for upgrade compatibility, then default to
+`1000:1000`; the installer writes the invoking user's values so writable data
+and read-only auth mounts retain host ownership. Both routers use a read-only
+root filesystem with only `/app/data` and a bounded `/tmp` writable.
 Spartan Route accepts at most `SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY` pending
 routing rows in memory, default `1024`. Saturation drops telemetry only; model
 requests continue and `/health` reports queue depth, capacity, drops, and write

@@ -13,7 +13,28 @@ services:
       context: ../../../apps/hermes-agent
     image: ${HERMES_IMAGE:-spartan-gate-hermes:latest}
     restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    mem_limit: 2g
+    pids_limit: 512
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
     command: ["gateway", "run"]
+    tmpfs:
+      - /tmp
+      - /run:rw,exec,nosuid,nodev,size=64m,mode=755
     environment:
       HERMES_HOME: /opt/data
       SPARTAN_HERMES_MODE: ${SPARTAN_HERMES_MODE:-free}

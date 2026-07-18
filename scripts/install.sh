@@ -256,6 +256,9 @@ write_env_file() {
         SPARTAN_GOGCLI_DATA_PATH SPARTAN_BROWSERLESS_PROFILES_PATH
         SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CODEX_HOME_PATH
         HERMES_UID HERMES_GID BROWSERLESS_PROFILES_GID
+        SPARTAN_CADDY_UID SPARTAN_CADDY_GID
+        SPARTAN_ROUTE_UID SPARTAN_ROUTE_GID
+        SPARTAN_CLAWROUTE_UID SPARTAN_CLAWROUTE_GID
         SPARTAN_HERMES_RUN_UID SPARTAN_HERMES_RUN_GID
         HERMES_API_KEY API_SERVER_KEY HERMES_GATEWAY_TOKEN
         HERMES_DASHBOARD_BASIC_AUTH_USERNAME
@@ -314,6 +317,12 @@ write_env_file() {
     append_env SPARTAN_BROWSERLESS_PROFILES_PATH "$data_root/browserless-profiles"
     append_env SPARTAN_CAMOFOX_DATA_PATH "$data_root/camofox"
     append_env SPARTAN_CODEX_HOME_PATH "$private_codex_home"
+    append_env SPARTAN_CADDY_UID "$(id -u)"
+    append_env SPARTAN_CADDY_GID "$(id -g)"
+    append_env SPARTAN_ROUTE_UID "$(id -u)"
+    append_env SPARTAN_ROUTE_GID "$(id -g)"
+    append_env SPARTAN_CLAWROUTE_UID "$(id -u)"
+    append_env SPARTAN_CLAWROUTE_GID "$(id -g)"
     append_env HERMES_UID "$(id -u)"
     append_env HERMES_GID "$(id -g)"
     append_env BROWSERLESS_PROFILES_GID "$(id -g)"

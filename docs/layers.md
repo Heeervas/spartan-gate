@@ -135,6 +135,14 @@ manually only after confirming the native tool path works for that data home.
 - Public edge bindings stay on localhost. Tailscale or other private exposure
   belongs in private overrides.
 
+Resource and privilege contracts do not weaken on smaller tiers. Every
+rendered service has memory and PID ceilings; L0–L3 Hermes uses the same
+read-only root, capability allowlist, no-new-privileges, `/tmp`/`/run`, and
+2 GiB/512-PID ceiling as L4. Browser services use 512 PIDs, routers 256,
+search/proxy/Caddy 128, and DNS/Reader 64. Spartan Route and ClawRoute run
+non-root with only their data mount writable. Caddy is non-root and retains
+only the upstream binary's required `NET_BIND_SERVICE` capability.
+
 ## Compose Mapping
 
 | Selection | Compose files |

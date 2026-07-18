@@ -1,0 +1,224 @@
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import subprocess
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+COMPOSE = ROOT / "infra" / "compose"
+TIERS = COMPOSE / "tiers"
+
+MATRICES = {
+    "l0": (TIERS / "compose.l0.yml",),
+    "l0-clawroute": (
+        TIERS / "compose.l0.yml",
+        TIERS / "compose.clawroute.yml",
+    ),
+    "l1": (TIERS / "compose.l1.yml",),
+    "l1-clawroute": (
+        TIERS / "compose.l1.yml",
+        TIERS / "compose.clawroute.yml",
+    ),
+    "l2": (TIERS / "compose.l2.yml",),
+    "l3": (
+        TIERS / "compose.l2.yml",
+        TIERS / "compose.l3.yml",
+    ),
+    "l1-spartan-route": (
+        TIERS / "compose.l1.yml",
+        TIERS / "compose.spartan-route.yml",
+    ),
+    "l2-spartan-route": (
+        TIERS / "compose.l2.yml",
+        TIERS / "compose.spartan-route.yml",
+    ),
+    "l4": (COMPOSE / "compose.yml",),
+    "l4-dev": (
+        COMPOSE / "compose.yml",
+        COMPOSE / "compose.dev.yml",
+    ),
+    "l4-prod": (
+        COMPOSE / "compose.yml",
+        COMPOSE / "compose.prod.example.yml",
+    ),
+    "l4-private-example": (
+        COMPOSE / "compose.yml",
+        ROOT / "private.example" / "compose.local.yml",
+    ),
+    "l4-route-compat": (
+        COMPOSE / "compose.yml",
+        COMPOSE / "compose.spartan-route.yml",
+    ),
+}
+
+MIB = 1024 * 1024
+EXPECTED_RESOURCES = {
+    "proxy": (64 * MIB, 128),
+    "searxng": (256 * MIB, 128),
+    "reader": (128 * MIB, 64),
+    "dns": (32 * MIB, 64),
+    "spartan-route": (512 * MIB, 256),
+    "clawroute": (512 * MIB, 256),
+    "browserless": (1024 * MIB, 512),
+    "camofox": (2048 * MIB, 512),
+    "pocket-tts": (2048 * MIB, 128),
+    "pocket-tts-prefetch": (2048 * MIB, 128),
+    "hermes": (2048 * MIB, 512),
+    "caddy": (64 * MIB, 128),
+}
+
+HERMES_CAPABILITIES = {
+    "CHOWN",
+    "FOWNER",
+    "SETGID",
+    "SETUID",
+    "DAC_OVERRIDE",
+    "NET_BIND_SERVICE",
+}
+
+
+def render_compose(paths: tuple[pathlib.Path, ...]) -> dict:
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        str(ROOT / ".env.example"),
+    ]
+    for path in paths:
+        command.extend(("-f", str(path)))
+    command.extend(("config", "--format", "json"))
+    env = os.environ.copy()
+    env.update(
+        {
+            "TAILSCALE_IP": "127.0.0.2",
+            "SPARTAN_CADDY_UID": "1000",
+            "SPARTAN_CADDY_GID": "1000",
+            "SPARTAN_ROUTE_UID": "1000",
+            "SPARTAN_ROUTE_GID": "1000",
+            "SPARTAN_CLAWROUTE_UID": "1000",
+            "SPARTAN_CLAWROUTE_GID": "1000",
+        }
+    )
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"Compose render failed for {paths}: {result.stderr.strip()}"
+        )
+    return json.loads(result.stdout)
+
+
+class ComposeHardeningContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.renders = {
+            label: render_compose(paths)
+            for label, paths in MATRICES.items()
+        }
+
+    def iter_services(self):
+        for label, rendered in self.renders.items():
+            for name, service in rendered["services"].items():
+                yield label, name, service
+
+    def test_every_service_has_its_resource_ceiling(self):
+        for label, name, service in self.iter_services():
+            with self.subTest(matrix=label, service=name):
+                expected_memory, expected_pids = EXPECTED_RESOURCES[name]
+                self.assertEqual(int(service["mem_limit"]), expected_memory)
+                self.assertEqual(service["pids_limit"], expected_pids)
+
+    def test_hermes_hardening_is_identical_across_layers(self):
+        for label, rendered in self.renders.items():
+            service = rendered["services"]["hermes"]
+            with self.subTest(matrix=label):
+                self.assertTrue(service["read_only"])
+                self.assertEqual(service["cap_drop"], ["ALL"])
+                self.assertEqual(set(service["cap_add"]), HERMES_CAPABILITIES)
+                self.assertIn(
+                    "no-new-privileges:true",
+                    service["security_opt"],
+                )
+                self.assertIn("/tmp", service["tmpfs"])
+                self.assertTrue(
+                    any(item.startswith("/run") for item in service["tmpfs"])
+                )
+
+    def test_browser_services_keep_intended_runtime_contracts(self):
+        for label, name, service in self.iter_services():
+            if name not in {"browserless", "camofox"}:
+                continue
+            with self.subTest(matrix=label, service=name):
+                self.assertIn(
+                    "no-new-privileges:true",
+                    service["security_opt"],
+                )
+                self.assertIn("/tmp", service["tmpfs"])
+                if name == "browserless":
+                    self.assertEqual(service["cap_drop"], ["ALL"])
+
+    def test_routers_are_non_root_and_only_data_is_writable(self):
+        for label, name, service in self.iter_services():
+            if name not in {"spartan-route", "clawroute"}:
+                continue
+            with self.subTest(matrix=label, service=name):
+                self.assertEqual(service["user"], "1000:1000")
+                self.assertTrue(service["read_only"])
+                self.assertEqual(service["cap_drop"], ["ALL"])
+                self.assertIn(
+                    "no-new-privileges:true",
+                    service["security_opt"],
+                )
+                self.assertTrue(
+                    any(item.startswith("/tmp") for item in service["tmpfs"])
+                )
+                volumes = {
+                    volume["target"]: volume
+                    for volume in service["volumes"]
+                }
+                self.assertFalse(volumes["/app/data"].get("read_only", False))
+                self.assertTrue(volumes["/app/config"]["read_only"])
+                self.assertTrue(volumes["/codex-home"]["read_only"])
+                if name == "spartan-route":
+                    self.assertEqual(
+                        service["environment"]["PYTHONDONTWRITEBYTECODE"],
+                        "1",
+                    )
+
+    def test_caddy_uses_only_image_required_capability_and_is_ready(self):
+        for label, rendered in self.renders.items():
+            if "caddy" not in rendered["services"]:
+                continue
+            service = rendered["services"]["caddy"]
+            with self.subTest(matrix=label):
+                self.assertEqual(service["user"], "1000:1000")
+                self.assertTrue(service["read_only"])
+                self.assertEqual(service["cap_drop"], ["ALL"])
+                self.assertEqual(service["cap_add"], ["NET_BIND_SERVICE"])
+                self.assertIn(
+                    "no-new-privileges:true",
+                    service["security_opt"],
+                )
+                health = " ".join(service["healthcheck"]["test"])
+                self.assertIn("caddy validate", health)
+                self.assertIn("127.0.0.1:18789", health)
+                self.assertIn("401", health)
+
+    def test_clawroute_image_identity_matches_compose_default(self):
+        dockerfile = (
+            ROOT / "packages" / "clawroute" / "Dockerfile"
+        ).read_text(encoding="utf-8")
+        self.assertIn("USER 1000:1000", dockerfile)
+
+
+if __name__ == "__main__":
+    unittest.main()

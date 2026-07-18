@@ -12,6 +12,16 @@ services:
       args:
         CLAWROUTE_BUILD_REVISION: ${CLAWROUTE_BUILD_REVISION:-unknown}
     restart: unless-stopped
+    user: "${SPARTAN_CLAWROUTE_UID:-${HERMES_UID:-1000}}:${SPARTAN_CLAWROUTE_GID:-${HERMES_GID:-1000}}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777
+    mem_limit: 512m
+    pids_limit: 256
     environment:
       CLAWROUTE_HOST: 0.0.0.0
       CLAWROUTE_PORT: 18790

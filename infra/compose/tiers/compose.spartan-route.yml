@@ -10,7 +10,21 @@ services:
     build:
       context: ../../../infra/spartan-route
     restart: unless-stopped
+    user: "${SPARTAN_ROUTE_UID:-${HERMES_UID:-1000}}:${SPARTAN_ROUTE_GID:-${HERMES_GID:-1000}}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777
+    mem_limit: 512m
+    pids_limit: 256
     environment:
+      HOME: /tmp
+      PYTHONDONTWRITEBYTECODE: "1"
+      SPARTAN_ROUTE_UID: ${SPARTAN_ROUTE_UID:-${HERMES_UID:-1000}}
+      SPARTAN_ROUTE_GID: ${SPARTAN_ROUTE_GID:-${HERMES_GID:-1000}}
       CLAWROUTE_HOST: 0.0.0.0
       CLAWROUTE_PORT: 18790
       CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}

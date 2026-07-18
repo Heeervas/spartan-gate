@@ -139,6 +139,22 @@ router URLs continue to work while the backend changes. `sg route ...` remains
 a compatibility alias for older commands. The Codex dashboard includes
 reset-credit telemetry.
 
+Spartan Route releases from before the non-root Compose contract may have
+created root-owned SQLite files. Before the first recreate with this contract,
+stop only the router and re-own its fixed data mount from a one-shot container:
+
+```sh
+sg stop spartan-route
+sg run --rm --no-deps --user 0:0 --cap-add CHOWN \
+  --cap-add DAC_READ_SEARCH --entrypoint sh spartan-route -c \
+  'chown -R "$SPARTAN_ROUTE_UID:$SPARTAN_ROUTE_GID" /app/data'
+sg up -d spartan-route
+```
+
+Fresh installer paths already have the configured owner. Apply the same
+ownership principle to a pre-existing legacy ClawRoute data root before
+enabling its non-root addon.
+
 Do not use private commands against old stack data paths unless you are intentionally migrating data. The provided private override should use isolated Spartan Gate paths.
 
 ## Logs
@@ -424,6 +440,13 @@ sg up -d --build proxy dns
 ## HTTPS Edge
 
 When `SPARTAN_EDGE_SCHEME=https`, `sg-urls` prints HTTPS URLs. Use the hostname covered by the certificate, usually `TAILSCALE_HOST`, not the raw Tailscale IP. If a browser shows `SSL_ERROR_RX_RECORD_TOO_LONG`, it is usually trying HTTPS against a Caddy listener that is still serving plain HTTP. Recreate or restart Caddy after enabling the HTTPS private override.
+
+Caddy runs with `SPARTAN_CADDY_UID`/`SPARTAN_CADDY_GID`; those values must
+match the owner that can read the mounted Caddyfile and certificate directory.
+The healthcheck runs `caddy validate` and probes the local authenticated
+listener. Public HTTP returns unauthenticated `401`; a private TLS listener
+returns `400` to the healthcheck's deliberate plain-HTTP probe. Either proves
+the listener is serving without placing credentials in the check.
 
 ```sh
 sg-caddy-validate

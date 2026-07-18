@@ -29,7 +29,12 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   network access, not disclosure to a public server.
 - Reader labels fetched text as untrusted content; agents must extract facts from it before using it to decide on tool calls.
 - Caddy requires Basic Auth for browser-facing HTTP entry points and the public
-  Compose binds edge ports to `127.0.0.1` only.
+  Compose binds edge ports to `127.0.0.1` only. It runs as the host-matching
+  non-root UID/GID with a read-only root, no-new-privileges, and all
+  capabilities dropped except `NET_BIND_SERVICE`, which the upstream
+  capability-bearing binary requires even for high ports. Its healthcheck
+  validates the effective config and the authenticated listener without
+  credentials.
 - Browserless debugger WebSockets do not rely on browser Basic Auth prompts,
   which can loop or drop credentials in Safari/Firefox. Profile-seeding URLs
   carry a generated `BROWSERLESS_EDGE_TOKEN` as a short edge authorization
@@ -53,6 +58,15 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   bearer auth when `CLAWROUTE_TOKEN` is configured; `/health` remains public
   for local health checks.
 - Router content logging is disabled by default.
+- Spartan Route and legacy ClawRoute run as explicit host-matching non-root
+  identities, with read-only roots, all capabilities dropped,
+  no-new-privileges, bounded temporary storage, and only `/app/data` writable.
+  Router auth/config mounts remain read-only.
+- Every rendered service has a memory and PID ceiling. PID defaults are 512 for
+  Hermes and browsers, 256 for routers, 128 for search/proxy/Caddy and Pocket
+  TTS, and 64 for DNS/Reader. Lower tiers carry the same Hermes read-only root,
+  capability allowlist, no-new-privileges, temporary filesystems, and 2 GiB
+  memory ceiling as L4.
 - Hermes application workloads run as the unprivileged `hermes` user under s6.
   Local deployments may drop those workloads directly to the host owner's
   numeric UID/GID for `/opt/data`; PID 1 and supervisors remain root only so

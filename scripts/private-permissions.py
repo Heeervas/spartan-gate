@@ -193,6 +193,21 @@ def collect_targets(private_dir: Path, env_file: Path) -> list[Target]:
         expected_gid,
     )
 
+    service_identities = {
+        "SPARTAN_ROUTE_DATA_PATH": (
+            _numeric_setting(values, "SPARTAN_ROUTE_UID", expected_uid),
+            _numeric_setting(values, "SPARTAN_ROUTE_GID", expected_gid),
+        ),
+        "SPARTAN_CLAWROUTE_DATA_PATH": (
+            _numeric_setting(values, "SPARTAN_CLAWROUTE_UID", expected_uid),
+            _numeric_setting(values, "SPARTAN_CLAWROUTE_GID", expected_gid),
+        ),
+        "SPARTAN_CADDY_CERTS_PATH": (
+            _numeric_setting(values, "SPARTAN_CADDY_UID", expected_uid),
+            _numeric_setting(values, "SPARTAN_CADDY_GID", expected_gid),
+        ),
+    }
+
     targets = [
         _target(private_dir, "private root", 0o700, expected_uid, expected_gid, True),
         _target(env_file, "private env", 0o600, expected_uid, expected_gid, False),
@@ -218,8 +233,10 @@ def collect_targets(private_dir: Path, env_file: Path) -> list[Target]:
             raise PermissionPolicyError(key, "configured root must be absolute")
         if not os.path.lexists(path):
             raise PermissionPolicyError(key, "target is missing")
-        gid = browser_gid if key == "SPARTAN_BROWSERLESS_PROFILES_PATH" else expected_gid
-        targets.append(_target(path, key, expected_mode, expected_uid, gid, True))
+        uid, gid = service_identities.get(key, (expected_uid, expected_gid))
+        if key == "SPARTAN_BROWSERLESS_PROFILES_PATH":
+            gid = browser_gid
+        targets.append(_target(path, key, expected_mode, uid, gid, True))
 
     deduplicated: dict[Path, Target] = {}
     for item in targets:

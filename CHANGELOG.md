@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Aligned memory/PID ceilings and the proven Hermes privilege contract across
+  every layer and addon; made Spartan Route, legacy ClawRoute, and Caddy
+  explicit non-root read-only services with narrowly writable mounts, added
+  host-derived installer identities, and added Caddy config/listener readiness
+  checks across public and private renders.
 - Bounded public/private egress-policy fragments and normalized active entries
   before host or container replacement; made proxy and DNS generation
   candidate-first, made DNS install its full artifact set transactionally, and
