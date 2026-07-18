@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,6 +147,29 @@ class SpartanRouteDataTests(unittest.TestCase):
 
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(len(list((self.data / "backups").glob("spartan-route-*.db"))), 1)
+
+    def test_migrate_repairs_sqlite_sidecars_created_during_backup(self):
+        module = load_module()
+        self.data.chmod(0o755)
+        original_create_backup = module._create_backup
+
+        def create_backup_with_sidecars(*args, **kwargs) -> None:
+            original_create_backup(*args, **kwargs)
+            for suffix in ("-wal", "-shm"):
+                sidecar = self.data / f"spartan-route.db{suffix}"
+                sidecar.touch(mode=0o644)
+                sidecar.chmod(0o644)
+
+        with patch.object(
+            module,
+            "_create_backup",
+            side_effect=create_backup_with_sidecars,
+        ):
+            module.migrate_data_dir(self.data, os.getuid(), os.getgid())
+
+        self.assertEqual(mode(self.data / "spartan-route.db-wal"), 0o600)
+        self.assertEqual(mode(self.data / "spartan-route.db-shm"), 0o600)
+        module.check_data_dir(self.data, os.getuid(), os.getgid())
 
     def test_metadata_failure_rolls_back_all_managed_targets(self):
         module = load_module()

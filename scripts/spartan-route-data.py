@@ -310,6 +310,11 @@ def migrate_data_dir(
     if backup_plan is not None and db_target is not None:
         _create_backup(backup_plan, db_target.path, uid, gid)
 
+    # Opening a WAL database for backup can materialize missing -wal/-shm
+    # files. Re-inventory the fixed family so those sidecars receive the same
+    # exact-file metadata repair instead of inheriting the migration UID.
+    targets = _collect_targets(data_dir)
+
     ordered = sorted(targets, key=lambda target: target.directory)
     changed: list[ManagedTarget] = []
     try:

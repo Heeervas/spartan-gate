@@ -155,9 +155,11 @@ The migration refuses to run while Spartan Route is active, validates every
 managed path before writing, makes a verified timestamped SQLite backup, and
 repairs only `spartan-route.db`, `spartan-route.db-wal`,
 `spartan-route.db-shm`, and their data directory. It does not recursively
-traverse other state. Fresh installer paths are prepared with the configured
-owner and private modes. Apply the same ownership principle to a pre-existing
-legacy ClawRoute data root before enabling its non-root addon.
+traverse other state. The fixed SQLite family is inventoried again after backup
+verification so a WAL or shared-memory sidecar materialized by SQLite receives
+the configured owner and private mode too. Fresh installer paths are prepared
+with the configured owner and private modes. Apply the same ownership principle
+to a pre-existing legacy ClawRoute data root before enabling its non-root addon.
 
 Do not use private commands against old stack data paths unless you are intentionally migrating data. The provided private override should use isolated Spartan Gate paths.
 

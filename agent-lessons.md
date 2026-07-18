@@ -32,6 +32,9 @@ Last updated: 2026-07-18
   telemetry snapshot or derived-cache read failed. Return sanitized partial
   metadata, keep inference health ready-but-degraded, and reserve structured
   503 responses for endpoints that have no non-telemetry result to serve.
+- SQLite backup reads can materialize missing WAL/shared-memory sidecars. An
+  exact-file ownership migration must re-inventory the managed family after
+  those reads before applying metadata repair.
 
 ## Tooling
 

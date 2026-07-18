@@ -6,7 +6,8 @@ All notable changes to Spartan Gate are documented here.
 - Added fail-closed Spartan Route SQLite ownership preflight to normal startup,
   rebuild, doctor, and L4 install paths; added a stopped-state exact-file
   migration with verified backup and rollback, replacing recursive data-root
-  ownership repair while keeping newly created SQLite files private.
+  ownership repair while keeping newly created SQLite files private, including
+  WAL/shared-memory sidecars materialized during backup verification.
 - Replaced Spartan Route's SQLite sort/group telemetry aggregation with
   streaming aggregation over the retained 50,000-row window, keeping daily
   cache and rollup rebuilds within the service's fixed 32 MiB temporary mount.
