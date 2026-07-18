@@ -1,7 +1,14 @@
 name: spartan-gate
 
+x-spartan-logging: &spartan-logging
+  driver: local
+  options:
+    max-size: "${SPARTAN_LOG_MAX_SIZE:-10m}"
+    max-file: "${SPARTAN_LOG_MAX_FILES:-3}"
+
 services:
   proxy:
+    logging: *spartan-logging
     build:
       context: ../outbound-proxy
     image: spartan-gate-outbound-proxy:latest
@@ -31,6 +38,7 @@ services:
       start_period: 5s
 
   searxng:
+    logging: *spartan-logging
     image: searxng/searxng@sha256:8ee5966e1fe91953ed98383dce45373289f5536d0f8927cc0c0352729f8009f7
     container_name: spartan_gate_searxng
     restart: unless-stopped
@@ -57,6 +65,7 @@ services:
       start_period: 15s
 
   reader:
+    logging: *spartan-logging
     build:
       context: ../reader
     container_name: spartan_gate_reader
@@ -85,6 +94,7 @@ services:
       start_period: 5s
 
   dns:
+    logging: *spartan-logging
     build:
       context: ../dns
     container_name: spartan_gate_dns
@@ -115,6 +125,7 @@ services:
       start_period: 10s
 
   spartan-route:
+    logging: *spartan-logging
     build:
       context: ../spartan-route
     container_name: spartan_gate_spartan_route
@@ -183,6 +194,7 @@ services:
       start_period: 15s
 
   browserless:
+    logging: *spartan-logging
     profiles:
       - browserless
     build:
@@ -248,6 +260,7 @@ services:
       start_period: 15s
 
   camofox:
+    logging: *spartan-logging
     profiles:
       - camofox
     build:
@@ -321,6 +334,7 @@ services:
       start_period: 20s
 
   pocket-tts:
+    logging: *spartan-logging
     profiles:
       - pocket-tts
     build:
@@ -365,6 +379,7 @@ services:
       start_period: 180s
 
   pocket-tts-prefetch:
+    logging: *spartan-logging
     profiles:
       - pocket-tts-bootstrap
     image: ${POCKET_TTS_IMAGE:-spartan-gate-pocket-tts:2.1.0}
@@ -408,6 +423,7 @@ services:
         condition: service_healthy
 
   hermes:
+    logging: *spartan-logging
     build:
       context: ../../apps/hermes-agent
     container_name: spartan_gate_hermes
@@ -459,7 +475,7 @@ services:
       HERMES_HOME: /opt/data
       SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-}
       SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-}
-      SPARTAN_PROXY_AUDIT_LOG: ${SPARTAN_PROXY_AUDIT_LOG:-/opt/data/logs/proxy-audit.log}
+      SPARTAN_PROXY_AUDIT_LOG: ${SPARTAN_PROXY_AUDIT_LOG:-stderr}
       HF_HOME: /opt/data/.cache/huggingface
       XDG_CONFIG_HOME: /opt/data/.config
       PYTHONUSERBASE: /opt/data/.local
@@ -562,6 +578,7 @@ services:
       start_period: 30s
 
   caddy:
+    logging: *spartan-logging
     image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     container_name: spartan_gate_caddy
     restart: unless-stopped

@@ -141,6 +141,18 @@ class ProxyBootstrapTests(unittest.TestCase):
             self.assertIn('SEND GET https://example.test/?token=[REDACTED]', audit_text)
             self.assertNotIn('secret', audit_text)
 
+    def test_audit_log_defaults_to_stderr(self):
+        os.environ.pop('SPARTAN_PROXY_AUDIT_LOG', None)
+        module = load_module()
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            module._audit_log('SEND', 'GET', 'https://example.test/')
+
+        self.assertEqual('stderr', module.PROXY_AUDIT_LOG)
+        self.assertIn('[proxy-audit]', stderr.getvalue())
+        self.assertIn('SEND GET https://example.test/', stderr.getvalue())
+
     def test_audit_log_can_be_sent_to_stderr(self):
         os.environ['SPARTAN_PROXY_AUDIT_LOG'] = 'stderr'
         module = load_module()

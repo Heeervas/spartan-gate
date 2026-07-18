@@ -1,5 +1,12 @@
+x-spartan-logging: &spartan-logging
+  driver: local
+  options:
+    max-size: "${SPARTAN_LOG_MAX_SIZE:-10m}"
+    max-file: "${SPARTAN_LOG_MAX_FILES:-3}"
+
 services:
   spartan-route:
+    logging: *spartan-logging
     environment:
       # recommended/dev: verbose router diagnostics without adding private keys.
       CLAWROUTE_DEBUG: "true"

@@ -1,11 +1,19 @@
+x-spartan-logging: &spartan-logging
+  driver: local
+  options:
+    max-size: "${SPARTAN_LOG_MAX_SIZE:-10m}"
+    max-file: "${SPARTAN_LOG_MAX_FILES:-3}"
+
 services:
   hermes:
+    logging: *spartan-logging
     restart: always
     environment:
       HERMES_DUMP_REQUESTS: "false"
       HERMES_DUMP_REQUEST_STDOUT: "false"
 
   spartan-route:
+    logging: *spartan-logging
     restart: always
     environment:
       CLAWROUTE_DEBUG: "false"
@@ -13,6 +21,7 @@ services:
       CLAWROUTE_LOG_CONTENT: "false"
 
   caddy:
+    logging: *spartan-logging
     restart: always
     ports:
       # recommended/prod: keep the public example local-only and put LAN/Tailscale binds in private/compose.local.yml.

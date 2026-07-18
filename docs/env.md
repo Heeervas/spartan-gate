@@ -45,6 +45,15 @@ Bcrypt hashes contain `$`. Wrap them in single quotes in `.env` files, or escape
 
 Tailscale binds such as `TAILSCALE_IP=100.x.y.z` belong in your private env file.
 
+## Logging
+
+- `SPARTAN_LOG_MAX_SIZE`: maximum size of each Docker `local` log segment;
+  defaults to `10m`.
+- `SPARTAN_LOG_MAX_FILES`: maximum segments retained per service; defaults to
+  `3`.
+
+Every public Compose service and overlay uses these bounded settings.
+
 ## Hermes
 
 - `SPARTAN_HERMES_DATA_PATH`: private host path mounted as `/opt/data`.
@@ -57,8 +66,9 @@ Tailscale binds such as `TAILSCALE_IP=100.x.y.z` belong in your private env file
   without modifying `/etc/passwd` or `/etc/group`. Leave unset to use the image
   default Hermes identity.
 - `SPARTAN_PROXY_AUDIT_LOG`: Hermes Python HTTP audit destination. Defaults to
-  `/opt/data/logs/proxy-audit.log`; set to `stderr` only for debugging when
-  audit lines should appear in process stderr.
+  `stderr`, so audit lines share Docker's bounded service log. An explicit file
+  path remains supported, but the operator must then provide rotation and
+  retention for that file.
 - `HERMES_API_KEY`: API server bearer token.
 - `HERMES_GATEWAY_TOKEN`: gateway/shared runtime token.
 - `HERMES_MAX_ITERATIONS`: maximum iterations per task.

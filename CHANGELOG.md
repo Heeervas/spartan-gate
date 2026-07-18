@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Bounded every service and overlay with Docker's `local` logging driver,
+  configurable 10 MiB x 3-segment defaults, and sent Hermes Python HTTP audit
+  output to that bounded stderr stream by default while retaining explicit
+  file output as an operator-managed option.
 - Added preflighted private-state permission checks and repair, restrictive
   installer creation, fatal chmod handling, doctor enforcement, rollback
   snapshots, and service-specific modes: 0600 files, 0700 private/data roots,
@@ -126,7 +130,7 @@ All notable changes to Spartan Gate are documented here.
   environment vars.
 - Added optional Hermes workload numeric UID/GID drops for normal host-owned
   data folders while keeping `/opt/hermes` root-owned, and moved Python
-  `[proxy-audit]` lines to `/opt/data/logs/proxy-audit.log` by default.
+  `[proxy-audit]` lines to a configurable destination.
 - Kept generic streaming Codex rate-limit errors request-local while preserving
   long slot cooldowns for explicit `usage_limit_reached` responses.
 - Clear stale Codex slot cooldowns after real reset evidence, including

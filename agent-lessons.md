@@ -22,6 +22,9 @@ Last updated: 2026-07-18
   supervised services must run before profile reconciliation.
 - Browser backends are separate operational modes. Do not claim that an
   inactive Compose profile remains available.
+- A log-retention boundary must cover overlay-only service definitions as well
+  as the base stack. Sending audit output to bounded container stderr avoids a
+  second unrotated file lifecycle.
 
 ## Tooling
 

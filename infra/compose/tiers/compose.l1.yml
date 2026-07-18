@@ -1,7 +1,14 @@
 name: ${COMPOSE_PROJECT_NAME:-spartan-gate}
 
+x-spartan-logging: &spartan-logging
+  driver: local
+  options:
+    max-size: "${SPARTAN_LOG_MAX_SIZE:-10m}"
+    max-file: "${SPARTAN_LOG_MAX_FILES:-3}"
+
 services:
   hermes:
+    logging: *spartan-logging
     build:
       context: ../../../apps/hermes-agent
     image: ${HERMES_IMAGE:-spartan-gate-hermes:latest}
@@ -58,6 +65,7 @@ services:
       start_period: 30s
 
   camofox:
+    logging: *spartan-logging
     build:
       context: ../../camofox
       args:

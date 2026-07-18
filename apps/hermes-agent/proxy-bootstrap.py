@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 SEARXNG_URL = os.environ.get('SEARXNG_URL', 'http://searxng:8080')
 READER_URL = os.environ.get('READER_PROXY_URL', 'http://reader:3000')
-PROXY_AUDIT_LOG = os.environ.get('SPARTAN_PROXY_AUDIT_LOG', '/opt/data/logs/proxy-audit.log').strip()
+PROXY_AUDIT_LOG = os.environ.get('SPARTAN_PROXY_AUDIT_LOG', 'stderr').strip()
 MAX_QUERY_LEN = 500  # Prevent data exfiltration via search queries
 BRAVE_SEARCH_HOST = 'api.search.brave.com'
 

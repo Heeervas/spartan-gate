@@ -1,5 +1,12 @@
+x-spartan-logging: &spartan-logging
+  driver: local
+  options:
+    max-size: "${SPARTAN_LOG_MAX_SIZE:-10m}"
+    max-file: "${SPARTAN_LOG_MAX_FILES:-3}"
+
 services:
   spartan-route:
+    logging: *spartan-logging
     build:
       context: ../../../infra/spartan-route
     restart: unless-stopped
@@ -45,6 +52,7 @@ services:
       start_period: 15s
 
   hermes:
+    logging: *spartan-logging
     depends_on:
       spartan-route:
         condition: service_healthy

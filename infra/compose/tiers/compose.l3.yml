@@ -1,5 +1,12 @@
+x-spartan-logging: &spartan-logging
+  driver: local
+  options:
+    max-size: "${SPARTAN_LOG_MAX_SIZE:-10m}"
+    max-file: "${SPARTAN_LOG_MAX_FILES:-3}"
+
 services:
   clawroute:
+    logging: *spartan-logging
     build:
       context: ../../../packages/clawroute
       args:
@@ -50,6 +57,7 @@ services:
       start_period: 15s
 
   hermes:
+    logging: *spartan-logging
     depends_on:
       clawroute:
         condition: service_healthy
@@ -61,6 +69,7 @@ services:
       no_proxy: localhost,127.0.0.1,::1,hermes,proxy,caddy,camofox,clawroute
 
   caddy:
+    logging: *spartan-logging
     ports:
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
     environment:
