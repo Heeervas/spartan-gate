@@ -499,7 +499,13 @@ the private extension by default and accepts an optional TTL such as `15m`,
 `SPARTAN_WHITELIST_REFRESH_TIME=02:00` and
 `SPARTAN_WHITELIST_REFRESH_TZ=Europe/Madrid`; expired entries are ignored at
 startup, helper-triggered hot reloads, explicit fallback recreates, and that
-daily refresh window. Set `SPARTAN_WHITELIST_RELOAD_FALLBACK=recreate` only
-when `sg-whitelist-domain` should recreate a running `proxy` or `dns` service
-after reload delivery fails; the default leaves the previous runtime policy
-active and exits non-zero.
+daily refresh window. The time must be an exact 24-hour `HH:MM` value and the
+timezone must name an installed file below `/usr/share/zoneinfo`; traversal,
+missing files, and malformed values fail startup and `scripts/doctor.sh`.
+If an in-container scheduled or signal-triggered refresh cannot regenerate the
+policy or signal its child, the service exits so Docker restarts it through the
+same fail-closed startup path. Set
+`SPARTAN_WHITELIST_RELOAD_FALLBACK=recreate` only when
+`sg-whitelist-domain` should recreate a running `proxy` or `dns` service
+after the helper cannot deliver its outer reload request; the default leaves
+the previous runtime policy active and exits non-zero.

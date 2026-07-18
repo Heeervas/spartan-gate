@@ -387,6 +387,42 @@ class WhitelistRuntimeGenerationTests(unittest.TestCase):
             check=False,
         )
 
+    def run_entrypoint_mode(self, entrypoint, mode, extra_env=None):
+        env = os.environ.copy()
+        if extra_env:
+            env.update(extra_env)
+        env["SPARTAN_WHITELIST_NOW"] = str(NOW)
+        env["SPARTAN_WHITELIST_ENTRYPOINT_TEST"] = mode
+        return subprocess.run(
+            ["sh", str(entrypoint)],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def runtime_paths(self, entrypoint):
+        if entrypoint == PROXY_ENTRYPOINT:
+            return {
+                "SPARTAN_WHITELIST_PUBLIC": str(self.public),
+                "SPARTAN_WHITELIST_PRIVATE": str(self.private),
+                "SPARTAN_WHITELIST_COMBINED": str(self.combined),
+            }
+        return {
+            "SPARTAN_DNS_WHITELIST_PUBLIC": str(self.public),
+            "SPARTAN_DNS_WHITELIST_PRIVATE": str(self.private),
+        }
+
+    def failed_mv_bin(self):
+        bin_dir = self.root / "failed-mv-bin"
+        bin_dir.mkdir(exist_ok=True)
+        fake_mv = bin_dir / "mv"
+        fake_mv.write_text("#!/bin/sh\nexit 9\n")
+        fake_mv.chmod(0o755)
+        return bin_dir
+
     def test_proxy_generation_excludes_expired_domains(self):
         result = self.run_entrypoint_generate(
             PROXY_ENTRYPOINT,
@@ -448,6 +484,117 @@ class WhitelistRuntimeGenerationTests(unittest.TestCase):
         self.assertNotIn("invalid-trailing.example.com", result.stdout)
         self.assertNotIn("1.2.3.999", result.stdout)
         self.assertNotIn("2001", result.stdout)
+
+    def test_refresh_time_is_validated_before_service_start(self):
+        invalid_times = ["2:00", "24:00", "00:60", "02:0", "tomorrow"]
+        for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
+            for refresh_time in invalid_times:
+                with self.subTest(entrypoint=entrypoint, refresh_time=refresh_time):
+                    result = self.run_entrypoint_mode(
+                        entrypoint,
+                        "validate",
+                        {
+                            "SPARTAN_WHITELIST_REFRESH_TIME": refresh_time,
+                            "SPARTAN_WHITELIST_REFRESH_TZ": "UTC",
+                        },
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Invalid SPARTAN_WHITELIST_REFRESH_TIME", result.stderr)
+
+    def test_refresh_time_accepts_boundary_values(self):
+        for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
+            for refresh_time in ("00:00", "23:59"):
+                with self.subTest(entrypoint=entrypoint, refresh_time=refresh_time):
+                    result = self.run_entrypoint_mode(
+                        entrypoint,
+                        "validate",
+                        {
+                            "SPARTAN_WHITELIST_REFRESH_TIME": refresh_time,
+                            "SPARTAN_WHITELIST_REFRESH_TZ": "UTC",
+                        },
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refresh_timezone_rejects_traversal_and_missing_files(self):
+        invalid_timezones = [
+            "../UTC",
+            "/usr/share/zoneinfo/UTC",
+            "Etc/../../etc/passwd",
+            "Spartan/DefinitelyMissing",
+        ]
+        for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
+            for timezone in invalid_timezones:
+                with self.subTest(entrypoint=entrypoint, timezone=timezone):
+                    result = self.run_entrypoint_mode(
+                        entrypoint,
+                        "validate",
+                        {
+                            "SPARTAN_WHITELIST_REFRESH_TIME": "02:00",
+                            "SPARTAN_WHITELIST_REFRESH_TZ": timezone,
+                        },
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Invalid SPARTAN_WHITELIST_REFRESH_TZ", result.stderr)
+
+    def test_expired_scheduled_refresh_failure_is_fail_closed(self):
+        self.private.write_text(
+            "expired.example.com # sg-expires-at=1699999999 sg-ttl=1m\n"
+        )
+        original = "stale-expired-runtime-policy\n"
+        self.combined.write_text(original)
+        failed_mv_bin = self.failed_mv_bin()
+
+        for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
+            with self.subTest(entrypoint=entrypoint):
+                env = self.runtime_paths(entrypoint)
+                env.update(
+                    {
+                        "PATH": f"{failed_mv_bin}:{os.environ['PATH']}",
+                        "SPARTAN_WHITELIST_REFRESH_TIME": "02:00",
+                        "SPARTAN_WHITELIST_REFRESH_TZ": "UTC",
+                        "SPARTAN_WHITELIST_REFRESH_NOW": "02:00",
+                    }
+                )
+                result = self.run_entrypoint_mode(entrypoint, "scheduled-refresh", env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Whitelist reload failed", result.stderr)
+                self.assertIn("Policy freshness lost", result.stderr)
+
+        self.assertEqual(self.combined.read_text(), original)
+
+    def test_child_signal_failure_terminates_supervisor_and_child(self):
+        for entrypoint in (PROXY_ENTRYPOINT, DNS_ENTRYPOINT):
+            with self.subTest(entrypoint=entrypoint):
+                child = subprocess.Popen(["sleep", "30"])
+                try:
+                    env = self.runtime_paths(entrypoint)
+                    env.update(
+                        {
+                            "SPARTAN_WHITELIST_REFRESH_TIME": "02:00",
+                            "SPARTAN_WHITELIST_REFRESH_TZ": "UTC",
+                            "SPARTAN_WHITELIST_REFRESH_NOW": "02:00",
+                            "SPARTAN_WHITELIST_TEST_CHILD_PID": str(child.pid),
+                            "SPARTAN_WHITELIST_TEST_SIGNAL_FAILURE": "1",
+                        }
+                    )
+                    result = self.run_entrypoint_mode(entrypoint, "scheduled-refresh", env)
+                    self.assertEqual(result.returncode, 143)
+                    self.assertIn("reload signaling failed", result.stderr)
+                    self.assertIn("Policy freshness lost", result.stderr)
+                    child.wait(timeout=5)
+                    self.assertIsNotNone(child.returncode)
+                finally:
+                    if child.poll() is None:
+                        child.terminate()
+                        child.wait(timeout=5)
+
+    def test_doctor_validates_effective_refresh_configuration(self):
+        source = (ROOT / "scripts" / "doctor.sh").read_text()
+        self.assertIn("validate_whitelist_refresh_config private/env/local.env", source)
+        self.assertIn("validate_whitelist_refresh_config .env", source)
+        self.assertIn('validate_whitelist_refresh_config ""', source)
+        self.assertIn("refresh_time=${SPARTAN_WHITELIST_REFRESH_TIME:-}", source)
+        self.assertIn("refresh_timezone=${SPARTAN_WHITELIST_REFRESH_TZ:-}", source)
 
     def test_container_images_install_timezone_data(self):
         proxy_dockerfile = (ROOT / "infra" / "outbound-proxy" / "Dockerfile").read_text()

@@ -155,6 +155,47 @@ env_value() {
   sed -n "s/^${key}=//p" "$env_file" | tail -n 1 | sed "s/^'//; s/'$//; s/^\"//; s/\"$//"
 }
 
+valid_whitelist_refresh_time() {
+  case "$1" in
+    [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+valid_whitelist_refresh_timezone() {
+  timezone=$1
+  case "$timezone" in
+    ""|/*|*/|*//*|*..*|*\\*) return 1 ;;
+  esac
+  printf '%s\n' "$timezone" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' || return 1
+  test -f "/usr/share/zoneinfo/$timezone"
+}
+
+validate_whitelist_refresh_config() {
+  env_file=${1:-}
+  refresh_time=${SPARTAN_WHITELIST_REFRESH_TIME:-}
+  refresh_timezone=${SPARTAN_WHITELIST_REFRESH_TZ:-}
+
+  if test -n "$env_file" && test -f "$env_file"; then
+    if test -z "$refresh_time"; then
+      refresh_time=$(env_value "$env_file" SPARTAN_WHITELIST_REFRESH_TIME)
+    fi
+    if test -z "$refresh_timezone"; then
+      refresh_timezone=$(env_value "$env_file" SPARTAN_WHITELIST_REFRESH_TZ)
+    fi
+  fi
+
+  if test -z "$refresh_time"; then
+    refresh_time=02:00
+  fi
+  if test -z "$refresh_timezone"; then
+    refresh_timezone=Europe/Madrid
+  fi
+
+  valid_whitelist_refresh_time "$refresh_time" || fail "invalid SPARTAN_WHITELIST_REFRESH_TIME in ${env_file:-defaults}; expected HH:MM in 00:00-23:59"
+  valid_whitelist_refresh_timezone "$refresh_timezone" || fail "invalid SPARTAN_WHITELIST_REFRESH_TZ in ${env_file:-defaults}; expected an installed traversal-free timezone"
+}
+
 validate_private_env() {
   env_file=$1
   test -f "$env_file" || return 0
@@ -528,10 +569,13 @@ if test -f private/compose.local.yml && test -f private/env/local.env; then
   python3 scripts/private-permissions.py check --private-dir private --env-file private/env/local.env \
     || fail "private infrastructure permissions are unsafe"
   validate_private_env private/env/local.env
+  validate_whitelist_refresh_config private/env/local.env
   check_effective_runtime_config private-local -f infra/compose/compose.yml -f private/compose.local.yml --env-file private/env/local.env
 elif test -f .env; then
+  validate_whitelist_refresh_config .env
   check_effective_runtime_config base-local -f infra/compose/compose.yml --env-file .env
 else
+  validate_whitelist_refresh_config ""
   check_effective_runtime_config base-default -f infra/compose/compose.yml
 fi
 

@@ -16,12 +16,49 @@ TMP_DOMAINS="${DOMAINS}.tmp"
 TMP_SERVERS="${SERVERS}.tmp"
 dns_pid=""
 refresh_pid=""
+supervisor_pid="$$"
+refresh_performed=0
 
 current_epoch() {
   if [ -n "${SPARTAN_WHITELIST_NOW:-}" ]; then
     printf '%s\n' "$SPARTAN_WHITELIST_NOW"
   else
     date +%s
+  fi
+}
+
+valid_refresh_time() {
+  case "$1" in
+    [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+valid_refresh_timezone() {
+  timezone="$1"
+  case "$timezone" in
+    ""|/*|*/|*//*|*..*|*\\*) return 1 ;;
+  esac
+  printf '%s\n' "$timezone" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' || return 1
+  [ -f "/usr/share/zoneinfo/$timezone" ]
+}
+
+validate_refresh_config() {
+  if ! valid_refresh_time "$REFRESH_TIME"; then
+    echo "[dns-relay] Invalid SPARTAN_WHITELIST_REFRESH_TIME; expected HH:MM in 00:00-23:59" >&2
+    return 1
+  fi
+  if ! valid_refresh_timezone "$REFRESH_TZ"; then
+    echo "[dns-relay] Invalid SPARTAN_WHITELIST_REFRESH_TZ; expected an installed traversal-free timezone" >&2
+    return 1
+  fi
+}
+
+current_refresh_time() {
+  if [ -n "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" ] && [ -n "${SPARTAN_WHITELIST_REFRESH_NOW:-}" ]; then
+    printf '%s\n' "$SPARTAN_WHITELIST_REFRESH_NOW"
+  else
+    TZ="$REFRESH_TZ" date '+%H:%M'
   fi
 }
 
@@ -170,30 +207,77 @@ servers-file=$SERVERS
 EOF
 }
 
-refresh_loop() {
+policy_freshness_lost() {
   dns_pid="$1"
-  while kill -0 "$dns_pid" 2>/dev/null; do
-    sleep 60
-    current_time="$(TZ="$REFRESH_TZ" date '+%H:%M')"
-    if [ "$current_time" = "$REFRESH_TIME" ]; then
-      echo "[dns-relay] Refreshing whitelist for scheduled window ${REFRESH_TIME} ${REFRESH_TZ}"
-      reload_servers "$dns_pid"
-      sleep 61
-    fi
-  done
+  echo "[dns-relay] Policy freshness lost; terminating so restart must re-enter fail-closed startup" >&2
+  if ! kill -TERM "$supervisor_pid" 2>/dev/null; then
+    kill "$dns_pid" 2>/dev/null || true
+  fi
+  return 1
 }
 
 reload_servers() {
   dns_pid="$1"
-  if generate_servers; then
-    if [ -n "$dns_pid" ] && kill -0 "$dns_pid" 2>/dev/null; then
-      kill -HUP "$dns_pid" 2>/dev/null || true
-    else
-      echo "[dns-relay] Whitelist regenerated; dnsmasq child is not running" >&2
-    fi
-  else
+  if ! generate_servers; then
     echo "[dns-relay] Whitelist reload failed; keeping previous runtime whitelist" >&2
     return 1
+  fi
+  if [ -z "$dns_pid" ] || ! kill -0 "$dns_pid" 2>/dev/null; then
+    echo "[dns-relay] Whitelist regenerated; dnsmasq child is not running" >&2
+    return 1
+  fi
+  if [ "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" = "scheduled-refresh" ] && [ "${SPARTAN_WHITELIST_TEST_SIGNAL_FAILURE:-0}" = "1" ]; then
+    echo "[dns-relay] Whitelist regenerated but dnsmasq reload signaling failed" >&2
+    return 1
+  fi
+  if ! kill -HUP "$dns_pid" 2>/dev/null; then
+    echo "[dns-relay] Whitelist regenerated but dnsmasq reload signaling failed" >&2
+    return 1
+  fi
+}
+
+scheduled_refresh() {
+  dns_pid="$1"
+  refresh_performed=0
+  if ! current_time="$(current_refresh_time)"; then
+    echo "[dns-relay] Could not determine the scheduled refresh time" >&2
+    policy_freshness_lost "$dns_pid"
+    return 1
+  fi
+  if [ "$current_time" != "$REFRESH_TIME" ]; then
+    return 0
+  fi
+
+  refresh_performed=1
+  echo "[dns-relay] Refreshing whitelist for scheduled window ${REFRESH_TIME} ${REFRESH_TZ}"
+  if ! reload_servers "$dns_pid"; then
+    policy_freshness_lost "$dns_pid"
+    return 1
+  fi
+}
+
+refresh_loop() {
+  dns_pid="$1"
+  while kill -0 "$dns_pid" 2>/dev/null; do
+    if ! sleep 60; then
+      policy_freshness_lost "$dns_pid"
+      return 1
+    fi
+    if ! scheduled_refresh "$dns_pid"; then
+      return 1
+    fi
+    if [ "$refresh_performed" -eq 1 ]; then
+      if ! sleep 61; then
+        policy_freshness_lost "$dns_pid"
+        return 1
+      fi
+    fi
+  done
+}
+
+handle_reload() {
+  if ! reload_servers "$dns_pid"; then
+    policy_freshness_lost "$dns_pid" || true
   fi
 }
 
@@ -210,8 +294,20 @@ shutdown() {
   exit 143
 }
 
-trap 'reload_servers "$dns_pid" || true' USR1
+trap 'handle_reload' USR1
 trap 'shutdown' INT TERM
+
+validate_refresh_config
+
+case "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" in
+  validate)
+    exit 0
+    ;;
+  scheduled-refresh)
+    scheduled_refresh "${SPARTAN_WHITELIST_TEST_CHILD_PID:-99999999}"
+    exit "$?"
+    ;;
+esac
 
 generate_servers
 write_config

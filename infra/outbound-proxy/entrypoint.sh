@@ -12,12 +12,49 @@ TMP_WHITELIST="${COMBINED_WHITELIST}.tmp"
 NEXT_WHITELIST="${COMBINED_WHITELIST}.next"
 proxy_pid=""
 refresh_pid=""
+supervisor_pid="$$"
+refresh_performed=0
 
 current_epoch() {
   if [ -n "${SPARTAN_WHITELIST_NOW:-}" ]; then
     printf '%s\n' "$SPARTAN_WHITELIST_NOW"
   else
     date +%s
+  fi
+}
+
+valid_refresh_time() {
+  case "$1" in
+    [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+valid_refresh_timezone() {
+  timezone="$1"
+  case "$timezone" in
+    ""|/*|*/|*//*|*..*|*\\*) return 1 ;;
+  esac
+  printf '%s\n' "$timezone" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' || return 1
+  [ -f "/usr/share/zoneinfo/$timezone" ]
+}
+
+validate_refresh_config() {
+  if ! valid_refresh_time "$REFRESH_TIME"; then
+    echo "[outbound-proxy] Invalid SPARTAN_WHITELIST_REFRESH_TIME; expected HH:MM in 00:00-23:59" >&2
+    return 1
+  fi
+  if ! valid_refresh_timezone "$REFRESH_TZ"; then
+    echo "[outbound-proxy] Invalid SPARTAN_WHITELIST_REFRESH_TZ; expected an installed traversal-free timezone" >&2
+    return 1
+  fi
+}
+
+current_refresh_time() {
+  if [ -n "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" ] && [ -n "${SPARTAN_WHITELIST_REFRESH_NOW:-}" ]; then
+    printf '%s\n' "$SPARTAN_WHITELIST_REFRESH_NOW"
+  else
+    TZ="$REFRESH_TZ" date '+%H:%M'
   fi
 }
 
@@ -149,30 +186,77 @@ generate_whitelist() {
   echo "[outbound-proxy] Loaded ${count} whitelisted domains from public/private fragments"
 }
 
-refresh_loop() {
+policy_freshness_lost() {
   proxy_pid="$1"
-  while kill -0 "$proxy_pid" 2>/dev/null; do
-    sleep 60
-    current_time="$(TZ="$REFRESH_TZ" date '+%H:%M')"
-    if [ "$current_time" = "$REFRESH_TIME" ]; then
-      echo "[outbound-proxy] Refreshing whitelist for scheduled window ${REFRESH_TIME} ${REFRESH_TZ}"
-      reload_whitelist "$proxy_pid"
-      sleep 61
-    fi
-  done
+  echo "[outbound-proxy] Policy freshness lost; terminating so restart must re-enter fail-closed startup" >&2
+  if ! kill -TERM "$supervisor_pid" 2>/dev/null; then
+    kill "$proxy_pid" 2>/dev/null || true
+  fi
+  return 1
 }
 
 reload_whitelist() {
   proxy_pid="$1"
-  if generate_whitelist; then
-    if [ -n "$proxy_pid" ] && kill -0 "$proxy_pid" 2>/dev/null; then
-      kill -USR1 "$proxy_pid" 2>/dev/null || true
-    else
-      echo "[outbound-proxy] Whitelist regenerated; Tinyproxy child is not running" >&2
-    fi
-  else
+  if ! generate_whitelist; then
     echo "[outbound-proxy] Whitelist reload failed; keeping previous runtime whitelist" >&2
     return 1
+  fi
+  if [ -z "$proxy_pid" ] || ! kill -0 "$proxy_pid" 2>/dev/null; then
+    echo "[outbound-proxy] Whitelist regenerated; Tinyproxy child is not running" >&2
+    return 1
+  fi
+  if [ "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" = "scheduled-refresh" ] && [ "${SPARTAN_WHITELIST_TEST_SIGNAL_FAILURE:-0}" = "1" ]; then
+    echo "[outbound-proxy] Whitelist regenerated but Tinyproxy reload signaling failed" >&2
+    return 1
+  fi
+  if ! kill -USR1 "$proxy_pid" 2>/dev/null; then
+    echo "[outbound-proxy] Whitelist regenerated but Tinyproxy reload signaling failed" >&2
+    return 1
+  fi
+}
+
+scheduled_refresh() {
+  proxy_pid="$1"
+  refresh_performed=0
+  if ! current_time="$(current_refresh_time)"; then
+    echo "[outbound-proxy] Could not determine the scheduled refresh time" >&2
+    policy_freshness_lost "$proxy_pid"
+    return 1
+  fi
+  if [ "$current_time" != "$REFRESH_TIME" ]; then
+    return 0
+  fi
+
+  refresh_performed=1
+  echo "[outbound-proxy] Refreshing whitelist for scheduled window ${REFRESH_TIME} ${REFRESH_TZ}"
+  if ! reload_whitelist "$proxy_pid"; then
+    policy_freshness_lost "$proxy_pid"
+    return 1
+  fi
+}
+
+refresh_loop() {
+  proxy_pid="$1"
+  while kill -0 "$proxy_pid" 2>/dev/null; do
+    if ! sleep 60; then
+      policy_freshness_lost "$proxy_pid"
+      return 1
+    fi
+    if ! scheduled_refresh "$proxy_pid"; then
+      return 1
+    fi
+    if [ "$refresh_performed" -eq 1 ]; then
+      if ! sleep 61; then
+        policy_freshness_lost "$proxy_pid"
+        return 1
+      fi
+    fi
+  done
+}
+
+handle_reload() {
+  if ! reload_whitelist "$proxy_pid"; then
+    policy_freshness_lost "$proxy_pid" || true
   fi
 }
 
@@ -189,8 +273,20 @@ shutdown() {
   exit 143
 }
 
-trap 'reload_whitelist "$proxy_pid" || true' USR1
+trap 'handle_reload' USR1
 trap 'shutdown' INT TERM
+
+validate_refresh_config
+
+case "${SPARTAN_WHITELIST_ENTRYPOINT_TEST:-}" in
+  validate)
+    exit 0
+    ;;
+  scheduled-refresh)
+    scheduled_refresh "${SPARTAN_WHITELIST_TEST_CHILD_PID:-99999999}"
+    exit "$?"
+    ;;
+esac
 
 generate_whitelist
 

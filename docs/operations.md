@@ -392,10 +392,14 @@ sg-whitelist-domain 15d vendor.example.com
 The helper writes to the private file by default and hot-reloads running
 `proxy`/`dns` services by executing an in-container `USR1` signal. The normal
 path does not use `docker compose kill` and does not recreate containers. If
-reload delivery fails, the helper exits non-zero and the previous runtime policy
-remains active; the private file still contains the requested entry for the next
-successful reload or startup. Use `--no-reload` to write only without touching
-running services; legacy `--no-restart` is accepted as the same operation. Use
+the helper cannot deliver that outer request, it exits non-zero and the
+previous runtime policy remains active; the private file still contains the
+requested entry for the next successful reload or startup. Once a refresh is
+accepted inside a container, regeneration failure, scheduled-time evaluation
+failure, or failure to signal Tinyproxy/dnsmasq is treated as policy-freshness
+loss: the service exits and Docker must restart it through fail-closed startup.
+Use `--no-reload` to write only without touching running services; legacy
+`--no-restart` is accepted as the same operation. Use
 `--recreate-on-reload-failure` or
 `SPARTAN_WHITELIST_RELOAD_FALLBACK=recreate` only when an explicit disruptive
 fallback is acceptable. Temporary entries are ignored after their timestamp

@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Validated whitelist refresh times and installed traversal-free timezones in
+  doctor and both egress services before child startup, and made scheduled or
+  signal-triggered regeneration/signaling failures terminate proxy/DNS so
+  restart re-enters the fail-closed startup path instead of serving an expired
+  runtime policy.
 - Bounded Spartan Route telemetry admission and shutdown draining, kept model
   requests available under telemetry pressure or database write failure,
   exposed non-sensitive queue/retention health, and transactionally enforced
