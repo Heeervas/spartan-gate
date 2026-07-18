@@ -458,7 +458,7 @@ def parse_args() -> argparse.Namespace:
         "--root",
         type=Path,
         default=Path.home() / ".custom_claw" / "hermes",
-        help="Hermes data root to migrate. Defaults to ~/.custom_claw/hermes.",
+        help="Hermes data root to migrate. Defaults to the legacy Hermes home.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Report changes without writing files.")
     parser.add_argument("--no-backup", action="store_true", help="Do not create backups for changed files.")

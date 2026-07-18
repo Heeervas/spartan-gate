@@ -99,7 +99,9 @@ scripts/doctor.sh
 docker compose -f infra/compose/compose.yml --env-file .env config
 ```
 
-`doctor` allows a local `.env`, but it must stay untracked. It also checks Docker availability, Compose config, subnet overlap, occupied published ports, private placeholders, and private data paths before `docker compose up`.
+`doctor` allows a local `.env`, but it must stay untracked. It also checks
+Docker/Compose, subnet and port conflicts, private placeholders/data paths, and
+least-privilege private metadata before `docker compose up`.
 
 ### 5. Load Helpers
 

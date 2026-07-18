@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TIER=""
 ADDONS=""
@@ -254,7 +255,7 @@ write_env_file() {
         SPARTAN_HERMES_DATA_PATH SPARTAN_CLAWROUTE_DATA_PATH SPARTAN_ROUTE_DATA_PATH
         SPARTAN_GOGCLI_DATA_PATH SPARTAN_BROWSERLESS_PROFILES_PATH
         SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CODEX_HOME_PATH
-        HERMES_UID HERMES_GID
+        HERMES_UID HERMES_GID BROWSERLESS_PROFILES_GID
         SPARTAN_HERMES_RUN_UID SPARTAN_HERMES_RUN_GID
         HERMES_API_KEY API_SERVER_KEY HERMES_GATEWAY_TOKEN
         HERMES_DASHBOARD_BASIC_AUTH_USERNAME
@@ -315,6 +316,7 @@ write_env_file() {
     append_env SPARTAN_CODEX_HOME_PATH "$private_codex_home"
     append_env HERMES_UID "$(id -u)"
     append_env HERMES_GID "$(id -g)"
+    append_env BROWSERLESS_PROFILES_GID "$(id -g)"
     append_env SPARTAN_HERMES_RUN_UID "$(id -u)"
     append_env SPARTAN_HERMES_RUN_GID "$(id -g)"
     append_env HERMES_API_KEY "$(get_or_generate HERMES_API_KEY 32)"
@@ -374,7 +376,7 @@ write_env_file() {
     append_env HERMES_IMAGE "spartan-gate-hermes:latest"
 
     mv "$tmp" "$env_file"
-    chmod 600 "$env_file" 2>/dev/null || true
+    chmod 600 "$env_file"
 }
 
 write_private_compose() {
@@ -449,12 +451,11 @@ EOF
 }
 
 require_docker
-if has_addon clawroute || [[ "$TIER" == "L4" ]]; then
-    mkdir -p "$private_codex_home"
-fi
+mkdir -p "$private_codex_home"
 write_env_file
 write_private_compose
 write_state
+python3 "$ROOT/scripts/private-permissions.py" fix --private-dir "$private_dir" --env-file "$env_file"
 
 printf 'Spartan Gate tier %s configured for %s.\n' "$TIER" "$(detect_platform)"
 printf 'Env file: %s\n' "$env_file"

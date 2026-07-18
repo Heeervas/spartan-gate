@@ -70,7 +70,9 @@ scripts/doctor.sh
 docker compose -f infra/compose/compose.yml --env-file .env config
 ```
 
-`doctor` validates the local `.env` instead of rejecting it. It fails early if Docker is unavailable, Compose is invalid, the configured subnet overlaps another Docker network, a published port is already occupied, or private placeholders/data paths are not ready.
+`doctor` validates the local `.env` instead of rejecting it. It fails early if
+Docker/Compose is unavailable, network or port configuration conflicts, private
+paths are not ready, or governed private metadata is too permissive.
 
 If you already run other local stacks, `doctor` checks whether anything else is listening on the resolved published ports. If it reports a port conflict, pick a different value in `.env` or `private/env/local.env` before retrying.
 

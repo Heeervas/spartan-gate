@@ -1,4 +1,5 @@
 import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -6,6 +7,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def path_mode(path):
+    return stat.S_IMODE(path.stat().st_mode)
+
 
 
 class InstallScriptTests(unittest.TestCase):
@@ -84,6 +89,36 @@ exit 2
         self.assertNotIn(values["HERMES_API_KEY"], result.stdout)
         self.assertNotIn(values["HERMES_GATEWAY_TOKEN"], result.stdout)
         self.assertNotIn(values["SPARTAN_CADDY_PASSWORD"], result.stdout)
+
+        self.assertEqual(values["BROWSERLESS_PROFILES_GID"], str(os.getgid()))
+        self.assertEqual(path_mode(self.private_dir), 0o700)
+        self.assertEqual(path_mode(self.private_dir / "env"), 0o700)
+        self.assertEqual(path_mode(self.private_dir / "env" / "local.env"), 0o600)
+        self.assertEqual(path_mode(self.private_dir / "install-state.json"), 0o600)
+        for key in (
+            "SPARTAN_HERMES_DATA_PATH",
+            "SPARTAN_CLAWROUTE_DATA_PATH",
+            "SPARTAN_ROUTE_DATA_PATH",
+            "SPARTAN_GOGCLI_DATA_PATH",
+            "SPARTAN_CAMOFOX_DATA_PATH",
+            "SPARTAN_CODEX_HOME_PATH",
+        ):
+            path = Path(values[key])
+            self.assertEqual(path_mode(path), 0o700, key)
+        self.assertEqual(
+            path_mode(Path(values["SPARTAN_BROWSERLESS_PROFILES_PATH"])),
+            0o770,
+        )
+
+    def test_install_fails_if_private_env_chmod_fails(self):
+        chmod = self.bin_dir / "chmod"
+        chmod.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        chmod.chmod(0o755)
+
+        result = self.run_install("L0", "linux")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(" compose ", self.log.read_text(encoding="utf-8"))
 
     def test_l2_generates_caddy_hash_and_keeps_plaintext_private(self):
         result = self.run_install("L2", "macos")
@@ -250,6 +285,12 @@ exit 2
         private_compose = self.private_dir / "compose.local.yml"
         self.assertTrue(private_compose.is_file())
         self.assertTrue((self.private_dir / "outbound-proxy" / "whitelist.private.txt").is_file())
+        self.assertEqual(path_mode(private_compose), 0o600)
+        self.assertEqual(
+            path_mode(self.private_dir / "outbound-proxy" / "whitelist.private.txt"),
+            0o600,
+        )
+        self.assertEqual(path_mode(self.private_dir / "caddy.local.d"), 0o700)
         content = private_compose.read_text(encoding="utf-8")
         self.assertIn("SPARTAN_BIND_LOCALHOST", content)
         self.assertIn("spartan-route:", content)

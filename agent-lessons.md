@@ -1,6 +1,6 @@
 # Agent Lessons
 
-Last updated: 2026-06-06
+Last updated: 2026-07-18
 
 ## Security
 
@@ -11,6 +11,10 @@ Last updated: 2026-06-06
 - Reader address checks require positive global classification and explicit
   multicast denial; Python's `ipaddress.is_global` can be true for multicast
   addresses.
+- Private permission repair must preflight every target before the first chmod,
+  never traverse credential stores, and preserve Browserless's required
+  UID-999/configured-GID access with mode 0770 rather than applying blanket
+  owner-only directories.
 
 ## Runtime
 

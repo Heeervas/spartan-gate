@@ -2,13 +2,23 @@
 
 ## Safe Start
 
-Run doctor first. It validates Compose, Docker availability, subnet overlap, occupied published ports, private placeholders, and private data paths before you start containers.
+Run doctor first. It validates Compose, Docker availability, subnet/port
+conflicts, private placeholders, data paths, and least-privilege metadata.
 
 ```sh
 scripts/doctor.sh
 source scripts/aliases.sh
 sg-up
 sg-status
+```
+
+For a metadata-only permission check or a preflighted repair with a local
+recovery snapshot:
+
+```sh
+python3 scripts/private-permissions.py check --private-dir private --env-file private/env/local.env
+python3 scripts/private-permissions.py fix --private-dir private --env-file private/env/local.env \\
+  --snapshot /tmp/spartan-gate-private-permissions.json
 ```
 
 `sg-up` starts the selected tier from `SPARTAN_TIER`, `SPARTAN_ADDONS`, and

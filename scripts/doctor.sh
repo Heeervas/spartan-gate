@@ -200,13 +200,13 @@ validate_private_env() {
     case "$value" in
       */.custom_claw/hermes|*/.custom_claw/hermes/*)
         if test "$allow_existing_stack_paths" = "true"; then
-          warn "allowing old stack path because SPARTAN_ALLOW_EXISTING_STACK_PATHS=true: $key=$value"
+          warn "allowing configured old-stack path because SPARTAN_ALLOW_EXISTING_STACK_PATHS=true: $key"
         else
-          fail "private data path looks like an old stack path: $key=$value; set SPARTAN_ALLOW_EXISTING_STACK_PATHS=true only for an intentional cutover with the old stack stopped"
+          fail "configured private data path looks like an old stack path: $key; set SPARTAN_ALLOW_EXISTING_STACK_PATHS=true only for an intentional cutover with the old stack stopped"
         fi
         ;;
     esac
-    test -d "$value" || fail "private data path does not exist; create it before compose up: $key=$value"
+    test -d "$value" || fail "configured private data path does not exist: $key"
   done
 }
 
@@ -279,7 +279,7 @@ if test -d .git; then
   git check-ignore -q .github/prompts/example.md || fail ".github/prompts/ must stay ignored"
 fi
 
-if find . -name .git -not -path './.git' | grep . >/dev/null; then
+if find . \( -path './.git' -o -path './private' -o -path './runtime' -o -path './.agents' -o -path '*/node_modules' -o -path '*/dist' \) -prune -o -name .git -print | grep . >/dev/null; then
   fail "nested .git directory found"
 fi
 
@@ -525,6 +525,8 @@ check_compose_config prod -f infra/compose/compose.yml -f infra/compose/compose.
 
 if test -f private/compose.local.yml && test -f private/env/local.env; then
   need_file private/outbound-proxy/whitelist.private.txt
+  python3 scripts/private-permissions.py check --private-dir private --env-file private/env/local.env \
+    || fail "private infrastructure permissions are unsafe"
   validate_private_env private/env/local.env
   check_effective_runtime_config private-local -f infra/compose/compose.yml -f private/compose.local.yml --env-file private/env/local.env
 elif test -f .env; then

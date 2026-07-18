@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Added preflighted private-state permission checks and repair, restrictive
+  installer creation, fatal chmod handling, doctor enforcement, rollback
+  snapshots, and service-specific modes: 0600 files, 0700 private/data roots,
+  and Browserless 0770 group access without traversing credential-store
+  contents.
 - Closed Reader access to shared CGNAT/overlay and every other non-global
   destination at URL, DNS, redirect, and connection time while preserving its
   intentional direct-fetch exception for arbitrary public page text and

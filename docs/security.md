@@ -102,6 +102,18 @@ Camofox state directories contain Playwright storage state, cookies, and traces.
 Treat `SPARTAN_CAMOFOX_DATA_PATH` and `runtime/camofox/` like credential stores
 when Camofox is enabled.
 
+Private configuration files use mode 0600 and private configuration directories
+and single-user data roots use 0700. Browserless is the deliberate exception:
+its profile root uses 0770 with `BROWSERLESS_PROFILES_GID` so image UID 999 can
+access the mount without granting access to `other`. Permission checks inspect
+only explicit private config trees and the top of configured data roots; they
+must never traverse Browserless, Camofox, or Codex credential contents.
+
+`scripts/private-permissions.py check` performs the metadata-only audit used by
+doctor. Its `fix` action preflights every target before changing anything,
+rejects symlinks, can write a mode-0600 recovery snapshot, and rolls back prior
+metadata if a later repair fails.
+
 The public whitelist is only a generic baseline. Local/project/personal domains
 belong in `private/outbound-proxy/whitelist.private.txt`; do not publish your
 real browsing or integration inventory by adding it to `infra/outbound-proxy/whitelist.txt`.
