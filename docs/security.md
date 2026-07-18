@@ -17,9 +17,13 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   complete cache atomically.
 - DNS forwarding is whitelist based.
 - Tinyproxy denies non-whitelisted destinations.
-- Reader only allows GET, blocks private/internal targets, revalidates the
-  address used for each outbound connection, and is the narrow direct-egress
-  exception for public page text.
+- Reader only allows GET, permits globally routable destinations, revalidates
+  the address used for each outbound connection, and is the narrow direct-egress
+  exception for arbitrary public page text.
+- Reader intentionally bypasses the Tinyproxy/DNS domain whitelist. Granting an
+  agent Reader access therefore accepts public HTTP/DNS exfiltration through
+  destination hostnames, paths, and queries; the control prevents non-global
+  network access, not disclosure to a public server.
 - Reader labels fetched text as untrusted content; agents must extract facts from it before using it to decide on tool calls.
 - Caddy requires Basic Auth for browser-facing HTTP entry points and the public
   Compose binds edge ports to `127.0.0.1` only.

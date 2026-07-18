@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Closed Reader access to shared CGNAT/overlay and every other non-global
+  destination at URL, DNS, redirect, and connection time while preserving its
+  intentional direct-fetch exception for arbitrary public page text and
+  documenting that exception's public exfiltration tradeoff.
 
 - Made Camofox/noVNC and generated Hermes previews compatible with Safari by
   exchanging one successful Caddy Basic Auth for a one-hour HttpOnly session

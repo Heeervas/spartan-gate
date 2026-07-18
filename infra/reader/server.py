@@ -6,8 +6,9 @@ Only GET requests allowed – POST, PUT, DELETE are rejected (405).
 
 Security:
 - GET-only: all other HTTP methods return 405
-- SSRF protection: blocks private/internal IPs (RFC 1918, link-local, loopback)
-  before fetch and again for the address used by each connection
+- SSRF protection: permits only globally routable addresses, blocking every
+  special-use range before fetch and again for the address used by each
+  connection
 - Response size cap: 2 MB download, 100k chars output
 - Audit logging: every request logged with timestamp and query-redacted URL
 """
@@ -111,8 +112,14 @@ def _is_blocked_ip(value: str) -> bool:
     except ValueError:
         return False
 
+    # A public page reader must deny every special-use range, including shared
+    # carrier-grade NAT space such as 100.64.0.0/10. Positive global
+    # classification is safer than trying to maintain a deny-list of address
+    # attributes whose definitions differ across IP versions and Python
+    # releases.
     return (
-        ip.is_private
+        not ip.is_global
+        or ip.is_private
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_multicast
@@ -122,7 +129,7 @@ def _is_blocked_ip(value: str) -> bool:
 
 
 def is_blocked(url: str) -> bool:
-    """Check if URL points to internal/blocked networks."""
+    """Check whether a URL violates the public global-address boundary."""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         return True
@@ -142,7 +149,7 @@ def is_blocked(url: str) -> bool:
     if _is_blocked_ip(hostname):
         return True
 
-    # Resolve every address and fail closed for any private/internal result.
+    # Resolve every address and fail closed for any non-global result.
     try:
         infos = socket.getaddrinfo(hostname, parsed.port or 443)
     except socket.gaierror:
@@ -172,7 +179,7 @@ def create_checked_connection(address, timeout=None, source_address=None):
 
     for candidate_host, _candidate_port in candidates:
         if _is_blocked_ip(candidate_host):
-            raise BlockedDestination("Resolved address blocked: internal/private network")
+            raise BlockedDestination("Resolved address blocked: non-global network")
 
     last_error = None
     for candidate in candidates:
@@ -213,7 +220,7 @@ def fetch_url(url: str, redirects: int = 0) -> tuple[str, str]:
         raise BlockedDestination("Redirect blocked: too many redirects")
 
     if is_blocked(url):
-        raise BlockedDestination("Destination blocked: internal/private network")
+        raise BlockedDestination("Destination blocked: non-global or internal destination")
 
     parsed = urllib.parse.urlparse(url)
     hostname = parsed.hostname
@@ -244,7 +251,7 @@ def fetch_url(url: str, redirects: int = 0) -> tuple[str, str]:
             newurl = urllib.parse.urljoin(url, location)
             if is_blocked(newurl):
                 audit_log("BLOCKED-REDIRECT", newurl)
-                raise BlockedDestination("Redirect blocked: internal/private network")
+                raise BlockedDestination("Redirect blocked: non-global or internal destination")
             return fetch_url(newurl, redirects + 1)
 
         content_type = resp.getheader("Content-Type", "text/html")
@@ -288,8 +295,8 @@ class ReaderHandler(BaseHTTPRequestHandler):
                 return
 
             if is_blocked(url):
-                audit_log("BLOCKED-PRIVATE", url)
-                self._respond(403, "URL blocked: internal/private network")
+                audit_log("BLOCKED-DESTINATION", url)
+                self._respond(403, "URL blocked: non-global or internal destination")
                 return
 
             audit_log("FETCH", url)

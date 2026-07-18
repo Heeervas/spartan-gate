@@ -91,11 +91,51 @@ class ReaderServerTests(unittest.TestCase):
             "http://192.168.1.1/",
             "http://169.254.169.254/latest/meta-data/",
             "http://clawroute:18790/health",
+            "http://100.64.0.1/private",
             "http://metadata.google.internal/",
         ]
         for url in blocked:
             with self.subTest(url=url):
                 self.assertTrue(reader_server.is_blocked(url))
+
+    def test_representative_non_global_address_classes_are_blocked(self):
+        blocked_ips = [
+            "100.64.0.0",          # first shared carrier-grade NAT address
+            "100.127.255.255",     # last shared carrier-grade NAT address
+            "0.0.0.0",             # unspecified
+            "192.0.2.1",          # documentation range
+            "198.18.0.1",         # benchmark range
+            "169.254.1.1",        # IPv4 link-local
+            "224.0.0.1",          # IPv4 multicast
+            "fc00::1",            # IPv6 unique-local
+            "ff02::1",            # IPv6 multicast
+            "fe80::1",            # IPv6 link-local
+            "2001:db8::1",        # IPv6 documentation range
+        ]
+
+        for value in blocked_ips:
+            with self.subTest(value=value):
+                self.assertTrue(reader_server._is_blocked_ip(value))
+
+    def test_globally_routable_addresses_remain_allowed(self):
+        for value in ("93.184.216.34", "100.128.0.1", "2606:4700:4700::1111"):
+            with self.subTest(value=value):
+                self.assertFalse(reader_server._is_blocked_ip(value))
+
+    def test_arbitrary_unlisted_public_domain_remains_allowed(self):
+        reader_server.socket.getaddrinfo = lambda *_args, **_kwargs: [
+            (reader_server.socket.AF_INET, reader_server.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+        ]
+
+        self.assertFalse(reader_server.is_blocked("https://arbitrary-unlisted.example/page"))
+
+    def test_mixed_global_and_non_global_dns_answers_fail_closed(self):
+        reader_server.socket.getaddrinfo = lambda *_args, **_kwargs: [
+            (reader_server.socket.AF_INET, reader_server.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80)),
+            (reader_server.socket.AF_INET, reader_server.socket.SOCK_STREAM, 6, "", ("100.64.0.1", 80)),
+        ]
+
+        self.assertTrue(reader_server.is_blocked("http://mixed.example/page"))
 
     def test_dns_resolution_failure_is_blocked(self):
         def raise_gaierror(*_args, **_kwargs):
@@ -116,7 +156,7 @@ class ReaderServerTests(unittest.TestCase):
 
             def getheader(self, name, default=None):
                 if name == "Location":
-                    return "http://127.0.0.1:3000/private"
+                    return "http://100.64.0.1/private"
                 return default
 
         class FakeSocket:
@@ -138,6 +178,15 @@ class ReaderServerTests(unittest.TestCase):
     def test_fetch_blocks_private_resolution_used_for_actual_connection(self):
         reader_server.socket.getaddrinfo = lambda *_args, **_kwargs: [
             (reader_server.socket.AF_INET, reader_server.socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80)),
+        ]
+
+        with self.assertRaises(reader_server.BlockedDestination):
+            reader_server.fetch_url("http://public.example/page")
+
+    def test_actual_connection_rejects_cgnat_after_preflight(self):
+        reader_server.is_blocked = lambda _url: False
+        reader_server.socket.getaddrinfo = lambda *_args, **_kwargs: [
+            (reader_server.socket.AF_INET, reader_server.socket.SOCK_STREAM, 6, "", ("100.64.0.1", 80)),
         ]
 
         with self.assertRaises(reader_server.BlockedDestination):

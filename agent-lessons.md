@@ -8,6 +8,9 @@ Last updated: 2026-06-06
   anchor the complete hostname instead of writing raw domains.
 - Expiring allowlist metadata must fail closed. Invalid or overflowing
   timestamps must never become permanent access.
+- Reader address checks require positive global classification and explicit
+  multicast denial; Python's `ipaddress.is_global` can be true for multicast
+  addresses.
 
 ## Runtime
 

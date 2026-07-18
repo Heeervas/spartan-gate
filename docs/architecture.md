@@ -8,7 +8,8 @@ Spartan Gate separates agent execution from network reachability.
 - **Spartan Route** exposes an OpenAI-compatible endpoint to Hermes and selects upstream models/providers in the full stack.
 - **Tinyproxy** is the only general outbound HTTP proxy path for controlled services.
 - **DNS relay** resolves only whitelisted domains for internal workloads.
-- **Reader** fetches public pages through a GET-only API, blocks internal/private targets, and returns bounded text content.
+- **Reader** fetches arbitrary public pages through a GET-only API, blocks every
+  non-global target, and returns bounded text content.
 - **Browserless** provides Chromium/CDP sessions for Hermes without direct container egress.
 - **Camofox** provides an optional Camoufox/Firefox-based browser backend for Hermes browser tools.
 - **SearXNG** provides internal search.
@@ -21,8 +22,9 @@ Browserless, Camofox, DNS, reader, proxy, SearXNG, and Caddy can communicate
 there.
 
 `spartan_external` is attached only to services that need egress or edge exposure:
-proxy, DNS, SearXNG, reader, and Caddy. Reader is a narrow direct-GET egress
-exception for public page text; it is not published to the host.
+proxy, DNS, SearXNG, reader, and Caddy. Reader is an intentional direct-GET
+exception to the Tinyproxy/DNS whitelist for arbitrary public page text; it is
+not published to the host.
 
 Hermes does not join the external network. It calls Spartan Route at
 `http://spartan-route:18790/v1`, uses Browserless for CDP-backed browsing, can opt
