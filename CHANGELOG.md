@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Pinned GogCLI and Deno release artifacts to architecture-specific official
+  SHA-256 values and verified each download before extraction; replaced
+  Camofox's moving uBlock Origin addon URL with an exact AMO-signed release,
+  digest verification, and manifest-version validation in camoufox-js's
+  expected cache.
 - Aligned memory/PID ceilings and the proven Hermes privilege contract across
   every layer and addon; made Spartan Route, legacy ClawRoute, and Caddy
   explicit non-root read-only services with narrowly writable mounts, added

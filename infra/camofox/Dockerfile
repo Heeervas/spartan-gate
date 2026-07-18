@@ -28,11 +28,23 @@ RUN set -eux; \
     fc-list | grep -i Onest; \
     rm -rf /tmp/onest /tmp/onest-fonts.zip
 
-# Camofox/camoufox-js downloads its default uBlock Origin addon the first time
-# a browser launches. Spartan Gate keeps the runtime service on the internal
-# network, so prefetch the addon at build time instead of allowing direct
-# runtime egress.
-RUN node --input-type=module -e "import { maybeDownloadAddons } from 'camoufox-js/dist/addons.js'; await maybeDownloadAddons({ UBO: 'https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi' });"
+# Prefetch the exact AMO-signed uBlock Origin release into camoufox-js's cache.
+# The runtime service has no direct egress, and the AMO API publishes this
+# immutable file URL and SHA-256 for version 1.72.2.
+RUN set -eux; \
+    UBLOCK_ORIGIN_VERSION="1.72.2"; \
+    UBLOCK_ORIGIN_SHA256="40c315b0da7871868155ecfae7a50a58dfa0920aebd865e008214986f1b7c578"; \
+    UBLOCK_ORIGIN_XPI="/tmp/ublock_origin-${UBLOCK_ORIGIN_VERSION}.xpi"; \
+    UBLOCK_ORIGIN_DIR="/root/.cache/camoufox/addons/UBO"; \
+    curl -fsSL "https://addons.mozilla.org/firefox/downloads/file/4888680/ublock_origin-${UBLOCK_ORIGIN_VERSION}.xpi" \
+        -o "${UBLOCK_ORIGIN_XPI}"; \
+    echo "${UBLOCK_ORIGIN_SHA256}  ${UBLOCK_ORIGIN_XPI}" | sha256sum -c -; \
+    rm -rf "${UBLOCK_ORIGIN_DIR}"; \
+    mkdir -p "${UBLOCK_ORIGIN_DIR}"; \
+    unzip -q "${UBLOCK_ORIGIN_XPI}" -d "${UBLOCK_ORIGIN_DIR}"; \
+    test -f /root/.cache/camoufox/addons/UBO/manifest.json; \
+    node -e "const m=require('/root/.cache/camoufox/addons/UBO/manifest.json'); if (m.version !== '${UBLOCK_ORIGIN_VERSION}') throw new Error('unexpected uBlock Origin version');"; \
+    rm -f "${UBLOCK_ORIGIN_XPI}"
 
 ENV CAMOFOX_CRASH_REPORT_ENABLED=false
 ENV CAMOFOX_GEOIP=false

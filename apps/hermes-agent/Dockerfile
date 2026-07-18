@@ -140,8 +140,17 @@ COPY runtime-docs/ /opt/hermes/runtime-docs/
 RUN set -eux; \
     GOGCLI_VERSION="0.30.0"; \
     ARCH="$(dpkg --print-architecture)"; \
+    case "${ARCH}" in \
+        amd64) GOGCLI_SHA256="f9f4f407bb762959085b42007c4da538b3dafc5c76b53f3a30dc7ff7c6237fc1" ;; \
+        arm64) GOGCLI_SHA256="3ba0ce1c268bc95cf84c60c622e1e4cbf3bc257ecd6e447bd1cfcdd3aa09430a" ;; \
+        *) echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;; \
+    esac; \
+    GOGCLI_ARCHIVE="/tmp/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz"; \
     curl -fsSL "https://github.com/openclaw/gogcli/releases/download/v${GOGCLI_VERSION}/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz" \
-        | tar xz -C /usr/local/bin gog; \
+        -o "${GOGCLI_ARCHIVE}"; \
+    echo "${GOGCLI_SHA256}  ${GOGCLI_ARCHIVE}" | sha256sum -c -; \
+    tar xzf "${GOGCLI_ARCHIVE}" -C /usr/local/bin gog; \
+    rm -f "${GOGCLI_ARCHIVE}"; \
     chmod +x /usr/local/bin/gog
 
 # Install Deno (JS runtime required by yt-dlp EJS challenge solver)
@@ -149,14 +158,16 @@ RUN set -eux; \
     DENO_VERSION="2.2.3"; \
     ARCH="$(dpkg --print-architecture)"; \
     case "${ARCH}" in \
-        amd64) DENO_ARCH="x86_64-unknown-linux-gnu" ;; \
-        arm64) DENO_ARCH="aarch64-unknown-linux-gnu" ;; \
-        *) echo "Unsupported arch: ${ARCH}" && exit 1 ;; \
+        amd64) DENO_ARCH="x86_64-unknown-linux-gnu"; DENO_SHA256="9b2928c032fd9fa058245b0105ca6382007d8f047ae8c1f4b40ea22106f591ed" ;; \
+        arm64) DENO_ARCH="aarch64-unknown-linux-gnu"; DENO_SHA256="a63a5a70d44d7a20d1f6f2894dcd14204f6bb350635d038f7c31989730b43b3a" ;; \
+        *) echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;; \
     esac; \
+    DENO_ARCHIVE="/tmp/deno-${DENO_ARCH}.zip"; \
     curl -fsSL "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${DENO_ARCH}.zip" \
-        -o /tmp/deno.zip; \
-    unzip /tmp/deno.zip -d /usr/local/bin; \
-    rm /tmp/deno.zip; \
+        -o "${DENO_ARCHIVE}"; \
+    echo "${DENO_SHA256}  ${DENO_ARCHIVE}" | sha256sum -c -; \
+    unzip "${DENO_ARCHIVE}" -d /usr/local/bin; \
+    rm -f "${DENO_ARCHIVE}"; \
     chmod +x /usr/local/bin/deno
 
 # Spartan Gate keeps installed Hermes code root-owned, while local deployments
