@@ -3,8 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import errno
+import fcntl
 import json
+import math
 import os
+import secrets
+import stat
 import struct
 import sys
 import time
@@ -12,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from .telemetry import TelemetryStore
 from .util import (
@@ -47,6 +52,27 @@ CODEX_RATE_LIMIT_UNAVAILABLE_CODE = "codex_429"
 DEFAULT_CODEX_IMAGE_HOST_MODEL = "gpt-5.5"
 DEFAULT_RECOVERY_WAIT_MS = 180_000
 DEFAULT_RECOVERY_POLL_MS = 1_000
+CODEX_AUTH_STORE_ROOT = Path("/app/data/codex-auth")
+CODEX_AUTH_STORE_VERSION = 1
+CODEX_AUTH_LOCK_TIMEOUT_SECONDS = 15.0
+CODEX_AUTH_MAX_BYTES = 1_048_576
+
+
+class CodexAuthStoreError(RuntimeError):
+    def __init__(self, code: str, *, retryable: bool = True, retry_after: float | None = None):
+        super().__init__(code)
+        self.code = code
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
+@dataclass(frozen=True)
+class CodexAuthCandidate:
+    tokens: dict[str, Any]
+    fingerprint: str
+    source: str
+    expires_at: float | None
+    last_refresh_at: str | None = None
 
 
 @dataclass
@@ -70,6 +96,12 @@ class CodexSlot:
     auth_fingerprint: str | None = None
     auth_unavailable_reason: str | None = None
     auth_retry_at: float = 0
+    auth_state_source: str | None = None
+    auth_expires_at: float | None = None
+    auth_last_refresh_at: str | None = None
+    auth_persistence_healthy: bool = True
+    auth_error_code: str | None = None
+    failed_auth_fingerprint: str | None = None
     rate_limited_until: float = 0
     transient_until: float = 0
     in_flight: int = 0
@@ -479,7 +511,13 @@ def image_b64_dimensions(value: str) -> tuple[int, int] | None:
 
 
 class CodexRouter:
-    def __init__(self, session: ClientSession, telemetry: TelemetryStore):
+    def __init__(
+        self,
+        session: ClientSession,
+        telemetry: TelemetryStore,
+        *,
+        auth_store_root: Path | None = None,
+    ):
         self.session = session
         self.telemetry = telemetry
         self.slots: list[CodexSlot] = []
@@ -489,12 +527,20 @@ class CodexRouter:
         self._availability_event_loop: asyncio.AbstractEventLoop | None = None
         self._usage_cache: dict[str, Any] | None = None
         self._usage_refresh_task: asyncio.Task[dict[str, Any]] | None = None
+        # Constructor-only injection keeps production fixed at /app/data/codex-auth.
+        self.auth_store_root = Path(auth_store_root) if auth_store_root is not None else CODEX_AUTH_STORE_ROOT
         self._init_slots()
 
     def _init_slots(self) -> None:
         token = (os.environ.get("OPENAI_CODEX_TOKEN") or "").strip()
         if token:
-            self.slots = [CodexSlot(0, token=token, auth=CodexAuth(access_token=token))]
+            self.slots = [CodexSlot(
+                0,
+                token=token,
+                auth=CodexAuth(access_token=token),
+                auth_state_source="static",
+                auth_expires_at=self._token_expiry(token),
+            )]
             return
         self.slots = [CodexSlot(index, path=path) for index, path in enumerate(resolve_auth_paths())]
 
@@ -551,6 +597,11 @@ class CodexRouter:
                 "authAvailable": bool(auth and not is_jwt_expired(auth.access_token)),
                 "authUnavailableReason": slot.auth_unavailable_reason,
                 "authRetryAt": slot.auth_retry_at if slot.auth_retry_at > now else None,
+                "authStateSource": slot.auth_state_source,
+                "authExpiresAt": slot.auth_expires_at,
+                "authLastRefreshAt": slot.auth_last_refresh_at,
+                "authPersistenceHealthy": slot.auth_persistence_healthy,
+                "authErrorCode": slot.auth_error_code,
                 "inFlight": slot.in_flight,
             })
             if include_paths:
@@ -646,6 +697,240 @@ class CodexRouter:
     def _iso_from_epoch(self, value: float) -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(value))
 
+    def _source_identity(self, path: str) -> str:
+        return sha(os.path.abspath(os.path.normpath(path)), 64)
+
+    def _token_expiry(self, access_token: Any) -> float | None:
+        claims = jwt_claims(access_token) if isinstance(access_token, str) else None
+        expiry = claims.get("exp") if claims else None
+        if isinstance(expiry, bool) or not isinstance(expiry, (int, float)):
+            return None
+        numeric = float(expiry)
+        return numeric if math.isfinite(numeric) else None
+
+    def _candidate(
+        self,
+        tokens: Any,
+        fingerprint: str,
+        source: str,
+        last_refresh_at: str | None = None,
+    ) -> CodexAuthCandidate | None:
+        if not isinstance(tokens, dict):
+            return None
+        access = tokens.get("access_token")
+        if not isinstance(access, str) or not access:
+            return None
+        return CodexAuthCandidate(
+            copy.deepcopy(tokens), fingerprint, source, self._token_expiry(access), last_refresh_at
+        )
+
+    def _open_owned_directory(self, path: Path, *, create: bool = False) -> int:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            parent_fd = os.open(path.parent, flags)
+        except OSError as exc:
+            raise CodexAuthStoreError("auth_store_parent_unavailable") from exc
+        directory_fd: int | None = None
+        try:
+            parent_stat = os.fstat(parent_fd)
+            if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.geteuid():
+                raise CodexAuthStoreError("auth_store_parent_unsafe")
+            os.fsync(parent_fd)
+            if create:
+                try:
+                    os.mkdir(path.name, 0o700, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                except FileExistsError:
+                    pass
+            directory_fd = os.open(path.name, flags, dir_fd=parent_fd)
+            metadata = os.fstat(directory_fd)
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                raise CodexAuthStoreError("auth_store_unsafe")
+            if stat.S_IMODE(metadata.st_mode) != 0o700:
+                os.fchmod(directory_fd, 0o700)
+            return directory_fd
+        except CodexAuthStoreError:
+            if directory_fd is not None:
+                os.close(directory_fd)
+            raise
+        except OSError as exc:
+            if directory_fd is not None:
+                os.close(directory_fd)
+            raise CodexAuthStoreError("auth_store_unavailable") from exc
+        finally:
+            os.close(parent_fd)
+
+    def _read_managed_candidate(self, path: str) -> CodexAuthCandidate | None:
+        store_fd = self._open_owned_directory(
+            getattr(self, "auth_store_root", CODEX_AUTH_STORE_ROOT), create=True
+        )
+        identity = self._source_identity(path)
+        try:
+            # This also re-establishes the durability gate after a prior replace/fsync failure.
+            os.fsync(store_fd)
+            try:
+                file_fd = os.open(
+                    f"{identity}.json",
+                    os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=store_fd,
+                )
+            except FileNotFoundError:
+                return None
+            try:
+                metadata = os.fstat(file_fd)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                    raise CodexAuthStoreError("auth_state_unsafe")
+                if stat.S_IMODE(metadata.st_mode) != 0o600:
+                    os.fchmod(file_fd, 0o600)
+                chunks: list[bytes] = []
+                size = 0
+                while True:
+                    chunk = os.read(file_fd, min(65_536, CODEX_AUTH_MAX_BYTES + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > CODEX_AUTH_MAX_BYTES:
+                        raise CodexAuthStoreError("auth_state_too_large")
+            finally:
+                os.close(file_fd)
+            try:
+                document = json.loads(b"".join(chunks))
+            except Exception as exc:
+                raise CodexAuthStoreError("auth_state_invalid") from exc
+            if not isinstance(document, dict) or document.get("version") != CODEX_AUTH_STORE_VERSION:
+                raise CodexAuthStoreError("auth_state_schema_invalid")
+            if document.get("sourcePathHash") != identity:
+                raise CodexAuthStoreError("auth_state_binding_mismatch")
+            tokens = document.get("tokens")
+            return self._candidate(
+                tokens,
+                sha(stable_json(tokens), 64),
+                "managed",
+                document.get("lastRefreshAt") if isinstance(document.get("lastRefreshAt"), str) else None,
+            )
+        except CodexAuthStoreError:
+            raise
+        except OSError as exc:
+            raise CodexAuthStoreError("auth_state_unavailable") from exc
+        finally:
+            os.close(store_fd)
+
+    def _load_candidate(
+        self,
+        path: str,
+        store_errors: list[CodexAuthStoreError] | None = None,
+    ) -> CodexAuthCandidate | None:
+        candidates: list[CodexAuthCandidate] = []
+        snapshot = read_auth_file(path)
+        if snapshot:
+            data, fingerprint = snapshot
+            tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else data
+            candidate = self._candidate(tokens, fingerprint, "bootstrap")
+            if candidate:
+                candidates.append(candidate)
+        try:
+            managed = self._read_managed_candidate(path)
+        except CodexAuthStoreError as exc:
+            bootstrap_valid = any(
+                item.source == "bootstrap"
+                and not is_jwt_expired(str(item.tokens.get("access_token") or ""))
+                for item in candidates
+            )
+            if store_errors is None or not bootstrap_valid:
+                raise
+            store_errors.append(exc)
+            managed = None
+        if managed:
+            candidates.append(managed)
+        if not candidates:
+            return None
+        # Furthest known expiry wins; immutable bootstrap wins an exact tie.
+        return max(
+            candidates,
+            key=lambda item: (
+                item.expires_at is not None,
+                item.expires_at or float("-inf"),
+                item.source == "bootstrap",
+            ),
+        )
+
+    def _public_auth_error_code(self, error: CodexAuthStoreError) -> str:
+        code = error.code
+        if code == "auth_lock_timeout":
+            return "refresh_lock_timeout"
+        if code.startswith(("auth_store", "auth_state", "auth_lock_")):
+            return "auth_store_unavailable"
+        if code == "auth_persist_failed":
+            return "refresh_persist_failed"
+        if code == "auth_refresh_rate_limited":
+            return "refresh_rate_limited"
+        if code.startswith("auth_refresh_http_unexpected_"):
+            return "refresh_invalid_response"
+        if code.startswith("auth_refresh_http_"):
+            try:
+                status_code = int(code.rsplit("_", 1)[-1])
+            except ValueError:
+                return "refresh_temporarily_unavailable"
+            return "reauth_required" if 400 <= status_code < 500 else "refresh_temporarily_unavailable"
+        if code in {
+            "auth_refresh_invalid_json",
+            "auth_refresh_invalid_payload",
+            "auth_refresh_access_missing",
+            "auth_refresh_account_missing",
+        }:
+            return "refresh_invalid_response"
+        if code in {"auth_refresh_transport"}:
+            return "refresh_temporarily_unavailable"
+        if code in {"auth_candidate_missing", "auth_refresh_token_missing"}:
+            return "reauth_required"
+        return "refresh_internal_error"
+
+    def _set_auth_error(
+        self,
+        slot: CodexSlot,
+        error: CodexAuthStoreError,
+        fingerprint: str | None = None,
+    ) -> None:
+        public_code = self._public_auth_error_code(error)
+        slot.auth = None
+        slot.auth_error_code = public_code
+        slot.auth_unavailable_reason = public_code
+        slot.auth_persistence_healthy = public_code not in {
+            "auth_store_unavailable",
+            "refresh_persist_failed",
+        }
+        if error.retryable:
+            slot.auth_retry_at = error.retry_after or (time.time() + 300)
+        else:
+            slot.failed_auth_fingerprint = fingerprint
+            slot.auth_retry_at = 0
+
+    def _adopt_candidate(self, slot: CodexSlot, candidate: CodexAuthCandidate) -> CodexAuth | None:
+        tokens = candidate.tokens
+        access = tokens.get("access_token")
+        account_id = derive_account_id(tokens)
+        if not isinstance(access, str) or not account_id:
+            return None
+        refresh = tokens.get("refresh_token")
+        auth = CodexAuth(
+            access,
+            refresh if isinstance(refresh, str) else None,
+            account_id,
+            slot.path,
+        )
+        slot.auth = auth
+        slot.auth_fingerprint = candidate.fingerprint
+        slot.auth_state_source = candidate.source
+        slot.auth_expires_at = candidate.expires_at
+        slot.auth_last_refresh_at = candidate.last_refresh_at
+        slot.auth_persistence_healthy = True
+        slot.auth_error_code = None
+        slot.auth_unavailable_reason = None
+        slot.auth_retry_at = 0
+        slot.failed_auth_fingerprint = None
+        return auth
+
     async def load_auth(self, slot: CodexSlot) -> CodexAuth | None:
         if slot.token:
             return slot.auth
@@ -656,88 +941,259 @@ class CodexRouter:
         if not slot.path:
             slot.auth_unavailable_reason = "missing"
             return None
-        snapshot = read_auth_file(slot.path)
-        if not snapshot:
+        store_errors: list[CodexAuthStoreError] = []
+        try:
+            candidate = self._load_candidate(slot.path, store_errors)
+        except CodexAuthStoreError as exc:
+            self._set_auth_error(slot, exc)
+            return None
+        if not candidate:
             slot.auth = None
             slot.auth_unavailable_reason = "missing"
             return None
-        data, fingerprint = snapshot
-        tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else data
-        access = tokens.get("access_token") if isinstance(tokens, dict) else None
-        refresh = tokens.get("refresh_token") if isinstance(tokens, dict) else None
-        account_id = derive_account_id(tokens if isinstance(tokens, dict) else {})
-        if not isinstance(access, str) or not access:
-            slot.auth = None
-            slot.auth_unavailable_reason = "missing"
+        if slot.failed_auth_fingerprint == candidate.fingerprint:
+            slot.auth_unavailable_reason = slot.auth_error_code or "auth_refresh_terminal"
             return None
-        if is_jwt_expired(access):
+        tokens = candidate.tokens
+        access = tokens.get("access_token")
+        refresh = tokens.get("refresh_token")
+        account_id = derive_account_id(tokens)
+        if is_jwt_expired(str(access or "")):
             if isinstance(refresh, str) and refresh:
-                refreshed = await self._refresh(slot, refresh, account_id)
-                if refreshed:
-                    return refreshed
-                slot.auth_retry_at = time.time() + 300
-                slot.auth_unavailable_reason = "expired_refresh_failed"
-                return None
+                return await self._refresh(slot, candidate)
             slot.auth_unavailable_reason = "expired"
             return None
         if not account_id:
             slot.auth_unavailable_reason = "unknown_account"
             return None
-        slot.auth = CodexAuth(access, refresh if isinstance(refresh, str) else None, account_id, slot.path)
-        slot.auth_fingerprint = fingerprint
-        slot.auth_unavailable_reason = None
-        return slot.auth
+        auth = self._adopt_candidate(slot, candidate)
+        if auth and store_errors:
+            slot.auth_persistence_healthy = False
+            slot.auth_error_code = "auth_store_unavailable"
+        return auth
 
-    async def _refresh(self, slot: CodexSlot, refresh_token: str, fallback_account_id: str | None = None) -> CodexAuth | None:
+    async def _acquire_process_lock(self, path: str) -> int:
+        store_fd = self._open_owned_directory(
+            getattr(self, "auth_store_root", CODEX_AUTH_STORE_ROOT), create=True
+        )
+        identity = self._source_identity(path)
+        lock_fd: int | None = None
+        try:
+            lock_fd = os.open(
+                f"{identity}.lock",
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=store_fd,
+            )
+            metadata = os.fstat(lock_fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                raise CodexAuthStoreError("auth_lock_unsafe")
+            if stat.S_IMODE(metadata.st_mode) != 0o600:
+                os.fchmod(lock_fd, 0o600)
+        except CodexAuthStoreError:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            raise
+        except OSError as exc:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            raise CodexAuthStoreError("auth_lock_unavailable") from exc
+        finally:
+            os.close(store_fd)
+        assert lock_fd is not None
+        deadline = time.monotonic() + CODEX_AUTH_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return lock_fd
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(lock_fd)
+                    raise CodexAuthStoreError(
+                        "auth_lock_timeout", retry_after=time.time() + 5
+                    )
+                await asyncio.sleep(0.05)
+            except OSError as exc:
+                os.close(lock_fd)
+                raise CodexAuthStoreError("auth_lock_unavailable") from exc
+
+    def _release_process_lock(self, lock_fd: int) -> None:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
+    async def _refresh(self, slot: CodexSlot, original: CodexAuthCandidate) -> CodexAuth | None:
         assert slot.path
         lock = self.refresh_locks.setdefault(slot.path, asyncio.Lock())
         async with lock:
+            lock_fd: int | None = None
+            attempted_fingerprint = original.fingerprint
             try:
+                lock_fd = await self._acquire_process_lock(slot.path)
+                latest = self._load_candidate(slot.path)
+                if latest is None:
+                    raise CodexAuthStoreError("auth_candidate_missing", retryable=False)
+                attempted_fingerprint = latest.fingerprint
+                if latest.fingerprint != original.fingerprint and not is_jwt_expired(
+                    str(latest.tokens.get("access_token") or "")
+                ):
+                    return self._adopt_candidate(slot, latest)
+                refresh_token = latest.tokens.get("refresh_token")
+                if not isinstance(refresh_token, str) or not refresh_token:
+                    raise CodexAuthStoreError("auth_refresh_token_missing", retryable=False)
+                fallback_account_id = derive_account_id(latest.tokens)
                 async with self.session.post(
                     OAUTH_TOKEN_URL,
-                    json={"client_id": OAUTH_CLIENT_ID, "grant_type": "refresh_token", "refresh_token": refresh_token},
+                    data={
+                        "client_id": OAUTH_CLIENT_ID,
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    },
+                    allow_redirects=False,
                     timeout=ClientTimeout(total=30),
                 ) as response:
                     if response.status != 200:
-                        return None
-                    payload = await response.json()
-            except Exception:
+                        headers = getattr(response, "headers", {})
+                        raw_retry_after = headers.get("Retry-After") if hasattr(headers, "get") else None
+                        try:
+                            retry_delay = max(1.0, min(float(raw_retry_after), 3600.0))
+                            retry_after = time.time() + retry_delay
+                        except (TypeError, ValueError):
+                            retry_after = None
+                        status_code = int(response.status)
+                        if status_code == 429:
+                            raise CodexAuthStoreError(
+                                "auth_refresh_rate_limited",
+                                retry_after=retry_after or time.time() + 300,
+                            )
+                        if status_code in {408, 409, 425} or 500 <= status_code <= 599:
+                            raise CodexAuthStoreError(
+                                f"auth_refresh_http_{status_code}", retry_after=retry_after
+                            )
+                        if 400 <= status_code < 500:
+                            raise CodexAuthStoreError(
+                                f"auth_refresh_http_{status_code}", retryable=False
+                            )
+                        raise CodexAuthStoreError(
+                            f"auth_refresh_http_unexpected_{status_code}"
+                        )
+                    try:
+                        payload = await response.json()
+                    except Exception as exc:
+                        raise CodexAuthStoreError("auth_refresh_invalid_json") from exc
+                if not isinstance(payload, dict):
+                    raise CodexAuthStoreError("auth_refresh_invalid_payload")
+                access = payload.get("access_token")
+                if not isinstance(access, str) or not access:
+                    raise CodexAuthStoreError("auth_refresh_access_missing")
+                next_refresh = (
+                    payload.get("refresh_token")
+                    if isinstance(payload.get("refresh_token"), str)
+                    else refresh_token
+                )
+                account_id = derive_account_id(
+                    {
+                        "access_token": access,
+                        "refresh_token": next_refresh,
+                        "id_token": payload.get("id_token"),
+                    }
+                ) or fallback_account_id
+                if not account_id:
+                    raise CodexAuthStoreError("auth_refresh_account_missing")
+                tokens: dict[str, Any] = {
+                    "access_token": access,
+                    "refresh_token": next_refresh,
+                    "account_id": account_id,
+                }
+                if isinstance(payload.get("id_token"), str):
+                    tokens["id_token"] = payload["id_token"]
+                persisted = self._persist_refresh(slot.path, tokens)
+                auth = self._adopt_candidate(slot, persisted)
+                self._notify_availability_changed()
+                return auth
+            except CodexAuthStoreError as exc:
+                self._set_auth_error(slot, exc, attempted_fingerprint)
                 return None
-            access = payload.get("access_token")
-            if not isinstance(access, str) or not access:
+            except (asyncio.TimeoutError, ClientError):
+                self._set_auth_error(
+                    slot, CodexAuthStoreError("auth_refresh_transport"), attempted_fingerprint
+                )
                 return None
-            next_refresh = payload.get("refresh_token") if isinstance(payload.get("refresh_token"), str) else refresh_token
-            account_id = derive_account_id({"access_token": access, "refresh_token": next_refresh, "id_token": payload.get("id_token")}) or fallback_account_id
-            if not account_id:
+            except Exception as exc:
+                print(f"[spartan-route] Codex auth refresh failed internally ({type(exc).__name__})", file=sys.stderr)
+                self._set_auth_error(
+                    slot, CodexAuthStoreError("auth_refresh_internal"), attempted_fingerprint
+                )
                 return None
-            auth = CodexAuth(access, next_refresh, account_id, slot.path)
-            slot.auth = auth
-            slot.auth_unavailable_reason = None
-            slot.auth_retry_at = 0
-            self._persist_refresh(slot.path, access, next_refresh, payload.get("id_token"))
-            self._notify_availability_changed()
-            return auth
+            finally:
+                if lock_fd is not None:
+                    self._release_process_lock(lock_fd)
 
-    def _persist_refresh(self, path: str, access: str, refresh: str, id_token: Any) -> None:
-        snapshot = read_auth_file(path)
-        if not snapshot:
-            return
-        data, _fingerprint = snapshot
-        tokens = data.setdefault("tokens", {})
-        if isinstance(tokens, dict):
-            tokens["access_token"] = access
-            tokens["refresh_token"] = refresh
-            if isinstance(id_token, str):
-                tokens["id_token"] = id_token
-        tmp = f"{path}.tmp"
+    def _persist_refresh(self, path: str, tokens: dict[str, Any]) -> CodexAuthCandidate:
+        store_fd = self._open_owned_directory(
+            getattr(self, "auth_store_root", CODEX_AUTH_STORE_ROOT), create=True
+        )
+        identity = self._source_identity(path)
+        filename = f"{identity}.json"
+        temporary = f".{identity}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        document = {
+            "version": CODEX_AUTH_STORE_VERSION,
+            "sourcePathHash": identity,
+            "lastRefreshAt": now_iso(),
+            "tokens": tokens,
+        }
+        encoded = (
+            json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        file_fd: int | None = None
         try:
-            Path(tmp).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-            os.replace(tmp, path)
-        except Exception:
+            file_fd = os.open(
+                temporary,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=store_fd,
+            )
+            os.fchmod(file_fd, 0o600)
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(file_fd, encoded[offset:])
+                if written <= 0:
+                    raise OSError(errno.EIO, "short auth state write")
+                offset += written
+            os.fsync(file_fd)
+            os.close(file_fd)
+            file_fd = None
+            os.replace(
+                temporary,
+                filename,
+                src_dir_fd=store_fd,
+                dst_dir_fd=store_fd,
+            )
+            os.fsync(store_fd)
+        except Exception as exc:
             try:
-                Path(tmp).unlink(missing_ok=True)
+                os.unlink(temporary, dir_fd=store_fd)
+            except FileNotFoundError:
+                pass
             except Exception:
                 pass
+            raise CodexAuthStoreError("auth_persist_failed") from exc
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            os.close(store_fd)
+        return CodexAuthCandidate(
+            tokens,
+            sha(stable_json(tokens), 64),
+            "managed",
+            self._token_expiry(tokens.get("access_token")),
+            document["lastRefreshAt"],
+        )
 
     def _lease_settings(self) -> tuple[str, float, float, float, int]:
         mode = (os.environ.get("CODEX_CACHE_LEASE_MODE") or "keyed").lower()

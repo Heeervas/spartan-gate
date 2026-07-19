@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import multiprocessing
 import os
+import stat
+import tempfile
 import struct
 import sys
 import time
@@ -15,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from spartan_route.codex import (
     CodexAuth,
+    CodexAuthStoreError,
     CodexCallResult,
     CodexEventState,
     CodexRouter,
@@ -117,6 +122,98 @@ class FakeJsonContextResponse:
 
     async def json(self):
         return self.payload
+
+
+class OAuthSession:
+    def __init__(self, status: int = 200, payload: dict[str, Any] | None = None, headers: dict[str, str] | None = None, delay: float = 0):
+        self.status = status
+        self.payload = payload or {}
+        self.headers = headers or {}
+        self.delay = delay
+        self.calls = 0
+        self.data: dict[str, str] | None = None
+        self.kwargs: dict[str, Any] = {}
+
+    def post(self, _url: str, **kwargs):
+        owner = self
+        owner.calls += 1
+        owner.data = kwargs.get("data")
+        owner.kwargs = kwargs
+
+        class Response:
+            status = owner.status
+            headers = owner.headers
+
+            async def __aenter__(self):
+                if owner.delay:
+                    await asyncio.sleep(owner.delay)
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb):
+                return None
+
+            async def json(self):
+                return owner.payload
+
+        return Response()
+
+
+class NoCallOAuthSession:
+    def post(self, *_args, **_kwargs):
+        raise AssertionError("OAuth refresh should not be called")
+
+
+class RaisingOAuthSession:
+    def __init__(self, error: BaseException):
+        self.error = error
+        self.calls = 0
+
+    def post(self, *_args, **_kwargs):
+        self.calls += 1
+        raise self.error
+
+
+class SharedOAuthSession:
+    def __init__(self, counter: Any, access_token: str):
+        self.counter = counter
+        self.access_token = access_token
+
+    def post(self, _url: str, **_kwargs):
+        owner = self
+        with owner.counter.get_lock():
+            owner.counter.value += 1
+
+        class Response:
+            status = 200
+            headers: dict[str, str] = {}
+
+            async def __aenter__(self):
+                await asyncio.sleep(0.1)
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb):
+                return None
+
+            async def json(self):
+                return {"access_token": owner.access_token, "refresh_token": "refresh-rotated"}
+
+        return Response()
+
+
+def run_refresh_process(source: str, store: str, access: str, counter: Any, start: Any, results: Any) -> None:
+    router = CodexRouter.__new__(CodexRouter)
+    router.session = SharedOAuthSession(counter, access)
+    router.telemetry = None
+    router.slots = []
+    router.leases = {}
+    router.refresh_locks = {}
+    router.auth_store_root = Path(store)
+    router._availability_event = None
+    router._availability_event_loop = None
+    slot = CodexSlot(0, path=source)
+    start.wait()
+    auth = asyncio.run(router.load_auth(slot))
+    results.put((auth.access_token if auth else None, slot.auth_error_code))
 
 
 class FakeUsageSession:
@@ -229,6 +326,594 @@ class RecoveringRouter(CodexRouter):
 
 
 class CodexTests(unittest.TestCase):
+    def jwt(self, expiry: float) -> str:
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": expiry}).encode()).decode().rstrip("=")
+        return f"x.{payload}.x"
+
+    def auth_router(self, session: Any, store_root: Path) -> CodexRouter:
+        router = CodexRouter.__new__(CodexRouter)
+        router.session = session
+        router.telemetry = None
+        router.slots = []
+        router.leases = {}
+        router.refresh_locks = {}
+        router.auth_store_root = store_root
+        router._availability_event = None
+        router._availability_event_loop = None
+        return router
+
+    def write_auth(self, path: Path, access: str, refresh: str = "refresh-old") -> bytes:
+        raw = (json.dumps({"tokens": {"access_token": access, "refresh_token": refresh, "account_id": "acct"}}, sort_keys=True) + "\n").encode()
+        path.write_bytes(raw)
+        return raw
+
+    def test_refresh_persists_managed_state_without_mutating_bootstrap_and_survives_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            original = self.write_auth(source, self.jwt(time.time() - 600))
+            store = root / "codex-auth"
+            session = OAuthSession(payload={
+                "access_token": self.jwt(time.time() + 7200),
+                "refresh_token": "refresh-new",
+            })
+            router = self.auth_router(session, store)
+            slot = CodexSlot(0, path=str(source))
+
+            auth = asyncio.run(router.load_auth(slot))
+
+            self.assertIsNotNone(auth)
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(session.calls, 1)
+            self.assertEqual(session.data["grant_type"], "refresh_token")
+            self.assertFalse(session.kwargs["allow_redirects"])
+            self.assertNotIn("json", session.data)
+            self.assertEqual(slot.auth_state_source, "managed")
+            state_file = store / f"{router._source_identity(str(source))}.json"
+            self.assertEqual(stat.S_IMODE(state_file.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(store.stat().st_mode), 0o700)
+
+            restarted = self.auth_router(NoCallOAuthSession(), store)
+            restarted_slot = CodexSlot(0, path=str(source))
+            restarted_auth = asyncio.run(restarted.load_auth(restarted_slot))
+            self.assertEqual(restarted_auth.access_token, auth.access_token)
+            self.assertEqual(restarted_slot.auth_state_source, "managed")
+
+    def test_candidate_selection_prefers_expiry_then_bootstrap_and_enforces_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            store = root / "codex-auth"
+            router = self.auth_router(NoCallOAuthSession(), store)
+            bootstrap_expiry = time.time() + 3600
+            self.write_auth(source, self.jwt(bootstrap_expiry))
+            managed = router._persist_refresh(str(source), {
+                "access_token": self.jwt(bootstrap_expiry + 3600),
+                "refresh_token": "managed",
+                "account_id": "acct",
+            })
+            self.assertEqual(router._load_candidate(str(source)).fingerprint, managed.fingerprint)
+
+            self.write_auth(source, self.jwt(bootstrap_expiry + 7200), "bootstrap-new")
+            selected = router._load_candidate(str(source))
+            self.assertEqual(selected.source, "bootstrap")
+
+            state_file = store / f"{router._source_identity(str(source))}.json"
+            document = json.loads(state_file.read_text())
+            document["sourcePathHash"] = "0" * 64
+            state_file.write_text(json.dumps(document))
+            with self.assertRaisesRegex(CodexAuthStoreError, "auth_state_binding_mismatch"):
+                router._read_managed_candidate(str(source))
+
+    def test_managed_store_symlinks_are_not_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            self.write_auth(source, self.jwt(time.time() + 7200))
+            actual_store = root / "actual-store"
+            actual_store.mkdir(mode=0o700)
+            store_link = root / "codex-auth"
+            store_link.symlink_to(actual_store, target_is_directory=True)
+            router = self.auth_router(NoCallOAuthSession(), store_link)
+            slot = CodexSlot(0, path=str(source))
+
+            auth = asyncio.run(router.load_auth(slot))
+
+            self.assertIsNotNone(auth)
+            self.assertFalse(slot.auth_persistence_healthy)
+            self.assertEqual(slot.auth_error_code, "auth_store_unavailable")
+
+            safe_store = root / "safe-store"
+            safe_router = self.auth_router(NoCallOAuthSession(), safe_store)
+            safe_router._persist_refresh(str(source), {
+                "access_token": self.jwt(time.time() + 8000),
+                "refresh_token": "managed",
+                "account_id": "acct",
+            })
+            state_file = safe_store / f"{safe_router._source_identity(str(source))}.json"
+            state_file.unlink()
+            external = root / "external.json"
+            external.write_text("{}")
+            state_file.symlink_to(external)
+            with self.assertRaisesRegex(CodexAuthStoreError, "auth_state_unavailable"):
+                safe_router._read_managed_candidate(str(source))
+
+    def test_two_processes_coordinate_refresh_with_one_oauth_exchange(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            store = root / "codex-auth"
+            self.write_auth(source, self.jwt(time.time() - 600))
+            access = self.jwt(time.time() + 7200)
+            context = multiprocessing.get_context("fork")
+            counter = context.Value("i", 0)
+            start = context.Event()
+            results = context.Queue()
+            processes = [
+                context.Process(
+                    target=run_refresh_process,
+                    args=(str(source), str(store), access, counter, start, results),
+                )
+                for _ in range(2)
+            ]
+            for process in processes:
+                process.start()
+            start.set()
+            for process in processes:
+                process.join(10)
+                self.assertEqual(process.exitcode, 0)
+            observed = [results.get(timeout=2) for _ in processes]
+            self.assertEqual(counter.value, 1)
+            self.assertEqual(observed, [(access, None), (access, None)])
+
+    def test_two_routers_coordinate_refresh_with_one_oauth_exchange(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            store = root / "codex-auth"
+            self.write_auth(source, self.jwt(time.time() - 600))
+            session = OAuthSession(payload={
+                "access_token": self.jwt(time.time() + 7200),
+                "refresh_token": "refresh-new",
+            }, delay=0.05)
+            first = self.auth_router(session, store)
+            second = self.auth_router(session, store)
+            first_slot = CodexSlot(0, path=str(source))
+            second_slot = CodexSlot(0, path=str(source))
+
+            async def exercise():
+                return await asyncio.gather(first.load_auth(first_slot), second.load_auth(second_slot))
+
+            auths = asyncio.run(exercise())
+            self.assertEqual(session.calls, 1)
+            self.assertEqual(auths[0].access_token, auths[1].access_token)
+            self.assertEqual(second_slot.auth_state_source, "managed")
+
+    def test_process_lock_times_out_without_blocking_event_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            source.write_text("{}")
+            store = root / "codex-auth"
+            first = self.auth_router(NoCallOAuthSession(), store)
+            second = self.auth_router(NoCallOAuthSession(), store)
+
+            async def exercise() -> None:
+                held = await first._acquire_process_lock(str(source))
+                ticked = False
+
+                async def tick() -> None:
+                    nonlocal ticked
+                    await asyncio.sleep(0)
+                    ticked = True
+
+                try:
+                    with patch("spartan_route.codex.CODEX_AUTH_LOCK_TIMEOUT_SECONDS", 0.01):
+                        ticker = asyncio.create_task(tick())
+                        with self.assertRaisesRegex(CodexAuthStoreError, "auth_lock_timeout"):
+                            await second._acquire_process_lock(str(source))
+                        await ticker
+                finally:
+                    first._release_process_lock(held)
+                self.assertTrue(ticked)
+
+            asyncio.run(exercise())
+
+    def test_persist_failures_at_create_file_fsync_and_replace_cleanup_temps(self) -> None:
+        tokens = {
+            "access_token": self.jwt(time.time() + 7200),
+            "refresh_token": "refresh-new",
+            "account_id": "acct",
+        }
+        for failure in ("create", "file_fsync", "replace"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "auth.json"
+                source.write_text("{}")
+                store = root / "codex-auth"
+                router = self.auth_router(NoCallOAuthSession(), store)
+                real_open = os.open
+                real_fsync = os.fsync
+
+                def guarded_open(name, flags, mode=0o777, *, dir_fd=None):
+                    if failure == "create" and isinstance(name, str) and name.endswith(".tmp"):
+                        raise OSError("simulated temp create failure")
+                    if dir_fd is None:
+                        return real_open(name, flags, mode)
+                    return real_open(name, flags, mode, dir_fd=dir_fd)
+
+                def guarded_fsync(fd):
+                    if failure == "file_fsync" and stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise OSError("simulated file fsync failure")
+                    return real_fsync(fd)
+
+                replace_effect = OSError("simulated replace failure") if failure == "replace" else None
+                with patch("spartan_route.codex.os.open", side_effect=guarded_open), \
+                     patch("spartan_route.codex.os.fsync", side_effect=guarded_fsync), \
+                     patch("spartan_route.codex.os.replace", side_effect=replace_effect) as replace_call:
+                    if failure != "replace":
+                        replace_call.side_effect = None
+                        replace_call.wraps = os.replace
+                    with self.assertRaisesRegex(CodexAuthStoreError, "auth_persist_failed"):
+                        router._persist_refresh(str(source), tokens)
+                self.assertFalse(any(item.name.endswith(".tmp") for item in store.iterdir()))
+
+    def test_directory_fsync_failure_does_not_adopt_refreshed_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            store = root / "codex-auth"
+            self.write_auth(source, self.jwt(time.time() - 600))
+            session = OAuthSession(payload={
+                "access_token": self.jwt(time.time() + 7200),
+                "refresh_token": "refresh-new",
+            })
+            router = self.auth_router(session, store)
+            slot = CodexSlot(0, path=str(source))
+            real_fsync = os.fsync
+            directory_calls = 0
+
+            def fail_final_directory_fsync(fd: int) -> None:
+                nonlocal directory_calls
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    directory_calls += 1
+                    if directory_calls == 8:
+                        raise OSError("simulated directory fsync failure")
+                real_fsync(fd)
+
+            with patch("spartan_route.codex.os.fsync", side_effect=fail_final_directory_fsync):
+                auth = asyncio.run(router.load_auth(slot))
+            self.assertIsNone(auth)
+            self.assertIsNone(slot.auth)
+            self.assertEqual(slot.auth_error_code, "refresh_persist_failed")
+            self.assertFalse(slot.auth_persistence_healthy)
+
+            restarted = self.auth_router(NoCallOAuthSession(), store)
+            recovered = asyncio.run(restarted.load_auth(CodexSlot(0, path=str(source))))
+            self.assertIsNotNone(recovered)
+
+    def test_refresh_http_statuses_are_exhaustively_classified_and_terminal_is_quarantined(self) -> None:
+        cases = [
+            (400, "reauth_required", True),
+            (401, "reauth_required", True),
+            (403, "reauth_required", True),
+            (418, "reauth_required", True),
+            (429, "refresh_rate_limited", False),
+            (503, "refresh_temporarily_unavailable", False),
+            (302, "refresh_invalid_response", False),
+            (204, "refresh_invalid_response", False),
+            (101, "refresh_invalid_response", False),
+            (600, "refresh_invalid_response", False),
+        ]
+        for status, code, terminal in cases:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "auth.json"
+                self.write_auth(source, self.jwt(time.time() - 600))
+                session = OAuthSession(status=status)
+                router = self.auth_router(session, root / "codex-auth")
+                slot = CodexSlot(0, path=str(source))
+                self.assertIsNone(asyncio.run(router.load_auth(slot)))
+                self.assertEqual(slot.auth_error_code, code)
+                self.assertEqual(slot.failed_auth_fingerprint is not None, terminal)
+                self.assertEqual(slot.auth_retry_at > time.time(), not terminal)
+                self.assertIsNone(asyncio.run(router.load_auth(slot)))
+                self.assertEqual(session.calls, 1)
+
+    def test_valid_bootstrap_serves_when_store_is_temporarily_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            self.write_auth(source, self.jwt(time.time() + 7200))
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            slot = CodexSlot(0, path=str(source))
+            with patch.object(
+                router,
+                "_read_managed_candidate",
+                side_effect=CodexAuthStoreError("auth_store_unavailable"),
+            ):
+                auth = asyncio.run(router.load_auth(slot))
+            self.assertIsNotNone(auth)
+            self.assertFalse(slot.auth_persistence_healthy)
+            self.assertEqual(slot.auth_error_code, "auth_store_unavailable")
+            self.assertIsNone(slot.auth_unavailable_reason)
+
+    def test_invalid_refresh_payload_is_retryable_and_retry_after_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            self.write_auth(source, self.jwt(time.time() - 600))
+            invalid = self.auth_router(OAuthSession(status=200, payload={}), root / "state-a")
+            invalid_slot = CodexSlot(0, path=str(source))
+            self.assertIsNone(asyncio.run(invalid.load_auth(invalid_slot)))
+            self.assertEqual(invalid_slot.auth_error_code, "refresh_invalid_response")
+            self.assertGreater(invalid_slot.auth_retry_at, time.time())
+
+            limited = self.auth_router(
+                OAuthSession(status=429, headers={"Retry-After": "999999"}),
+                root / "state-b",
+            )
+            limited_slot = CodexSlot(0, path=str(source))
+            before = time.time()
+            self.assertIsNone(asyncio.run(limited.load_auth(limited_slot)))
+            self.assertLessEqual(limited_slot.auth_retry_at, before + 3601)
+
+    def test_refresh_distinguishes_network_internal_and_invalid_identity_failures(self) -> None:
+        cases = [
+            (asyncio.TimeoutError(), "refresh_temporarily_unavailable"),
+            (RuntimeError("bug"), "refresh_internal_error"),
+        ]
+        for error, code in cases:
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "auth.json"
+                self.write_auth(source, self.jwt(time.time() - 600))
+                session = RaisingOAuthSession(error)
+                slot = CodexSlot(0, path=str(source))
+                router = self.auth_router(session, root / "codex-auth")
+                self.assertIsNone(asyncio.run(router.load_auth(slot)))
+                self.assertEqual(slot.auth_error_code, code)
+                self.assertGreater(slot.auth_retry_at, time.time())
+                self.assertIsNone(slot.failed_auth_fingerprint)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            source.write_text(json.dumps({"tokens": {
+                "access_token": self.jwt(time.time() - 600),
+                "refresh_token": "refresh-old",
+            }}))
+            router = self.auth_router(
+                OAuthSession(payload={"access_token": self.jwt(time.time() + 7200)}),
+                root / "codex-auth",
+            )
+            slot = CodexSlot(0, path=str(source))
+            self.assertIsNone(asyncio.run(router.load_auth(slot)))
+            self.assertEqual(slot.auth_error_code, "refresh_invalid_response")
+            self.assertGreater(slot.auth_retry_at, time.time())
+            self.assertIsNone(slot.failed_auth_fingerprint)
+
+    def test_store_state_and_lock_containment_ownership_and_mode_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            self.write_auth(source, self.jwt(time.time() + 7200))
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            router._persist_refresh(str(source), {
+                "access_token": self.jwt(time.time() + 8000),
+                "refresh_token": "managed",
+                "account_id": "acct",
+            })
+            store = root / "codex-auth"
+            state_file = next(store.glob("*.json"))
+            os.chmod(store, 0o755)
+            os.chmod(state_file, 0o644)
+            self.assertIsNotNone(router._read_managed_candidate(str(source)))
+            lock_fd = asyncio.run(router._acquire_process_lock(str(source)))
+            router._release_process_lock(lock_fd)
+            lock_file = next(store.glob("*.lock"))
+            os.chmod(lock_file, 0o644)
+            lock_fd = asyncio.run(router._acquire_process_lock(str(source)))
+            router._release_process_lock(lock_fd)
+            self.assertEqual(stat.S_IMODE(store.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(state_file.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(lock_file.stat().st_mode), 0o600)
+
+            real_fstat = os.fstat
+
+            def foreign_on_third_call():
+                calls = 0
+                def foreign(fd):
+                    nonlocal calls
+                    calls += 1
+                    metadata = real_fstat(fd)
+                    if calls == 3:
+                        values = list(metadata)
+                        values[4] = os.geteuid() + 1
+                        return os.stat_result(values)
+                    return metadata
+                return foreign
+
+            with patch("spartan_route.codex.os.fstat", side_effect=foreign_on_third_call()):
+                with self.assertRaisesRegex(CodexAuthStoreError, "auth_state_unsafe"):
+                    router._read_managed_candidate(str(source))
+            with patch("spartan_route.codex.os.fstat", side_effect=foreign_on_third_call()):
+                with self.assertRaisesRegex(CodexAuthStoreError, "auth_lock_unsafe"):
+                    asyncio.run(router._acquire_process_lock(str(source)))
+
+            unsafe_parent = root / "parent-file"
+            unsafe_parent.write_text("not a directory")
+            unsafe_router = self.auth_router(NoCallOAuthSession(), unsafe_parent / "codex-auth")
+            with self.assertRaisesRegex(CodexAuthStoreError, "auth_store_parent_unavailable"):
+                unsafe_router._read_managed_candidate(str(source))
+            foreign_parent = self.auth_router(NoCallOAuthSession(), root / "other-store")
+            parent_metadata = list(root.stat())
+            parent_metadata[4] = os.geteuid() + 1
+            with patch("spartan_route.codex.os.fstat", return_value=os.stat_result(parent_metadata)):
+                with self.assertRaisesRegex(CodexAuthStoreError, "auth_store_parent_unsafe"):
+                    foreign_parent._read_managed_candidate(str(source))
+
+    def test_non_regular_store_state_and_lock_entries_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            self.write_auth(source, self.jwt(time.time() + 7200))
+
+            store_file = root / "store-file"
+            store_file.write_text("not a directory")
+            file_router = self.auth_router(NoCallOAuthSession(), store_file)
+            with self.assertRaisesRegex(CodexAuthStoreError, "auth_store_unavailable"):
+                file_router._read_managed_candidate(str(source))
+
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            router._persist_refresh(str(source), {
+                "access_token": self.jwt(time.time() + 8000),
+                "refresh_token": "managed",
+                "account_id": "acct",
+            })
+            store = root / "codex-auth"
+            state_file = next(store.glob("*.json"))
+            state_file.unlink()
+            state_file.mkdir()
+            with self.assertRaisesRegex(CodexAuthStoreError, "auth_state_unsafe"):
+                router._read_managed_candidate(str(source))
+
+            lock_name = store / f"{router._source_identity(str(source))}.lock"
+            lock_name.mkdir()
+            with self.assertRaisesRegex(CodexAuthStoreError, "auth_lock_unavailable"):
+                asyncio.run(router._acquire_process_lock(str(source)))
+
+    def test_refresh_error_contract_never_exposes_upstream_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            self.write_auth(source, self.jwt(time.time() - 600))
+            session = OAuthSession(status=400)
+            session.raw_body = "sensitive upstream body"
+            router = self.auth_router(session, root / "codex-auth")
+            slot = CodexSlot(0, path=str(source))
+            self.assertIsNone(asyncio.run(router.load_auth(slot)))
+            router.slots = [slot]
+            encoded = json.dumps(router.slot_status())
+            self.assertNotIn(session.raw_body, encoded)
+            self.assertIn("reauth_required", encoded)
+            self.assertFalse(session.kwargs["allow_redirects"])
+
+    def test_candidate_selection_rejects_invalid_expiry_and_prefers_bootstrap_ties(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            expiry = time.time() + 7200
+            router._persist_refresh(str(source), {
+                "access_token": self.jwt(expiry),
+                "refresh_token": "managed",
+                "account_id": "acct",
+            })
+            self.write_auth(source, self.jwt(expiry), "bootstrap")
+            self.assertEqual(router._load_candidate(str(source)).source, "bootstrap")
+
+            router._persist_refresh(str(source), {
+                "access_token": self.jwt(float("nan")),
+                "refresh_token": "managed-invalid",
+                "account_id": "acct",
+            })
+            self.write_auth(source, "not-a-jwt", "bootstrap-no-expiry")
+            self.assertEqual(router._load_candidate(str(source)).source, "bootstrap")
+
+            router._persist_refresh(str(source), {
+                "access_token": self.jwt(expiry),
+                "refresh_token": "managed-finite",
+                "account_id": "acct",
+            })
+            self.write_auth(source, "not-a-jwt", "bootstrap-no-expiry")
+            self.assertEqual(router._load_candidate(str(source)).source, "managed")
+
+    def test_terminal_quarantine_clears_when_bootstrap_fingerprint_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            expired = self.jwt(time.time() - 600)
+            self.write_auth(source, expired, "dead-refresh")
+            failed_session = OAuthSession(status=400)
+            router = self.auth_router(failed_session, root / "codex-auth")
+            slot = CodexSlot(0, path=str(source))
+            self.assertIsNone(asyncio.run(router.load_auth(slot)))
+            self.assertEqual(slot.auth_error_code, "reauth_required")
+            self.assertIsNotNone(slot.failed_auth_fingerprint)
+
+            self.write_auth(source, expired, "fresh-login-refresh")
+            recovered_session = OAuthSession(payload={
+                "access_token": self.jwt(time.time() + 7200),
+                "refresh_token": "rotated-refresh",
+            })
+            router.session = recovered_session
+            recovered = asyncio.run(router.load_auth(slot))
+            self.assertIsNotNone(recovered)
+            self.assertEqual(recovered_session.calls, 1)
+            self.assertIsNone(slot.failed_auth_fingerprint)
+
+    def test_parent_and_read_fsync_failures_remain_retryable_until_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            self.write_auth(source, self.jwt(time.time() - 600))
+            session = OAuthSession(payload={
+                "access_token": self.jwt(time.time() + 7200),
+                "refresh_token": "refresh-new",
+            })
+            router = self.auth_router(session, root / "codex-auth")
+            slot = CodexSlot(0, path=str(source))
+            real_fsync = os.fsync
+            directory_calls = 0
+
+            def fail_created_store_parent(fd):
+                nonlocal directory_calls
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    directory_calls += 1
+                    if directory_calls == 2:
+                        raise OSError("parent durability failure")
+                return real_fsync(fd)
+
+            with patch("spartan_route.codex.os.fsync", side_effect=fail_created_store_parent):
+                self.assertIsNone(asyncio.run(router.load_auth(slot)))
+            self.assertEqual(session.calls, 0)
+            self.assertEqual(slot.auth_error_code, "auth_store_unavailable")
+            self.assertIsNone(slot.failed_auth_fingerprint)
+
+            slot.auth_retry_at = 0
+            self.assertIsNotNone(asyncio.run(router.load_auth(slot)))
+            self.assertEqual(session.calls, 1)
+            managed_file = next((root / "codex-auth").glob("*.json"))
+            self.assertTrue(managed_file.is_file())
+
+            unavailable = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            unavailable_slot = CodexSlot(0, path=str(source))
+            with patch("spartan_route.codex.os.fsync", side_effect=OSError("read durability failure")):
+                self.assertIsNone(asyncio.run(unavailable.load_auth(unavailable_slot)))
+            self.assertEqual(unavailable_slot.auth_error_code, "auth_store_unavailable")
+            self.assertIsNone(unavailable_slot.failed_auth_fingerprint)
+
+            recovered = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            self.assertIsNotNone(asyncio.run(recovered.load_auth(CodexSlot(0, path=str(source)))))
+
+    def test_static_token_bypasses_managed_auth_store(self) -> None:
+        router = CodexRouter.__new__(CodexRouter)
+        auth = CodexAuth("static")
+        slot = CodexSlot(0, token="static", auth=auth)
+        self.assertIs(asyncio.run(router.load_auth(slot)), auth)
+
+    def test_static_token_status_reports_static_lifecycle(self) -> None:
+        router = CodexRouter.__new__(CodexRouter)
+        router.telemetry = None
+        router.leases = {}
+        with patch.dict(os.environ, {"OPENAI_CODEX_TOKEN": self.jwt(time.time() + 7200)}, clear=True):
+            router._init_slots()
+        status = router.slot_status()[0]
+        self.assertEqual(status["authStateSource"], "static")
+        self.assertIsNotNone(status["authExpiresAt"])
+        self.assertTrue(status["authPersistenceHealthy"])
+
     def test_cleanup_cancels_inflight_usage_refresh_without_resetting_slots(self) -> None:
         router = CodexRouter.__new__(CodexRouter)
         slot = CodexSlot(0, auth=CodexAuth("token", account_id="acct"))

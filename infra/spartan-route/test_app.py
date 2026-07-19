@@ -1459,6 +1459,11 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("resetTitle", html)
         self.assertIn("slot-only", html)
         self.assertIn("active-lease-strip", html)
+        self.assertIn("function authLifecycle", html)
+        self.assertIn("authStateSource", html)
+        self.assertIn("authExpiresAt", html)
+        self.assertIn("authPersistenceHealthy", html)
+        self.assertIn("authErrorCode", html)
         self.assertNotIn("<h2>Slots</h2>", html)
 
 

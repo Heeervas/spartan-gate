@@ -161,6 +161,17 @@ the configured owner and private mode too. Fresh installer paths are prepared
 with the configured owner and private modes. Apply the same ownership principle
 to a pre-existing legacy ClawRoute data root before enabling its non-root addon.
 
+Codex OAuth profiles mounted into Spartan Route are bootstrap-only and stay
+read-only. Refresh-token rotation is stored under the existing private data
+mount at `/app/data/codex-auth`. A dashboard state of `reauth_required` means
+the current grant was rejected terminally; log in again in that slot's original
+Codex home and retry. `refresh_rate_limited`,
+`refresh_temporarily_unavailable`, `refresh_lock_timeout`,
+`auth_store_unavailable`, `refresh_persist_failed`, `refresh_invalid_response`,
+and `refresh_internal_error` are retryable and should
+not trigger a new login. Never seed two slots from a copied refresh grant, and
+protect any backup of the managed store as a live credential.
+
 Do not use private commands against old stack data paths unless you are intentionally migrating data. The provided private override should use isolated Spartan Gate paths.
 
 ## Logs

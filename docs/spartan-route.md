@@ -79,7 +79,10 @@ Kept in v1:
   Completions and Responses, streaming or non-streaming, return
   `400 codex_ultra_requires_app_server`, log the attempt, and do not select a
   Codex slot.
-- Multiple Codex auth slots from `OPENAI_CODEX_AUTH_PATHS`.
+- Multiple Codex auth slots from `OPENAI_CODEX_AUTH_PATHS`. Configured auth
+  files are read-only bootstrap inputs. Spartan Route stores rotated OAuth
+  generations separately in `/app/data/codex-auth`, keyed by a SHA-256 source
+  identity, and never rewrites a Codex CLI or editor profile.
 - Prompt-cache keys based on explicit `prompt_cache_key`, `user`, or stable
   system/tool prefix shape.
 - Per-key Codex cache leases, rate-limit cooldowns, transient 5xx cooldowns,
@@ -257,7 +260,19 @@ The Codex dashboard also classifies each slot as healthy, failed, unavailable,
 history, or disabled. Only a current failure on a routing-enabled slot makes the
 account card red; the card also shows a `Failed` badge and text reason. Active
 cooldowns are warnings, cached-only errors are history, and operator-disabled
-slots remain neutral.
+slots remain neutral. Each slot also reports its safe OAuth lifecycle source,
+expiry, last successful refresh, persistence health, and sanitized error code.
+
+Rotating Codex grants are persisted atomically before use. The managed
+`codex-auth` directory is private (`0700`) and its state/lock files are `0600`;
+foreign-owned, symlinked, or non-regular objects fail closed. Refreshes are
+coordinated across router processes so only one process consumes a generation.
+Terminal grant failures require a new login, while quota, network, lock, and
+local persistence failures remain retryable and do not imply that the user
+should reauthenticate. After a manual login, the changed bootstrap fingerprint
+automatically clears the terminal quarantine. Do not copy one refresh grant
+between slots: every slot needs an independent local login. Treat backups of
+`/app/data/codex-auth` as credentials, not ordinary telemetry.
 
 Provider credentials, Codex tokens, raw auth data, and slot paths are not
 returned by the Config API. Query-string bearer tokens remain unsupported.

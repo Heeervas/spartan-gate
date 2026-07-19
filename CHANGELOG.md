@@ -3,6 +3,9 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Persist rotating Codex OAuth grants in a private Spartan-owned store with
+  cross-process refresh coordination, atomic durability, terminal-grant
+  quarantine, and safe lifecycle diagnostics without mutating source profiles.
 - Made Codex balances load from persisted telemetry immediately while one
   bounded concurrent refresh runs in the background; promoted weekly remaining
   balance to the primary wheel, kept optional five-hour windows compatible,

@@ -162,6 +162,13 @@
     .slot-row-main {
       min-width: 0;
     }
+    .auth-lifecycle {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+      font-size: 12px;
+    }
     .active-lease-strip, .reset-credit-strip {
       margin-top: 10px;
       border: 1px solid var(--line);
@@ -358,7 +365,7 @@
     }
     function fmtTime(value) {
       if (!value) return '-';
-      const d = new Date(value);
+      const d = new Date(deadlineMs(value));
       return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
     }
     function deadlineMs(value) {
@@ -455,6 +462,17 @@
       const mismatch = slot.routingIdentityMismatch ? ' · identity mismatch, override ignored' : (slot.routingIdentityUnverified ? ' · identity unverified' : '');
       return `${routing} · ${auth}${cooldownText !== '-' ? ` · cooldown ${cooldownText}` : ''}${mismatch}`;
     }
+    function authLifecycle(slot) {
+      const source = slot.authStateSource || (slot.authAvailable ? 'bootstrap' : 'unknown');
+      const expiry = slot.authExpiresAt
+        ? `<span title="${esc(fmtTime(slot.authExpiresAt))}" data-countdown-prefix="expires in " data-countdown="${esc(slot.authExpiresAt)}">expires in ${esc(countdownText(slot.authExpiresAt))}</span>`
+        : '<span>expiry unknown</span>';
+      const refreshed = slot.authLastRefreshAt ? ` · refreshed ${esc(fmtTime(slot.authLastRefreshAt))}` : '';
+      const persistence = slot.authPersistenceHealthy === false
+        ? ` · persistence unavailable (${esc(slot.authErrorCode || 'auth_store_unavailable')})`
+        : '';
+      return `<div class="auth-lifecycle ${slot.authPersistenceHealthy === false ? 'warn' : 'muted'}"><strong>OAuth ${esc(source)}</strong>${expiry}<span>${refreshed}${persistence}</span></div>`;
+    }
     function renderSlotControls(slot) {
       const tone = slot.healthStatus === 'failed' ? 'bad' : (slot.healthStatus === 'unavailable' ? 'warn' : (slot.healthStatus === 'healthy' ? 'good' : 'muted'));
       return `<div class="slot-row">
@@ -462,6 +480,7 @@
           <strong>slot ${esc(slot.slotIndex)}</strong>
           <div class="muted">${esc(slot.accountKey || '-')} · ${esc(slot.slotPath || slot.slotPathHash || 'no path')}</div>
           <div class="${tone}">${esc(slotStateLine(slot))}</div>
+          ${authLifecycle(slot)}
         </div>
         <div class="slot-actions">
           <button data-action="toggle" data-slot="${esc(slot.slotIndex)}" data-next="${slot.routingEnabled ? 'false' : 'true'}" class="${slot.routingEnabled ? 'danger' : ''}">${esc(slot.routingEnabled ? 'Disable' : 'Enable')}</button>

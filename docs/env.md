@@ -314,6 +314,10 @@ own SQLite state. `SPARTAN_ROUTE_DATA_PATH` controls the host data mount and
 `/app/data/spartan-route.db` and does not reuse `clawroute.db`.
 `SPARTAN_CODEX_HOME_PATH` can mount a private Codex home at `/codex-home` while
 leaving `CODEX_HOME` pointed at that container path.
+Those auth mounts remain read-only bootstrap sources. Rotated Codex OAuth state
+uses the fixed `/app/data/codex-auth` directory inside the existing
+`SPARTAN_ROUTE_DATA_PATH` mount; there is deliberately no environment override
+or additional writable bind for this secret store.
 `SPARTAN_ROUTE_UID`/`SPARTAN_ROUTE_GID` and
 `SPARTAN_CLAWROUTE_UID`/`SPARTAN_CLAWROUTE_GID` select the explicit
 non-root identities for Spartan Route and legacy ClawRoute. They inherit
