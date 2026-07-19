@@ -80,6 +80,11 @@
       border-color: var(--accent);
       color: var(--accent);
     }
+    button:disabled { cursor: wait; opacity: .65; }
+    nav a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+      outline-offset: 2px;
+    }
     button.danger {
       border-color: var(--bad);
       color: var(--bad);
@@ -175,6 +180,10 @@
       gap: 10px;
       align-items: center;
     }
+    .ring-wrap.secondary {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
     .ring {
       width: 76px;
       aspect-ratio: 1;
@@ -235,13 +244,30 @@
     .good { color: var(--good); }
     .warn { color: var(--warn); }
     .bad { color: var(--bad); }
+    .skeleton {
+      min-height: 150px;
+      color: var(--muted);
+      background: linear-gradient(90deg, var(--panel), color-mix(in srgb, var(--line) 28%, var(--panel)), var(--panel));
+      background-size: 220% 100%;
+      animation: skeleton-shift 1.4s ease-in-out infinite;
+    }
+    @keyframes skeleton-shift { to { background-position: -220% 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      .skeleton { animation: none; }
+    }
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
       .rings { grid-template-columns: 1fr; }
     }
     @media (max-width: 760px) {
+      .wrap { width: min(100% - 24px, 1260px); }
       .toolbar { display: grid; grid-template-columns: 1fr; }
       input { min-width: 0; width: 100%; }
+      button, nav a { min-height: 44px; }
+      .actions, .slot-actions { width: 100%; }
+      .actions button, .slot-actions button { flex: 1 1 auto; }
+      .account-head, .slot-row { align-items: flex-start; }
+      .badge-row { justify-content: flex-start; }
       th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; }
     }
   </style>
@@ -381,19 +407,23 @@
       const cached = Number(row.cache_likely_cached_input_tokens || row.cacheLikelyCachedInputTokens || 0);
       return `${pct(cached, input)} likely cache`;
     }
-    function ringTone(value) {
-      if (value >= 90) return 'var(--bad)';
-      if (value >= 70) return 'var(--warn)';
+    function balanceTone(value) {
+      if (value <= 10) return 'var(--bad)';
+      if (value <= 30) return 'var(--warn)';
       return 'var(--good)';
     }
-    function ring(windowName, row) {
-      const used = row ? Math.max(0, Math.min(100, Number(row.usedPercent || 0))) : 0;
-      const resetCopy = row?.resetAt ? `reset in ${countdownText(row.resetAt)}` : 'no live data';
-      return `<div class="ring-wrap">
-        <div class="ring" style="--degrees:${used * 3.6}deg;--tone:${ringTone(used)}"><span class="ring-value">${row ? `${used.toFixed(1)}%` : '-'}</span></div>
+    function balanceRing(windowName, row, secondary = false) {
+      if (!row) return '';
+      const remaining = Math.max(0, Math.min(100, Number(
+        row.remainingPercent ?? (100 - Number(row.usedPercent || 0))
+      )));
+      const resetCopy = row.resetAt ? `resets in ${countdownText(row.resetAt)}` : 'reset time unavailable';
+      return `<div class="ring-wrap${secondary ? ' secondary' : ''}">
+        <div class="ring" style="--degrees:${remaining * 3.6}deg;--tone:${balanceTone(remaining)}"><span class="ring-value">${remaining.toFixed(1)}%</span></div>
         <div>
           <strong>${esc(windowName)}</strong>
-          <div class="muted" title="${esc(resetTitle(row?.resetAt))}"${row?.resetAt ? ` data-countdown-prefix="reset in " data-countdown="${esc(row.resetAt)}"` : ''}>${esc(resetCopy)}</div>
+          <div class="muted">remaining</div>
+          <div class="muted" title="${esc(resetTitle(row.resetAt))}"${row.resetAt ? ` data-countdown-prefix="resets in " data-countdown="${esc(row.resetAt)}"` : ''}>${esc(resetCopy)}</div>
         </div>
       </div>`;
     }
@@ -541,8 +571,8 @@
           </div>
           <div class="account-health" role="status"></div>
           <div class="rings">
-            ${ring('5h', account.fiveHour)}
-            ${ring('1w', account.weekly)}
+            ${balanceRing('Weekly balance', account.weekly)}
+            ${balanceRing('Five-hour balance', account.fiveHour, true)}
           </div>
           ${activeLeaseStrip(account, leases)}
           ${resetCreditStrip(credits)}
@@ -674,14 +704,18 @@
         button.textContent = originalLabel;
       }
     });
+    let loadGeneration = 0;
     function renderPayload(payload) {
       const accounts = payload.accounts || [];
       const balancer = payload.balancer || {};
+      const source = payload.source === 'persisted'
+        ? `saved ${fmtTime(payload.observedAt)}`
+        : (payload.source === 'memory' ? 'recent live data' : 'live');
       const status = [
-        payload.cached ? 'cached' : 'live',
+        source,
+        payload.refreshing ? 'refreshing in background' : '',
         payload.partial ? 'partial' : 'complete',
-        payload.cacheExpiresAt ? `cache expires ${fmtTime(payload.cacheExpiresAt)}` : '',
-      ].filter(Boolean).join(' - ');
+      ].filter(Boolean).join(' · ');
       usageStatus.textContent = status;
       renderAccountCards(accounts, payload.slots || balancer.slots || [], balancer.activeLeases || []);
       renderCache(payload.cacheDaily || []);
@@ -689,14 +723,38 @@
       renderErrors(payload);
       updateCountdowns();
     }
-    async function load(force = false) {
+    async function pollRefresh(generation, attempt = 0) {
+      if (generation !== loadGeneration || attempt >= 24) return;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (generation !== loadGeneration) return;
       try {
-        usageStatus.textContent = 'Loading...';
-        const payload = await fetchJson(`/api/codex/usage${force ? '?force=true' : ''}`, { headers: headers() });
+        const payload = await fetchJson('/api/codex/usage', { headers: headers() });
+        if (generation !== loadGeneration) return;
         renderPayload(payload);
+        if (payload.refreshing) await pollRefresh(generation, attempt + 1);
       } catch (error) {
-        usageStatus.textContent = '';
         showError(error.message);
+      }
+    }
+    async function load(force = false) {
+      const generation = ++loadGeneration;
+      const refreshButton = document.getElementById(force ? 'force' : 'refresh');
+      const originalLabel = refreshButton.textContent;
+      refreshButton.disabled = true;
+      refreshButton.textContent = force ? 'Refreshing live…' : 'Loading…';
+      if (!accountsEl.children.length) {
+        accountsEl.innerHTML = '<div class="panel skeleton" role="status" aria-busy="true">Loading saved balances…</div>';
+      }
+      try {
+        const payload = await fetchJson(`/api/codex/usage${force ? '?force=true' : ''}`, { headers: headers() });
+        if (generation !== loadGeneration) return;
+        renderPayload(payload);
+        if (payload.refreshing && !force) void pollRefresh(generation);
+      } catch (error) {
+        if (generation === loadGeneration) showError(error.message);
+      } finally {
+        refreshButton.disabled = false;
+        refreshButton.textContent = originalLabel;
       }
     }
     setInterval(updateCountdowns, 1000);

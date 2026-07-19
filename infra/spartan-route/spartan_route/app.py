@@ -60,6 +60,9 @@ class ExecutionResult:
     cached_input_tokens: int = 0
     output_tokens: int = 0
     error: str | None = None
+    actual_tool_call_count: int | None = None
+    actual_tool_names: list[str] | None = None
+    _actual_tool_call_keys: set[str] = field(default_factory=set, repr=False)
     usage_seen: bool = False
     usage_event_type: str | None = None
     upstream_response_time_ms: int | None = None
@@ -318,6 +321,33 @@ def apply_usage(result: ExecutionResult, payload: Any) -> None:
     result.output_tokens = output or result.output_tokens
 
 
+def apply_tool_call_telemetry(result: ExecutionResult, payload: Any) -> None:
+    if not isinstance(payload, dict) or not isinstance(payload.get("choices"), list):
+        return
+    if result.actual_tool_call_count is None:
+        result.actual_tool_call_count = 0
+        result.actual_tool_names = []
+    names = set(result.actual_tool_names or [])
+    for choice_position, choice in enumerate(payload["choices"]):
+        if not isinstance(choice, dict):
+            continue
+        raw_choice_index = choice.get("index")
+        choice_index = raw_choice_index if isinstance(raw_choice_index, (int, str)) else choice_position
+        source = choice.get("message") if isinstance(choice.get("message"), dict) else choice.get("delta")
+        if not isinstance(source, dict) or not isinstance(source.get("tool_calls"), list):
+            continue
+        for call_index, call in enumerate(source["tool_calls"]):
+            if not isinstance(call, dict):
+                continue
+            key = f"{choice_index}:{call.get('index', call_index)}"
+            result._actual_tool_call_keys.add(key)
+            function = call.get("function")
+            if isinstance(function, dict) and isinstance(function.get("name"), str) and function["name"]:
+                names.add(function["name"])
+    result.actual_tool_call_count = len(result._actual_tool_call_keys)
+    result.actual_tool_names = sorted(names)
+
+
 def parse_json_bytes(data: bytes) -> Any:
     try:
         return json.loads(data.decode("utf-8"))
@@ -365,6 +395,7 @@ async def provider_stream(response: Any, result: ExecutionResult) -> AsyncIterat
                 parsed = parse_json_bytes(data.encode("utf-8"))
                 if isinstance(parsed, dict):
                     apply_usage(result, parsed)
+                    apply_tool_call_telemetry(result, parsed)
                     if parsed.get("error") and not result.error:
                         result.error = stable_json(parsed.get("error"))
             yield raw
@@ -442,6 +473,7 @@ async def execute_provider_chat(
     )
     parsed = parse_json_bytes(data)
     apply_usage(result, parsed)
+    apply_tool_call_telemetry(result, parsed)
     if response.status >= 400:
         result.error = sanitize_preview(data.decode("utf-8", errors="replace"))
     return result
@@ -501,6 +533,8 @@ async def execute_chat(
             cached_input_tokens=codex_result.cached_input_tokens,
             output_tokens=codex_result.output_tokens,
             error=codex_result.error,
+            actual_tool_call_count=codex_result.actual_tool_call_count,
+            actual_tool_names=codex_result.actual_tool_names,
             usage_seen=codex_result.usage_seen,
             usage_event_type=codex_result.usage_event_type,
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
@@ -530,6 +564,8 @@ async def sync_codex_stream_result(source_result: CodexCallResult, target: Execu
         target.cached_input_tokens = source_result.cached_input_tokens
         target.output_tokens = source_result.output_tokens
         target.error = source_result.error
+        target.actual_tool_call_count = source_result.actual_tool_call_count
+        target.actual_tool_names = source_result.actual_tool_names
         target.usage_seen = source_result.usage_seen
         target.usage_event_type = source_result.usage_event_type
         target.upstream_response_time_ms = source_result.upstream_response_time_ms
@@ -1087,6 +1123,8 @@ def log_request(
             upstream_response_time_ms=upstream_response_time_ms,
             total_response_time_ms=total_response_time_ms,
             had_tool_calls=bool(body.get("tools")),
+            actual_tool_call_count=result.actual_tool_call_count,
+            actual_tool_names=result.actual_tool_names,
             is_dry_run=state.config.dry_run,
             session_id=session_id,
             error=result.error if result.status >= 400 or result.error else None,
@@ -1500,13 +1538,24 @@ async def image_edits(request: web.Request) -> web.StreamResponse:
     if state.config.api_key("openai") and not model.startswith("codex/"):
         result = await proxy_openai_multipart(state, "/images/edits", fields)
         return await write_execution_response(request, result)
-    if state.codex is None:
-        return response_json_error("Codex router is not ready", 503, "codex_unavailable")
-    if fields.get("mask") is not None:
-        return response_json_error("Codex image edits in spartan-route v1 do not support mask uploads.", 400, "mask_not_supported", "invalid_request_error")
     size_error = codex_image_size_error(fields.get("size"))
     if size_error is not None:
         return size_error
+    input_fidelity = fields.get("input_fidelity")
+    if input_fidelity is not None:
+        input_fidelity = str(input_fidelity).strip().lower()
+        if input_fidelity not in {"low", "high"}:
+            return response_json_error(
+                "input_fidelity must be low or high.",
+                400,
+                "invalid_input_fidelity",
+                "invalid_request_error",
+            )
+    mask_field = fields.get("mask")
+    if mask_field is not None and not isinstance(mask_field, FileField):
+        return response_json_error("mask must be an uploaded image file.", 400, "invalid_mask", "invalid_request_error")
+    if state.codex is None:
+        return response_json_error("Codex router is not ready", 503, "codex_unavailable")
     images = []
     for name, value in fields.items():
         if name in {"image", "image[]"} and isinstance(value, FileField):
@@ -1522,6 +1571,11 @@ async def image_edits(request: web.Request) -> web.StreamResponse:
         "background": str(fields.get("background") or "opaque"),
         "images": images,
     }
+    if isinstance(mask_field, FileField):
+        mask_field.file.seek(0)
+        payload["mask"] = data_url_from_file(mask_field)
+    if input_fidelity is not None:
+        payload["input_fidelity"] = input_fidelity
     if fields.get("output_compression") is not None:
         payload["output_compression"] = str(fields.get("output_compression"))
     codex_result = await state.codex.execute_image(payload)
@@ -2281,6 +2335,9 @@ async def startup(app: web.Application) -> None:
 
 async def cleanup(app: web.Application) -> None:
     state: SpartanRouteState = app[STATE_KEY]
+    codex_cleanup = getattr(state.codex, "cleanup", None)
+    if codex_cleanup:
+        await codex_cleanup()
     telemetry_drained = await state.queue.stop()
     if state.session:
         await state.session.close()

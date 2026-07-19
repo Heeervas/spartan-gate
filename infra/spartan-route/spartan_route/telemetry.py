@@ -42,6 +42,8 @@ class RoutingLogEntry:
     upstream_response_time_ms: int | None = None
     total_response_time_ms: int | None = None
     had_tool_calls: bool = False
+    actual_tool_call_count: int | None = None
+    actual_tool_names: list[str] | None = None
     is_dry_run: bool = False
     is_override: bool = False
     session_id: str | None = None
@@ -125,6 +127,8 @@ class TelemetryStore:
                     upstream_response_time_ms INTEGER,
                     total_response_time_ms INTEGER,
                     had_tool_calls INTEGER NOT NULL DEFAULT 0,
+                    actual_tool_call_count INTEGER,
+                    actual_tool_names TEXT,
                     is_dry_run INTEGER NOT NULL DEFAULT 0,
                     is_override INTEGER NOT NULL DEFAULT 0,
                     session_id TEXT,
@@ -214,6 +218,8 @@ class TelemetryStore:
                 {
                     "upstream_response_time_ms": "INTEGER",
                     "total_response_time_ms": "INTEGER",
+                    "actual_tool_call_count": "INTEGER",
+                    "actual_tool_names": "TEXT",
                 },
             )
             self._conn.commit()
@@ -236,11 +242,12 @@ class TelemetryStore:
                     classification_reason, confidence, input_tokens, cached_input_tokens,
                     output_tokens, original_cost_usd, actual_cost_usd, savings_usd,
                     escalated, escalation_chain, response_time_ms, upstream_response_time_ms,
-                    total_response_time_ms, had_tool_calls,
+                    total_response_time_ms, had_tool_calls, actual_tool_call_count,
+                    actual_tool_names,
                     is_dry_run, is_override, session_id, error, prompt_preview,
                     context_info, request_api_kind, requested_reasoning_effort,
                     selected_codex_slot_index, selected_codex_account_key, request_id, turn_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.timestamp, entry.original_model, entry.routed_model, entry.actual_model, entry.tier,
@@ -248,6 +255,8 @@ class TelemetryStore:
                     entry.output_tokens, entry.original_cost_usd, entry.actual_cost_usd, entry.savings_usd,
                     int(entry.escalated), entry.escalation_chain, entry.response_time_ms,
                     entry.upstream_response_time_ms, entry.total_response_time_ms, int(entry.had_tool_calls),
+                    entry.actual_tool_call_count,
+                    json.dumps(sorted(set(entry.actual_tool_names or [])), separators=(",", ":")) if entry.actual_tool_names is not None else None,
                     int(entry.is_dry_run), int(entry.is_override), entry.session_id, entry.error, entry.prompt_preview,
                     entry.context_info, entry.request_api_kind, entry.requested_reasoning_effort,
                     entry.selected_codex_slot_index, entry.selected_codex_account_key, entry.request_id, entry.turn_id,
@@ -832,37 +841,52 @@ class TelemetryStore:
         if not records:
             return
         observed_at = now_iso()
+        authoritative_accounts = {
+            str(record["account_key"])
+            for record in records
+            if record.get("window") == "weekly"
+        }
         with self._lock:
-            for record in records:
-                self._conn.execute(
-                    """
-                    INSERT INTO codex_usage_snapshots (
-                        account_key, slot_index, window, used_percent, reset_at, window_minutes, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(account_key, window) DO UPDATE SET
-                        slot_index = excluded.slot_index,
-                        used_percent = excluded.used_percent,
-                        reset_at = excluded.reset_at,
-                        window_minutes = excluded.window_minutes,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        record["account_key"], record["slot_index"], record["window"],
-                        record["used_percent"], record["reset_at"], record["window_minutes"], observed_at,
-                    ),
-                )
-                self._conn.execute(
-                    """
-                    INSERT INTO codex_usage_snapshot_history (
-                        account_key, slot_index, window, used_percent, reset_at, window_minutes, observed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        record["account_key"], record["slot_index"], record["window"],
-                        record["used_percent"], record["reset_at"], record["window_minutes"], observed_at,
-                    ),
-                )
-            self._conn.commit()
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                for account_key in authoritative_accounts:
+                    self._conn.execute(
+                        "DELETE FROM codex_usage_snapshots WHERE account_key = ?",
+                        (account_key,),
+                    )
+                for record in records:
+                    self._conn.execute(
+                        """
+                        INSERT INTO codex_usage_snapshots (
+                            account_key, slot_index, window, used_percent, reset_at, window_minutes, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(account_key, window) DO UPDATE SET
+                            slot_index = excluded.slot_index,
+                            used_percent = excluded.used_percent,
+                            reset_at = excluded.reset_at,
+                            window_minutes = excluded.window_minutes,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            record["account_key"], record["slot_index"], record["window"],
+                            record["used_percent"], record["reset_at"], record["window_minutes"], observed_at,
+                        ),
+                    )
+                    self._conn.execute(
+                        """
+                        INSERT INTO codex_usage_snapshot_history (
+                            account_key, slot_index, window, used_percent, reset_at, window_minutes, observed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            record["account_key"], record["slot_index"], record["window"],
+                            record["used_percent"], record["reset_at"], record["window_minutes"], observed_at,
+                        ),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def usage_snapshots(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -985,6 +1009,12 @@ class TelemetryStore:
             "cacheLowInputTokens": 0,
             "legacyLatencyRequests": 0,
             "splitLatencyRequests": 0,
+            "toolEnabledRequests": 0,
+            "actualToolCalls": 0,
+            "toolTelemetryKnownRequests": 0,
+            "toolTelemetryUnknownRequests": 0,
+            "_toolNames": set(),
+            "_reasoningEfforts": {},
             "_latencies": [],
             "_firstResponseLatencies": [],
             "_totalLatencies": [],
@@ -993,6 +1023,26 @@ class TelemetryStore:
     def _add_metrics(self, metrics: dict[str, Any], row: dict[str, Any]) -> None:
         metrics["requests"] += 1
         context = self._row_context(row)
+        if row.get("had_tool_calls"):
+            metrics["toolEnabledRequests"] += 1
+        actual_tool_call_count = row.get("actual_tool_call_count")
+        if actual_tool_call_count is None:
+            metrics["toolTelemetryUnknownRequests"] += 1
+        else:
+            metrics["toolTelemetryKnownRequests"] += 1
+            metrics["actualToolCalls"] += int(actual_tool_call_count or 0)
+        raw_tool_names = row.get("actual_tool_names")
+        if raw_tool_names:
+            try:
+                tool_names = json.loads(raw_tool_names)
+            except (TypeError, json.JSONDecodeError):
+                tool_names = []
+            if isinstance(tool_names, list):
+                metrics["_toolNames"].update(str(name) for name in tool_names if isinstance(name, str) and name)
+        reasoning_effort = str(row.get("requested_reasoning_effort") or "").strip().lower()
+        if reasoning_effort:
+            efforts = metrics["_reasoningEfforts"]
+            efforts[reasoning_effort] = int(efforts.get(reasoning_effort) or 0) + 1
         usage_seen = bool(context.get("usage_seen"))
         if usage_seen:
             metrics["usageSeenRequests"] += 1
@@ -1035,6 +1085,8 @@ class TelemetryStore:
         metrics["latencyMs"] = self._latency_summary(latencies)
         metrics["firstResponseLatencyMs"] = self._latency_summary(first_latencies if first_latencies else latencies)
         metrics["totalLatencyMs"] = self._latency_summary(metrics.pop("_totalLatencies", []))
+        metrics["toolNames"] = sorted(metrics.pop("_toolNames", set()))
+        metrics["reasoningEfforts"] = dict(sorted(metrics.pop("_reasoningEfforts", {}).items()))
 
     def _row_usage_seen(self, row: dict[str, Any]) -> bool:
         return bool(self._row_context(row).get("usage_seen"))
@@ -1100,8 +1152,26 @@ class TelemetryStore:
             "promptPreview": row["prompt_preview"],
             "selectedCodexSlotIndex": row["selected_codex_slot_index"],
             "selectedCodexAccountKey": row["selected_codex_account_key"],
+            "toolsAvailable": bool(row.get("had_tool_calls")),
+            "actualToolCallCount": row.get("actual_tool_call_count"),
+            "actualToolNames": self._tool_names_from_row(row),
+            "requestedReasoningEffort": row.get("requested_reasoning_effort"),
             "context": context,
         }
+
+    def _tool_names_from_row(self, row: dict[str, Any]) -> list[str] | None:
+        raw = row.get("actual_tool_names")
+        if raw is None:
+            return None
+        try:
+            values = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return (
+            sorted({str(value) for value in values if isinstance(value, str) and value})
+            if isinstance(values, list)
+            else []
+        )
 
 
 class TelemetryQueue:

@@ -102,6 +102,8 @@ class CodexCallResult:
     cached_input_tokens: int = 0
     output_tokens: int = 0
     error: str | None = None
+    actual_tool_call_count: int | None = None
+    actual_tool_names: list[str] | None = None
     completed: bool = False
     usage_seen: bool = False
     usage_event_type: str | None = None
@@ -486,6 +488,7 @@ class CodexRouter:
         self._availability_event: asyncio.Event | None = None
         self._availability_event_loop: asyncio.AbstractEventLoop | None = None
         self._usage_cache: dict[str, Any] | None = None
+        self._usage_refresh_task: asyncio.Task[dict[str, Any]] | None = None
         self._init_slots()
 
     def _init_slots(self) -> None:
@@ -496,12 +499,29 @@ class CodexRouter:
         self.slots = [CodexSlot(index, path=path) for index, path in enumerate(resolve_auth_paths())]
 
     def reset_state(self) -> None:
+        task = getattr(self, "_usage_refresh_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._usage_refresh_task = None
         self.slots = []
         self.leases.clear()
         self.refresh_locks.clear()
         self._notify_availability_changed()
         self._usage_cache = None
         self._init_slots()
+
+    async def cleanup(self) -> None:
+        task = getattr(self, "_usage_refresh_task", None)
+        self._usage_refresh_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                print(f"[spartan-route] Codex usage refresh cleanup failed ({type(exc).__name__})", file=sys.stderr)
 
     def slot_path_label(self, slot: CodexSlot) -> str | None:
         if slot.path:
@@ -1261,10 +1281,21 @@ class CodexRouter:
             }))
         return outputs, False
 
+    def _actual_tool_names(self, state: CodexEventState) -> list[str]:
+        return sorted({
+            str(function.get("name"))
+            for call in state.calls()
+            if isinstance(call, dict)
+            for function in [call.get("function")]
+            if isinstance(function, dict) and function.get("name")
+        })
+
     def _copy_usage_to_result(self, result: CodexCallResult, state: CodexEventState) -> None:
         result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
         result.usage_seen = state.usage_seen
         result.usage_event_type = state.usage_event_type
+        result.actual_tool_call_count = len(state.calls())
+        result.actual_tool_names = self._actual_tool_names(state)
 
     def _complete_tool_call_deltas(self, state: CodexEventState) -> list[dict[str, Any]]:
         deltas: list[dict[str, Any]] = []
@@ -1360,6 +1391,8 @@ class CodexRouter:
             error=str(error["code"]),
             usage_seen=state.usage_seen,
             usage_event_type=state.usage_event_type,
+            actual_tool_call_count=len(state.calls()),
+            actual_tool_names=self._actual_tool_names(state),
         )
 
     def _codex_error_status(self, error: dict[str, Any]) -> int:
@@ -1386,6 +1419,8 @@ class CodexRouter:
             cached_input_tokens=cached,
             output_tokens=output_tokens,
             error=self._error_code(error),
+            actual_tool_call_count=len(state.calls()) if state is not None else None,
+            actual_tool_names=self._actual_tool_names(state) if state is not None else None,
             usage_seen=usage_seen,
             usage_event_type=usage_event_type,
         )
@@ -1400,6 +1435,8 @@ class CodexRouter:
                 body={"error": self._empty_response_error()},
                 input_tokens=prompt_tokens,
                 cached_input_tokens=cached,
+                actual_tool_call_count=len(state.calls()),
+                actual_tool_names=self._actual_tool_names(state),
                 output_tokens=output_tokens,
                 error="codex_empty_response",
                 usage_seen=state.usage_seen,
@@ -1409,6 +1446,8 @@ class CodexRouter:
             return CodexCallResult(
                 status=502,
                 body={"error": self._incomplete_tool_response_error()},
+                actual_tool_call_count=len(state.calls()),
+                actual_tool_names=self._actual_tool_names(state),
                 input_tokens=prompt_tokens,
                 cached_input_tokens=cached,
                 output_tokens=output_tokens,
@@ -1438,6 +1477,8 @@ class CodexRouter:
             input_tokens=prompt_tokens,
             cached_input_tokens=cached,
             output_tokens=output_tokens,
+            actual_tool_call_count=len(calls),
+            actual_tool_names=self._actual_tool_names(state),
             completed=True,
             usage_seen=state.usage_seen,
             usage_event_type=state.usage_event_type,
@@ -1764,6 +1805,14 @@ class CodexRouter:
         tool: dict[str, Any] = {"type": "image_generation", "output_format": output_format}
         if size and size != "auto":
             tool["size"] = size
+        if images:
+            tool["action"] = "edit"
+        mask = request.get("mask")
+        if isinstance(mask, str) and mask:
+            tool["input_image_mask"] = {"image_url": mask}
+        input_fidelity = request.get("input_fidelity")
+        if input_fidelity in {"low", "high"}:
+            tool["input_fidelity"] = input_fidelity
         return {
             "model": codex_image_host_model(),
             "stream": True,
@@ -1994,112 +2043,175 @@ class CodexRouter:
         )
 
     async def usage_snapshot(self, force: bool = False, slot_indexes: set[int] | None = None) -> dict[str, Any]:
-        if slot_indexes is None and not force and self._usage_cache:
-            if self._usage_cache["expiresAt"] > time.time() and self._usage_cache["signature"] == self._usage_cache_signature():
+        if slot_indexes is not None:
+            payload = await self._fetch_usage_snapshot(slot_indexes)
+            payload.update({"cached": False, "source": "live", "refreshing": False, "observedAt": now_iso()})
+            self._usage_cache = None
+            return payload
+
+        signature = self._usage_cache_signature()
+        if not force and self._usage_cache:
+            if self._usage_cache["expiresAt"] > time.time() and self._usage_cache["signature"] == signature:
                 cached_payload = copy.deepcopy(self._usage_cache["payload"])
-                cached_payload["cached"] = True
-                cached_payload["cacheExpiresAt"] = self._iso_from_epoch(self._usage_cache["expiresAt"])
+                cached_payload.update({
+                    "cached": True,
+                    "source": "memory",
+                    "refreshing": False,
+                    "cacheExpiresAt": self._iso_from_epoch(self._usage_cache["expiresAt"]),
+                })
                 return cached_payload
 
-        payload = await self._fetch_usage_snapshot(slot_indexes)
-        payload["cached"] = False
-        if slot_indexes is None:
-            expires_at = time.time() + CODEX_USAGE_CACHE_TTL_SECONDS
-            self._usage_cache = {
-                "expiresAt": expires_at,
-                "signature": self._usage_cache_signature(),
-                "payload": copy.deepcopy(payload),
-            }
-            payload["cacheExpiresAt"] = self._iso_from_epoch(expires_at)
-        else:
-            self._usage_cache = None
+        refresh = self._ensure_usage_refresh()
+        if force:
+            payload = copy.deepcopy(await refresh)
+            payload.update({"cached": False, "source": "live", "refreshing": False})
+            return payload
+
+        payload = self._persisted_usage_snapshot()
+        payload.update({"cached": True, "source": "persisted", "refreshing": True})
         return payload
 
-    async def _fetch_usage_snapshot(self, slot_indexes: set[int] | None = None) -> dict[str, Any]:
-        accounts: list[dict[str, Any]] = []
-        slot_errors: list[dict[str, Any]] = []
-        reset_errors: list[dict[str, Any]] = []
+    def _ensure_usage_refresh(self) -> asyncio.Task[dict[str, Any]]:
+        task = getattr(self, "_usage_refresh_task", None)
+        if task is None or task.done():
+            task = asyncio.create_task(self._refresh_usage_cache())
+            self._usage_refresh_task = task
+        return task
+
+    async def _refresh_usage_cache(self) -> dict[str, Any]:
+        payload = await self._fetch_usage_snapshot()
+        observed_at = now_iso()
+        payload.update({"cached": False, "source": "live", "refreshing": False, "observedAt": observed_at})
+        expires_at = time.time() + CODEX_USAGE_CACHE_TTL_SECONDS
+        self._usage_cache = {
+            "expiresAt": expires_at,
+            "signature": self._usage_cache_signature(),
+            "payload": copy.deepcopy(payload),
+        }
+        payload["cacheExpiresAt"] = self._iso_from_epoch(expires_at)
+        return payload
+
+    def _persisted_usage_snapshot(self) -> dict[str, Any]:
         telemetry_errors: list[dict[str, str]] = []
-        usage_records: list[dict[str, Any]] = []
-        reset_records: list[dict[str, Any]] = []
+        try:
+            usage_rows = self.telemetry.usage_snapshots()
+        except Exception as exc:
+            self.telemetry.record_health_failure("read", "usage_snapshots")
+            print(f"[spartan-route] telemetry usage snapshot read failed ({type(exc).__name__})", file=sys.stderr)
+            usage_rows = []
+            telemetry_errors.append({"code": "telemetry_read_failed", "operation": "usage_snapshots"})
+        else:
+            self.telemetry.record_health_success("read", "usage_snapshots")
+        try:
+            reset_rows = self.telemetry.reset_credit_snapshots()
+        except Exception as exc:
+            self.telemetry.record_health_failure("read", "reset_credit_snapshots")
+            print(f"[spartan-route] telemetry reset-credit read failed ({type(exc).__name__})", file=sys.stderr)
+            reset_rows = {}
+            telemetry_errors.append({"code": "telemetry_read_failed", "operation": "reset_credit_snapshots"})
+        else:
+            self.telemetry.record_health_success("read", "reset_credit_snapshots")
+
+        accounts: dict[str, dict[str, Any]] = {}
+        observed_at: str | None = None
+        slots_by_index = {slot.index: slot for slot in self.slots}
+        for record in usage_rows:
+            account_key = str(record.get("account_key") or "")
+            if not account_key:
+                continue
+            slot_index = int(record.get("slot_index") or 0)
+            slot = slots_by_index.get(slot_index)
+            slot_path = self.slot_path_label(slot) if slot is not None else None
+            row = accounts.setdefault(account_key, {
+                "accountKey": account_key,
+                "slotIndexes": [],
+                "slotPaths": [],
+                "source": "persisted",
+                "stale": True,
+                "fiveHour": None,
+                "weekly": None,
+                "resetCredits": reset_rows.get(account_key),
+            })
+            if slot_index not in row["slotIndexes"]:
+                row["slotIndexes"].append(slot_index)
+            if slot_path and slot_path not in row["slotPaths"]:
+                row["slotPaths"].append(slot_path)
+            updated_at = str(record.get("updated_at") or "")
+            if updated_at and (observed_at is None or updated_at > observed_at):
+                observed_at = updated_at
+            window_name = str(record.get("window") or "")
+            if window_name not in {"fiveHour", "weekly"}:
+                continue
+            used = max(0.0, min(100.0, parse_float(record.get("used_percent"), 0.0)))
+            row[window_name] = {
+                "window": window_name,
+                "usedPercent": used,
+                "remainingPercent": 100.0 - used,
+                "resetAt": record.get("reset_at"),
+                "windowMinutes": int(record.get("window_minutes") or 0),
+                "updatedAt": updated_at or None,
+            }
+        result: dict[str, Any] = {
+            "accounts": sorted(accounts.values(), key=lambda row: min(row["slotIndexes"] or [9999])),
+            "slotErrors": [],
+            "resetCreditErrors": [],
+            "partial": bool(telemetry_errors),
+            "observedAt": observed_at,
+        }
+        if telemetry_errors:
+            result["telemetryErrors"] = telemetry_errors
+        return result
+
+    async def _fetch_usage_snapshot(self, slot_indexes: set[int] | None = None) -> dict[str, Any]:
+        telemetry_errors: list[dict[str, str]] = []
         try:
             persisted_reset = self.telemetry.reset_credit_snapshots()
         except Exception as exc:
             self.telemetry.record_health_failure("read", "reset_credit_snapshots")
-            print(
-                f"[spartan-route] telemetry reset-credit read failed ({type(exc).__name__})",
-                file=sys.stderr,
-            )
+            print(f"[spartan-route] telemetry reset-credit read failed ({type(exc).__name__})", file=sys.stderr)
             persisted_reset = {}
-            telemetry_errors.append(
-                {
-                    "code": "telemetry_read_failed",
-                    "operation": "reset_credit_snapshots",
-                }
-            )
+            telemetry_errors.append({"code": "telemetry_read_failed", "operation": "reset_credit_snapshots"})
         else:
             self.telemetry.record_health_success("read", "reset_credit_snapshots")
+
+        groups: dict[str, dict[str, Any]] = {}
+        slot_errors: list[dict[str, Any]] = []
         for slot in self.slots:
             if slot_indexes is not None and slot.index not in slot_indexes:
                 continue
             auth = await self.load_auth(slot)
             account_key = auth.account_key if auth else slot.account_key()
             if not auth or not account_key:
-                slot_errors.append({"slotIndex": slot.index, "source": "none", "message": slot.auth_unavailable_reason or "auth unavailable"})
+                slot_errors.append({
+                    "slotIndex": slot.index,
+                    "source": "none",
+                    "message": slot.auth_unavailable_reason or "auth unavailable",
+                })
                 continue
-            slot_path = self.slot_path_label(slot)
-            row = {
-                "accountKey": account_key,
-                "slotIndexes": [slot.index],
-                "slotPaths": [slot_path] if slot_path else [],
-                "source": "live",
-                "stale": False,
-                "fiveHour": None,
-                "weekly": None,
-                "resetCredits": persisted_reset.get(account_key),
-            }
-            headers = {"Authorization": f"Bearer {auth.access_token}"}
-            if auth.account_id:
-                headers["chatgpt-account-id"] = auth.account_id
-            try:
-                async with self.session.get(CODEX_USAGE_URL, headers=headers, timeout=ClientTimeout(total=10)) as response:
-                    if response.status != 200:
-                        raise RuntimeError(f"Codex usage HTTP {response.status}")
-                    payload = await response.json()
-                live_window_used: list[float] = []
-                for window_name, source, seconds in (
-                    ("fiveHour", payload.get("primary_window") or (payload.get("rate_limit") or {}).get("primary_window"), FIVE_HOURS_SECONDS),
-                    ("weekly", payload.get("secondary_window") or (payload.get("rate_limit") or {}).get("secondary_window"), SEVEN_DAYS_SECONDS),
-                ):
-                    if isinstance(source, dict):
-                        used = parse_float(source.get("used_percent"), 0.0)
-                        live_window_used.append(used)
-                        reset_at = source.get("reset_at")
-                        if isinstance(reset_at, (int, float)):
-                            reset_at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(float(reset_at)))
-                        if isinstance(reset_at, str):
-                            row[window_name] = {"window": window_name, "usedPercent": used, "resetAt": reset_at, "windowMinutes": seconds // 60, "updatedAt": now_iso()}
-                            usage_records.append({"account_key": account_key, "slot_index": slot.index, "window": window_name, "used_percent": used, "reset_at": reset_at, "window_minutes": seconds // 60})
-                if slot_indexes is not None and live_window_used and all(used < 100 for used in live_window_used):
-                    if slot.rate_limited_until > 0:
-                        slot.rate_limited_until = 0
-                        self._usage_cache = None
-                        self._notify_availability_changed()
-            except Exception as exc:
-                slot_errors.append({"slotIndex": slot.index, "source": "none", "message": str(exc)})
-            try:
-                headers_reset = dict(headers)
-                headers_reset.update({"OpenAI-Beta": "codex-1", "originator": "Codex Desktop"})
-                async with self.session.get(CODEX_RESET_CREDITS_URL, headers=headers_reset, timeout=ClientTimeout(total=10)) as response:
-                    if response.status != 200:
-                        raise RuntimeError(f"Codex reset credits HTTP {response.status}")
-                    payload = await response.json()
-                reset = normalize_reset_credits(payload, account_key, slot.index)
-                row["resetCredits"] = reset["api"]
-                reset_records.append(reset["db"])
-            except Exception as exc:
-                reset_errors.append({"slotIndex": slot.index, "source": "persisted" if row["resetCredits"] else "none", "message": str(exc)})
-            accounts.append(row)
+            group = groups.setdefault(account_key, {"auth": auth, "slots": []})
+            group["slots"].append(slot)
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def fetch_group(account_key: str, group: dict[str, Any]) -> dict[str, Any]:
+            async with semaphore:
+                return await self._fetch_usage_account(
+                    account_key,
+                    group["auth"],
+                    group["slots"],
+                    persisted_reset.get(account_key),
+                    slot_indexes is not None,
+                )
+
+        fetched = await asyncio.gather(
+            *(fetch_group(account_key, group) for account_key, group in groups.items())
+        )
+        accounts = [item["row"] for item in fetched]
+        reset_errors = [item["resetError"] for item in fetched if item.get("resetError")]
+        slot_errors.extend(item["usageError"] for item in fetched if item.get("usageError"))
+        usage_records = [record for item in fetched for record in item["usageRecords"]]
+        reset_records = [item["resetRecord"] for item in fetched if item.get("resetRecord")]
+
         for operation, persist in (
             ("usage_snapshots", lambda: self.telemetry.upsert_usage_snapshots(usage_records)),
             ("reset_credit_snapshots", lambda: self.telemetry.upsert_reset_credits(reset_records)),
@@ -2108,18 +2220,11 @@ class CodexRouter:
                 persist()
             except Exception as exc:
                 self.telemetry.record_health_failure("write", operation)
-                print(
-                    f"[spartan-route] telemetry {operation} write failed ({type(exc).__name__})",
-                    file=sys.stderr,
-                )
-                telemetry_errors.append(
-                    {
-                        "code": "telemetry_persistence_failed",
-                        "operation": operation,
-                    }
-                )
+                print(f"[spartan-route] telemetry {operation} write failed ({type(exc).__name__})", file=sys.stderr)
+                telemetry_errors.append({"code": "telemetry_persistence_failed", "operation": operation})
             else:
                 self.telemetry.record_health_success("write", operation)
+
         result = {
             "accounts": accounts,
             "slotErrors": slot_errors,
@@ -2129,6 +2234,127 @@ class CodexRouter:
         if telemetry_errors:
             result["telemetryErrors"] = telemetry_errors
         return result
+
+    async def _fetch_usage_account(
+        self,
+        account_key: str,
+        auth: CodexAuth,
+        slots: list[CodexSlot],
+        persisted_reset: dict[str, Any] | None,
+        clear_recovered_limit: bool,
+    ) -> dict[str, Any]:
+        slot = slots[0]
+        slot_paths = [path for path in (self.slot_path_label(item) for item in slots) if path]
+        row = {
+            "accountKey": account_key,
+            "slotIndexes": [item.index for item in slots],
+            "slotPaths": list(dict.fromkeys(slot_paths)),
+            "source": "live",
+            "stale": False,
+            "fiveHour": None,
+            "weekly": None,
+            "resetCredits": persisted_reset,
+        }
+        headers = {"Authorization": f"Bearer {auth.access_token}"}
+        if auth.account_id:
+            headers["chatgpt-account-id"] = auth.account_id
+
+        async def fetch_usage() -> Any:
+            async with self.session.get(CODEX_USAGE_URL, headers=headers, timeout=ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Codex usage HTTP {response.status}")
+                return await response.json()
+
+        async def fetch_reset() -> Any:
+            reset_headers = {**headers, "OpenAI-Beta": "codex-1", "originator": "Codex Desktop"}
+            async with self.session.get(CODEX_RESET_CREDITS_URL, headers=reset_headers, timeout=ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Codex reset credits HTTP {response.status}")
+                return await response.json()
+
+        usage_result, reset_result = await asyncio.gather(fetch_usage(), fetch_reset(), return_exceptions=True)
+        usage_records: list[dict[str, Any]] = []
+        usage_error: dict[str, Any] | None = None
+        reset_error: dict[str, Any] | None = None
+        reset_record: dict[str, Any] | None = None
+
+        if isinstance(usage_result, BaseException):
+            usage_error = {"slotIndex": slot.index, "source": "none", "message": str(usage_result)}
+        elif not isinstance(usage_result, dict):
+            usage_error = {"slotIndex": slot.index, "source": "none", "message": "Codex usage payload was not an object"}
+        else:
+            rate_limit = usage_result.get("rate_limit") if isinstance(usage_result.get("rate_limit"), dict) else {}
+            live_window_used: list[float] = []
+            for window_name, source, seconds in (
+                ("fiveHour", usage_result.get("primary_window") or rate_limit.get("primary_window"), FIVE_HOURS_SECONDS),
+                ("weekly", usage_result.get("secondary_window") or rate_limit.get("secondary_window"), SEVEN_DAYS_SECONDS),
+            ):
+                if not isinstance(source, dict):
+                    continue
+                reset_at = source.get("reset_at")
+                if isinstance(reset_at, (int, float)):
+                    reset_at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(float(reset_at)))
+                if not isinstance(reset_at, str):
+                    continue
+                used = max(0.0, min(100.0, parse_float(source.get("used_percent"), 0.0)))
+                live_window_used.append(used)
+                window = {
+                    "window": window_name,
+                    "usedPercent": used,
+                    "remainingPercent": 100.0 - used,
+                    "resetAt": reset_at,
+                    "windowMinutes": seconds // 60,
+                    "updatedAt": now_iso(),
+                }
+                row[window_name] = window
+                usage_records.append({
+                    "account_key": account_key,
+                    "slot_index": slot.index,
+                    "window": window_name,
+                    "used_percent": used,
+                    "reset_at": reset_at,
+                    "window_minutes": seconds // 60,
+                })
+            if row["weekly"] is None:
+                usage_records = []
+                usage_error = {
+                    "slotIndex": slot.index,
+                    "source": "none",
+                    "message": "Codex usage payload did not contain a recognized weekly window",
+                }
+            elif clear_recovered_limit and live_window_used and all(used < 100 for used in live_window_used):
+                for item in slots:
+                    if item.rate_limited_until > 0:
+                        item.rate_limited_until = 0
+                        self._usage_cache = None
+                        self._notify_availability_changed()
+
+        if isinstance(reset_result, BaseException):
+            reset_error = {
+                "slotIndex": slot.index,
+                "source": "persisted" if row["resetCredits"] else "none",
+                "message": str(reset_result),
+            }
+        else:
+            try:
+                reset = normalize_reset_credits(reset_result, account_key, slot.index)
+            except Exception as exc:
+                reset_error = {
+                    "slotIndex": slot.index,
+                    "source": "persisted" if row["resetCredits"] else "none",
+                    "message": str(exc),
+                }
+            else:
+                row["resetCredits"] = reset["api"]
+                reset_record = reset["db"]
+
+        return {
+            "row": row,
+            "usageError": usage_error,
+            "resetError": reset_error,
+            "usageRecords": usage_records,
+            "resetRecord": reset_record,
+        }
 
 
 async def parse_sse_response(response: Any) -> AsyncIterator[tuple[str | None, str]]:

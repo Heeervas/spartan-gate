@@ -78,6 +78,10 @@
       border-color: var(--accent);
       color: var(--accent);
     }
+    nav a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+      outline-offset: 2px;
+    }
     main { padding: 22px 0 40px; }
     input {
       min-width: 240px;
@@ -116,6 +120,8 @@
     }
     details.panel { margin-bottom: 10px; }
     details.panel > summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(460px, .9fr);
       list-style: none;
       cursor: pointer;
     }
@@ -128,16 +134,39 @@
     details[open] > summary .chev { transform: rotate(90deg); }
     .title {
       display: grid;
-      gap: 2px;
-      min-width: 240px;
+      gap: 4px;
+      min-width: 0;
+    }
+    .activity-title {
+      display: -webkit-box;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
     }
     .summary-metrics {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      color: var(--muted);
+      display: grid;
+      grid-template-columns: repeat(5, minmax(72px, 1fr));
+      gap: 6px;
+      min-width: 0;
+    }
+    .fact {
+      display: grid;
+      align-content: start;
+      gap: 2px;
+      min-width: 0;
+      border-left: 1px solid var(--line);
+      padding-left: 8px;
+      overflow-wrap: anywhere;
       font-size: 12px;
-      justify-content: flex-end;
+    }
+    .fact-label, .field-label {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: .04em;
     }
     .turn-list {
       margin-top: 12px;
@@ -149,7 +178,11 @@
       border-radius: 6px;
       padding: 10px;
     }
-    .turn summary { padding: 0; }
+    .turn > summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(460px, .9fr);
+      padding: 0;
+    }
     .preview {
       max-width: 520px;
       color: var(--muted);
@@ -168,17 +201,24 @@
     }
     .request > summary {
       display: grid;
-      grid-template-columns: minmax(120px, .85fr) minmax(130px, 1fr) minmax(110px, .85fr) minmax(120px, .9fr) minmax(120px, .85fr) minmax(90px, .7fr);
+      grid-template-columns: minmax(120px, .8fr) repeat(4, minmax(100px, .8fr)) minmax(150px, 1fr);
       gap: 10px;
       align-items: center;
-      padding: 9px 6px;
+      padding: 10px 6px;
       cursor: pointer;
       list-style: none;
+      min-width: 0;
+    }
+    .request-primary {
+      display: grid;
+      gap: 2px;
       min-width: 0;
     }
     .request > summary::-webkit-details-marker { display: none; }
     .request > summary:hover { background: color-mix(in srgb, var(--line) 22%, transparent); }
     .request-field {
+      display: grid;
+      gap: 2px;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -243,18 +283,63 @@
       color: var(--muted);
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
+    .diagnostics {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .diagnostics > summary {
+      display: inline-flex;
+      justify-content: flex-start;
+      min-height: 36px;
+      padding: 8px 0;
+      cursor: pointer;
+    }
+    .diagnostics > summary::before {
+      content: "›";
+      margin-right: 6px;
+      transition: transform .15s ease;
+    }
+    .diagnostics[open] > summary::before { transform: rotate(90deg); }
+    .diagnostic-list {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .diagnostic-list button { flex: 0 0 auto; font-family: inherit; }
+    .session-diagnostics {
+      border-top: 1px solid var(--line);
+      padding-top: 4px;
+    }
     .bad { color: var(--bad); }
     .warn { color: var(--warn); }
     @media (max-width: 1040px) {
       .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
+      .wrap { width: min(100% - 24px, 1260px); }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .toolbar { display: grid; grid-template-columns: 1fr; }
       input { min-width: 0; width: 100%; }
-      .request > summary { grid-template-columns: minmax(90px, 1fr) minmax(120px, 1fr); }
-      .request-slot, .request-tokens { display: none; }
-      .summary-metrics { justify-content: flex-start; }
+      button, nav a { min-height: 44px; }
+      .actions { width: 100%; }
+      .actions button { flex: 1 1 auto; }
+      .metric, .panel { padding: 12px; }
+      details.panel > summary, .turn > summary { grid-template-columns: minmax(0, 1fr); }
+      .summary-metrics {
+        width: 100%;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .fact:last-child { grid-column: 1 / -1; }
+      .request > summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .request-primary, .request-latency { grid-column: 1 / -1; }
+      .request-field { white-space: normal; overflow-wrap: anywhere; }
+      .diagnostic-list { align-items: stretch; flex-direction: column; }
+      .diagnostic-list button { width: 100%; }
     }
   </style>
 </head>
@@ -345,25 +430,35 @@
         : tokenCachePercent(metrics.cacheLikelyCachedInputTokens, input);
       return `${percent} likely cache`;
     }
-    function metricLine(metrics = {}) {
-      const latency = metrics.firstResponseLatencyMs || metrics.latencyMs || {};
-      const totalLatency = metrics.totalLatencyMs || {};
-      const latencySuffix = metrics.splitLatencyRequests ? 'first' : 'legacy';
-      const likely = Number(metrics.cacheLikelyRequests || 0);
-      const low = Number(metrics.cacheLowRequests || 0);
-      const cacheText = [`${pct(metrics.cacheHitPercent)} usage cache`];
-      const likelyCache = likelyUsageCacheText(metrics);
-      if (likelyCache) cacheText.push(likelyCache);
-      if (likely || low) cacheText.push(cacheLowSummary(low, likely));
+    function fact(label, value, tone = '') {
+      return `<span class="fact ${tone}"><span class="fact-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
+    }
+    function reasoningSummary(metrics = {}) {
+      const efforts = metrics.reasoningEfforts || {};
+      const entries = Object.entries(efforts);
+      return entries.length ? entries.map(([effort, count]) => `${effort} · ${count}`).join(', ') : 'default';
+    }
+    function toolSummary(metrics = {}) {
+      const known = Number(metrics.toolTelemetryKnownRequests || 0);
+      if (!known) return 'unknown';
+      const count = Number(metrics.actualToolCalls || 0);
+      const names = (metrics.toolNames || []).join(', ');
+      return names ? `${count} · ${names}` : `${count} calls`;
+    }
+    function metricLine(metrics = {}, models = []) {
+      const cache = Number(metrics.usageSeenRequests || 0) ? pct(metrics.cacheHitPercent) : 'unknown';
+      const errors = Number(metrics.errors || 0);
       return [
-        `${num(metrics.requests)} req`,
-        cacheText.join(' · '),
-        `${num(metrics.inputTokens)} in`,
-        `${num(metrics.outputTokens)} out`,
-        `${latency.avg == null ? '-' : `${latency.avg}ms ${latencySuffix}`}`,
-        `${totalLatency.avg == null ? '-' : `${totalLatency.avg}ms total`}`,
-        `${num(metrics.errors)} errors`,
-      ].map(item => `<span>${esc(item)}</span>`).join('');
+        fact('Model', models.join(', ') || 'unknown'),
+        fact('Cache', cache),
+        fact('Reasoning', reasoningSummary(metrics)),
+        fact('Tools', toolSummary(metrics)),
+        fact('Status', errors ? `${errors} errors` : 'OK', errors ? 'bad' : ''),
+      ].join('');
+    }
+    function activityTitle(item, fallback) {
+      const preview = String(item?.promptPreview || '').trim();
+      return preview || fallback;
     }
     function requestPreview(row) {
       const preview = row.promptPreview || tracePreview(row);
@@ -402,26 +497,38 @@
       const account = row.selectedCodexAccountKey || '';
       const total = row.totalResponseTimeMs || 0;
       const latencyKind = row.latencySource === 'legacy_response_time' ? 'legacy' : 'first';
-      const status = row.error || 'ok';
       const cachePercent = tokenCachePercent(row.cachedInputTokens, row.inputTokens);
+      const reasoning = row.requestedReasoningEffort || row.context?.requested_reasoning_effort || 'default';
+      const tools = row.actualToolCallCount == null
+        ? 'unknown'
+        : ((row.actualToolNames || []).length ? `${row.actualToolCallCount} · ${row.actualToolNames.join(', ')}` : `${row.actualToolCallCount} calls`);
       return `<details class="request${row.error ? ' error' : ''}">
         <summary title="${esc(preview)}">
-          <span class="request-field">${esc(fmtTime(row.timestamp))}</span>
-          <span class="request-field request-model">${esc(row.actualModel)}</span>
-          <span class="request-field request-slot">slot ${esc(slot)}${account ? ` · ${esc(account)}` : ''}</span>
-          <span class="request-field request-tokens">${num(row.inputTokens)} in · ${num(row.cachedInputTokens)} cached (${esc(cachePercent)}) · ${num(row.outputTokens)} out</span>
-          <span class="request-field request-latency">${esc(row.responseTimeMs || 0)}ms ${esc(latencyKind)} · ${esc(total)}ms total</span>
-          <span class="request-field request-status ${row.error ? 'bad' : ''}">${esc(status)}</span>
+          <span class="request-primary"><strong class="${row.error ? 'bad' : ''}">${esc(row.error ? 'Error' : 'OK')}</strong><span class="muted">${esc(fmtTime(row.timestamp))}</span></span>
+          <span class="request-field request-model"><span class="field-label">Model</span>${esc(row.actualModel)}</span>
+          <span class="request-field request-cache"><span class="field-label">Cache</span>${esc(cachePercent)}</span>
+          <span class="request-field request-reasoning"><span class="field-label">Reasoning</span>${esc(reasoning)}</span>
+          <span class="request-field request-tools"><span class="field-label">Tools</span>${esc(tools)}</span>
+          <span class="request-field request-latency"><span class="field-label">Latency</span>${esc(row.responseTimeMs || 0)}ms ${esc(latencyKind)} · ${esc(total)}ms total</span>
         </summary>
         <div class="request-detail">
           <div class="request-preview">${esc(preview)}</div>
           <div class="request-meta">
             <span class="meta-pill">${esc(row.originalModel)} to ${esc(row.routedModel)}</span>
             <span class="meta-pill">${esc(row.tier || 'unknown')}</span>
-            <span class="meta-pill">${esc(row.requestId || 'no request id')}</span>
+            <span class="meta-pill">${num(row.inputTokens)} in · ${num(row.cachedInputTokens)} cached · ${num(row.outputTokens)} out</span>
+            ${row.toolsAvailable ? '<span class="meta-pill">tools offered</span>' : ''}
             ${row.context?.request_trace?.delta?.phase ? `<span class="meta-pill">${esc(row.context.request_trace.delta.phase)}</span>` : ''}
           </div>
           ${renderTraceItems(row)}
+          <details class="diagnostics">
+            <summary>Technical identifiers</summary>
+            <div class="diagnostic-list">
+              <span>request ${esc(row.requestId || 'unavailable')}</span>
+              <button type="button" data-copy="${esc(row.requestId || '')}">Copy request ID</button>
+              <span>slot ${esc(slot)}${account ? ` · account ${esc(account)}` : ''}</span>
+            </div>
+          </details>
         </div>
       </details>`;
     }
@@ -490,28 +597,50 @@
     }
     function renderSessions(payload) {
       const sessions = payload.sessions || [];
-      statusEl.textContent = `${sessions.length} shown${payload.hasMoreSessions ? ', more in DB' : ''}`;
+      statusEl.textContent = `${sessions.length} shown${payload.hasMoreSessions ? ', more retained' : ''}`;
       sessionsEl.innerHTML = sessions.map((session, index) => {
         const turns = session.turns || [];
-        return `<details class="panel" ${index === 0 ? 'open' : ''}>
-          <summary>
-            <span class="title"><strong><span class="chev">›</span>${esc(session.id)}</strong><span class="muted">${esc(fmtTime(session.lastAt))} - ${esc(session.turnCount || turns.length)} turns</span></span>
-            <span class="summary-metrics">${metricLine(session.metrics)}</span>
+        const latestTurn = turns[0] || {};
+        const title = activityTitle(latestTurn, `Session at ${fmtTime(session.lastAt)}`);
+        return `<details class="panel session-card" ${index === 0 ? 'open' : ''}>
+          <summary class="session-summary">
+            <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(title)}</strong><span class="muted">${esc(fmtTime(session.lastAt))} · ${esc(session.turnCount || turns.length)} turns</span></span>
+            <span class="summary-metrics">${metricLine(session.metrics, session.models)}</span>
           </summary>
           <div class="turn-list">
             ${turns.map(turn => `<details class="turn" data-turn-id="${esc(turn.id)}">
-              <summary>
-                <span class="title"><strong><span class="chev">›</span>${esc(turn.id)}</strong><span class="preview">${esc(turn.promptPreview || (turn.models || []).join(', ') || 'No preview')}</span></span>
-                <span class="summary-metrics">${metricLine(turn.metrics)}</span>
+              <summary class="turn-summary">
+                <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(activityTitle(turn, 'Turn without preview'))}</strong><span class="muted">${esc(fmtTime(turn.lastAt))}</span></span>
+                <span class="summary-metrics">${metricLine(turn.metrics, turn.models)}</span>
               </summary>
               <div class="turn-requests"></div>
+              <details class="diagnostics">
+                <summary>Turn identifier</summary>
+                <div class="diagnostic-list"><span>${esc(turn.id)}</span><button type="button" data-copy="${esc(turn.id)}">Copy turn ID</button></div>
+              </details>
             </details>`).join('')}
-            ${session.hasMoreTurns ? '<p class="muted">Older turns hidden by current limit.</p>' : ''}
+            ${session.hasMoreTurns ? '<p class="muted">Older turns hidden by the current limit.</p>' : ''}
+            <details class="diagnostics session-diagnostics">
+              <summary>Session identifier</summary>
+              <div class="diagnostic-list"><span>${esc(session.id)}</span><button type="button" data-copy="${esc(session.id)}">Copy session ID</button></div>
+            </details>
           </div>
         </details>`;
-      }).join('') || '<div class="panel muted">No routing rows yet.</div>';
+      }).join('') || '<div class="panel muted" role="status">No sessions recorded yet. New routed requests will appear here.</div>';
       wireLazyTurns();
     }
+    sessionsEl.addEventListener('click', async event => {
+      const button = event.target.closest('button[data-copy]');
+      if (!button) return;
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy || '');
+        const label = button.textContent;
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = label; }, 1200);
+      } catch (_error) {
+        button.textContent = 'Copy failed';
+      }
+    });
     async function load() {
       try {
         statusEl.textContent = 'Loading...';

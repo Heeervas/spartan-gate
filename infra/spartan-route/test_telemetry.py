@@ -295,7 +295,7 @@ class TelemetryTests(unittest.TestCase):
         finally:
             store.close()
 
-    def test_existing_database_gets_latency_columns(self) -> None:
+    def test_existing_database_gets_additive_routing_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = str(Path(tmp) / "spartan-route.db")
             conn = sqlite3.connect(db_path)
@@ -348,6 +348,8 @@ class TelemetryTests(unittest.TestCase):
                 }
                 self.assertIn("upstream_response_time_ms", columns)
                 self.assertIn("total_response_time_ms", columns)
+                self.assertIn("actual_tool_call_count", columns)
+                self.assertIn("actual_tool_names", columns)
                 store.log_routing(RoutingLogEntry(
                     timestamp="2026-06-25T09:00:00.000Z",
                     original_model="clawroute/auto",
@@ -357,6 +359,8 @@ class TelemetryTests(unittest.TestCase):
                     response_time_ms=75,
                     upstream_response_time_ms=75,
                     total_response_time_ms=900,
+                    actual_tool_call_count=1,
+                    actual_tool_names=["read_file"],
                     context_info='{"usage_seen":true}',
                 ))
             finally:
@@ -852,6 +856,74 @@ class TelemetryRetentionTests(unittest.TestCase):
             self.assertEqual(
                 store.reset_credit_snapshots()["acct"]["availableCount"],
                 1,
+            )
+        finally:
+            store.close()
+
+
+    def test_live_sessions_expose_reasoning_and_actual_tool_activity(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-07-19T10:00:00.000Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.6",
+                actual_model="codex/gpt-5.6",
+                tier="complex",
+                input_tokens=1000,
+                cached_input_tokens=750,
+                output_tokens=50,
+                had_tool_calls=True,
+                actual_tool_call_count=2,
+                actual_tool_names=["write_file", "read_file", "read_file"],
+                session_id="session-friendly",
+                request_id="request-friendly",
+                turn_id="turn-friendly",
+                prompt_preview="Improve the mobile dashboard",
+                requested_reasoning_effort="high",
+                context_info='{"usage_seen":true}',
+            ))
+
+            session = store.live_sessions()["sessions"][0]
+            metrics = session["metrics"]
+            self.assertEqual(metrics["actualToolCalls"], 2)
+            self.assertEqual(metrics["toolNames"], ["read_file", "write_file"])
+            self.assertEqual(metrics["toolEnabledRequests"], 1)
+            self.assertEqual(metrics["toolTelemetryKnownRequests"], 1)
+            self.assertEqual(metrics["reasoningEfforts"], {"high": 1})
+
+            request = store.turn_requests("turn-friendly")["requests"][0]
+            self.assertTrue(request["toolsAvailable"])
+            self.assertEqual(request["actualToolCallCount"], 2)
+            self.assertEqual(request["actualToolNames"], ["read_file", "write_file"])
+            self.assertEqual(request["requestedReasoningEffort"], "high")
+        finally:
+            store.close()
+
+    def test_weekly_snapshot_replaces_obsolete_current_windows_but_keeps_history(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            base = {
+                "account_key": "acct",
+                "slot_index": 0,
+                "used_percent": 20,
+                "reset_at": "2026-07-25T10:00:00Z",
+            }
+            store.upsert_usage_snapshots([
+                {**base, "window": "fiveHour", "window_minutes": 300},
+                {**base, "window": "weekly", "window_minutes": 10080},
+            ])
+            store.upsert_usage_snapshots([
+                {**base, "window": "weekly", "window_minutes": 10080, "used_percent": 40},
+            ])
+
+            self.assertEqual(
+                [row["window"] for row in store.usage_snapshots()],
+                ["weekly"],
+            )
+            self.assertEqual(
+                store._conn.execute("SELECT count(*) FROM codex_usage_snapshot_history").fetchone()[0],
+                3,
             )
         finally:
             store.close()

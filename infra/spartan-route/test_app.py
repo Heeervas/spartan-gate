@@ -20,6 +20,7 @@ from spartan_route.app import (
     RoutedRequest,
     SpartanRouteState,
     STATE_KEY,
+    apply_tool_call_telemetry,
     build_request_shape_diagnostics,
     build_routing_policy_snapshot,
     classify_codex_slot_health,
@@ -921,6 +922,35 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_session.calls[0]["json"]["size"], "1536x1024")
         self.assertTrue(fake_session.calls[0]["url"].endswith("/images/generations"))
 
+    async def test_openai_image_edit_passthrough_preserves_mask_and_fidelity(self) -> None:
+        state = self.app[STATE_KEY]
+        if state.session is not None:
+            await state.session.close()
+        fake_session = FakeOpenAISession()
+        state.session = fake_session
+        form = FormData()
+        form.add_field("model", "gpt-image-2")
+        form.add_field("prompt", "repair the grip")
+        form.add_field("image", b"source", filename="source.png", content_type="image/png")
+        form.add_field("mask", b"mask", filename="mask.png", content_type="image/png")
+        form.add_field("input_fidelity", "high")
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            response = await self.client.post(
+                "/v1/images/edits",
+                headers={"Authorization": "Bearer secret"},
+                data=form,
+            )
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(fake_session.calls[0]["url"].endswith("/images/edits"))
+        upstream_fields = {
+            field_options["name"]: value
+            for field_options, _headers, value in fake_session.calls[0]["data"]._fields
+        }
+        self.assertEqual(upstream_fields["mask"], b"mask")
+        self.assertEqual(upstream_fields["input_fidelity"], "high")
+
     async def test_codex_image_edits_allow_non_square_size(self) -> None:
         state = self.app[STATE_KEY]
         fake_codex = FakeImageCodex()
@@ -931,6 +961,8 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         form.add_field("prompt", "make the red square landscape")
         form.add_field("size", "1024x1536")
         form.add_field("image", b"\x89PNG\r\n", filename="red.png", content_type="image/png")
+        form.add_field("mask", b"\x89PNG\r\nmask", filename="mask.png", content_type="image/png")
+        form.add_field("input_fidelity", "high")
 
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
             response = await self.client.post(
@@ -942,6 +974,25 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(fake_codex.requests[0]["size"], "1024x1536")
         self.assertEqual(len(fake_codex.requests[0]["images"]), 1)
+        self.assertTrue(fake_codex.requests[0]["mask"].startswith("data:image/png;base64,"))
+        self.assertEqual(fake_codex.requests[0]["input_fidelity"], "high")
+
+    async def test_codex_image_edits_reject_invalid_input_fidelity(self) -> None:
+        form = FormData()
+        form.add_field("model", "gpt-image-2")
+        form.add_field("prompt", "repair the grip")
+        form.add_field("image", b"\x89PNG\r\n", filename="source.png", content_type="image/png")
+        form.add_field("input_fidelity", "maximum")
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            response = await self.client.post(
+                "/v1/images/edits",
+                headers={"Authorization": "Bearer secret"},
+                data=form,
+            )
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual((await response.json())["error"]["code"], "invalid_input_fidelity")
 
 
 class AppCacheDiagnosticsTests(unittest.TestCase):
@@ -1294,6 +1345,8 @@ class StreamingCodex:
                 result.input_tokens = 1000
                 result.cached_input_tokens = 750
                 result.output_tokens = 20
+                result.actual_tool_call_count = 1
+                result.actual_tool_names = ["lookup"]
                 result.usage_seen = True
                 result.usage_event_type = "response.completed"
 
@@ -1302,6 +1355,20 @@ class StreamingCodex:
 
 
 class AppStreamingTelemetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_tool_telemetry_uses_protocol_choice_indexes(self) -> None:
+        result = ExecutionResult(status=200)
+        apply_tool_call_telemetry(
+            result,
+            {"choices": [{"index": 2, "delta": {"tool_calls": [{"index": 0, "function": {"name": "lookup"}}]}}]},
+        )
+        apply_tool_call_telemetry(
+            result,
+            {"choices": [{"index": 1, "delta": {"tool_calls": [{"index": 0, "function": {"name": "search"}}]}}]},
+        )
+
+        self.assertEqual(result.actual_tool_call_count, 2)
+        self.assertEqual(result.actual_tool_names, ["lookup", "search"])
+
     async def test_codex_stream_updates_execution_result_before_logging(self) -> None:
         state = SpartanRouteState(test_config(), TelemetryStore(":memory:"), CaptureQueue())
         state.codex = StreamingCodex()
@@ -1325,6 +1392,8 @@ class AppStreamingTelemetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.input_tokens, 1000)
         self.assertEqual(result.cached_input_tokens, 750)
         self.assertEqual(result.output_tokens, 20)
+        self.assertEqual(result.actual_tool_call_count, 1)
+        self.assertEqual(result.actual_tool_names, ["lookup"])
         self.assertTrue(result.usage_seen)
         self.assertEqual(result.usage_event_type, "response.completed")
 
@@ -1356,16 +1425,28 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("firstResponseLatencyMs", html)
         self.assertIn("tokenCachePercent", html)
         self.assertIn("likelyUsageCacheText", html)
+        self.assertIn("function reasoningSummary", html)
+        self.assertIn("function toolSummary", html)
+        self.assertIn('class="activity-title"', html)
+        self.assertIn("actualToolCallCount", html)
+        self.assertIn("Technical identifiers", html)
+        self.assertIn("Copy session ID", html)
 
     def test_codex_dashboard_uses_threshold_colored_rings(self) -> None:
         html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
 
-        self.assertIn("function ringTone", html)
-        self.assertIn("value >= 90", html)
-        self.assertIn("value >= 70", html)
+        self.assertIn("function balanceTone", html)
+        self.assertIn("value <= 10", html)
+        self.assertIn("value <= 30", html)
         self.assertIn("--tone", html)
+        self.assertIn("Weekly balance", html)
+        self.assertIn("Five-hour balance", html)
+        self.assertIn("account.fiveHour", html)
+        self.assertIn("remainingPercent", html)
         self.assertIn("slotPaths", html)
         self.assertIn("likelyUsageCacheText", html)
+        self.assertIn("refreshing in background", html)
+        self.assertIn("function pollRefresh", html)
 
     def test_codex_dashboard_merges_usage_and_slot_cards_with_countdowns(self) -> None:
         html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")

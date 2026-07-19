@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Made Codex balances load from persisted telemetry immediately while one
+  bounded concurrent refresh runs in the background; promoted weekly remaining
+  balance to the primary wheel, kept optional five-hour windows compatible,
+  added mobile-first session activity diagnostics and actual tool telemetry,
+  and added masked/fidelity-aware Codex image edits.
 - Added fail-closed Spartan Route SQLite ownership preflight to normal startup,
   rebuild, doctor, and L4 install paths; added a stopped-state exact-file
   migration with verified backup and rollback, replacing recursive data-root

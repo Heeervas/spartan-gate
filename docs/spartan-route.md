@@ -84,13 +84,16 @@ Kept in v1:
   system/tool prefix shape.
 - Per-key Codex cache leases, rate-limit cooldowns, transient 5xx cooldowns,
   and retry across slots/accounts.
-- Codex image generation and no-mask image edits, with OpenAI image endpoint
-  passthrough when `OPENAI_API_KEY` is available. The Codex-auth image fallback
-  accepts OpenAI `gpt-image-2` sizes such as `1536x1024` and `1024x1536`,
-  validates the documented request-size constraints, and returns Codex image
-  result bytes unchanged even when upstream produces different pixel
-  dimensions or aspect ratio. If dimensions can be detected, Spartan Route
-  includes `actual_size` on the image item.
+- Codex image generation and image edits, including multipart PNG alpha masks
+  translated to Responses `input_image_mask`. Edits set `action=edit` and
+  forward validated `input_fidelity=low|high`; coordinates in prompt text are
+  not a pixel boundary. OpenAI image endpoint passthrough remains active when
+  `OPENAI_API_KEY` is available. The Codex-auth image fallback accepts OpenAI
+  `gpt-image-2` sizes such as `1536x1024` and `1024x1536`, validates the
+  documented request-size constraints, and returns Codex image result bytes
+  unchanged even when upstream produces different pixel dimensions or aspect
+  ratio. If dimensions can be detected, Spartan Route includes `actual_size`
+  on the image item.
 - Reset-credit telemetry and dashboard display. V1 only reads and persists
   reset-credit metadata; it never redeems credits.
 - Bounded asynchronous routing telemetry: 1,024 pending rows by default,
@@ -127,15 +130,27 @@ Kept in v1:
   invalidated, and the override survives service restart. If a stored override
   clearly belongs to a different slot identity, Spartan Route ignores that
   stale disable and reports an identity mismatch in the dashboard/API.
-- Cached Codex usage polling for the dashboard. Normal `/api/codex/usage`
-  calls reuse a short-lived in-process snapshot; `?force=true` or
-  `POST /api/codex/usage/slots/{slot}` performs a live check.
+- Persisted-first Codex usage polling for the dashboard. Normal
+  `/api/codex/usage` calls return a fresh memory snapshot or the latest
+  database snapshot immediately, then start one background live refresh.
+  Accounts and their usage/reset-credit requests refresh concurrently with a
+  bounded fan-out. `?force=true` waits for that shared refresh;
+  `POST /api/codex/usage/slots/{slot}` performs a focused live check.
 - Authenticated Codex dashboard/API responses include the configured Codex auth
   path for each slot so local operators can identify accounts. Public health
   responses keep only hashes and never expose raw slot paths.
-- The Codex dashboard groups usage windows and slot controls by account. Slots
-  without live usage telemetry still render as slot-only cards, and reset times
-  are shown as countdowns with exact timestamps available on hover.
+- The Codex dashboard presents remaining weekly balance as the primary wheel.
+  The five-hour wheel appears only when upstream returns a recognized primary
+  window; a successful weekly-only response removes the obsolete current
+  five-hour snapshot while retaining its history, and support resumes
+  automatically if the window returns. Slots without usage telemetry still
+  render as slot-only cards, and reset times include countdowns and timestamps.
+- The routing dashboard presents sessions as a prompt-led activity feed with
+  model, cache percentage, requested reasoning, errors, and actual tool-call
+  activity visible before expansion. Session, turn, request, account, slot, and
+  cache identifiers remain available in disclosed diagnostics. Actual tool
+  counts/names are recorded without arguments when observable; older or
+  unobservable rows report unknown rather than zero.
 
 With `CLAWROUTE_DEBUG=true`, Spartan Route logs a redacted summary of outbound
 image passthrough payloads. The summary includes fields such as `model`, `size`,
