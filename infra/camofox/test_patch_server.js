@@ -41,6 +41,35 @@ async function launch() {
         proxy: launchProxy,
     };
 }
+      // Memory admission control (Fly.io only) — reject new sessions when
+      // system memory is critically low. 503 tells Fly Proxy to try another machine.
+
+app.post('/tabs', async (req, res) => {
+  try {
+    const { userId, sessionKey, listItemId, url, trace } = req.body;
+    const resolvedSessionKey = sessionKey || listItemId;
+    const result = await withTimeout((async () => {
+      let session = await getSession(userId, { trace: !!trace });
+      const group = getTabGroup(session, resolvedSessionKey);
+      const page = await session.context.newPage();
+      const tabId = fly.makeTabId();
+      let tabState = createTabState(page);
+      group.set(tabId, tabState);
+      if (url) {
+        const urlErr = validateUrl(url);
+        if (urlErr) throw new Error(urlErr);
+        await page.goto(url);
+      }
+      return { tabId, url: page.url() };
+    })(), requestTimeoutMs(), 'tab create');
+    res.json(result);
+  } catch (err) {
+    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Navigate
 app.post('/tabs/:tabId/navigate', async (req, res) => {
   try {
     await navigateCurrentPage();
@@ -56,6 +85,16 @@ app.post('/tabs/:tabId/viewport', async (req, res) => {
   res.json({ ok: true, width: req.body?.width, height: req.body?.height });
 });
 // Get captured downloads
+
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// Active health probe -- detect hung browser even when isConnected() lies
+setInterval(async () => {
+  const context = await browser.newContext();
+  await context.close();
+}, 60_000);
+
+// Crash logging
 
 async function closeBrowser() {
   // Reset native memory baseline so next browser measures from fresh
@@ -130,6 +169,15 @@ try {
   assert.match(once, /err\.code = 'clipper_bridge_timeout'/, 'clipper bridge timeouts must return a semantic code');
   assert.match(once, /if \(err\.code\) return err\.message;/, 'coded errors must keep actionable messages');
   assert.match(once, /body\.code = err\.code/, 'global errors must include semantic codes in the response body');
+  assert.match(once, /app\.get\('\/spartan\/health\/deep'/, 'deep health route must be installed');
+  assert.match(once, /spartanInternalRequestAuthorized/, 'deep health must require internal authorization');
+  assert.doesNotMatch(once, /Active health probe -- detect hung browser/, 'unbounded upstream probe must be removed');
+  assert.match(once, /const spartanCreateFence =/, 'tab create must fence late completions');
+  assert.match(once, /sessions\.get\(spartanCreateFence\.userKey\) === session/, 'late session cleanup must use compare-and-delete');
+  assert.match(once, /spartanPagePromise\.then/, 'late pages must be observed for cleanup');
+  assert.match(once, /code: 'tab_create_timeout'/, 'tab timeout must be semantic');
+  assert.match(once, /stage: spartanCreateFence\.stage/, 'tab failure logs must identify only the stage');
+  assert.match(once, /spartanCgroupAdmissionAllowed/, 'Compose memory admission must use cgroup v2');
   const syntax = spawnSync(process.execPath, ['--check', serverPath], { cwd: temp, encoding: 'utf8' });
   assert.strictEqual(syntax.status, 0, syntax.stderr);
   console.log('patch-server tests: ok');

@@ -64,6 +64,36 @@ async function launch(vdDisplay, launchProxy) {
     };
 }
 
+      // Memory admission control (Fly.io only) — reject new sessions when
+      // system memory is critically low. 503 tells Fly Proxy to try another machine.
+
+app.post('/tabs', async (req, res) => {
+  try {
+    const { userId, sessionKey, listItemId, url, trace } = req.body;
+    const resolvedSessionKey = sessionKey || listItemId;
+    const result = await withTimeout((async () => {
+      let session = await getSession(userId, { trace: !!trace });
+      const group = getTabGroup(session, resolvedSessionKey);
+      const page = await session.context.newPage();
+      const tabId = fly.makeTabId();
+      let tabState = createTabState(page);
+      group.set(tabId, tabState);
+      if (url) {
+        const urlErr = validateUrl(url);
+        if (urlErr) throw new Error(urlErr);
+        await page.goto(url);
+      }
+      return { tabId, url: page.url() };
+    })(), requestTimeoutMs(), 'tab create');
+    res.json(result);
+  } catch (err) {
+    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Navigate
+
 app.post('/tabs/:tabId/navigate', async (req, res) => {
   try {
     await navigateCurrentPage();
@@ -81,6 +111,16 @@ app.post('/tabs/:tabId/viewport', async (req, res) => {
 });
 
 // Get captured downloads
+
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// Active health probe -- detect hung browser even when isConnected() lies
+setInterval(async () => {
+  const context = await browser.newContext();
+  await context.close();
+}, 60_000);
+
+// Crash logging
 
 app.delete('/tabs/:tabId', async (req, res) => {
   try {
@@ -200,6 +240,15 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertIn("await withTabLock(req.params.tabId, async () =>", close_route)
         self.assertLess(close_route.index("await withTabLock"), close_route.index("safePageClose"))
         self.assertIn("typeof reporter.resetNativeMemBaseline === 'function'", patched)
+        self.assertIn("app.get('/spartan/health/deep'", patched)
+        self.assertIn("spartanInternalRequestAuthorized", patched)
+        self.assertNotIn("Active health probe -- detect hung browser", patched)
+        self.assertIn("const spartanCreateFence =", patched)
+        self.assertIn("sessions.get(spartanCreateFence.userKey) === session", patched)
+        self.assertIn("spartanPagePromise.then", patched)
+        self.assertIn("code: 'tab_create_timeout'", patched)
+        self.assertIn("stage: spartanCreateFence.stage", patched)
+        self.assertIn("spartanCgroupAdmissionAllowed", patched)
 
         syntax = subprocess.run(
             ["node", "--check", "server.js"],

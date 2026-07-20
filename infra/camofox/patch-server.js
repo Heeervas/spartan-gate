@@ -3,6 +3,13 @@ const fs = require('fs');
 const path = 'server.js';
 let source = fs.readFileSync(path, 'utf8');
 
+const spartanHealthImport = "import { createSpartanDeepHealthController, spartanInternalRequestAuthorized, spartanCgroupAdmissionAllowed } from './spartan-health.mjs';\n";
+if (!source.includes(spartanHealthImport)) {
+  const importMarker = "import fs from 'fs';\n";
+  if (!source.includes(importMarker)) throw new Error('expected Camofox fs import marker not found');
+  source = source.replace(importMarker, importMarker + spartanHealthImport);
+}
+
 const spartanChildProcessRequire = "const spartanChildProcess = require('child_process');\n";
 const spartanChildProcessImport = "import * as spartanChildProcess from 'child_process';\n";
 
@@ -777,6 +784,102 @@ if (closeTabRouteStartIndex !== -1) {
   }
 }
 
+const createTabRouteStart = "app.post('/tabs', async (req, res) => {";
+const createTabRouteEnd = "\n});\n\n// Navigate";
+const createTabRouteStartIndex = source.indexOf(createTabRouteStart);
+if (createTabRouteStartIndex !== -1) {
+  const createTabRouteEndIndex = source.indexOf(createTabRouteEnd, createTabRouteStartIndex);
+  if (createTabRouteEndIndex === -1) throw new Error('expected Camofox create-tab route end marker not found');
+  let createTabRoute = source.slice(createTabRouteStartIndex, createTabRouteEndIndex);
+  if (!createTabRoute.includes('const spartanCreateFence =')) {
+    const routeOpen = `${createTabRouteStart}\n  try {`;
+    const routeOpenReplacement = `${createTabRouteStart}\n  const spartanCreateFence = {\n    active: true,\n    stage: 'validate',\n    startedAt: Date.now(),\n    session: null,\n    page: null,\n    group: null,\n    tabId: null,\n    userKey: null,\n  };\n  try {`;
+    const getSessionMarker = '      let session = await getSession(userId, { trace: !!trace });';
+    const getSessionReplacement = `      spartanCreateFence.stage = 'get_session';
+      spartanCreateFence.userKey = normalizeUserId(userId);
+      let session = await getSession(userId, { trace: !!trace });
+      spartanCreateFence.session = session;
+      if (!spartanCreateFence.active) {
+        if (sessions.get(spartanCreateFence.userKey) === session) sessions.delete(spartanCreateFence.userKey);
+        session._closing = true;
+        closeSession(spartanCreateFence.userKey, session, { reason: 'late_tab_create', clearDownloads: true, clearLocks: true }).catch(() => {});
+        throw Object.assign(new Error('tab create completed after deadline'), { statusCode: 503, code: 'tab_create_timeout' });
+      }`;
+    const groupMarker = '      const group = getTabGroup(session, resolvedSessionKey);';
+    const groupReplacement = `${groupMarker}
+      spartanCreateFence.group = group;`;
+    const newPageMarker = '      const page = await session.context.newPage();';
+    const newPageReplacement = `      spartanCreateFence.stage = 'new_page';
+      const spartanPagePromise = session.context.newPage();
+      spartanPagePromise.then(latePage => {
+        if (!spartanCreateFence.active) safePageClose(latePage).catch(() => {});
+      }).catch(() => {});
+      const page = await spartanPagePromise;
+      if (!spartanCreateFence.active) {
+        safePageClose(page).catch(() => {});
+        throw Object.assign(new Error('tab create completed after deadline'), { statusCode: 503, code: 'tab_create_timeout' });
+      }
+      spartanCreateFence.page = page;`;
+    const tabIdMarker = '      const tabId = fly.makeTabId();';
+    const tabIdReplacement = `${tabIdMarker}
+      spartanCreateFence.tabId = tabId;`;
+    const navigationMarker = `      if (url) {
+        const urlErr = validateUrl(url);`;
+    const navigationReplacement = `      if (url) {
+        spartanCreateFence.stage = 'navigate';
+        const urlErr = validateUrl(url);`;
+    const catchMarker = `  } catch (err) {
+    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });`;
+    const catchReplacement = `  } catch (err) {
+    spartanCreateFence.active = false;
+    const spartanCreateTimedOut = err?.code === 'tab_create_timeout'
+      || String(err?.message || '').includes('tab create timed out');
+    if (spartanCreateTimedOut) {
+      err.statusCode = 503;
+      err.code = 'tab_create_timeout';
+      log('error', 'tab create stage failed', {
+        reqId: req.reqId,
+        stage: spartanCreateFence.stage,
+        durationMs: Date.now() - spartanCreateFence.startedAt,
+        code: err.code,
+      });
+      if (spartanCreateFence.group && spartanCreateFence.tabId) {
+        spartanCreateFence.group.delete(spartanCreateFence.tabId);
+        refreshActiveTabsGauge();
+      }
+      if (spartanCreateFence.page) {
+        await withTimeout(safePageClose(spartanCreateFence.page), 2000, 'tab create cleanup').catch(() => {
+          restartBrowser('tab_create_cleanup_timeout').catch(() => {});
+        });
+      } else if (spartanCreateFence.session && spartanCreateFence.userKey) {
+        const current = sessions.get(spartanCreateFence.userKey);
+        if (current === spartanCreateFence.session) sessions.delete(spartanCreateFence.userKey);
+        spartanCreateFence.session._closing = true;
+        await withTimeout(closeSession(spartanCreateFence.userKey, spartanCreateFence.session, {
+          reason: 'tab_create_timeout', clearDownloads: true, clearLocks: true,
+        }), 2000, 'tab create session cleanup').catch(() => {
+          restartBrowser('tab_create_session_cleanup_timeout').catch(() => {});
+        });
+      }
+    }
+    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });`;
+
+    for (const [marker, replacement, label] of [
+      [routeOpen, routeOpenReplacement, 'route open'],
+      [getSessionMarker, getSessionReplacement, 'getSession'],
+      [groupMarker, groupReplacement, 'group'],
+      [newPageMarker, newPageReplacement, 'newPage'],
+      [tabIdMarker, tabIdReplacement, 'tabId'],
+      [navigationMarker, navigationReplacement, 'navigation'],
+      [catchMarker, catchReplacement, 'catch'],
+    ]) {
+      if (!createTabRoute.includes(marker)) throw new Error(`expected Camofox create-tab ${label} marker not found`);
+      createTabRoute = createTabRoute.replace(marker, replacement);
+    }
+    source = source.slice(0, createTabRouteStartIndex) + createTabRoute + source.slice(createTabRouteEndIndex);
+  }
+}
+
 const nativeMemResetMarker = `  // Reset native memory baseline so next browser measures from fresh
   reporter.resetNativeMemBaseline();
   _nativeMemBaseline = null;`;
@@ -789,6 +892,73 @@ if (source.includes(nativeMemResetMarker)) {
   source = source.replace(nativeMemResetMarker, nativeMemResetReplacement);
 } else if (!source.includes("typeof reporter.resetNativeMemBaseline === 'function'")) {
   throw new Error('expected Camofox native memory reset marker not found');
+}
+
+const spartanCgroupAdmissionMarker = `      // Memory admission control (Fly.io only) — reject new sessions when
+      // system memory is critically low. 503 tells Fly Proxy to try another machine.`;
+const spartanCgroupAdmission = `      if (process.env.SPARTAN_CAMOFOX_CGROUP_ADMISSION === 'true') {
+        const admission = spartanCgroupAdmissionAllowed({
+          threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.90),
+        });
+        if (!admission.allowed) {
+          const err = new Error('Camofox cgroup memory admission rejected');
+          err.statusCode = 503;
+          err.code = admission.code || 'memory_pressure';
+          throw err;
+        }
+      }
+`;
+if (!source.includes('spartanCgroupAdmissionAllowed({')) {
+  if (!source.includes(spartanCgroupAdmissionMarker)) {
+    throw new Error('expected Camofox memory admission marker not found');
+  }
+  source = source.replace(spartanCgroupAdmissionMarker, spartanCgroupAdmission + spartanCgroupAdmissionMarker);
+}
+
+const spartanDeepHealthMarker = "app.get('/health',";
+const spartanDeepHealthRoutes = `const spartanDeepHealthSecretPath = process.env.SPARTAN_CAMOFOX_INTERNAL_SECRET_FILE
+  || '/run/spartan-camofox/internal.key';
+const spartanDeepHealth = createSpartanDeepHealthController({
+  getBrowser: ensureBrowser,
+  recoverBrowser: () => restartBrowser('spartan_deep_health'),
+  probeTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS || 8000),
+  cleanupTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 2000),
+  recoveryTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS || 20000),
+});
+
+function spartanRequireInternalHealth(req, res) {
+  if (spartanInternalRequestAuthorized(req, spartanDeepHealthSecretPath)) return true;
+  res.status(403).json({ ok: false, code: 'forbidden' });
+  return false;
+}
+
+app.get('/spartan/health/deep', async (req, res) => {
+  if (!spartanRequireInternalHealth(req, res)) return;
+  const result = await spartanDeepHealth.probe();
+  res.status(result.ok ? 200 : 503).json(result);
+});
+
+app.post('/spartan/recover', async (req, res) => {
+  if (!spartanRequireInternalHealth(req, res)) return;
+  const result = await spartanDeepHealth.recover();
+  res.status(result.ok ? 200 : 503).json(result);
+});
+
+`;
+if (!source.includes("app.get('/spartan/health/deep'")) {
+  if (!source.includes(spartanDeepHealthMarker)) {
+    throw new Error('expected Camofox health route marker not found');
+  }
+  source = source.replace(spartanDeepHealthMarker, spartanDeepHealthRoutes + spartanDeepHealthMarker);
+}
+
+const upstreamActiveHealthStart = '// Active health probe -- detect hung browser even when isConnected() lies\n';
+const upstreamActiveHealthEnd = '\n// Crash logging\n';
+const upstreamActiveHealthIndex = source.indexOf(upstreamActiveHealthStart);
+if (upstreamActiveHealthIndex !== -1) {
+  const end = source.indexOf(upstreamActiveHealthEnd, upstreamActiveHealthIndex);
+  if (end === -1) throw new Error('expected Camofox active health probe end marker not found');
+  source = source.slice(0, upstreamActiveHealthIndex) + source.slice(end + 1);
 }
 
 fs.writeFileSync(path, source);
