@@ -87,6 +87,12 @@ healthy minutes. If a process remains in uninterruptible `D` state, readiness
 stays unhealthy and no second browser is launched; the supervisor retries
 cleanup at the maximum backoff.
 
+The empty-session reaper waits until one complete create-handler deadline plus
+five seconds has elapsed since the last access. Session teardown also uses
+compare-and-delete, so an old context finishing asynchronously cannot remove a
+same-user replacement. Together these fence create-versus-reaper races without
+keeping failed tabs alive.
+
 The watchdog ledger is separate from browser credentials:
 
 ```text

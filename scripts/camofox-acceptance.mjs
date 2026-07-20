@@ -14,6 +14,11 @@ if (!Number.isInteger(concurrentIdentities) || concurrentIdentities < 5 || concu
   throw new Error('acceptance concurrency must be between 5 and 20');
 }
 
+function endpointLabel(path) {
+  const pathname = path.split('?', 1)[0];
+  return pathname.replace(/^\/tabs\/[^/]+/, '/tabs/:tabId');
+}
+
 async function request(path, options = {}, authenticated = true) {
   const headers = { ...(options.headers || {}) };
   if (authenticated) headers.Authorization = `Bearer ${key}`;
@@ -26,11 +31,13 @@ async function request(path, options = {}, authenticated = true) {
       signal: AbortSignal.timeout(requestTimeoutMs),
     });
   } catch (error) {
-    const wrapped = new Error('Camofox acceptance request timed out or disconnected');
+    const method = String(options.method || 'GET').toUpperCase();
+    const wrapped = new Error(`Camofox acceptance ${method} ${endpointLabel(path)} timed out or disconnected`);
     wrapped.cause = error;
     throw wrapped;
   }
-  if (!response.ok) throw new Error(`Camofox acceptance HTTP ${response.status}`);
+  const method = String(options.method || 'GET').toUpperCase();
+  if (!response.ok) throw new Error(`Camofox acceptance ${method} ${endpointLabel(path)} HTTP ${response.status}`);
   const text = await response.text();
   return text ? JSON.parse(text) : null;
 }

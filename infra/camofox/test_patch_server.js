@@ -31,6 +31,22 @@ function sendError(res, err, extraFields = {}) {
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
+const sessions = new Map();
+async function closeSession(key, session) {
+  await session.context.close().catch(() => {});
+  sessions.delete(key);
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, session] of sessions) {
+    // Clean up sessions with zero tabs remaining -- free browser context memory
+    if (session.tabGroups.size === 0) {
+      session._closing = true;
+      log('info', 'session empty after tab reaper, closing', { userId });
+      closeSession(userId, session).catch(() => {});
+    }
+  }
+}, 60_000);
 async function launch() {
     const useVirtualDisplay = !!vdDisplay;
     log('info', 'launching camoufox', {
@@ -178,6 +194,16 @@ try {
   assert.match(once, /code: 'tab_create_timeout'/, 'tab timeout must be semantic');
   assert.match(once, /stage: spartanCreateFence\.stage/, 'tab failure logs must identify only the stage');
   assert.match(once, /spartanCgroupAdmissionAllowed/, 'Compose memory admission must use cgroup v2');
+  assert.match(
+    once,
+    /if \(sessions\.get\(key\) === session\) sessions\.delete\(key\);/,
+    'closing an old session must not delete its same-user replacement',
+  );
+  assert.match(
+    once,
+    /session\.tabGroups\.size === 0[\s\S]*now - session\.lastAccess >= requestTimeoutMs\(\) \+ 5000/,
+    'empty-session reaping must wait beyond an in-flight create deadline',
+  );
   const syntax = spawnSync(process.execPath, ['--check', serverPath], { cwd: temp, encoding: 'utf8' });
   assert.strictEqual(syntax.status, 0, syntax.stderr);
   console.log('patch-server tests: ok');

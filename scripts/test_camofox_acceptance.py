@@ -18,6 +18,9 @@ class CamofoxAcceptanceContractTests(unittest.TestCase):
         self.assertIn("waitForBaseline", source)
         self.assertNotIn("/sessions/", source)
         self.assertNotIn("console.log(created", source)
+        self.assertIn("endpointLabel(path)", source)
+        self.assertIn("'/tabs/:tabId'", source)
+        self.assertIn("path.split('?', 1)[0]", source)
 
 
 if __name__ == "__main__":

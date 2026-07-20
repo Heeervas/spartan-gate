@@ -7,11 +7,12 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PATCHER = ROOT / "infra" / "camofox" / "patch-server.js"
+SPARTAN_HEALTH = ROOT / "infra" / "camofox" / "spartan-health.mjs"
 
 SERVER_FIXTURE = """\
 import crypto from 'crypto';
 import fs from 'fs';
-const app = { post() {}, delete() {} };
+const app = { get() {}, post() {}, delete() {} };
 const sessions = new Map();
 const tabLocks = new Map();
 const failuresTotal = { labels() { return { inc() {} }; } };
@@ -52,6 +53,27 @@ const reporter = {};
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
+function requestTimeoutMs() { return 30000; }
+async function ensureBrowser() { return {}; }
+async function restartBrowser() { return {}; }
+async function closeSession(key, session) {
+  await session.context.close().catch(() => {});
+  sessions.delete(key);
+}
+function reapEmptySessions(now = Date.now()) {
+  for (const [userId, session] of sessions) {
+    // Clean up sessions with zero tabs remaining -- free browser context memory
+    if (session.tabGroups.size === 0) {
+      session._closing = true;
+      log('info', 'session empty after tab reaper, closing', { userId });
+      closeSession(userId, session, {
+        reason: 'tab_reaper_empty_session', clearDownloads: true, clearLocks: true,
+      }).catch(() => {});
+    }
+  }
+}
+const emptySessionReaper = setInterval(() => reapEmptySessions(), 60_000);
+emptySessionReaper.unref();
 
 async function launch(vdDisplay, launchProxy) {
     const useVirtualDisplay = !!vdDisplay;
@@ -153,6 +175,8 @@ async function closeBrowser() {
   reporter.resetNativeMemBaseline();
   _nativeMemBaseline = null;
 }
+
+export { sessions, closeSession, reapEmptySessions };
 """
 
 
@@ -161,6 +185,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp_dir.name)
         shutil.copy2(PATCHER, self.root / "patch-server.cjs")
+        shutil.copy2(SPARTAN_HEALTH, self.root / "spartan-health.mjs")
         (self.root / "package.json").write_text('{"type":"module"}\n')
         self.server = self.root / "server.js"
         self.server.write_text(SERVER_FIXTURE)
@@ -249,6 +274,8 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertIn("code: 'tab_create_timeout'", patched)
         self.assertIn("stage: spartanCreateFence.stage", patched)
         self.assertIn("spartanCgroupAdmissionAllowed", patched)
+        self.assertIn("if (sessions.get(key) === session) sessions.delete(key);", patched)
+        self.assertIn("now - session.lastAccess >= requestTimeoutMs() + 5000", patched)
 
         syntax = subprocess.run(
             ["node", "--check", "server.js"],
@@ -262,6 +289,62 @@ class CamofoxPatchServerTests(unittest.TestCase):
         second = self.run_patcher()
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.server.read_text(), patched)
+
+    def test_session_reaper_threshold_and_compare_delete_are_behavioral(self):
+        first = self.run_patcher()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        runner = self.root / "reaper-runtime.mjs"
+        runner.write_text(
+            """import assert from 'node:assert/strict';
+import { sessions, closeSession, reapEmptySessions } from './server.js';
+
+let releaseOldContext;
+const oldContextClosed = new Promise(resolve => { releaseOldContext = resolve; });
+const oldSession = {
+  lastAccess: 1_000,
+  tabGroups: new Map(),
+  context: { close: () => oldContextClosed },
+};
+const replacement = {
+  lastAccess: 2_000,
+  tabGroups: new Map([['live', new Map([['tab', {}]])]]),
+  context: { close: async () => {} },
+};
+
+sessions.set('same-user', oldSession);
+const closing = closeSession('same-user', oldSession);
+sessions.set('same-user', replacement);
+releaseOldContext();
+await closing;
+assert.equal(sessions.get('same-user'), replacement);
+
+let reaperCloseCalls = 0;
+const empty = {
+  lastAccess: 10_000,
+  tabGroups: new Map(),
+  context: { close: async () => { reaperCloseCalls++; } },
+};
+sessions.clear();
+sessions.set('reap-user', empty);
+reapEmptySessions(44_999);
+assert.equal(empty._closing, undefined);
+assert.equal(reaperCloseCalls, 0);
+reapEmptySessions(45_000);
+assert.equal(empty._closing, true);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(reaperCloseCalls, 1);
+"""
+        )
+
+        result = subprocess.run(
+            ["node", runner.name],
+            cwd=self.root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_migrates_already_patched_server_without_viewport_route(self):
         first = self.run_patcher()

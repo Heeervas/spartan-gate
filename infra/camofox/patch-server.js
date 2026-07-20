@@ -880,6 +880,43 @@ if (createTabRouteStartIndex !== -1) {
   }
 }
 
+const spartanCloseSessionDeleteMarker = `  await session.context.close().catch(() => {});
+  sessions.delete(key);`;
+const spartanCloseSessionDeleteReplacement = `  await session.context.close().catch(() => {});
+  // A reaped session may already have been replaced for the same user while
+  // context.close() was pending. Never delete that replacement.
+  if (sessions.get(key) === session) sessions.delete(key);`;
+if (source.includes(spartanCloseSessionDeleteMarker)) {
+  source = source.replace(
+    spartanCloseSessionDeleteMarker,
+    spartanCloseSessionDeleteReplacement,
+  );
+} else if (!source.includes(
+  'if (sessions.get(key) === session) sessions.delete(key);',
+)) {
+  throw new Error('expected Camofox close-session delete marker not found');
+}
+
+const spartanEmptySessionReaperMarker = `    // Clean up sessions with zero tabs remaining -- free browser context memory
+    if (session.tabGroups.size === 0) {`;
+const spartanEmptySessionReaperReplacement = `    // Keep an empty context through the longest create handler. getSession()
+    // refreshes lastAccess before newPage(), so the reaper cannot invalidate a
+    // tab between a successful create response and its first operation.
+    if (
+      session.tabGroups.size === 0
+      && now - session.lastAccess >= requestTimeoutMs() + 5000
+    ) {`;
+if (source.includes(spartanEmptySessionReaperMarker)) {
+  source = source.replace(
+    spartanEmptySessionReaperMarker,
+    spartanEmptySessionReaperReplacement,
+  );
+} else if (!source.includes(
+  'now - session.lastAccess >= requestTimeoutMs() + 5000',
+)) {
+  throw new Error('expected Camofox empty-session reaper marker not found');
+}
+
 const nativeMemResetMarker = `  // Reset native memory baseline so next browser measures from fresh
   reporter.resetNativeMemBaseline();
   _nativeMemBaseline = null;`;
