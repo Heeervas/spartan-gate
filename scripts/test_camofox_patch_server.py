@@ -62,6 +62,11 @@ async function closeSession(key, session) {
 }
 function reapEmptySessions(now = Date.now()) {
   for (const [userId, session] of sessions) {
+    for (const [listItemId, group] of session.tabGroups) {
+      if (group.size === 0) {
+        session.tabGroups.delete(listItemId);
+      }
+    }
     // Clean up sessions with zero tabs remaining -- free browser context memory
     if (session.tabGroups.size === 0) {
       session._closing = true;
@@ -74,6 +79,32 @@ function reapEmptySessions(now = Date.now()) {
 }
 const emptySessionReaper = setInterval(() => reapEmptySessions(), 60_000);
 emptySessionReaper.unref();
+function inspectMemoryPressureSessions() {
+  for (const [key, session] of sessions) {
+    if (session._closing) continue;
+    if (session.lastAccess < Infinity) void key;
+  }
+}
+function reapOrphanPages(now = Date.now()) {
+  for (const session of sessions.values()) {
+    if (session._closing) continue;
+    let contextPages;
+    try {
+      contextPages = session.context.pages();
+    } catch (_) {
+      continue;
+    }
+    const registered = new Set();
+    for (const group of session.tabGroups.values()) {
+      for (const tabState of group.values()) registered.add(tabState.page);
+    }
+    for (const page of contextPages) {
+      if (!registered.has(page)) page.close({ runBeforeUnload: false }).catch(() => {});
+    }
+  }
+}
+const orphanPageReaper = setInterval(() => reapOrphanPages(), 60_000);
+orphanPageReaper.unref();
 
 async function launch(vdDisplay, launchProxy) {
     const useVirtualDisplay = !!vdDisplay;
@@ -176,7 +207,7 @@ async function closeBrowser() {
   _nativeMemBaseline = null;
 }
 
-export { sessions, closeSession, reapEmptySessions };
+export { sessions, closeSession, reapEmptySessions, reapOrphanPages };
 """
 
 
@@ -275,7 +306,25 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertIn("stage: spartanCreateFence.stage", patched)
         self.assertIn("spartanCgroupAdmissionAllowed", patched)
         self.assertIn("if (sessions.get(key) === session) sessions.delete(key);", patched)
-        self.assertIn("now - session.lastAccess >= requestTimeoutMs() + 5000", patched)
+        self.assertIn("const spartanSessionCreatePending =", patched)
+        self.assertIn("const spartanGroupCreatePending =", patched)
+        self.assertIn("spartanPendingCreates.delete(spartanCreateFence)", patched)
+        self.assertNotIn(
+            "now - session.lastAccess >= requestTimeoutMs() + 5000",
+            patched,
+        )
+        memory_eviction = patched.split(
+            "function inspectMemoryPressureSessions()", 1
+        )[1].split("function reapOrphanPages", 1)[0]
+        self.assertNotIn("_spartanPendingCreates", memory_eviction)
+        orphan_reaper = patched.split(
+            "function reapOrphanPages", 1
+        )[1].split("const orphanPageReaper", 1)[0]
+        self.assertIn(
+            "session._spartanPendingCreates instanceof Set"
+            " && session._spartanPendingCreates.size > 0",
+            orphan_reaper,
+        )
 
         syntax = subprocess.run(
             ["node", "--check", "server.js"],
@@ -296,7 +345,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
         runner = self.root / "reaper-runtime.mjs"
         runner.write_text(
             """import assert from 'node:assert/strict';
-import { sessions, closeSession, reapEmptySessions } from './server.js';
+import { sessions, closeSession, reapEmptySessions, reapOrphanPages } from './server.js';
 
 let releaseOldContext;
 const oldContextClosed = new Promise(resolve => { releaseOldContext = resolve; });
@@ -319,20 +368,50 @@ await closing;
 assert.equal(sessions.get('same-user'), replacement);
 
 let reaperCloseCalls = 0;
+const pendingGroup = new Map();
+const pendingFence = { group: pendingGroup };
 const empty = {
   lastAccess: 10_000,
-  tabGroups: new Map(),
-  context: { close: async () => { reaperCloseCalls++; } },
+  tabGroups: new Map([['pending', pendingGroup]]),
+  _spartanPendingCreates: new Set([pendingFence]),
+  context: {
+    close: async () => { reaperCloseCalls++; },
+    pages: () => [],
+  },
 };
 sessions.clear();
 sessions.set('reap-user', empty);
 reapEmptySessions(44_999);
 assert.equal(empty._closing, undefined);
+assert.equal(empty.tabGroups.has('pending'), true);
 assert.equal(reaperCloseCalls, 0);
+empty._spartanPendingCreates.clear();
 reapEmptySessions(45_000);
 assert.equal(empty._closing, true);
+assert.equal(empty.tabGroups.has('pending'), false);
 await new Promise(resolve => setImmediate(resolve));
 assert.equal(reaperCloseCalls, 1);
+
+let orphanCloseCalls = 0;
+const registeredPage = {};
+const orphanPage = { close: async () => { orphanCloseCalls++; } };
+const orphanSession = {
+  lastAccess: Date.now(),
+  tabGroups: new Map([['live', new Map([['tab', { page: registeredPage }]])]]),
+  _spartanPendingCreates: new Set([{}]),
+  context: {
+    close: async () => {},
+    pages: () => [registeredPage, orphanPage],
+  },
+};
+sessions.clear();
+sessions.set('orphan-user', orphanSession);
+reapOrphanPages(44_999);
+assert.equal(orphanCloseCalls, 0);
+delete orphanSession._spartanPendingCreates;
+reapOrphanPages(45_000);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(orphanCloseCalls, 1);
 """
         )
 

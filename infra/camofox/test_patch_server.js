@@ -36,14 +36,43 @@ async function closeSession(key, session) {
   await session.context.close().catch(() => {});
   sessions.delete(key);
 }
+for (const [key, session] of sessions) {
+  if (session._closing) continue;
+  if (session.lastAccess < Infinity) void key;
+}
 setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of sessions) {
+    for (const [listItemId, group] of session.tabGroups) {
+      if (group.size === 0) {
+        session.tabGroups.delete(listItemId);
+      }
+    }
     // Clean up sessions with zero tabs remaining -- free browser context memory
     if (session.tabGroups.size === 0) {
       session._closing = true;
       log('info', 'session empty after tab reaper, closing', { userId });
       closeSession(userId, session).catch(() => {});
+    }
+  }
+}, 60_000);
+setInterval(() => {
+  for (const session of sessions.values()) {
+    if (session._closing) continue;
+    let contextPages;
+    try {
+      contextPages = session.context.pages();
+    } catch (_) {
+      continue;
+    }
+    const registered = new Set();
+    for (const group of session.tabGroups.values()) {
+      for (const tabState of group.values()) registered.add(tabState.page);
+    }
+    for (const page of contextPages) {
+      if (!registered.has(page)) {
+        page.close({ runBeforeUnload: false }).catch(() => {});
+      }
     }
   }
 }, 60_000);
@@ -201,8 +230,41 @@ try {
   );
   assert.match(
     once,
-    /session\.tabGroups\.size === 0[\s\S]*now - session\.lastAccess >= requestTimeoutMs\(\) \+ 5000/,
-    'empty-session reaping must wait beyond an in-flight create deadline',
+    /const spartanSessionCreatePending =[\s\S]*session\.tabGroups\.size === 0[\s\S]*!spartanSessionCreatePending/,
+    'empty-session reaping must preserve only sessions with active creates',
+  );
+  assert.match(
+    once,
+    /const spartanGroupCreatePending =[\s\S]*pending\.group === group[\s\S]*group\.size === 0 && !spartanGroupCreatePending/,
+    'empty group deletion must preserve only a group with an active create',
+  );
+  assert.match(
+    once,
+    /\)\.finally\(\(\) => {[\s\S]*spartanPendingCreates\.delete\(spartanCreateFence\)/,
+    'the underlying create promise must release its fence',
+  );
+  const memoryEviction = once.match(
+    /for \(const \[key, session\] of sessions\) {[\s\S]*?if \(session\.lastAccess < Infinity\)/,
+  )?.[0] || '';
+  assert.doesNotMatch(
+    memoryEviction,
+    /_spartanPendingCreates/,
+    'create fencing must not modify memory-pressure eviction',
+  );
+  const orphanContextIndex = once.indexOf('let contextPages;');
+  const orphanFence = once.slice(
+    once.lastIndexOf('if (session._closing) continue;', orphanContextIndex),
+    orphanContextIndex,
+  );
+  assert.match(
+    orphanFence,
+    /_spartanPendingCreates instanceof Set && session\._spartanPendingCreates\.size > 0/,
+    'only the orphan reaper must skip a session with an active create',
+  );
+  assert.doesNotMatch(
+    once,
+    /lastAccess[^\n]*requestTimeoutMs\(\)/,
+    'reaper fences must not retain garbage because unrelated tabs are active',
   );
   const syntax = spawnSync(process.execPath, ['--check', serverPath], { cwd: temp, encoding: 'utf8' });
   assert.strictEqual(syntax.status, 0, syntax.stderr);

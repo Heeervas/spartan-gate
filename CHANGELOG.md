@@ -10,7 +10,9 @@ All notable changes to Spartan Gate are documented here.
 - Fenced timed-out Camofox tab creation, cleaned late pages/contaminated
   sessions, returned semantic 503 errors, removed the unbounded upstream probe,
   made Compose memory admission use its cgroup limit, and stopped the
-  empty-session reaper from invalidating newly created tabs.
+  empty-group/session and orphan-page reapers from invalidating newly created
+  tabs by holding explicit fences only while the underlying create work is
+  pending.
 - Stopped sharing one global Camofox owner/session across supervised Hermes
   profiles, disabled global tab adoption across L1/L2/L4/install/examples, and
   retained Google Meet as an explicit default-profile single-owner exception.

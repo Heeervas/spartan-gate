@@ -799,6 +799,8 @@ if (createTabRouteStartIndex !== -1) {
       spartanCreateFence.userKey = normalizeUserId(userId);
       let session = await getSession(userId, { trace: !!trace });
       spartanCreateFence.session = session;
+      if (!(session._spartanPendingCreates instanceof Set)) session._spartanPendingCreates = new Set();
+      session._spartanPendingCreates.add(spartanCreateFence);
       if (!spartanCreateFence.active) {
         if (sessions.get(spartanCreateFence.userKey) === session) sessions.delete(spartanCreateFence.userKey);
         session._closing = true;
@@ -828,6 +830,14 @@ if (createTabRouteStartIndex !== -1) {
     const navigationReplacement = `      if (url) {
         spartanCreateFence.stage = 'navigate';
         const urlErr = validateUrl(url);`;
+    const createPromiseCloseMarker = `    })(), requestTimeoutMs(), 'tab create');`;
+    const createPromiseCloseReplacement = `    })().finally(() => {
+      const spartanPendingCreates = spartanCreateFence.session?._spartanPendingCreates;
+      if (spartanPendingCreates instanceof Set) {
+        spartanPendingCreates.delete(spartanCreateFence);
+        if (spartanPendingCreates.size === 0) delete spartanCreateFence.session._spartanPendingCreates;
+      }
+    }), requestTimeoutMs(), 'tab create');`;
     const catchMarker = `  } catch (err) {
     log('error', 'tab create failed', { reqId: req.reqId, error: err.message });`;
     const catchReplacement = `  } catch (err) {
@@ -871,6 +881,7 @@ if (createTabRouteStartIndex !== -1) {
       [newPageMarker, newPageReplacement, 'newPage'],
       [tabIdMarker, tabIdReplacement, 'tabId'],
       [navigationMarker, navigationReplacement, 'navigation'],
+      [createPromiseCloseMarker, createPromiseCloseReplacement, 'promise close'],
       [catchMarker, catchReplacement, 'catch'],
     ]) {
       if (!createTabRoute.includes(marker)) throw new Error(`expected Camofox create-tab ${label} marker not found`);
@@ -897,24 +908,58 @@ if (source.includes(spartanCloseSessionDeleteMarker)) {
   throw new Error('expected Camofox close-session delete marker not found');
 }
 
+const spartanEmptyGroupReaperMarker = `      if (group.size === 0) {
+        session.tabGroups.delete(listItemId);
+      }`;
+const spartanEmptyGroupReaperReplacement = `      const spartanGroupCreatePending = session._spartanPendingCreates instanceof Set
+        && [...session._spartanPendingCreates].some(pending => pending.group === group);
+      if (group.size === 0 && !spartanGroupCreatePending) {
+        session.tabGroups.delete(listItemId);
+      }`;
+if (source.includes(spartanEmptyGroupReaperMarker)) {
+  source = source.replace(
+    spartanEmptyGroupReaperMarker,
+    spartanEmptyGroupReaperReplacement,
+  );
+} else if (!source.includes('const spartanGroupCreatePending =')) {
+  throw new Error('expected Camofox empty-group reaper marker not found');
+}
+
 const spartanEmptySessionReaperMarker = `    // Clean up sessions with zero tabs remaining -- free browser context memory
     if (session.tabGroups.size === 0) {`;
-const spartanEmptySessionReaperReplacement = `    // Keep an empty context through the longest create handler. getSession()
-    // refreshes lastAccess before newPage(), so the reaper cannot invalidate a
-    // tab between a successful create response and its first operation.
+const spartanEmptySessionReaperReplacement = `    // A create fence lives until the underlying work settles, not merely until
+    // the HTTP timeout. Never tear down a context that is still creating a tab.
+    const spartanSessionCreatePending = session._spartanPendingCreates instanceof Set
+      && session._spartanPendingCreates.size > 0;
     if (
       session.tabGroups.size === 0
-      && now - session.lastAccess >= requestTimeoutMs() + 5000
+      && !spartanSessionCreatePending
     ) {`;
 if (source.includes(spartanEmptySessionReaperMarker)) {
   source = source.replace(
     spartanEmptySessionReaperMarker,
     spartanEmptySessionReaperReplacement,
   );
-} else if (!source.includes(
-  'now - session.lastAccess >= requestTimeoutMs() + 5000',
-)) {
+} else if (!source.includes('const spartanSessionCreatePending =')) {
   throw new Error('expected Camofox empty-session reaper marker not found');
+}
+
+const spartanOrphanReaperMarker = `    if (session._closing) continue;
+    let contextPages;
+    try {
+      contextPages = session.context.pages();`;
+const spartanOrphanReaperReplacement = `    if (session._closing) continue;
+    if (session._spartanPendingCreates instanceof Set && session._spartanPendingCreates.size > 0) continue;
+    let contextPages;
+    try {
+      contextPages = session.context.pages();`;
+if (source.includes(spartanOrphanReaperMarker)) {
+  source = source.replace(
+    spartanOrphanReaperMarker,
+    spartanOrphanReaperReplacement,
+  );
+} else if (!source.includes(spartanOrphanReaperReplacement)) {
+  throw new Error('expected Camofox orphan reaper marker not found');
 }
 
 const nativeMemResetMarker = `  // Reset native memory baseline so next browser measures from fresh
