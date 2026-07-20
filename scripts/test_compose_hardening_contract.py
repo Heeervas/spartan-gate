@@ -234,6 +234,9 @@ class ComposeHardeningContractTests(unittest.TestCase):
         expected_environment = {
             "MAX_CONCURRENT_PER_USER": "2",
             "SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES": "1",
+            "SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS": "1000",
+            "SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS": "45000",
+            "SPARTAN_CAMOFOX_RECOVERY_DRAIN_TIMEOUT_MS": "2000",
             "MAX_SESSIONS": "8",
             "MAX_TABS_PER_SESSION": "4",
             "HANDLER_TIMEOUT_MS": "30000",

@@ -54,6 +54,7 @@ RUN command -v yt-dlp >/dev/null && yt-dlp --version >/dev/null
 RUN command -v python3 >/dev/null && python3 --version >/dev/null
 
 COPY spartan-health.mjs /app/spartan-health.mjs
+COPY spartan-lifecycle.mjs /app/spartan-lifecycle.mjs
 COPY patch-server.js /tmp/spartan-camofox-patch-server.js
 RUN node /tmp/spartan-camofox-patch-server.js && rm /tmp/spartan-camofox-patch-server.js
 

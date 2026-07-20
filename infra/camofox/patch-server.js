@@ -10,6 +10,13 @@ if (!source.includes(spartanHealthImport)) {
   source = source.replace(importMarker, importMarker + spartanHealthImport);
 }
 
+const spartanLifecycleImport = "import { createSpartanBrowserLifecycleCoordinator, spartanBrowserLifecycleError } from './spartan-lifecycle.mjs';\n";
+if (!source.includes(spartanLifecycleImport)) {
+  const importMarker = "import fs from 'fs';\n";
+  if (!source.includes(importMarker)) throw new Error('expected Camofox fs import marker not found');
+  source = source.replace(importMarker, importMarker + spartanLifecycleImport);
+}
+
 const spartanChildProcessRequire = "const spartanChildProcess = require('child_process');\n";
 const spartanChildProcessImport = "import * as spartanChildProcess from 'child_process';\n";
 
@@ -546,7 +553,22 @@ async function spartanEvaluateViewport(page) {
   }));
 }
 
-async function spartanRelaunchViewportTab({ userId, sessionKey, tabId, tabState, requested, effective, timeoutMs }) {
+async function spartanRelaunchViewportTab(options) {
+  const { userId, sessionKey, tabId, tabState, requested, effective, timeoutMs } = options;
+  if (!spartanBrowserLifecycle.hasLease()) {
+    const lifecycleTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Number(timeoutMs)
+      : requestTimeoutMs();
+    return await spartanBrowserLifecycle.run(
+      'viewport_relaunch',
+      () => spartanRelaunchViewportTab(options),
+      {
+        priority: 'foreground',
+        waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
+        deadlineAt: Date.now() + lifecycleTimeoutMs,
+      },
+    );
+  }
   const resumeUrl = String(tabState.page?.url?.() || '');
   const canResumeUrl = /^https?:\/\//i.test(resumeUrl);
   const target = spartanNativeOuterTarget(requested, effective);
@@ -1097,6 +1119,777 @@ if (!source.includes("app.get('/spartan/health/deep'")) {
     throw new Error('expected Camofox health route marker not found');
   }
   source = source.replace(spartanDeepHealthMarker, spartanDeepHealthRoutes + spartanDeepHealthMarker);
+}
+
+// Camoufox can wedge when one context close overlaps one page create or
+// navigation. Converge pristine upstream and the deployed create-only FIFO on
+// one versioned, re-entrant lifecycle coordinator. Unknown partial variants
+// fail before the single server.js write at the end of this patcher.
+const spartanLifecycleVersionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;';
+const spartanLifecycleRevisionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;';
+const spartanLifecycleRuntimeBlock = `const userConcurrency = new Map();
+
+const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;
+const SPARTAN_MAX_CONCURRENT_CREATES_RAW = Number(process.env.SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES || '1');
+if (!Number.isInteger(SPARTAN_MAX_CONCURRENT_CREATES_RAW) || SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1) {
+  throw new Error('SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES must be exactly 1');
+}
+const SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS = Number(
+  process.env.SPARTAN_CAMOFOX_RECOVERY_DRAIN_TIMEOUT_MS || 2000,
+);
+if (!Number.isFinite(SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS) || SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS < 1) {
+  throw new Error('SPARTAN_CAMOFOX_RECOVERY_DRAIN_TIMEOUT_MS must be positive');
+}
+
+const spartanBrowserLifecycle = createSpartanBrowserLifecycleCoordinator({
+  maxQueued: MAX_SESSIONS,
+  backgroundAgingMs: 1000,
+});
+const spartanGuardedBrowsers = new WeakSet();
+const spartanGuardedContexts = new WeakSet();
+const spartanGuardedPages = new WeakSet();
+const spartanClosePromises = new WeakMap();
+const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close']);
+
+function spartanLifecycleMethodKind(prefix, methodName) {
+  return \`\${prefix}_\${String(methodName).replace(/[A-Z]/g, value => \`_\${value.toLowerCase()}\`)}\`;
+}
+
+function spartanTrackLifecyclePromise(promise) {
+  return spartanBrowserLifecycle.hasLease()
+    ? spartanBrowserLifecycle.track(promise)
+    : promise;
+}
+
+function spartanGuardLifecycleMethod(target, methodName, {
+  prefix,
+  priority = 'foreground',
+  transform = value => value,
+} = {}) {
+  const original = target?.[methodName];
+  if (typeof original !== 'function') return;
+  const kind = spartanLifecycleMethodKind(prefix, methodName);
+  target[methodName] = function spartanGuardedLifecycleMethod(...args) {
+    if (methodName === 'close') {
+      const existing = spartanClosePromises.get(target);
+      if (existing) return existing;
+    }
+    const invoke = () => Promise.resolve()
+      .then(() => original.apply(this, args))
+      .then(transform);
+    const running = spartanBrowserLifecycle.hasLease()
+      ? spartanBrowserLifecycle.track(invoke())
+      : spartanBrowserLifecycle.run(kind, invoke, {
+          priority,
+          waitTimeoutMs: priority === 'background'
+            ? null
+            : Math.max(1, HANDLER_TIMEOUT_MS - 1000),
+          deadlineAt: priority === 'background'
+            ? null
+            : Date.now() + HANDLER_TIMEOUT_MS,
+        });
+    if (methodName === 'close') spartanClosePromises.set(target, running);
+    return running;
+  };
+}
+
+function spartanGuardPage(page) {
+  if (!page || spartanGuardedPages.has(page)) return page;
+  spartanGuardedPages.add(page);
+  for (const methodName of SPARTAN_PAGE_LIFECYCLE_METHODS) {
+    spartanGuardLifecycleMethod(page, methodName, {
+      prefix: 'page',
+      priority: methodName === 'close' ? 'background' : 'foreground',
+    });
+  }
+  return page;
+}
+
+function spartanGuardContext(context) {
+  if (!context || spartanGuardedContexts.has(context)) return context;
+  spartanGuardedContexts.add(context);
+  spartanGuardLifecycleMethod(context, 'newPage', {
+    prefix: 'context',
+    transform: spartanGuardPage,
+  });
+  spartanGuardLifecycleMethod(context, 'addCookies', { prefix: 'context' });
+  spartanGuardLifecycleMethod(context, 'close', {
+    prefix: 'context',
+    priority: 'background',
+  });
+  try {
+    for (const page of context.pages?.() || []) spartanGuardPage(page);
+  } catch {
+    // Keep a stale context guarded without masking the original browser error.
+  }
+  return context;
+}
+
+function spartanGuardBrowser(candidate) {
+  if (!candidate || spartanGuardedBrowsers.has(candidate)) return candidate;
+  spartanGuardedBrowsers.add(candidate);
+  spartanGuardLifecycleMethod(candidate, 'newContext', {
+    prefix: 'browser',
+    transform: spartanGuardContext,
+  });
+  spartanGuardLifecycleMethod(candidate, 'close', {
+    prefix: 'browser',
+    priority: 'background',
+  });
+  return candidate;
+}
+
+async function spartanWithCreateLimit(operation, queueTimeoutMs = 30000) {
+  const timeoutMs = Number(queueTimeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
+    throw spartanBrowserLifecycleError(
+      'browser_lifecycle_queue_timeout',
+      'Camofox browser lifecycle queue deadline expired',
+    );
+  }
+  return await spartanBrowserLifecycle.run('tab_create', operation, {
+    priority: 'foreground',
+    waitTimeoutMs: timeoutMs,
+    deadlineAt: Date.now() + timeoutMs,
+  });
+}`;
+
+function spartanReplaceLifecycleOnce(marker, replacement, label) {
+  const first = source.indexOf(marker);
+  if (first === -1) throw new Error(`expected Camofox lifecycle ${label} marker not found`);
+  if (source.indexOf(marker, first + marker.length) !== -1) {
+    throw new Error(`duplicate Camofox lifecycle ${label} marker`);
+  }
+  source = source.slice(0, first) + replacement + source.slice(first + marker.length);
+}
+
+function spartanLifecycleRange(startMarker, endMarker, label) {
+  const start = source.indexOf(startMarker);
+  if (start === -1) throw new Error(`expected Camofox lifecycle ${label} start not found`);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (end === -1) throw new Error(`expected Camofox lifecycle ${label} end not found`);
+  return { start, end, value: source.slice(start, end) };
+}
+
+function spartanReplaceLifecycleRange(range, replacement) {
+  const currentStart = source.indexOf(range.value);
+  if (currentStart === -1) {
+    throw new Error('Camofox lifecycle range changed after preflight');
+  }
+  if (source.indexOf(range.value, currentStart + range.value.length) !== -1) {
+    throw new Error('duplicate Camofox lifecycle range after preflight');
+  }
+  source = source.slice(0, currentStart)
+    + replacement
+    + source.slice(currentStart + range.value.length);
+}
+
+const spartanLifecycleVersionCount = source.split(spartanLifecycleVersionMarker).length - 1;
+if (spartanLifecycleVersionCount > 1) {
+  throw new Error('duplicate Camofox lifecycle coordinator version marker');
+}
+if (spartanLifecycleVersionCount === 0) {
+  const legacyCreateBlock = spartanCreateLimitReplacement;
+  if (!source.includes(legacyCreateBlock)) {
+    throw new Error('unsupported Camofox create limiter variant; refusing partial lifecycle migration');
+  }
+
+  const tabLockRange = spartanLifecycleRange(
+    'async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {',
+    '\n}\n\nfunction withTimeout(',
+    'tab lock',
+  );
+  const expectedTabLockBody = `async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  const lock = getTabLock(tabId);
+  await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+  try {
+    return await withTimeout(operation(), timeoutMs, 'action');
+  } finally {
+    lock.release();
+  }`;
+  if (tabLockRange.value !== expectedTabLockBody) {
+    throw new Error('unsupported Camofox tab-lock variant; refusing lifecycle migration');
+  }
+
+  const ensureRange = spartanLifecycleRange(
+    'async function ensureBrowser() {',
+    '\n}\n\n// Helper to normalize userId',
+    'ensure browser',
+  );
+  const closeSessionRange = spartanLifecycleRange(
+    'async function closeSession(userId, session, {',
+    '\n}\n\nasync function closeAllSessions(',
+    'close session',
+  );
+  const restartRange = spartanLifecycleRange(
+    'async function restartBrowser(reason) {',
+    '\n}\n\nfunction getTotalTabCount(',
+    'restart browser',
+  );
+  const popupRange = spartanLifecycleRange(
+    'function attachPopupHandler(page, userId, sessionKey) {',
+    '\n}\n\nfunction pressureHash(',
+    'popup handler',
+  );
+  const openRouteRange = spartanLifecycleRange(
+    "app.post('/tabs/open', async (req, res) => {",
+    "\n});\n\n// POST /start",
+    'tabs open route',
+  );
+
+  for (const [marker, label] of [
+    ['async function closeBrowserFully(reason) {\n  if (_browserClosePromise)', 'close browser'],
+    ['async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {', 'close all sessions'],
+    ['async function getSession(userId, { trace = false } = {}) {', 'get session'],
+    ['async function withUserLimit(userId, operation) {', 'user operation'],
+    ['  return Promise.race([\n    promise,\n    new Promise((_, reject) =>', 'timeout tracking'],
+    ['await session.context.close().catch(() => {});', 'context close propagation'],
+    ["  } catch (err) {\n    log('error', 'browser restart failed', { error: err.message });\n  } finally {", 'restart error propagation'],
+    ['session.tabGroups.size === 0\n      && !spartanSessionCreatePending', 'empty-session reaper'],
+    ['    const session = await getSession(userId);\n    await session.context.addCookies(sanitized);', 'cookie import'],
+    [spartanDeepHealthRoutes, 'legacy deep health'],
+  ]) {
+    if (!source.includes(marker)) {
+      throw new Error(`expected Camofox lifecycle ${label} marker not found`);
+    }
+  }
+
+  spartanReplaceLifecycleOnce(legacyCreateBlock, spartanLifecycleRuntimeBlock, 'legacy create limiter');
+
+  spartanReplaceLifecycleOnce(
+    '  return Promise.race([\n    promise,\n    new Promise((_, reject) =>',
+    '  return Promise.race([\n    spartanTrackLifecyclePromise(promise),\n    new Promise((_, reject) =>',
+    'timeout promise tracking',
+  );
+
+  spartanReplaceLifecycleOnce(
+    'async function withUserLimit(userId, operation) {',
+    `async function withUserLimit(userId, operation) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    const lifecycleTimeoutMs = requestTimeoutMs();
+    return await spartanBrowserLifecycle.run('user_operation', () => withUserLimit(userId, operation), {
+      priority: 'foreground',
+      waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
+      deadlineAt: Date.now() + lifecycleTimeoutMs,
+    });
+  }`,
+    'user operation guard',
+  );
+
+  const coordinatedTabLock = `async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  if (spartanBrowserLifecycle.hasLease()) {
+    const lock = getTabLock(tabId);
+    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+    try {
+      return await operation();
+    } finally {
+      lock.release();
+    }
+  }
+  const underlying = spartanBrowserLifecycle.run('tab_operation', async () => {
+    const lock = getTabLock(tabId);
+    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+    try {
+      return await operation();
+    } finally {
+      lock.release();
+    }
+  }, {
+    priority: 'foreground',
+    waitTimeoutMs: Math.max(1, Number(timeoutMs) - 1000),
+    deadlineAt: Date.now() + Number(timeoutMs),
+  });
+  return await withTimeout(underlying, timeoutMs, 'action');`;
+  spartanReplaceLifecycleRange(tabLockRange, coordinatedTabLock);
+
+  let coordinatedEnsure = ensureRange.value.replace(
+    'async function ensureBrowser() {',
+    `async function ensureBrowser() {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    return await spartanBrowserLifecycle.run('browser_ensure', () => ensureBrowser(), {
+      priority: 'foreground',
+      waitTimeoutMs: Math.max(1, HANDLER_TIMEOUT_MS - 1000),
+      deadlineAt: Date.now() + HANDLER_TIMEOUT_MS,
+    });
+  }`,
+  );
+  coordinatedEnsure = coordinatedEnsure
+    .replace('if (browser) return browser;', 'if (browser) return spartanGuardBrowser(browser);')
+    .replace(
+      'if (browserLaunchPromise) return browserLaunchPromise;',
+      'if (browserLaunchPromise) return browserLaunchPromise.then(spartanGuardBrowser);',
+    )
+    .replace('return browserLaunchPromise;', 'return browserLaunchPromise.then(spartanGuardBrowser);');
+  if (!coordinatedEnsure.includes('return browserLaunchPromise.then(spartanGuardBrowser);')) {
+    throw new Error('expected Camofox ensure-browser return marker not found');
+  }
+  spartanReplaceLifecycleRange(ensureRange, coordinatedEnsure);
+
+  spartanReplaceLifecycleOnce(
+    'async function closeBrowserFully(reason) {\n  if (_browserClosePromise)',
+    `async function closeBrowserFully(reason) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    return await spartanBrowserLifecycle.run(
+      'browser_close',
+      () => closeBrowserFully(reason),
+      { priority: 'background', waitTimeoutMs: null },
+    );
+  }
+  if (_browserClosePromise)`,
+    'close browser guard',
+  );
+
+  let coordinatedCloseSession = closeSessionRange.value.replace(
+    `} = {}) {
+  if (!session) return;`,
+    `} = {}) {
+  if (!session) return;
+  if (!spartanBrowserLifecycle.hasLease()) {
+    if (session._spartanClosePromise) return await session._spartanClosePromise;
+    session._closing = true;
+    const closing = spartanBrowserLifecycle.run(
+      'session_close',
+      async () => {
+        if (session._spartanCloseComplete) return;
+        return await closeSession(userId, session, { reason, clearDownloads, clearLocks });
+      },
+      { priority: 'background', waitTimeoutMs: null },
+    ).catch(error => {
+      const expectedRecoveryAbort = error?.code === 'browser_lifecycle_invalidated'
+        || error?.code === 'browser_lifecycle_recovering';
+      if (!expectedRecoveryAbort) {
+        spartanBrowserLifecycle.markDegraded('session_close_failed');
+      }
+      throw error;
+    });
+    session._spartanClosePromise = closing;
+    return await closing;
+  }
+  if (session._spartanCloseComplete) return;
+  session._closing = true;`,
+  );
+  coordinatedCloseSession = coordinatedCloseSession.replace(
+    '  await session.context.close().catch(() => {});',
+    `  try {
+    await session.context.close();
+  } catch (error) {
+    const closeMessage = String(error?.message || '');
+    const alreadyClosed = closeMessage.includes('Target page, context or browser has been closed')
+      || closeMessage.includes('browser has been closed')
+      || closeMessage.includes('Context closed')
+      || closeMessage.includes('Browser closed');
+    if (!alreadyClosed) {
+      spartanBrowserLifecycle.markDegraded('session_close_failed');
+      throw error;
+    }
+  }`,
+  );
+  coordinatedCloseSession = coordinatedCloseSession.replace(
+    '  if (sessions.get(key) === session) sessions.delete(key);',
+    `  if (sessions.get(key) === session) sessions.delete(key);
+  session._spartanCloseComplete = true;`,
+  );
+  if (!coordinatedCloseSession.includes('session._spartanClosePromise = closing;')) {
+    throw new Error('expected Camofox close-session body marker not found');
+  }
+  spartanReplaceLifecycleRange(closeSessionRange, coordinatedCloseSession);
+
+  spartanReplaceLifecycleOnce(
+    'async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {',
+    `async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    return await spartanBrowserLifecycle.run(
+      'sessions_close_all',
+      () => closeAllSessions(reason, { clearDownloads, clearLocks }),
+      { priority: 'background', waitTimeoutMs: null },
+    );
+  }`,
+    'close all sessions guard',
+  );
+
+  spartanReplaceLifecycleOnce(
+    'async function getSession(userId, { trace = false } = {}) {',
+    `async function getSession(userId, { trace = false } = {}) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    return await spartanBrowserLifecycle.run(
+      'session_get',
+      () => getSession(userId, { trace }),
+      {
+        priority: 'foreground',
+        waitTimeoutMs: Math.max(1, HANDLER_TIMEOUT_MS - 1000),
+        deadlineAt: Date.now() + HANDLER_TIMEOUT_MS,
+      },
+    );
+  }`,
+    'get session guard',
+  );
+
+  let coordinatedRestart = restartRange.value.replace(
+    'async function restartBrowser(reason) {',
+    `async function restartBrowser(reason) {
+  if (!spartanBrowserLifecycle.isRecoveryLease()) {
+    if (spartanBrowserLifecycle.hasLease()) {
+      spartanBrowserLifecycle.markDegraded('browser_recovery_reentrant');
+      throw spartanBrowserLifecycleError(
+        'browser_recovery_reentrant',
+        'browser recovery requested by an active lifecycle operation',
+      );
+    }
+    return await spartanBrowserLifecycle.recover(
+      () => restartBrowser(reason),
+      { drainTimeoutMs: SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS },
+    );
+  }`,
+  );
+  coordinatedRestart = coordinatedRestart.replace(
+    "  } catch (err) {\n    log('error', 'browser restart failed', { error: err.message });\n  } finally {",
+    "  } catch (err) {\n    log('error', 'browser restart failed', { error: err.message });\n    throw err;\n  } finally {",
+  );
+  spartanReplaceLifecycleRange(restartRange, coordinatedRestart);
+
+  let coordinatedPopup = popupRange.value
+    .replace(
+      `function attachPopupHandler(page, userId, sessionKey) {
+  page.on('popup', (popupPage) => {
+    const key = normalizeUserId(userId);
+    const currentSession = sessions.get(key);
+    if (!currentSession || currentSession._closing) return;`,
+      `function attachPopupHandler(page, userId, sessionKey) {
+  const key = normalizeUserId(userId);
+  const sourceSession = sessions.get(key);
+  page = spartanGuardPage(page);
+  page.on('popup', (popupPage) => {
+    const guardedPopup = spartanGuardPage(popupPage);
+    const currentSession = sessions.get(key);
+    if (!sourceSession || currentSession !== sourceSession || currentSession._closing) {
+      safePageClose(guardedPopup).catch(() => {});
+      return;
+    }`,
+    )
+    .replace('const popupTabState = createTabState(popupPage);', 'const popupTabState = createTabState(guardedPopup);')
+    .replaceAll('url: popupPage.url()', 'url: guardedPopup.url()')
+    .replace('attachPopupHandler(popupPage, userId, sessionKey);', 'attachPopupHandler(guardedPopup, userId, sessionKey);');
+  if (!coordinatedPopup.includes('currentSession !== sourceSession')) {
+    throw new Error('expected Camofox popup handler body marker not found');
+  }
+  spartanReplaceLifecycleRange(popupRange, coordinatedPopup);
+
+  spartanReplaceLifecycleOnce(
+    'session.tabGroups.size === 0\n      && !spartanSessionCreatePending',
+    'session.tabGroups.size === 0\n      && !spartanSessionCreatePending\n      && !session._closing',
+    'empty-session reaper guard',
+  );
+
+  spartanReplaceLifecycleOnce(
+    '    const session = await getSession(userId);\n    await session.context.addCookies(sanitized);',
+    `    const session = await spartanBrowserLifecycle.run('cookie_import', async () => {
+      const current = await getSession(userId);
+      await current.context.addCookies(sanitized);
+      return current;
+    }, {
+      priority: 'foreground',
+      waitTimeoutMs: Math.max(1, HANDLER_TIMEOUT_MS - 1000),
+      deadlineAt: Date.now() + HANDLER_TIMEOUT_MS,
+    });`,
+    'cookie import operation',
+  );
+
+  const openRouteBody = openRouteRange.value.slice(
+    "app.post('/tabs/open', async (req, res) => {".length,
+  );
+  const indentedOpenRouteBody = openRouteBody
+    .split('\n')
+    .map(line => line ? `    ${line}` : line)
+    .join('\n');
+  const coordinatedOpenRoute = `app.post('/tabs/open', async (req, res) => {
+  try {
+    return await spartanBrowserLifecycle.run('tab_open', async () => {${indentedOpenRouteBody}
+    }, {
+      priority: 'foreground',
+      waitTimeoutMs: Math.max(1, requestTimeoutMs() - 1000),
+      deadlineAt: Date.now() + requestTimeoutMs(),
+    });
+  } catch (err) {
+    log('error', 'openclaw tab lifecycle admission failed', {
+      reqId: req.reqId,
+      code: err?.code || 'browser_lifecycle_failed',
+    });
+    handleRouteError(err, req, res);
+  }`;
+  spartanReplaceLifecycleRange(openRouteRange, coordinatedOpenRoute);
+
+  const coordinatedDeepHealthRoutes = `const spartanDeepHealthSecretPath = process.env.SPARTAN_CAMOFOX_INTERNAL_SECRET_FILE
+  || '/run/spartan-camofox/internal.key';
+const SPARTAN_DEEP_PROBE_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS || 8000);
+const SPARTAN_DEEP_CLEANUP_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 1000);
+const spartanDeepHealth = createSpartanDeepHealthController({
+  getBrowser: ensureBrowser,
+  recoverBrowser: () => restartBrowser('spartan_deep_health'),
+  runExclusive: operation => {
+    const lifecycle = spartanBrowserLifecycle.snapshot();
+    const fallbackDeadlineExceeded = lifecycle.ownerKind
+      && lifecycle.ownerDeadlineAt === null
+      && lifecycle.ownerAgeMs > HANDLER_TIMEOUT_MS;
+    if (lifecycle.ownerDeadlineExceeded || fallbackDeadlineExceeded) {
+      throw spartanBrowserLifecycleError(
+        'browser_lifecycle_stuck',
+        'browser lifecycle owner exceeded its declared deadline',
+      );
+    }
+    return spartanBrowserLifecycle.run('deep_probe', operation, {
+      priority: 'health',
+      waitTimeoutMs: 500,
+      deadlineAt: Date.now() + SPARTAN_DEEP_PROBE_TIMEOUT_MS + SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,
+    }).catch(error => {
+      if (error?.code !== 'browser_lifecycle_queue_timeout') throw error;
+      const afterWait = spartanBrowserLifecycle.snapshot();
+      const ownerWithinDeadline = afterWait.ownerKind
+        && !afterWait.ownerDeadlineExceeded
+        && !(afterWait.ownerDeadlineAt === null && afterWait.ownerAgeMs > HANDLER_TIMEOUT_MS);
+      if (!ownerWithinDeadline) throw error;
+      throw spartanBrowserLifecycleError(
+        'browser_lifecycle_busy',
+        'browser lifecycle is busy within its declared deadline',
+      );
+    });
+  },
+  probeTimeoutMs: SPARTAN_DEEP_PROBE_TIMEOUT_MS,
+  cleanupTimeoutMs: SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,
+  recoveryTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS || 20000),
+});
+
+function spartanRequireInternalHealth(req, res) {
+  if (spartanInternalRequestAuthorized(req, spartanDeepHealthSecretPath)) return true;
+  res.status(403).json({ ok: false, code: 'forbidden' });
+  return false;
+}
+
+app.get('/spartan/health/deep', async (req, res) => {
+  if (!spartanRequireInternalHealth(req, res)) return;
+  const result = await spartanDeepHealth.probe();
+  res.status(result.ok ? 200 : 503).json(result);
+});
+
+app.post('/spartan/recover', async (req, res) => {
+  if (!spartanRequireInternalHealth(req, res)) return;
+  const result = await spartanDeepHealth.recover();
+  res.status(result.ok ? 200 : 503).json(result);
+});
+
+`;
+  spartanReplaceLifecycleOnce(
+    spartanDeepHealthRoutes,
+    coordinatedDeepHealthRoutes,
+    'deep health coordination',
+  );
+} else {
+  for (const [marker, label] of [
+    ["spartanBrowserLifecycle.run('deep_probe'", 'deep health'],
+    ['spartanTrackLifecyclePromise(promise)', 'timeout promise tracking'],
+    ['SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1', 'fixed lifecycle capacity'],
+    ["spartanBrowserLifecycle.run('cookie_import'", 'cookie import'],
+    ["spartanBrowserLifecycle.run('tab_open'", 'tabs open'],
+    ['const closing = spartanBrowserLifecycle.run(', 'session close'],
+    ['currentSession !== sourceSession', 'popup generation fence'],
+    ['&& !session._closing', 'reaper closing guard'],
+  ]) {
+    if (!source.includes(marker)) {
+      throw new Error(`Camofox lifecycle v1 marker is incomplete: ${label}`);
+    }
+  }
+}
+
+// Revision 2 narrows the global lane to browser/context mutation, explicit page
+// navigation/close, creates, cookie import, viewport relaunch, and deep health.
+// It also migrates servers already patched with revision 1 before one write.
+const spartanLifecycleRevisionCount = source.split(spartanLifecycleRevisionMarker).length - 1;
+if (spartanLifecycleRevisionCount > 1) {
+  throw new Error('duplicate Camofox lifecycle coordinator revision marker');
+}
+if (spartanLifecycleRevisionCount > 0 && spartanLifecycleVersionCount === 0) {
+  throw new Error('Camofox lifecycle revision exists without its version marker');
+}
+if (spartanLifecycleRevisionCount === 0) {
+  const broadUserGuard = `async function withUserLimit(userId, operation) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    const lifecycleTimeoutMs = requestTimeoutMs();
+    return await spartanBrowserLifecycle.run('user_operation', () => withUserLimit(userId, operation), {
+      priority: 'foreground',
+      waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
+      deadlineAt: Date.now() + lifecycleTimeoutMs,
+    });
+  }`;
+  const broadTabLock = `async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  if (spartanBrowserLifecycle.hasLease()) {
+    const lock = getTabLock(tabId);
+    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+    try {
+      return await operation();
+    } finally {
+      lock.release();
+    }
+  }
+  const underlying = spartanBrowserLifecycle.run('tab_operation', async () => {
+    const lock = getTabLock(tabId);
+    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+    try {
+      return await operation();
+    } finally {
+      lock.release();
+    }
+  }, {
+    priority: 'foreground',
+    waitTimeoutMs: Math.max(1, Number(timeoutMs) - 1000),
+    deadlineAt: Date.now() + Number(timeoutMs),
+  });
+  return await withTimeout(underlying, timeoutMs, 'action');`;
+  const upstreamTabLock = `async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  const lock = getTabLock(tabId);
+  await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+  try {
+    return await withTimeout(operation(), timeoutMs, 'action');
+  } finally {
+    lock.release();
+  }`;
+  const closeOnlyMethods = "const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close']);";
+  const narrowMethods = "const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close', 'goBack', 'goForward', 'goto', 'reload']);";
+  const viewportSignature = 'async function spartanRelaunchViewportTab({ userId, sessionKey, tabId, tabState, requested, effective, timeoutMs }) {';
+  const viewportGuard = `async function spartanRelaunchViewportTab(options) {
+  const { userId, sessionKey, tabId, tabState, requested, effective, timeoutMs } = options;
+  if (!spartanBrowserLifecycle.hasLease()) {
+    const lifecycleTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Number(timeoutMs)
+      : requestTimeoutMs();
+    return await spartanBrowserLifecycle.run(
+      'viewport_relaunch',
+      () => spartanRelaunchViewportTab(options),
+      {
+        priority: 'foreground',
+        waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
+        deadlineAt: Date.now() + lifecycleTimeoutMs,
+      },
+    );
+  }`;
+  const closeCacheMarker = "    if (methodName === 'close') spartanClosePromises.set(target, running);";
+  const closeCacheReplacement = `    if (methodName === 'close') {
+      spartanClosePromises.set(target, running);
+      const clearClosePromise = () => {
+        if (spartanClosePromises.get(target) === running) spartanClosePromises.delete(target);
+      };
+      running.then(clearClosePromise, clearClosePromise);
+    }`;
+  const revisionOneCloseCatch = `    ).catch(error => {
+      spartanBrowserLifecycle.markDegraded('session_close_failed');
+      throw error;
+    });`;
+  const recoverySafeCloseCatch = `    ).catch(error => {
+      const expectedRecoveryAbort = error?.code === 'browser_lifecycle_invalidated'
+        || error?.code === 'browser_lifecycle_recovering';
+      if (!expectedRecoveryAbort) {
+        spartanBrowserLifecycle.markDegraded('session_close_failed');
+      }
+      throw error;
+    });`;
+  const deepCleanupMarker = 'const SPARTAN_DEEP_CLEANUP_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 1000);\n';
+  const deepCleanupReplacement = `const SPARTAN_DEEP_CLEANUP_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 1000);
+const SPARTAN_DEEP_BUSY_MAX_AGE_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS || 45000);
+`;
+  const deepOptionMarker = '  cleanupTimeoutMs: SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,\n  recoveryTimeoutMs:';
+  const deepOptionReplacement = '  cleanupTimeoutMs: SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,\n  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  recoveryTimeoutMs:';
+
+  for (const [marker, label] of [
+    [broadUserGuard, 'revision-1 user guard'],
+    [closeOnlyMethods, 'revision-1 page methods'],
+    [closeCacheMarker, 'close single-flight cache'],
+    [deepCleanupMarker, 'deep busy TTL constant'],
+    [deepOptionMarker, 'deep busy TTL option'],
+  ]) {
+    const count = source.split(marker).length - 1;
+    if (count !== 1) {
+      throw new Error(`expected one Camofox lifecycle ${label} marker, found ${count}`);
+    }
+  }
+  const guardedViewportMarker = "spartanBrowserLifecycle.run(\n      'viewport_relaunch'";
+  const unguardedViewportCount = source.split(viewportSignature).length - 1;
+  const guardedViewportCount = source.split(guardedViewportMarker).length - 1;
+  if (unguardedViewportCount + guardedViewportCount !== 1) {
+    throw new Error('expected exactly one guarded or revision-1 viewport relaunch');
+  }
+  const revisionOneCloseCatchCount = source.split(revisionOneCloseCatch).length - 1;
+  const recoverySafeCloseCatchCount = source.split(recoverySafeCloseCatch).length - 1;
+  if (revisionOneCloseCatchCount + recoverySafeCloseCatchCount !== 1) {
+    throw new Error('expected exactly one revision-1 or recovery-safe session close catch');
+  }
+  const revisionTabLockRange = spartanLifecycleRange(
+    'async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {',
+    '\n}\n\nfunction withTimeout(',
+    'revision-1 tab lock',
+  );
+  if (revisionTabLockRange.value !== broadTabLock) {
+    throw new Error('unsupported Camofox revision-1 tab-lock variant');
+  }
+  const revisionEnsureRange = spartanLifecycleRange(
+    'async function ensureBrowser() {',
+    '\n}\n\n// Helper to normalize userId',
+    'revision-1 ensure browser',
+  );
+  if ((revisionEnsureRange.value.split('launchBrowserInstance(),').length - 1) !== 1) {
+    throw new Error('expected one underlying browser launch marker');
+  }
+
+  spartanReplaceLifecycleOnce(
+    broadUserGuard,
+    'async function withUserLimit(userId, operation) {',
+    'narrow user operation',
+  );
+  spartanReplaceLifecycleRange(revisionTabLockRange, upstreamTabLock);
+  spartanReplaceLifecycleOnce(closeOnlyMethods, narrowMethods, 'narrow page methods');
+  if (unguardedViewportCount === 1) {
+    spartanReplaceLifecycleOnce(viewportSignature, viewportGuard, 'viewport relaunch guard');
+  }
+  spartanReplaceLifecycleOnce(closeCacheMarker, closeCacheReplacement, 'close cache cleanup');
+  if (revisionOneCloseCatchCount === 1) {
+    spartanReplaceLifecycleOnce(
+      revisionOneCloseCatch,
+      recoverySafeCloseCatch,
+      'recovery-safe session close catch',
+    );
+  }
+  spartanReplaceLifecycleOnce(deepCleanupMarker, deepCleanupReplacement, 'deep busy TTL constant');
+  spartanReplaceLifecycleOnce(deepOptionMarker, deepOptionReplacement, 'deep busy TTL option');
+
+  const trackedEnsure = revisionEnsureRange.value.replace(
+    'launchBrowserInstance(),',
+    'spartanTrackLifecyclePromise(launchBrowserInstance()),',
+  );
+  spartanReplaceLifecycleRange(revisionEnsureRange, trackedEnsure);
+  spartanReplaceLifecycleOnce(
+    spartanLifecycleVersionMarker,
+    `${spartanLifecycleVersionMarker}
+${spartanLifecycleRevisionMarker}`,
+    'lifecycle revision marker',
+  );
+} else {
+  for (const [marker, label] of [
+    ["const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close', 'goBack', 'goForward', 'goto', 'reload']);", 'narrow page methods'],
+    ["spartanBrowserLifecycle.run(\n      'viewport_relaunch'", 'viewport relaunch'],
+    ['spartanTrackLifecyclePromise(launchBrowserInstance())', 'tracked browser launch'],
+    ['spartanClosePromises.delete(target)', 'retryable close cache'],
+    ['const expectedRecoveryAbort =', 'recovery-safe session close'],
+    ['SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS', 'deep busy TTL'],
+  ]) {
+    if (!source.includes(marker)) {
+      throw new Error(`Camofox lifecycle revision 2 marker is incomplete: ${label}`);
+    }
+  }
+  for (const forbidden of [
+    "spartanBrowserLifecycle.run('tab_operation'",
+    "spartanBrowserLifecycle.run('user_operation'",
+  ]) {
+    if (source.includes(forbidden)) {
+      throw new Error('Camofox lifecycle revision 2 retains a broad operation guard');
+    }
+  }
 }
 
 const upstreamActiveHealthStart = '// Active health probe -- detect hung browser even when isConnected() lies\n';

@@ -39,28 +39,56 @@ test('deep probe completes the raw lifecycle and cleans up', async () => {
   assert.equal(contextClosed, 1);
 });
 
-test('newPage timeout returns unhealthy and late page is closed', async () => {
+test('newPage timeout reports the stage but keeps the lease until late cleanup settles', async () => {
   let resolvePage;
   let pageClosed = 0;
-  const latePage = fakePage({ close: async () => { pageClosed++; } });
+  let contextClosed = 0;
+  const closeOrder = [];
+  let exclusiveActive = false;
+  let resolveExclusiveDone;
+  const exclusiveDone = new Promise(resolve => { resolveExclusiveDone = resolve; });
+  const latePage = fakePage({
+    close: async () => {
+      pageClosed++;
+      closeOrder.push('page');
+    },
+  });
   const context = {
     newPage: () => new Promise(resolve => { resolvePage = resolve; }),
-    close: async () => {},
+    close: async () => {
+      contextClosed++;
+      closeOrder.push('context');
+    },
   };
   const controller = createSpartanDeepHealthController({
     getBrowser: async () => ({ newContext: async () => context }),
     recoverBrowser: async () => {},
     probeTimeoutMs: 10,
-    cleanupTimeoutMs: 10,
+    cleanupTimeoutMs: 20,
+    runExclusive: async operation => {
+      exclusiveActive = true;
+      try {
+        return await operation();
+      } finally {
+        exclusiveActive = false;
+        resolveExclusiveDone();
+      }
+    },
   });
 
   const result = await controller.probe();
   assert.equal(result.ok, false);
   assert.equal(result.code, 'deep_probe_timeout');
   assert.equal(result.stage, 'new_page');
+  assert.equal(exclusiveActive, true);
+  assert.equal(pageClosed, 0);
+  assert.equal(contextClosed, 0);
   resolvePage(latePage);
-  await new Promise(resolve => setTimeout(resolve, 5));
+  await exclusiveDone;
+  assert.equal(exclusiveActive, false);
   assert.equal(pageClosed, 1);
+  assert.equal(contextClosed, 1);
+  assert.deepEqual(closeOrder, ['page', 'context']);
 });
 
 test('concurrent probes and recoveries are single flight', async () => {
@@ -187,4 +215,135 @@ test('deep probe timeout is global rather than renewed per stage', async () => {
   const result = await controller.probe();
   assert.equal(result.ok, false);
   assert.equal(result.stage, 'new_context');
+});
+
+test('hung cleanup returns bounded unhealthy while retaining exclusivity', async () => {
+  let releaseClose;
+  const closeGate = new Promise(resolve => { releaseClose = resolve; });
+  let exclusiveActive = false;
+  let resolveExclusiveDone;
+  const exclusiveDone = new Promise(resolve => { resolveExclusiveDone = resolve; });
+  const controller = createSpartanDeepHealthController({
+    getBrowser: async () => ({
+      newContext: async () => ({
+        newPage: async () => fakePage({ close: async () => { await closeGate; } }),
+        close: async () => {},
+      }),
+    }),
+    recoverBrowser: async () => {},
+    probeTimeoutMs: 10,
+    cleanupTimeoutMs: 10,
+    runExclusive: async operation => {
+      exclusiveActive = true;
+      try {
+        return await operation();
+      } finally {
+        exclusiveActive = false;
+        resolveExclusiveDone();
+      }
+    },
+  });
+
+  const started = Date.now();
+  const result = await controller.probe();
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'deep_probe_timeout');
+  assert.equal(result.stage, 'lifecycle_settle');
+  assert.equal(exclusiveActive, true);
+  assert.ok(Date.now() - started < 100);
+  releaseClose();
+  await exclusiveDone;
+  assert.equal(exclusiveActive, false);
+});
+
+test('cleanup failure is unhealthy even after a successful sentinel', async () => {
+  let contextClosed = 0;
+  const controller = createSpartanDeepHealthController({
+    getBrowser: async () => ({
+      newContext: async () => ({
+        newPage: async () => fakePage({ close: async () => { throw new Error('close failed'); } }),
+        close: async () => { contextClosed++; },
+      }),
+    }),
+    recoverBrowser: async () => {},
+  });
+  const result = await controller.probe();
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'deep_probe_cleanup_failed');
+  assert.equal(result.stage, 'cleanup');
+  assert.equal(contextClosed, 1);
+});
+
+test('bounded lifecycle busy is healthy only after a recent completed ready probe', async () => {
+  let browserCalls = 0;
+  let clock = 100;
+  let busy = false;
+  const controller = createSpartanDeepHealthController({
+    getBrowser: async () => {
+      browserCalls++;
+      return {
+        newContext: async () => ({
+          newPage: async () => fakePage(),
+          close: async () => {},
+        }),
+      };
+    },
+    recoverBrowser: async () => {},
+    busyMaxAgeMs: 20,
+    now: () => clock,
+    runExclusive: async operation => {
+      if (!busy) return await operation();
+      const error = new Error('busy');
+      error.code = 'browser_lifecycle_busy';
+      throw error;
+    },
+  });
+
+  assert.equal((await controller.probe()).code, 'ready');
+  await new Promise(resolve => setImmediate(resolve));
+  busy = true;
+  clock = 110;
+  const recent = await controller.probe();
+  assert.equal(recent.ok, true);
+  assert.equal(recent.code, 'busy');
+  assert.equal(recent.readyAgeMs, 10);
+  assert.equal(browserCalls, 1);
+
+  await new Promise(resolve => setImmediate(resolve));
+  clock = 121;
+  const stale = await controller.probe();
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'deep_probe_busy_stale');
+  assert.equal(stale.readyAgeMs, 21);
+  assert.equal(browserCalls, 1);
+});
+
+test('busy before any real probe is unhealthy and cannot verify recovery', async () => {
+  let recoveryCalls = 0;
+  const busyExclusive = async () => {
+    const error = new Error('busy');
+    error.code = 'browser_lifecycle_busy';
+    throw error;
+  };
+  const controller = createSpartanDeepHealthController({
+    getBrowser: async () => { throw new Error('must not launch'); },
+    recoverBrowser: async () => { recoveryCalls++; },
+    runExclusive: busyExclusive,
+  });
+
+  const initial = await controller.probe();
+  assert.equal(initial.ok, false);
+  assert.equal(initial.code, 'deep_probe_busy_stale');
+  await new Promise(resolve => setImmediate(resolve));
+  const recovery = await controller.recover();
+  assert.equal(recovery.ok, false);
+  assert.equal(recovery.code, 'recovery_probe_failed');
+  assert.equal(recoveryCalls, 1);
+});
+
+test('invalid health deadlines and exclusivity fail closed', () => {
+  const base = { getBrowser: async () => ({}), recoverBrowser: async () => {} };
+  assert.throws(() => createSpartanDeepHealthController({ ...base, probeTimeoutMs: 0 }), /probeTimeoutMs/);
+  assert.throws(() => createSpartanDeepHealthController({ ...base, busyMaxAgeMs: Number.POSITIVE_INFINITY }), /busyMaxAgeMs/);
+  assert.throws(() => createSpartanDeepHealthController({ ...base, runExclusive: null }), /runExclusive/);
 });

@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 
 const DEFAULT_PROBE_TIMEOUT_MS = 8000;
-const DEFAULT_CLEANUP_TIMEOUT_MS = 2000;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 1000;
+const DEFAULT_BUSY_MAX_AGE_MS = 45000;
 
 export function readSpartanCgroupMemory(root = '/sys/fs/cgroup') {
   try {
@@ -40,13 +41,14 @@ function timeoutError(stage) {
   return error;
 }
 
-async function bounded(promise, timeoutMs, stage, lateCleanup) {
+async function bounded(promise, timeoutMs, stage, lateCleanup, settlements) {
   let timer;
   let expired = false;
   const tracked = Promise.resolve(promise).then(async value => {
     if (expired && lateCleanup) await lateCleanup(value).catch(() => {});
     return value;
   });
+  settlements?.push(tracked.then(() => undefined, () => undefined));
   try {
     return await Promise.race([
       tracked,
@@ -63,13 +65,9 @@ async function bounded(promise, timeoutMs, stage, lateCleanup) {
   }
 }
 
-async function boundedClose(resource, timeoutMs) {
+function closeResource(resource) {
   if (!resource?.close) return;
-  await bounded(
-    Promise.resolve().then(() => resource.close()),
-    timeoutMs,
-    'cleanup',
-  ).catch(() => {});
+  return Promise.resolve().then(() => resource.close());
 }
 
 export function spartanInternalRequestAuthorized(req, secretPath) {
@@ -93,34 +91,60 @@ export function createSpartanDeepHealthController({
   recoverBrowser,
   probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
   cleanupTimeoutMs = DEFAULT_CLEANUP_TIMEOUT_MS,
+  busyMaxAgeMs = DEFAULT_BUSY_MAX_AGE_MS,
   recoveryTimeoutMs = 20000,
+  runExclusive = operation => operation(),
   now = () => Date.now(),
 }) {
+  for (const [name, value] of [
+    ['probeTimeoutMs', probeTimeoutMs],
+    ['cleanupTimeoutMs', cleanupTimeoutMs],
+    ['busyMaxAgeMs', busyMaxAgeMs],
+    ['recoveryTimeoutMs', recoveryTimeoutMs],
+  ]) {
+    if (!Number.isFinite(Number(value)) || Number(value) < 1) {
+      throw new TypeError(`deep health ${name} must be positive`);
+    }
+  }
+  if (typeof runExclusive !== 'function') {
+    throw new TypeError('deep health runExclusive must be a function');
+  }
+  const exposureTimeoutMs = Number(probeTimeoutMs) + Number(cleanupTimeoutMs);
   let inflightProbe = null;
   let inflightRecovery = null;
+  let lastReadyAt = null;
 
-  async function runProbe() {
+  async function runProbe(reportFailure) {
     const startedAt = now();
     const deadlineAt = startedAt + probeTimeoutMs;
     const remaining = () => Math.max(1, deadlineAt - now());
+    const settlements = [];
     let context;
     let page;
     let stage = 'ensure_browser';
     try {
-      const browser = await bounded(Promise.resolve().then(() => getBrowser()), remaining(), stage);
+      const browser = await bounded(
+        Promise.resolve().then(() => getBrowser()),
+        remaining(),
+        stage,
+        null,
+        settlements,
+      );
       stage = 'new_context';
       context = await bounded(
         browser.newContext(),
         remaining(),
         stage,
-        value => boundedClose(value, cleanupTimeoutMs),
+        value => closeResource(value),
+        settlements,
       );
       stage = 'new_page';
       page = await bounded(
         context.newPage(),
         remaining(),
         stage,
-        value => boundedClose(value, cleanupTimeoutMs),
+        value => closeResource(value),
+        settlements,
       );
       stage = 'goto';
       await bounded(
@@ -130,12 +154,16 @@ export function createSpartanDeepHealthController({
         }),
         remaining(),
         stage,
+        null,
+        settlements,
       );
       stage = 'evaluate';
       const sentinel = await bounded(
         page.evaluate(() => document.querySelector('#sentinel')?.textContent),
         remaining(),
         stage,
+        null,
+        settlements,
       );
       if (sentinel !== 'ready') {
         const error = new Error('deep browser probe sentinel mismatch');
@@ -145,23 +173,95 @@ export function createSpartanDeepHealthController({
       }
       return { ok: true, code: 'ready', stage: 'complete', durationMs: Math.max(0, now() - startedAt) };
     } catch (error) {
-      return {
+      const result = {
         ok: false,
         code: error?.code || 'deep_probe_failed',
         stage: error?.stage || stage,
         durationMs: Math.max(0, now() - startedAt),
       };
+      reportFailure(result);
+      return result;
     } finally {
-      await boundedClose(page, cleanupTimeoutMs);
-      await boundedClose(context, cleanupTimeoutMs);
+      // A timed-out create/navigation must settle before cleanup starts.
+      // Otherwise context.close() can overlap the still-running browser call
+      // and recreate the Camoufox deadlock this probe is meant to detect.
+      await Promise.all(settlements);
+      const cleanupErrors = [];
+      for (const resource of [page, context]) {
+        try {
+          await closeResource(resource);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      // The exclusive lifecycle lease is held until every timed-out operation
+      // and each page -> context close has actually settled. PID 1 is the final
+      // escape hatch for an operation that cannot settle.
+      if (cleanupErrors.length > 0) {
+        const error = new Error('deep browser probe cleanup failed');
+        error.code = 'deep_probe_cleanup_failed';
+        error.stage = 'cleanup';
+        throw error;
+      }
     }
   }
 
   function probe() {
     if (!inflightProbe) {
-      inflightProbe = runProbe().finally(() => {
-        inflightProbe = null;
-      });
+      let reportFailure;
+      const earlyFailure = new Promise(resolve => { reportFailure = resolve; });
+      const startedAt = now();
+      const underlying = Promise.resolve()
+        .then(() => runExclusive(() => runProbe(reportFailure)))
+        .then(result => {
+          if (result?.ok && result.code === 'ready') lastReadyAt = now();
+          return result;
+        })
+        .catch(error => {
+          if (error?.code === 'browser_lifecycle_busy') {
+            const readyAgeMs = lastReadyAt === null
+              ? null
+              : Math.max(0, now() - lastReadyAt);
+            if (readyAgeMs !== null && readyAgeMs <= Number(busyMaxAgeMs)) {
+              return {
+                ok: true,
+                code: 'busy',
+                stage: 'lifecycle',
+                readyAgeMs,
+                durationMs: Math.max(0, now() - startedAt),
+              };
+            }
+            return {
+              ok: false,
+              code: 'deep_probe_busy_stale',
+              stage: 'lifecycle',
+              readyAgeMs,
+              durationMs: Math.max(0, now() - startedAt),
+            };
+          }
+          return {
+            ok: false,
+            code: error?.code || 'deep_probe_failed',
+            stage: error?.stage || 'lifecycle',
+            durationMs: Math.max(0, now() - startedAt),
+          };
+        });
+      const reported = Promise.race([earlyFailure, underlying]);
+      const exposed = bounded(
+        reported,
+        exposureTimeoutMs,
+        'lifecycle_settle',
+      ).catch(error => ({
+        ok: false,
+        code: error?.code || 'deep_probe_failed',
+        stage: error?.stage || 'lifecycle_settle',
+        durationMs: Math.max(0, now() - startedAt),
+      }));
+      inflightProbe = exposed;
+      underlying.then(
+        () => { if (inflightProbe === exposed) inflightProbe = null; },
+        () => { if (inflightProbe === exposed) inflightProbe = null; },
+      );
     }
     return inflightProbe;
   }
@@ -169,9 +269,13 @@ export function createSpartanDeepHealthController({
   function recover() {
     if (!inflightRecovery) {
       const recovery = Promise.resolve().then(async () => {
+          lastReadyAt = null;
           await recoverBrowser();
+          // A successful probe from the previous browser generation must not
+          // validate the replacement.
+          lastReadyAt = null;
           const verification = await probe();
-          return verification.ok
+          return verification.code === 'ready'
             ? { ok: true, code: 'recovered' }
             : { ok: false, code: 'recovery_probe_failed', stage: verification.stage };
         });

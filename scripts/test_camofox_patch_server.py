@@ -9,6 +9,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PATCHER = ROOT / "infra" / "camofox" / "patch-server.js"
 SPARTAN_HEALTH = ROOT / "infra" / "camofox" / "spartan-health.mjs"
+SPARTAN_LIFECYCLE = ROOT / "infra" / "camofox" / "spartan-lifecycle.mjs"
 
 SERVER_FIXTURE = """\
 import crypto from 'crypto';
@@ -16,16 +17,16 @@ import fs from 'fs';
 const app = { get() {}, post() {}, delete() {} };
 const MAX_SESSIONS = 8;
 const sessions = new Map();
-const userConcurrency = new Map();
 const tabLocks = new Map();
 const failuresTotal = { labels() { return { inc() {} }; } };
 const MAX_DOWNLOAD_INLINE_BYTES = 1024;
+const HANDLER_TIMEOUT_MS = 30000;
+const TAB_LOCK_TIMEOUT_MS = 35000;
 const CONFIG = { nodeEnv: 'production' };
 function authMiddleware() {}
 function normalizeUserId(value) { return value; }
 function findTab() { return null; }
 function tabNotFoundResponse() {}
-function withTabLock(_tabId, callback) { return callback(); }
 function getDownloadsList() { return []; }
 function classifyError() { return 'test'; }
 function log() {}
@@ -56,13 +57,147 @@ const reporter = {};
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
-function requestTimeoutMs() { return 30000; }
-async function ensureBrowser() { return {}; }
-async function restartBrowser() { return {}; }
-async function closeSession(key, session) {
+
+function getTabLock(tabId) {
+  if (!tabLocks.has(tabId)) {
+    tabLocks.set(tabId, { acquire: async () => {}, release() {}, drain() {} });
+  }
+  return tabLocks.get(tabId);
+}
+async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  const lock = getTabLock(tabId);
+  await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+  try {
+    return await withTimeout(operation(), timeoutMs, 'action');
+  } finally {
+    lock.release();
+  }
+}
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    )
+  ]);
+}
+
+function requestTimeoutMs() { return HANDLER_TIMEOUT_MS; }
+const userConcurrency = new Map();
+
+async function withUserLimit(userId, operation) {
+  void userId;
+  return await operation();
+}
+
+let browser = null;
+let browserLaunchPromise = null;
+let _browserClosePromise = null;
+let spartanTestLaunchFactory = async () => ({
+  newContext: async () => ({ pages: () => [] }),
+});
+function spartanSetTestLaunchFactory(factory) {
+  spartanTestLaunchFactory = factory;
+  browser = null;
+  browserLaunchPromise = null;
+}
+async function launchBrowserInstance() {
+  const value = await spartanTestLaunchFactory();
+  browser = value;
+  return value;
+}
+async function restartBrowser(reason) {
+  try {
+    await closeAllSessions(`browser_restart:${reason}`);
+    await closeBrowserFully(reason);
+    await ensureBrowser();
+  } catch (err) {
+    log('error', 'browser restart failed', { error: err.message });
+  } finally {
+    void reason;
+  }
+}
+
+function getTotalTabCount() { return 0; }
+
+async function closeBrowserFully(reason) {
+  if (_browserClosePromise) return _browserClosePromise;
+  _browserClosePromise = Promise.resolve(reason);
+  try {
+    return await _browserClosePromise;
+  } finally {
+    _browserClosePromise = null;
+  }
+}
+
+async function ensureBrowser() {
+  if (browser) return browser;
+  if (browserLaunchPromise) return browserLaunchPromise;
+  const launchTimeoutMs = 10;
+  browserLaunchPromise = Promise.race([
+    launchBrowserInstance(),
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('Browser launch timeout')), launchTimeoutMs);
+      timer.unref?.();
+    }),
+  ]).finally(() => { browserLaunchPromise = null; });
+  return browserLaunchPromise;
+}
+
+// Helper to normalize userId to string (JSON body may parse as number)
+
+async function closeSession(userId, session, {
+  reason = 'session_closed',
+  clearDownloads = true,
+  clearLocks = true,
+} = {}) {
+  if (!session) return;
+  const key = normalizeUserId(userId);
+  void reason; void clearDownloads; void clearLocks;
   await session.context.close().catch(() => {});
   sessions.delete(key);
 }
+
+async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
+  for (const [userId, session] of sessions) {
+    await closeSession(userId, session, { reason, clearDownloads, clearLocks });
+  }
+}
+
+async function getSession(userId, { trace = false } = {}) {
+  const key = normalizeUserId(userId);
+  let session = sessions.get(key);
+  if (!session) {
+    const b = await ensureBrowser();
+    const context = await b.newContext();
+    session = { context, tabGroups: new Map(), trace };
+    sessions.set(key, session);
+  }
+  return session;
+}
+
+function attachPopupHandler(page, userId, sessionKey) {
+  page.on('popup', (popupPage) => {
+    const key = normalizeUserId(userId);
+    const currentSession = sessions.get(key);
+    if (!currentSession || currentSession._closing) return;
+
+    const popupTabId = fly.makeTabId();
+    const popupTabState = createTabState(popupPage);
+    attachDownloadListener(popupTabState, popupTabId, log, pluginEvents, key);
+    const popupGroup = getTabGroup(currentSession, sessionKey || '__popups__');
+    popupGroup.set(popupTabId, popupTabState);
+    currentSession.lastAccess = Date.now();
+    refreshActiveTabsGauge();
+    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: popupPage.url() });
+    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: popupPage.url() });
+    attachPopupHandler(popupPage, userId, sessionKey);
+  });
+}
+
+function pressureHash(value) { return value; }
+
 function reapEmptySessions(now = Date.now()) {
   for (const [userId, session] of sessions) {
     for (const [listItemId, group] of session.tabGroups) {
@@ -123,6 +258,18 @@ async function launch(vdDisplay, launchProxy) {
       // Memory admission control (Fly.io only) — reject new sessions when
       // system memory is critically low. 503 tells Fly Proxy to try another machine.
 
+app.post('/sessions/cookies', async (req, res) => {
+  try {
+    const userId = req.body.userId;
+    const sanitized = [];
+    const session = await getSession(userId);
+    await session.context.addCookies(sanitized);
+    res.json({ ok: true });
+  } catch (err) {
+    handleRouteError(err, req, res);
+  }
+});
+
 app.post('/tabs', async (req, res) => {
   try {
     const { userId, sessionKey, listItemId, url, trace } = req.body;
@@ -162,6 +309,24 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
   }
 });
 
+app.post('/tabs/open', async (req, res) => {
+  try {
+    const { userId, url, listItemId = 'default' } = req.body;
+    let session = await getSession(userId);
+    let group = getTabGroup(session, listItemId);
+    let page = await session.context.newPage();
+    const tabId = fly.makeTabId();
+    const tabState = createTabState(page);
+    group.set(tabId, tabState);
+    await page.goto(url);
+    res.json({ tabId, url: page.url() });
+  } catch (err) {
+    log('error', 'openclaw tab open failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// POST /start
 app.post('/tabs/:tabId/viewport', async (req, res) => {
   res.json({ ok: true, width: req.body?.width, height: req.body?.height });
 });
@@ -210,7 +375,7 @@ async function closeBrowser() {
   _nativeMemBaseline = null;
 }
 
-export { sessions, closeSession, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit };
+export { sessions, closeSession, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit, spartanBrowserLifecycle, spartanGuardPage, ensureBrowser, spartanSetTestLaunchFactory };
 """
 
 
@@ -220,6 +385,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.root = pathlib.Path(self.temp_dir.name)
         shutil.copy2(PATCHER, self.root / "patch-server.cjs")
         shutil.copy2(SPARTAN_HEALTH, self.root / "spartan-health.mjs")
+        shutil.copy2(SPARTAN_LIFECYCLE, self.root / "spartan-lifecycle.mjs")
         (self.root / "package.json").write_text('{"type":"module"}\n')
         self.server = self.root / "server.js"
         self.server.write_text(SERVER_FIXTURE)
@@ -301,6 +467,33 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertIn("typeof reporter.resetNativeMemBaseline === 'function'", patched)
         self.assertIn("app.get('/spartan/health/deep'", patched)
         self.assertIn("spartanInternalRequestAuthorized", patched)
+        self.assertEqual(
+            patched.count("const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;"),
+            1,
+        )
+        self.assertEqual(
+            patched.count("const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;"),
+            1,
+        )
+        self.assertIn("SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1", patched)
+        self.assertIn(
+            "SPARTAN_PAGE_LIFECYCLE_METHODS = "
+            "Object.freeze(['close', 'goBack', 'goForward', 'goto', 'reload'])",
+            patched,
+        )
+        self.assertNotIn("spartanBrowserLifecycle.run('user_operation'", patched)
+        self.assertNotIn("spartanBrowserLifecycle.run('tab_operation'", patched)
+        self.assertIn("'viewport_relaunch'", patched)
+        self.assertIn("spartanTrackLifecyclePromise(promise)", patched)
+        self.assertIn("spartanTrackLifecyclePromise(launchBrowserInstance())", patched)
+        self.assertIn("spartanClosePromises.delete(target)", patched)
+        self.assertIn("SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS", patched)
+        self.assertIn("ownerDeadlineExceeded", patched)
+        self.assertIn("browser_lifecycle_busy", patched)
+        self.assertIn("spartanBrowserLifecycle.run('cookie_import'", patched)
+        self.assertIn("spartanBrowserLifecycle.run('tab_open'", patched)
+        self.assertNotIn("spartanCreateWaiters", patched)
+        self.assertNotIn("spartanActiveCreates", patched)
         self.assertNotIn("Active health probe -- detect hung browser", patched)
         self.assertIn("const spartanCreateFence =", patched)
         self.assertIn("sessions.get(spartanCreateFence.userKey) === session", patched)
@@ -342,10 +535,148 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.server.read_text(), patched)
 
+    def test_migrates_revision_one_to_narrow_revision_two(self):
+        first = self.run_patcher()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        final = self.server.read_text()
+
+        def replace_once(value, old, new):
+            self.assertEqual(value.count(old), 1, old[:80])
+            return value.replace(old, new, 1)
+
+        legacy = replace_once(
+            final,
+            "const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;\n",
+            "",
+        )
+        legacy = replace_once(
+            legacy,
+            "const SPARTAN_PAGE_LIFECYCLE_METHODS = "
+            "Object.freeze(['close', 'goBack', 'goForward', 'goto', 'reload']);",
+            "const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close']);",
+        )
+        legacy = replace_once(
+            legacy,
+            "spartanTrackLifecyclePromise(launchBrowserInstance()),",
+            "launchBrowserInstance(),",
+        )
+        legacy = replace_once(
+            legacy,
+            """    if (methodName === 'close') {
+      spartanClosePromises.set(target, running);
+      const clearClosePromise = () => {
+        if (spartanClosePromises.get(target) === running) spartanClosePromises.delete(target);
+      };
+      running.then(clearClosePromise, clearClosePromise);
+    }""",
+            "    if (methodName === 'close') spartanClosePromises.set(target, running);",
+        )
+        legacy = replace_once(
+            legacy,
+            """    ).catch(error => {
+      const expectedRecoveryAbort = error?.code === 'browser_lifecycle_invalidated'
+        || error?.code === 'browser_lifecycle_recovering';
+      if (!expectedRecoveryAbort) {
+        spartanBrowserLifecycle.markDegraded('session_close_failed');
+      }
+      throw error;
+    });""",
+            """    ).catch(error => {
+      spartanBrowserLifecycle.markDegraded('session_close_failed');
+      throw error;
+    });""",
+        )
+        legacy = replace_once(
+            legacy,
+            "const SPARTAN_DEEP_BUSY_MAX_AGE_MS = "
+            "Number(process.env.SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS || 45000);\n",
+            "",
+        )
+        legacy = replace_once(
+            legacy,
+            "  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n",
+            "",
+        )
+        legacy = replace_once(
+            legacy,
+            """async function spartanRelaunchViewportTab(options) {
+  const { userId, sessionKey, tabId, tabState, requested, effective, timeoutMs } = options;
+  if (!spartanBrowserLifecycle.hasLease()) {
+    const lifecycleTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Number(timeoutMs)
+      : requestTimeoutMs();
+    return await spartanBrowserLifecycle.run(
+      'viewport_relaunch',
+      () => spartanRelaunchViewportTab(options),
+      {
+        priority: 'foreground',
+        waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
+        deadlineAt: Date.now() + lifecycleTimeoutMs,
+      },
+    );
+  }""",
+            "async function spartanRelaunchViewportTab("
+            "{ userId, sessionKey, tabId, tabState, requested, effective, timeoutMs }) {",
+        )
+        legacy = replace_once(
+            legacy,
+            "async function withUserLimit(userId, operation) {",
+            """async function withUserLimit(userId, operation) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    const lifecycleTimeoutMs = requestTimeoutMs();
+    return await spartanBrowserLifecycle.run('user_operation', () => withUserLimit(userId, operation), {
+      priority: 'foreground',
+      waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
+      deadlineAt: Date.now() + lifecycleTimeoutMs,
+    });
+  }""",
+        )
+        legacy = replace_once(
+            legacy,
+            """async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  const lock = getTabLock(tabId);
+  await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+  try {
+    return await withTimeout(operation(), timeoutMs, 'action');
+  } finally {
+    lock.release();
+  }""",
+            """async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  if (spartanBrowserLifecycle.hasLease()) {
+    const lock = getTabLock(tabId);
+    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+    try {
+      return await operation();
+    } finally {
+      lock.release();
+    }
+  }
+  const underlying = spartanBrowserLifecycle.run('tab_operation', async () => {
+    const lock = getTabLock(tabId);
+    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+    try {
+      return await operation();
+    } finally {
+      lock.release();
+    }
+  }, {
+    priority: 'foreground',
+    waitTimeoutMs: Math.max(1, Number(timeoutMs) - 1000),
+    deadlineAt: Date.now() + Number(timeoutMs),
+  });
+  return await withTimeout(underlying, timeoutMs, 'action');""",
+        )
+        self.server.write_text(legacy)
+
+        migrated = self.run_patcher()
+
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.assertEqual(self.server.read_text(), final)
+
     def test_rejects_invalid_global_create_limits(self):
         first = self.run_patcher()
         self.assertEqual(first.returncode, 0, first.stderr)
-        for invalid in ("0", "9", "not-a-number"):
+        for invalid in ("0", "2", "9", "not-a-number"):
             env = os.environ.copy()
             env["SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES"] = invalid
             result = subprocess.run(
@@ -357,7 +688,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0, invalid)
-            self.assertIn("must be an integer between 1 and MAX_SESSIONS", result.stderr)
+            self.assertIn("must be exactly 1", result.stderr)
 
     def test_session_reaper_threshold_and_compare_delete_are_behavioral(self):
         first = self.run_patcher()
@@ -365,7 +696,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
         runner = self.root / "reaper-runtime.mjs"
         runner.write_text(
             """import assert from 'node:assert/strict';
-import { sessions, closeSession, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit } from './server.js';
+import { sessions, closeSession, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit, spartanBrowserLifecycle, spartanGuardPage, ensureBrowser, spartanSetTestLaunchFactory } from './server.js';
 
 let releaseOldContext;
 const oldContextClosed = new Promise(resolve => { releaseOldContext = resolve; });
@@ -388,6 +719,8 @@ await closing;
 assert.equal(sessions.get('same-user'), replacement);
 
 let reaperCloseCalls = 0;
+let releaseReaperClose;
+const reaperCloseGate = new Promise(resolve => { releaseReaperClose = resolve; });
 const pendingGroup = new Map();
 const pendingFence = { group: pendingGroup };
 const empty = {
@@ -395,7 +728,7 @@ const empty = {
   tabGroups: new Map([['pending', pendingGroup]]),
   _spartanPendingCreates: new Set([pendingFence]),
   context: {
-    close: async () => { reaperCloseCalls++; },
+    close: async () => { reaperCloseCalls++; await reaperCloseGate; },
     pages: () => [],
   },
 };
@@ -411,6 +744,11 @@ assert.equal(empty._closing, true);
 assert.equal(empty.tabGroups.has('pending'), false);
 await new Promise(resolve => setImmediate(resolve));
 assert.equal(reaperCloseCalls, 1);
+reapEmptySessions(105_000);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(reaperCloseCalls, 1);
+releaseReaperClose();
+await new Promise(resolve => setImmediate(resolve));
 
 let orphanCloseCalls = 0;
 const registeredPage = {};
@@ -477,7 +815,9 @@ const timeoutHolder = spartanWithCreateLimit(async () => {
 await new Promise(resolve => setImmediate(resolve));
 let expiredRan = false;
 const expiredWaiter = spartanWithCreateLimit(async () => { expiredRan = true; }, 10);
-await assert.rejects(expiredWaiter, error => error?.code === 'tab_create_queue_timeout');
+const queueTimerKeepalive = setTimeout(() => {}, 1000);
+await assert.rejects(expiredWaiter, error => error?.code === 'browser_lifecycle_queue_timeout');
+clearTimeout(queueTimerKeepalive);
 assert.equal(expiredRan, false);
 releaseTimeout();
 await timeoutHolder;
@@ -495,12 +835,84 @@ const queuedAtCapacity = Array.from({ length: 8 }, () =>
 await new Promise(resolve => setImmediate(resolve));
 await assert.rejects(
   spartanWithCreateLimit(async () => {}, 1000),
-  error => error?.code === 'tab_create_queue_full',
+  error => error?.code === 'browser_lifecycle_queue_full',
 );
 releaseOverflow();
 await overflowHolder;
 await Promise.all(queuedAtCapacity);
 assert.equal(overflowRuns, 8);
+
+let releaseRecoveryClose;
+const recoveryCloseGate = new Promise(resolve => { releaseRecoveryClose = resolve; });
+const recoverySession = {
+  tabGroups: new Map(),
+  context: { close: async () => { await recoveryCloseGate; } },
+};
+sessions.set('recovery-close', recoverySession);
+const interruptedClose = closeSession('recovery-close', recoverySession);
+await new Promise(resolve => setImmediate(resolve));
+const coordinatedRecovery = spartanBrowserLifecycle.recover(async () => {});
+releaseRecoveryClose();
+await assert.rejects(
+  interruptedClose,
+  error => error?.code === 'browser_lifecycle_invalidated',
+);
+await coordinatedRecovery;
+assert.equal(spartanBrowserLifecycle.snapshot().degradedCode, null);
+
+const alreadyClosedSession = {
+  tabGroups: new Map(),
+  context: { close: async () => { throw new Error('Target page, context or browser has been closed'); } },
+};
+sessions.set('already-closed', alreadyClosedSession);
+await closeSession('already-closed', alreadyClosedSession);
+assert.equal(sessions.has('already-closed'), false);
+
+let guardedCloseCalls = 0;
+const guardedPage = spartanGuardPage({
+  close: async () => {
+    guardedCloseCalls++;
+    if (guardedCloseCalls === 1) throw new Error('first close failed');
+  },
+});
+const firstGuardedClose = guardedPage.close();
+const sameGuardedClose = guardedPage.close();
+assert.equal(firstGuardedClose, sameGuardedClose);
+const firstCloseResults = await Promise.allSettled([firstGuardedClose, sameGuardedClose]);
+assert.deepEqual(firstCloseResults.map(result => result.status), ['rejected', 'rejected']);
+assert.equal(guardedCloseCalls, 1);
+await guardedPage.close();
+assert.equal(guardedCloseCalls, 2);
+
+let resolveLateLaunch;
+spartanSetTestLaunchFactory(() => new Promise(resolve => { resolveLateLaunch = resolve; }));
+let launchSettled = false;
+const timedLaunch = ensureBrowser().then(
+  value => { launchSettled = true; return value; },
+  error => { launchSettled = true; throw error; },
+);
+await new Promise(resolve => setTimeout(resolve, 25));
+assert.equal(launchSettled, false);
+assert.equal(spartanBrowserLifecycle.snapshot().ownerKind, 'browser_ensure');
+let afterLaunchRan = false;
+const afterLateLaunch = spartanWithCreateLimit(async () => { afterLaunchRan = true; }, 1000);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(afterLaunchRan, false);
+resolveLateLaunch({ newContext: async () => ({ pages: () => [] }) });
+await assert.rejects(timedLaunch, /Browser launch timeout/);
+await afterLateLaunch;
+assert.equal(afterLaunchRan, true);
+
+const failedCloseSession = {
+  tabGroups: new Map(),
+  context: { close: async () => { throw new Error('unexpected close failure'); } },
+};
+sessions.set('failed-close', failedCloseSession);
+await assert.rejects(closeSession('failed-close', failedCloseSession), /unexpected close failure/);
+await assert.rejects(
+  spartanWithCreateLimit(async () => {}),
+  error => error?.code === 'browser_lifecycle_degraded',
+);
 """
         )
 

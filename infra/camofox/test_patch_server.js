@@ -32,12 +32,145 @@ let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
 const MAX_SESSIONS = 8;
+const HANDLER_TIMEOUT_MS = 30000;
+const TAB_LOCK_TIMEOUT_MS = 35000;
 const sessions = new Map();
+
+function getTabLock() {
+  return { acquire: async () => {}, release() {} };
+}
+async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  const lock = getTabLock(tabId);
+  await lock.acquire(TAB_LOCK_TIMEOUT_MS);
+  try {
+    return await withTimeout(operation(), timeoutMs, 'action');
+  } finally {
+    lock.release();
+  }
+}
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(\`\${label} timed out after \${ms}ms\`)), ms)
+    )
+  ]);
+}
+function requestTimeoutMs() { return HANDLER_TIMEOUT_MS; }
 const userConcurrency = new Map();
-async function closeSession(key, session) {
+
+async function withUserLimit(userId, operation) {
+  return await operation();
+}
+
+let browser = null;
+let browserLaunchPromise = null;
+let _browserClosePromise = null;
+let spartanTestLaunchFactory = async () => ({
+  newContext: async () => ({ pages: () => [] }),
+});
+function spartanSetTestLaunchFactory(factory) {
+  spartanTestLaunchFactory = factory;
+  browser = null;
+  browserLaunchPromise = null;
+}
+async function launchBrowserInstance() {
+  const value = await spartanTestLaunchFactory();
+  browser = value;
+  return value;
+}
+async function restartBrowser(reason) {
+  try {
+    await closeAllSessions(\`browser_restart:\${reason}\`);
+    await closeBrowserFully(reason);
+    await ensureBrowser();
+  } catch (err) {
+    log('error', 'browser restart failed', { error: err.message });
+  } finally {
+    void reason;
+  }
+}
+
+function getTotalTabCount() { return 0; }
+
+async function closeBrowserFully(reason) {
+  if (_browserClosePromise) return _browserClosePromise;
+  _browserClosePromise = Promise.resolve(reason);
+  try {
+    return await _browserClosePromise;
+  } finally {
+    _browserClosePromise = null;
+  }
+}
+
+async function ensureBrowser() {
+  if (browser) return browser;
+  if (browserLaunchPromise) return browserLaunchPromise;
+  const launchTimeoutMs = 10;
+  browserLaunchPromise = Promise.race([
+    launchBrowserInstance(),
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('Browser launch timeout')), launchTimeoutMs);
+      timer.unref?.();
+    }),
+  ]).finally(() => { browserLaunchPromise = null; });
+  return browserLaunchPromise;
+}
+
+// Helper to normalize userId to string (JSON body may parse as number)
+function normalizeUserId(userId) { return String(userId); }
+
+async function closeSession(userId, session, {
+  reason = 'session_closed',
+  clearDownloads = true,
+  clearLocks = true,
+} = {}) {
+  if (!session) return;
+  const key = normalizeUserId(userId);
+  void reason; void clearDownloads; void clearLocks;
   await session.context.close().catch(() => {});
   sessions.delete(key);
 }
+
+async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
+  for (const [userId, session] of sessions) {
+    await closeSession(userId, session, { reason, clearDownloads, clearLocks });
+  }
+}
+async function getSession(userId, { trace = false } = {}) {
+  const key = normalizeUserId(userId);
+  let session = sessions.get(key);
+  if (!session) {
+    const b = await ensureBrowser();
+    const context = await b.newContext();
+    session = { context, tabGroups: new Map(), trace };
+    sessions.set(key, session);
+  }
+  return session;
+}
+
+function attachPopupHandler(page, userId, sessionKey) {
+  page.on('popup', (popupPage) => {
+    const key = normalizeUserId(userId);
+    const currentSession = sessions.get(key);
+    if (!currentSession || currentSession._closing) return;
+
+    const popupTabId = fly.makeTabId();
+    const popupTabState = createTabState(popupPage);
+    attachDownloadListener(popupTabState, popupTabId, log, pluginEvents, key);
+    const popupGroup = getTabGroup(currentSession, sessionKey || '__popups__');
+    popupGroup.set(popupTabId, popupTabState);
+    currentSession.lastAccess = Date.now();
+    refreshActiveTabsGauge();
+    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: popupPage.url() });
+    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: popupPage.url() });
+    attachPopupHandler(popupPage, userId, sessionKey);
+  });
+}
+
+function pressureHash(value) { return value; }
+
 for (const [key, session] of sessions) {
   if (session._closing) continue;
   if (session.lastAccess < Infinity) void key;
@@ -91,6 +224,18 @@ async function launch() {
       // Memory admission control (Fly.io only) — reject new sessions when
       // system memory is critically low. 503 tells Fly Proxy to try another machine.
 
+app.post('/sessions/cookies', async (req, res) => {
+  try {
+    const userId = req.body.userId;
+    const sanitized = [];
+    const session = await getSession(userId);
+    await session.context.addCookies(sanitized);
+    res.json({ ok: true });
+  } catch (err) {
+    handleRouteError(err, req, res);
+  }
+});
+
 app.post('/tabs', async (req, res) => {
   try {
     const { userId, sessionKey, listItemId, url, trace } = req.body;
@@ -128,6 +273,25 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     }
   }
 });
+
+app.post('/tabs/open', async (req, res) => {
+  try {
+    const { userId, url, listItemId = 'default' } = req.body;
+    let session = await getSession(userId);
+    let group = getTabGroup(session, listItemId);
+    let page = await session.context.newPage();
+    const tabId = fly.makeTabId();
+    const tabState = createTabState(page);
+    group.set(tabId, tabState);
+    await page.goto(url);
+    res.json({ tabId, url: page.url() });
+  } catch (err) {
+    log('error', 'openclaw tab open failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// POST /start
 app.post('/tabs/:tabId/viewport', async (req, res) => {
   res.json({ ok: true, width: req.body?.width, height: req.body?.height });
 });
@@ -218,6 +382,34 @@ try {
   assert.match(once, /body\.code = err\.code/, 'global errors must include semantic codes in the response body');
   assert.match(once, /app\.get\('\/spartan\/health\/deep'/, 'deep health route must be installed');
   assert.match(once, /spartanInternalRequestAuthorized/, 'deep health must require internal authorization');
+  assert.strictEqual(
+    (once.match(/const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;/g) || []).length,
+    1,
+    'generated server must contain exactly one lifecycle coordinator version',
+  );
+  assert.strictEqual(
+    (once.match(/const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;/g) || []).length,
+    1,
+    'generated server must contain exactly one narrow coordinator revision',
+  );
+  assert.match(once, /SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1/, 'lifecycle capacity must fail closed above one');
+  assert.match(
+    once,
+    /SPARTAN_PAGE_LIFECYCLE_METHODS = Object\.freeze\(\['close', 'goBack', 'goForward', 'goto', 'reload'\]\)/,
+    'only page navigation and close should join the global lifecycle lane',
+  );
+  assert.doesNotMatch(once, /spartanBrowserLifecycle\.run\('user_operation'/, 'ordinary user operations must retain upstream concurrency');
+  assert.doesNotMatch(once, /spartanBrowserLifecycle\.run\('tab_operation'/, 'ordinary tab operations must retain upstream concurrency');
+  assert.match(once, /spartanBrowserLifecycle\.run\(\s*'viewport_relaunch'/, 'viewport relaunch must join the lifecycle lane explicitly');
+  assert.match(once, /spartanTrackLifecyclePromise\(promise\)/, 'timed-out browser work must retain its lease');
+  assert.match(once, /spartanTrackLifecyclePromise\(launchBrowserInstance\(\)\)/, 'timed-out browser launch must retain its lease');
+  assert.match(once, /spartanClosePromises\.delete\(target\)/, 'a settled close must remain retryable');
+  assert.match(once, /SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS/, 'bounded busy health must have a finite real-probe TTL');
+  assert.match(once, /ownerDeadlineExceeded/, 'health must distinguish bounded busy from stuck');
+  assert.match(once, /browser_lifecycle_busy/, 'bounded busy must be explicit');
+  assert.match(once, /spartanBrowserLifecycle\.run\('cookie_import'/, 'cookie context mutation must be atomic');
+  assert.match(once, /spartanBrowserLifecycle\.run\('tab_open'/, 'OpenClaw tab creation must be atomic');
+  assert.doesNotMatch(once, /spartanCreateWaiters|spartanActiveCreates/, 'legacy create FIFO must be fully migrated');
   assert.doesNotMatch(once, /Active health probe -- detect hung browser/, 'unbounded upstream probe must be removed');
   assert.match(once, /const spartanCreateFence =/, 'tab create must fence late completions');
   assert.match(once, /async function spartanWithCreateLimit\(operation, queueTimeoutMs/, 'tab creates must use the bounded global FIFO limiter');
@@ -271,7 +463,12 @@ try {
     'reaper fences must not retain garbage because unrelated tabs are active',
   );
   const syntax = spawnSync(process.execPath, ['--check', serverPath], { cwd: temp, encoding: 'utf8' });
-  assert.strictEqual(syntax.status, 0, syntax.stderr);
+  const syntaxLine = Number(syntax.stderr.match(/server\.js:(\d+)/)?.[1] || 1);
+  const syntaxContext = once.split('\n')
+    .slice(Math.max(0, syntaxLine - 4), syntaxLine + 3)
+    .map((line, index) => `${Math.max(1, syntaxLine - 3) + index}: ${line}`)
+    .join('\n');
+  assert.strictEqual(syntax.status, 0, `${syntax.stderr}\n${syntaxContext}`);
   console.log('patch-server tests: ok');
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
