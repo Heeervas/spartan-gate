@@ -399,8 +399,11 @@ docker compose -f infra/compose/compose.yml exec spartan-route python3 -c "impor
 ```
 
 Camofox Docker health is deep readiness, not its shallow unauthenticated
-`GET /health`. A PID-1 supervisor validates a real raw context/page lifecycle,
-marks stale state unhealthy, performs one internal recovery after three
+`GET /health`. A PID-1 supervisor validates a real raw context/page lifecycle.
+A busy owner is healthy only while it remains inside its declared deadline and
+the last completed real probe is at most 45 seconds old; busy never refreshes
+that proof. Overdue or stale state is unhealthy. The supervisor performs one
+internal recovery after three
 failures, and then recycles its child process tree under persistent exponential
 backoff. It does not use Docker control APIs. If an unkillable `D` process
 survives, it refuses to launch a second browser and remains unhealthy. Preserve

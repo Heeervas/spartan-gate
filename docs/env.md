@@ -285,11 +285,11 @@ unless `CAMOFOX_URL` is set.
   the helper aborts instead of falling back to a raw IP.
 - `CAMOFOX_MAX_CONCURRENT_PER_USER`, `CAMOFOX_MAX_CONCURRENT_CREATES`,
   `CAMOFOX_MAX_SESSIONS`, `CAMOFOX_MAX_TABS_PER_SESSION`, and
-  `CAMOFOX_MAX_TABS_GLOBAL`: Camofox resource limits. Create lifecycles default
-  to one global FIFO slot because concurrent Camoufox context navigation can
-  stall even when proxy requests succeed. The FIFO holds at most
-  `CAMOFOX_MAX_SESSIONS` waiters and removes a waiter before its request
-  deadline, preventing expired requests from executing later.
+  `CAMOFOX_MAX_TABS_GLOBAL`: Camofox resource limits. Browser lifecycle work is
+  fixed at one global slot because overlapping Camoufox context close/create
+  operations can stall even when proxy requests succeed. The bounded queue
+  removes a waiter before its absolute request deadline; values other than `1`
+  for `CAMOFOX_MAX_CONCURRENT_CREATES` fail closed.
 - `CAMOFOX_SESSION_TIMEOUT_MS`, `CAMOFOX_TAB_INACTIVITY_MS`, and
   `CAMOFOX_BROWSER_IDLE_TIMEOUT_MS`: Camofox idle/session cleanup windows.
 - `CAMOFOX_TRACES_MAX_BYTES` and `CAMOFOX_TRACES_TTL_HOURS`: local trace
@@ -302,6 +302,14 @@ unless `CAMOFOX_URL` is set.
   `SPARTAN_CAMOFOX_FAILURE_THRESHOLD`, and
   `SPARTAN_CAMOFOX_RECOVERY_TIMEOUT_SECONDS`: supervisor cadence and bounded
   recovery; defaults are 20 seconds, three failures, and 25 seconds.
+- `SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS`,
+  `SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS`,
+  `SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS`, and
+  `SPARTAN_CAMOFOX_RECOVERY_DRAIN_TIMEOUT_MS`: deep browser work, bounded HTTP
+  cleanup exposure, maximum age of the last completed real probe while the
+  lifecycle is busy, and current-owner drain budgets; defaults are 8000, 1000,
+  45000, and 2000 milliseconds. An HTTP timeout never releases a lifecycle
+  lease while its underlying browser operation is still running.
 - `SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT`/`HARD_PERCENT`: cgroup pressure
   thresholds, defaults 90/98. Unknown cgroup state fails readiness closed.
 - `SPARTAN_CAMOFOX_BACKOFF_SECONDS`: persistent automatic recycle schedule,
