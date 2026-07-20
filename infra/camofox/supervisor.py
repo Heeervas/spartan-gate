@@ -460,11 +460,13 @@ class InternalClient:
         secret_file: pathlib.Path,
         health_timeout: float,
         recovery_timeout: float,
+        access_key: str = "",
     ):
         self.port = port
         self.secret_file = secret_file
         self.health_timeout = health_timeout
         self.recovery_timeout = recovery_timeout
+        self.access_key = access_key
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _request(self, *, path: str, method: str, timeout: float) -> bool:
@@ -474,11 +476,14 @@ class InternalClient:
             return False
         if not re.fullmatch(r"[0-9a-f]{64}", secret):
             return False
+        headers = {self.HEADER: secret, "Connection": "close"}
+        if self.access_key:
+            headers["Authorization"] = f"Bearer {self.access_key}"
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}",
             data=b"" if method == "POST" else None,
             method=method,
-            headers={self.HEADER: secret, "Connection": "close"},
+            headers=headers,
         )
         try:
             with self._opener.open(request, timeout=timeout) as response:
@@ -703,6 +708,7 @@ class Config:
     server_js: str
     workdir: str
     max_old_space_size: int
+    access_key: str
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -848,6 +854,9 @@ class Config:
         workdir = source.get("SPARTAN_CAMOFOX_WORKDIR", "/app")
         if not node_bin or not server_js.startswith("/") or not workdir.startswith("/"):
             raise ValueError("invalid child command")
+        access_key = source.get("CAMOFOX_ACCESS_KEY", "").strip()
+        if len(access_key) > 4096 or "\r" in access_key or "\n" in access_key:
+            raise ValueError("invalid CAMOFOX_ACCESS_KEY")
         return cls(
             port=port,
             monitor_interval=monitor,
@@ -865,6 +874,7 @@ class Config:
             server_js=server_js,
             workdir=workdir,
             max_old_space_size=max_old_space_size,
+            access_key=access_key,
             **paths,
         )
 
@@ -906,6 +916,7 @@ class SupervisorRuntime:
             secret_file=config.secret_file,
             health_timeout=config.health_timeout,
             recovery_timeout=config.recovery_timeout,
+            access_key=config.access_key,
         )
         self.cgroup = CgroupMonitor(
             config.cgroup_root,

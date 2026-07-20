@@ -73,8 +73,10 @@ directory.
 The wrapper runs `spartan-camofox-supervisor.py` as PID 1. It owns the Node
 server process group, reaps children, and checks deep browser readiness every
 20 seconds. The internal deep-health and recovery routes require both loopback
-origin and an ephemeral credential stored in a mode-`0600` file under `/run`;
-the credential is never passed in argv or exposed on the Compose network.
+origin and an ephemeral credential stored in a mode-`0600` file under `/run`.
+When the global access gate is enabled, the supervisor also supplies that
+bearer only over the same proxy-disabled loopback connection. Neither
+credential is passed in argv, logged, or exposed on the Compose network.
 
 Three consecutive deep failures trigger one in-process browser recovery. If
 that path does not return healthy, the supervisor terminates the Node/Camoufox

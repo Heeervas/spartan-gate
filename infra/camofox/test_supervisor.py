@@ -246,7 +246,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(unlimited.percent)
         self.assertEqual(unlimited.oom_delta, 0)
 
-    def test_internal_client_reads_0600_secret_and_sends_only_dedicated_header(self):
+    def test_internal_client_sends_dedicated_secret_and_global_bearer_over_loopback(self):
         secret_path = self.root / "run" / "internal.key"
         secret = self.supervisor.ensure_internal_secret(secret_path)
         self.assertGreaterEqual(len(secret), 32)
@@ -258,6 +258,7 @@ class SupervisorTests(unittest.TestCase):
             def do_GET(handler):
                 seen["path"] = handler.path
                 seen["secret"] = handler.headers.get("X-Spartan-Camofox-Internal")
+                seen["authorization"] = handler.headers.get("Authorization")
                 handler.send_response(200)
                 handler.end_headers()
 
@@ -273,6 +274,7 @@ class SupervisorTests(unittest.TestCase):
                 secret_file=secret_path,
                 health_timeout=1,
                 recovery_timeout=1,
+                access_key="test-access-key",
             )
             self.assertTrue(client.deep_health())
         finally:
@@ -282,6 +284,7 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(seen["path"], "/spartan/health/deep")
         self.assertEqual(seen["secret"], secret)
+        self.assertEqual(seen["authorization"], "Bearer test-access-key")
 
     def test_policy_recovers_on_third_failure_or_immediate_hard_trigger(self):
         policy = self.supervisor.RecoveryPolicy(failure_threshold=3)
@@ -370,6 +373,10 @@ class SupervisorTests(unittest.TestCase):
         command = config.child_command()
         self.assertEqual(command, ("node", "--max-old-space-size=256", "/app/server.js"))
         self.assertNotIn("internal.key", " ".join(command))
+        self.assertNotIn("CAMOFOX_ACCESS_KEY", " ".join(command))
+
+        with self.assertRaises(ValueError):
+            self.supervisor.Config.from_env({"CAMOFOX_ACCESS_KEY": "bad\nheader"})
 
 
     def test_dockerfile_asserts_python_and_installs_supervisor_as_cmd(self):
