@@ -100,6 +100,7 @@ def render_compose(paths: tuple[pathlib.Path, ...]) -> dict:
             "SPARTAN_ROUTE_GID": "1000",
             "SPARTAN_CLAWROUTE_UID": "1000",
             "SPARTAN_CLAWROUTE_GID": "1000",
+            "COMPOSE_PROFILES": "camofox",
         }
     )
     result = subprocess.run(
@@ -228,6 +229,47 @@ class ComposeHardeningContractTests(unittest.TestCase):
         self.assertIn("18790", health)
         self.assertEqual(healthcheck["interval"], "15s")
         self.assertEqual(healthcheck["retries"], 3)
+
+    def test_camofox_uses_supervised_deep_readiness_in_every_layer(self):
+        expected_environment = {
+            "MAX_CONCURRENT_PER_USER": "2",
+            "MAX_SESSIONS": "8",
+            "MAX_TABS_PER_SESSION": "4",
+            "HANDLER_TIMEOUT_MS": "30000",
+            "NAVIGATE_TIMEOUT_MS": "25000",
+            "BUILDREFS_TIMEOUT_MS": "12000",
+            "SPARTAN_CAMOFOX_CGROUP_ADMISSION": "true",
+            "SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS": "8000",
+            "SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS": "20000",
+            "SPARTAN_CAMOFOX_FAILURE_THRESHOLD": "3",
+            "SPARTAN_CAMOFOX_BACKOFF_SECONDS": "0,30,120,600,1800",
+            "SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT": "90",
+            "SPARTAN_CAMOFOX_MEMORY_HARD_PERCENT": "98",
+        }
+        for label, rendered in self.renders.items():
+            if "camofox" not in rendered["services"]:
+                continue
+            service = rendered["services"]["camofox"]
+            with self.subTest(matrix=label):
+                self.assertEqual(service["restart"], "unless-stopped")
+                self.assertEqual(service["stop_grace_period"], "1m0s")
+                self.assertIn("/run", service["tmpfs"])
+                self.assertEqual(
+                    service["healthcheck"]["test"],
+                    ["CMD", "python3", "/usr/local/bin/spartan-camofox-supervisor.py", "check"],
+                )
+                self.assertEqual(service["healthcheck"]["timeout"], "3s")
+                self.assertEqual(service["healthcheck"]["start_period"], "1m0s")
+                for key, value in expected_environment.items():
+                    self.assertEqual(service["environment"].get(key), value, key)
+                targets = {volume["target"] for volume in service.get("volumes", [])}
+                self.assertIn("/var/lib/spartan-camofox-watchdog", targets)
+                rendered_contract = json.dumps(service, sort_keys=True)
+                self.assertNotIn("docker.sock", rendered_contract)
+                self.assertNotIn('"pid": "host"', rendered_contract)
+                health = " ".join(service["healthcheck"]["test"]).lower()
+                for forbidden in ("curl", "docker", "restart", "kill"):
+                    self.assertNotIn(forbidden, health)
 
     def test_clawroute_image_identity_matches_compose_default(self):
         dockerfile = (

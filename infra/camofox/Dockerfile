@@ -51,7 +51,9 @@ ENV CAMOFOX_GEOIP=false
 ENV CAMOFOX_ADDONS=
 
 RUN command -v yt-dlp >/dev/null && yt-dlp --version >/dev/null
+RUN command -v python3 >/dev/null && python3 --version >/dev/null
 
+COPY spartan-health.mjs /app/spartan-health.mjs
 COPY patch-server.js /tmp/spartan-camofox-patch-server.js
 RUN node /tmp/spartan-camofox-patch-server.js && rm /tmp/spartan-camofox-patch-server.js
 
@@ -65,3 +67,8 @@ RUN node -e "const fs=require('fs'); const path='camofox.config.json'; const con
 # geolocation target, and the geoip public-IP probes do not follow the runtime
 # proxy path. Keep browser proxying enabled while making geoip opt-in.
 RUN node -e "const fs=require('fs'); const path='server.js'; let s=fs.readFileSync(path,'utf8'); const from='geoip: !!launchProxy,'; const to=\"geoip: process.env.CAMOFOX_GEOIP !== 'false' && !!launchProxy,\"; if(!s.includes(from)) throw new Error('expected Camofox geoip launch marker not found'); s=s.replaceAll(from,to); fs.writeFileSync(path,s);"
+
+# Keep the browser API under an independent PID-1 watchdog. The supervisor
+# receives its internal loopback credential through a 0600 file, not argv.
+COPY --chmod=0755 supervisor.py /usr/local/bin/spartan-camofox-supervisor.py
+CMD ["python3", "/usr/local/bin/spartan-camofox-supervisor.py", "run"]

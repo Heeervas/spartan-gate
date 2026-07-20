@@ -303,11 +303,13 @@ services:
     image: ${CAMOFOX_IMAGE:-spartan-gate-camofox:1.11.2}
     container_name: spartan_gate_camofox
     restart: unless-stopped
+    stop_grace_period: 60s
     mem_limit: 2g
     pids_limit: 512
     shm_size: 1gb
     tmpfs:
       - /tmp
+      - /run
     security_opt:
       - no-new-privileges:true
     dns:
@@ -330,10 +332,29 @@ services:
       MAX_SESSIONS: ${CAMOFOX_MAX_SESSIONS:-8}
       MAX_TABS_PER_SESSION: ${CAMOFOX_MAX_TABS_PER_SESSION:-4}
       MAX_TABS_GLOBAL: ${CAMOFOX_MAX_TABS_GLOBAL:-12}
+      HANDLER_TIMEOUT_MS: ${CAMOFOX_HANDLER_TIMEOUT_MS:-30000}
+      NAVIGATE_TIMEOUT_MS: ${CAMOFOX_NAVIGATE_TIMEOUT_MS:-25000}
+      BUILDREFS_TIMEOUT_MS: ${CAMOFOX_BUILDREFS_TIMEOUT_MS:-12000}
       SESSION_TIMEOUT_MS: ${CAMOFOX_SESSION_TIMEOUT_MS:-600000}
       TAB_INACTIVITY_MS: ${CAMOFOX_TAB_INACTIVITY_MS:-300000}
       BROWSER_IDLE_TIMEOUT_MS: ${CAMOFOX_BROWSER_IDLE_TIMEOUT_MS:-300000}
       MAX_OLD_SPACE_SIZE: ${CAMOFOX_MAX_OLD_SPACE_SIZE:-256}
+      SPARTAN_CAMOFOX_CGROUP_ADMISSION: "true"
+      SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO: ${SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO:-0.90}
+      SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS: ${SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS:-8000}
+      SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS: ${SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS:-2000}
+      SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS: ${SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS:-20000}
+      SPARTAN_CAMOFOX_MONITOR_INTERVAL_SECONDS: ${SPARTAN_CAMOFOX_MONITOR_INTERVAL_SECONDS:-20}
+      SPARTAN_CAMOFOX_HEALTH_TIMEOUT_SECONDS: ${SPARTAN_CAMOFOX_HEALTH_TIMEOUT_SECONDS:-10}
+      SPARTAN_CAMOFOX_RECOVERY_TIMEOUT_SECONDS: ${SPARTAN_CAMOFOX_RECOVERY_TIMEOUT_SECONDS:-25}
+      SPARTAN_CAMOFOX_FAILURE_THRESHOLD: ${SPARTAN_CAMOFOX_FAILURE_THRESHOLD:-3}
+      SPARTAN_CAMOFOX_TERM_GRACE_SECONDS: ${SPARTAN_CAMOFOX_TERM_GRACE_SECONDS:-12}
+      SPARTAN_CAMOFOX_KILL_GRACE_SECONDS: ${SPARTAN_CAMOFOX_KILL_GRACE_SECONDS:-3}
+      SPARTAN_CAMOFOX_STABLE_RESET_SECONDS: ${SPARTAN_CAMOFOX_STABLE_RESET_SECONDS:-1800}
+      SPARTAN_CAMOFOX_READINESS_MAX_AGE_SECONDS: ${SPARTAN_CAMOFOX_READINESS_MAX_AGE_SECONDS:-45}
+      SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT: ${SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT:-90}
+      SPARTAN_CAMOFOX_MEMORY_HARD_PERCENT: ${SPARTAN_CAMOFOX_MEMORY_HARD_PERCENT:-98}
+      SPARTAN_CAMOFOX_BACKOFF_SECONDS: ${SPARTAN_CAMOFOX_BACKOFF_SECONDS:-0,30,120,600,1800}
       ENABLE_VNC: ${CAMOFOX_ENABLE_VNC:-0}
       VNC_PASSWORD: ${CAMOFOX_VNC_PASSWORD:-}
       VNC_BIND: 0.0.0.0
@@ -353,6 +374,7 @@ services:
     volumes:
       # required: Camofox storageState, cookies, and traces. Do not share Browserless profiles.
       - ../../runtime/camofox:/root/.camofox
+      - camofox_watchdog:/var/lib/spartan-camofox-watchdog
     networks:
       - spartan_internal
     depends_on:
@@ -361,11 +383,11 @@ services:
       dns:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9377/health >/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "python3", "/usr/local/bin/spartan-camofox-supervisor.py", "check"]
+      interval: 15s
+      timeout: 3s
       retries: 3
-      start_period: 20s
+      start_period: 60s
 
   pocket-tts:
     logging: *spartan-logging
@@ -682,3 +704,6 @@ networks:
     internal: true
   spartan_external:
     driver: bridge
+
+volumes:
+  camofox_watchdog:
