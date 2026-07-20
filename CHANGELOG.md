@@ -16,6 +16,10 @@ All notable changes to Spartan Gate are documented here.
 - Stopped sharing one global Camofox owner/session across supervised Hermes
   profiles, disabled global tab adoption across L1/L2/L4/install/examples, and
   retained Google Meet as an explicit default-profile single-owner exception.
+- Serialized Camofox create lifecycles through a configurable FIFO after
+  concurrent Camoufox navigations stalled despite successful parallel proxy
+  requests. Waiters are bounded by `MAX_SESSIONS` and cancel before the outer
+  handler deadline, so expired requests cannot run later in the background.
 - Persist rotating Codex OAuth grants in a private Spartan-owned store with
   cross-process refresh coordination, atomic durability, terminal-grant
   quarantine, and safe lifecycle diagnostics without mutating source profiles.

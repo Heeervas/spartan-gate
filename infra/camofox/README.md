@@ -120,8 +120,15 @@ sg-camofox-acceptance https://example.com/
 
 It executes 20 sequential lifecycles and five concurrent identities, requires
 each evaluation to return `true`, closes each tab in `finally`, and requires
-`activeTabs` to return to the captured baseline. Then exercise supervised
-recovery with a bounded, reversible browser-only fault:
+`activeTabs` to return to the captured baseline.
+
+The five clients remain concurrent, but create lifecycles use one global FIFO
+slot by default. The FIFO is capped at `MAX_SESSIONS` waiters and cancels a
+waiter before its outer handler deadline. Local evidence showed that two
+simultaneous Camoufox context navigations could both stall while five parallel
+proxy requests completed.
+
+Then exercise supervised recovery with a bounded, reversible browser-only fault:
 
 ```sh
 sg-camofox-deep-health-fault-test

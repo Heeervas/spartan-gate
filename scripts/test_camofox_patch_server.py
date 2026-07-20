@@ -1,3 +1,4 @@
+import os
 import pathlib
 import shutil
 import subprocess
@@ -13,7 +14,9 @@ SERVER_FIXTURE = """\
 import crypto from 'crypto';
 import fs from 'fs';
 const app = { get() {}, post() {}, delete() {} };
+const MAX_SESSIONS = 8;
 const sessions = new Map();
+const userConcurrency = new Map();
 const tabLocks = new Map();
 const failuresTotal = { labels() { return { inc() {} }; } };
 const MAX_DOWNLOAD_INLINE_BYTES = 1024;
@@ -207,7 +210,7 @@ async function closeBrowser() {
   _nativeMemBaseline = null;
 }
 
-export { sessions, closeSession, reapEmptySessions, reapOrphanPages };
+export { sessions, closeSession, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit };
 """
 
 
@@ -339,13 +342,30 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.server.read_text(), patched)
 
+    def test_rejects_invalid_global_create_limits(self):
+        first = self.run_patcher()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        for invalid in ("0", "9", "not-a-number"):
+            env = os.environ.copy()
+            env["SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES"] = invalid
+            result = subprocess.run(
+                ["node", "server.js"],
+                cwd=self.root,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, invalid)
+            self.assertIn("must be an integer between 1 and MAX_SESSIONS", result.stderr)
+
     def test_session_reaper_threshold_and_compare_delete_are_behavioral(self):
         first = self.run_patcher()
         self.assertEqual(first.returncode, 0, first.stderr)
         runner = self.root / "reaper-runtime.mjs"
         runner.write_text(
             """import assert from 'node:assert/strict';
-import { sessions, closeSession, reapEmptySessions, reapOrphanPages } from './server.js';
+import { sessions, closeSession, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit } from './server.js';
 
 let releaseOldContext;
 const oldContextClosed = new Promise(resolve => { releaseOldContext = resolve; });
@@ -412,6 +432,75 @@ delete orphanSession._spartanPendingCreates;
 reapOrphanPages(45_000);
 await new Promise(resolve => setImmediate(resolve));
 assert.equal(orphanCloseCalls, 1);
+
+let limiterActive = 0;
+let limiterPeak = 0;
+let releaseFirst;
+const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+const limitedOperation = async (gate = null) => {
+  limiterActive++;
+  limiterPeak = Math.max(limiterPeak, limiterActive);
+  if (gate) await gate;
+  await new Promise(resolve => setImmediate(resolve));
+  limiterActive--;
+};
+const firstLimited = spartanWithCreateLimit(() => limitedOperation(firstGate));
+await new Promise(resolve => setImmediate(resolve));
+const secondLimited = spartanWithCreateLimit(() => limitedOperation());
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(limiterActive, 1);
+assert.equal(limiterPeak, 1);
+releaseFirst();
+await Promise.all([firstLimited, secondLimited]);
+assert.equal(limiterActive, 0);
+assert.equal(limiterPeak, 1);
+
+let afterErrorRan = false;
+let releaseError;
+const errorGate = new Promise(resolve => { releaseError = resolve; });
+const failingLimited = spartanWithCreateLimit(async () => {
+  await errorGate;
+  throw new Error('expected limiter failure');
+});
+await new Promise(resolve => setImmediate(resolve));
+const afterError = spartanWithCreateLimit(async () => { afterErrorRan = true; });
+releaseError();
+await assert.rejects(failingLimited, /expected limiter failure/);
+await afterError;
+assert.equal(afterErrorRan, true);
+
+let releaseTimeout;
+const timeoutGate = new Promise(resolve => { releaseTimeout = resolve; });
+const timeoutHolder = spartanWithCreateLimit(async () => {
+  await timeoutGate;
+});
+await new Promise(resolve => setImmediate(resolve));
+let expiredRan = false;
+const expiredWaiter = spartanWithCreateLimit(async () => { expiredRan = true; }, 10);
+await assert.rejects(expiredWaiter, error => error?.code === 'tab_create_queue_timeout');
+assert.equal(expiredRan, false);
+releaseTimeout();
+await timeoutHolder;
+
+let releaseOverflow;
+const overflowGate = new Promise(resolve => { releaseOverflow = resolve; });
+const overflowHolder = spartanWithCreateLimit(async () => {
+  await overflowGate;
+});
+await new Promise(resolve => setImmediate(resolve));
+let overflowRuns = 0;
+const queuedAtCapacity = Array.from({ length: 8 }, () =>
+  spartanWithCreateLimit(async () => { overflowRuns++; }, 1000)
+);
+await new Promise(resolve => setImmediate(resolve));
+await assert.rejects(
+  spartanWithCreateLimit(async () => {}, 1000),
+  error => error?.code === 'tab_create_queue_full',
+);
+releaseOverflow();
+await overflowHolder;
+await Promise.all(queuedAtCapacity);
+assert.equal(overflowRuns, 8);
 """
         )
 

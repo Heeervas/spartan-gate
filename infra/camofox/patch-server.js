@@ -784,6 +784,68 @@ if (closeTabRouteStartIndex !== -1) {
   }
 }
 
+const spartanCreateLimitMarker = 'const userConcurrency = new Map();';
+const spartanCreateLimitReplacement = `const userConcurrency = new Map();
+
+const SPARTAN_MAX_CONCURRENT_CREATES_RAW = Number(process.env.SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES || '1');
+const SPARTAN_MAX_CONCURRENT_CREATES = SPARTAN_MAX_CONCURRENT_CREATES_RAW;
+if (
+  !Number.isInteger(SPARTAN_MAX_CONCURRENT_CREATES)
+  || SPARTAN_MAX_CONCURRENT_CREATES < 1
+  || SPARTAN_MAX_CONCURRENT_CREATES > MAX_SESSIONS
+) throw new Error('SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES must be an integer between 1 and MAX_SESSIONS');
+
+const spartanCreateWaiters = [];
+let spartanActiveCreates = 0;
+function spartanCreateQueueError(code, message) {
+  const error = new Error(message);
+  error.statusCode = 503;
+  error.code = code;
+  return error;
+}
+async function spartanWithCreateLimit(operation, queueTimeoutMs = 30000) {
+  if (spartanActiveCreates < SPARTAN_MAX_CONCURRENT_CREATES) {
+    spartanActiveCreates++;
+  } else {
+    if (spartanCreateWaiters.length >= MAX_SESSIONS) {
+      throw spartanCreateQueueError('tab_create_queue_full', 'Camofox tab create queue is full');
+    }
+    const timeoutMs = Number(queueTimeoutMs);
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
+      throw spartanCreateQueueError('tab_create_queue_timeout', 'Camofox tab create queue deadline expired');
+    }
+    await new Promise((resolve, reject) => {
+      const waiter = {
+        activate() {
+          clearTimeout(waiter.timer);
+          resolve();
+        },
+        timer: null,
+      };
+      waiter.timer = setTimeout(() => {
+        const index = spartanCreateWaiters.indexOf(waiter);
+        if (index < 0) return;
+        spartanCreateWaiters.splice(index, 1);
+        reject(spartanCreateQueueError('tab_create_queue_timeout', 'Camofox tab create queue deadline expired'));
+      }, timeoutMs);
+      spartanCreateWaiters.push(waiter);
+    });
+  }
+  try {
+    return await operation();
+  } finally {
+    const next = spartanCreateWaiters.shift();
+    if (next) next.activate();
+    else spartanActiveCreates--;
+  }
+}`;
+if (!source.includes('async function spartanWithCreateLimit(')) {
+  if (!source.includes(spartanCreateLimitMarker)) {
+    throw new Error('expected Camofox user-concurrency marker not found');
+  }
+  source = source.replace(spartanCreateLimitMarker, spartanCreateLimitReplacement);
+}
+
 const createTabRouteStart = "app.post('/tabs', async (req, res) => {";
 const createTabRouteEnd = "\n});\n\n// Navigate";
 const createTabRouteStartIndex = source.indexOf(createTabRouteStart);
@@ -831,7 +893,9 @@ if (createTabRouteStartIndex !== -1) {
         spartanCreateFence.stage = 'navigate';
         const urlErr = validateUrl(url);`;
     const createPromiseCloseMarker = `    })(), requestTimeoutMs(), 'tab create');`;
-    const createPromiseCloseReplacement = `    })().finally(() => {
+    const createOperationOpenMarker = 'const result = await withTimeout((async () => {';
+    const createOperationOpenReplacement = 'const result = await withTimeout(spartanWithCreateLimit(async () => {';
+    const createPromiseCloseReplacement = `    }, Math.max(1, requestTimeoutMs() - 1000)).finally(() => {
       const spartanPendingCreates = spartanCreateFence.session?._spartanPendingCreates;
       if (spartanPendingCreates instanceof Set) {
         spartanPendingCreates.delete(spartanCreateFence);
@@ -881,6 +945,7 @@ if (createTabRouteStartIndex !== -1) {
       [newPageMarker, newPageReplacement, 'newPage'],
       [tabIdMarker, tabIdReplacement, 'tabId'],
       [navigationMarker, navigationReplacement, 'navigation'],
+      [createOperationOpenMarker, createOperationOpenReplacement, 'operation open'],
       [createPromiseCloseMarker, createPromiseCloseReplacement, 'promise close'],
       [catchMarker, catchReplacement, 'catch'],
     ]) {

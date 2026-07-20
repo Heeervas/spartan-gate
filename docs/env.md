@@ -283,9 +283,13 @@ unless `CAMOFOX_URL` is set.
   default Caddyfile listens on container port `26080`. In HTTPS setups,
   `TAILSCALE_HOST` must resolve to `TAILSCALE_IP` and match the certificate;
   the helper aborts instead of falling back to a raw IP.
-- `CAMOFOX_MAX_CONCURRENT_PER_USER`, `CAMOFOX_MAX_SESSIONS`,
-  `CAMOFOX_MAX_TABS_PER_SESSION`, and `CAMOFOX_MAX_TABS_GLOBAL`: Camofox
-  resource limits.
+- `CAMOFOX_MAX_CONCURRENT_PER_USER`, `CAMOFOX_MAX_CONCURRENT_CREATES`,
+  `CAMOFOX_MAX_SESSIONS`, `CAMOFOX_MAX_TABS_PER_SESSION`, and
+  `CAMOFOX_MAX_TABS_GLOBAL`: Camofox resource limits. Create lifecycles default
+  to one global FIFO slot because concurrent Camoufox context navigation can
+  stall even when proxy requests succeed. The FIFO holds at most
+  `CAMOFOX_MAX_SESSIONS` waiters and removes a waiter before its request
+  deadline, preventing expired requests from executing later.
 - `CAMOFOX_SESSION_TIMEOUT_MS`, `CAMOFOX_TAB_INACTIVITY_MS`, and
   `CAMOFOX_BROWSER_IDLE_TIMEOUT_MS`: Camofox idle/session cleanup windows.
 - `CAMOFOX_TRACES_MAX_BYTES` and `CAMOFOX_TRACES_TTL_HOURS`: local trace

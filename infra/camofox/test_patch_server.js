@@ -31,7 +31,9 @@ function sendError(res, err, extraFields = {}) {
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
+const MAX_SESSIONS = 8;
 const sessions = new Map();
+const userConcurrency = new Map();
 async function closeSession(key, session) {
   await session.context.close().catch(() => {});
   sessions.delete(key);
@@ -218,6 +220,8 @@ try {
   assert.match(once, /spartanInternalRequestAuthorized/, 'deep health must require internal authorization');
   assert.doesNotMatch(once, /Active health probe -- detect hung browser/, 'unbounded upstream probe must be removed');
   assert.match(once, /const spartanCreateFence =/, 'tab create must fence late completions');
+  assert.match(once, /async function spartanWithCreateLimit\(operation, queueTimeoutMs/, 'tab creates must use the bounded global FIFO limiter');
+  assert.match(once, /withTimeout\(spartanWithCreateLimit\(async \(\) =>/, 'create lifecycle must run inside the limiter');
   assert.match(once, /sessions\.get\(spartanCreateFence\.userKey\) === session/, 'late session cleanup must use compare-and-delete');
   assert.match(once, /spartanPagePromise\.then/, 'late pages must be observed for cleanup');
   assert.match(once, /code: 'tab_create_timeout'/, 'tab timeout must be semantic');
