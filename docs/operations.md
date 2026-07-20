@@ -369,10 +369,14 @@ sg-camofox-profile-use main
 sg-browser-mode-apply
 ```
 
-`sg-camofox-profile-use` updates only Camofox mode/profile keys in
-`private/env/local.env` and writes a timestamped backup. It does not change
-tokens or private host paths. Use `sg-camofox-profile-reset <profile>` only for
-an explicit destructive reset of that Camofox profile.
+`sg-camofox-profile-use` enables Camofox mode but clears legacy global
+user/session ownership and leaves global tab adoption disabled. Supervised
+Hermes profiles derive distinct identities from their own `HERMES_HOME` when
+managed persistence is enabled. Google Meet remains a single-owner compatibility
+path for the default profile. The helper discovers configured profiles, preserves one original backup across
+repeated applies, proves the derived identities are distinct without printing them,
+and does not change tokens or private host paths. Use `sg-camofox-profile-reset
+<profile>` only for an explicit destructive reset, never for recovery.
 
 For HTTPS, configure a certificate-valid `TAILSCALE_HOST` that resolves to
 `TAILSCALE_IP`. The helper aborts instead of using the raw IP when DNS is wrong.
@@ -393,6 +397,15 @@ Raw checks:
 sg-status
 docker compose -f infra/compose/compose.yml exec spartan-route python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:18790/health').read().decode())"
 ```
+
+Camofox Docker health is deep readiness, not its shallow unauthenticated
+`GET /health`. A PID-1 supervisor validates a real raw context/page lifecycle,
+marks stale state unhealthy, performs one internal recovery after three
+failures, and then recycles its child process tree under persistent exponential
+backoff. It does not use Docker control APIs. If an unkillable `D` process
+survives, it refuses to launch a second browser and remains unhealthy. Preserve
+redacted Camofox logs before any explicit recreate; do not delete profiles or
+watchdog state as a diagnostic shortcut.
 
 Hermes is healthy only when its local API, Tinyproxy, and Spartan Route are
 reachable. Three 15-second retries tolerate expected proxy/DNS restarts for

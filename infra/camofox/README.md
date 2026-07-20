@@ -27,8 +27,10 @@ CAMOFOX_ACCESS_KEY=<private-key>
 
 `CAMOFOX_ACCESS_KEY` is passed to the Camofox service and to Hermes. Camofox
 protects most routes with `Authorization: Bearer <key>` when this key is set.
-`GET /health` intentionally stays unauthenticated for Docker healthchecks, so a
-successful healthcheck alone does not prove browser/auth integration.
+`GET /health` remains a shallow diagnostic and does not prove that Camoufox can
+create a context or page. Docker readiness instead consumes the PID-1
+supervisor status, which is refreshed only after a private loopback probe has
+created, loaded, evaluated, and closed a raw Playwright context/page.
 `CAMOFOX_API_KEY` is generated separately for dedicated cookie/storage routes.
 Hermes receives the access key under upstream Hermes' `CAMOFOX_API_KEY` client
 variable so upstream Camofox auth headers work without a local Hermes patch.
@@ -65,6 +67,65 @@ sg-camofox-profile-reset main
 For a full manual wipe, stop `hermes` and `camofox`, then remove the directory
 configured by `SPARTAN_CAMOFOX_DATA_PATH` or the public `runtime/camofox/`
 directory.
+
+## Automatic Recovery
+
+The wrapper runs `spartan-camofox-supervisor.py` as PID 1. It owns the Node
+server process group, reaps children, and checks deep browser readiness every
+20 seconds. The internal deep-health and recovery routes require both loopback
+origin and an ephemeral credential stored in a mode-`0600` file under `/run`;
+the credential is never passed in argv or exposed on the Compose network.
+
+Three consecutive deep failures trigger one in-process browser recovery. If
+that path does not return healthy, the supervisor terminates the Node/Camoufox
+process tree and relaunches it only after every tracked PID has disappeared.
+The durable retry schedule is `0s, 30s, 2m, 10m, 30m`, capped at one attempt per
+30 minutes during a sustained fault and reset only after 30 continuously
+healthy minutes. If a process remains in uninterruptible `D` state, readiness
+stays unhealthy and no second browser is launched; the supervisor retries
+cleanup at the maximum backoff.
+
+The watchdog ledger is separate from browser credentials:
+
+```text
+/var/lib/spartan-camofox-watchdog/ledger.json
+```
+
+Do not mount `docker.sock`, add an autoheal sidecar, or use profile reset as a
+recovery action. For diagnosis, preserve logs before any recreate and inspect
+only allowlisted timestamps, stages, PIDs and resource counters.
+
+After deployment, run the non-secret acceptance summary:
+
+```sh
+source scripts/aliases.sh
+sg-camofox-acceptance https://example.com/
+```
+
+It executes 20 sequential lifecycles and five concurrent identities, requires
+each evaluation to return `true`, closes each tab in `finally`, and requires
+`activeTabs` to return to the captured baseline. Then exercise supervised
+recovery with a bounded, reversible browser-only fault:
+
+```sh
+sg-camofox-deep-health-fault-test
+```
+
+The fault test sends `SIGSTOP` only to the child `camoufox-bin`, requires
+Docker health to become `unhealthy`, and waits for a different healthy browser
+PID without a Docker container restart. A trap resumes the old PID if recovery
+does not replace it.
+
+Rollback is independent by owner:
+
+1. Revert the supervisor/Compose commit and rebuild/recreate only Camofox while
+   retaining the timed-out tab cleanup.
+2. Run `sg-camofox-profile-isolate rollback`, then revert profile identity
+   defaults separately; keep global adoption disabled unless one owner is guaranteed.
+3. Revert the tab-lifecycle fix only if reintroducing the original timeout is
+   accepted.
+
+No rollback step deletes `/root/.camofox` or resets a profile.
 
 ## Egress
 

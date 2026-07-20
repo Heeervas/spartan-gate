@@ -251,14 +251,21 @@ unless `CAMOFOX_URL` is set.
   protected-route access key under the same variable name because upstream
   Hermes reads `CAMOFOX_API_KEY` for Camofox client bearer auth.
 - `CAMOFOX_ADMIN_KEY`: optional dedicated key for admin stop behavior.
-- `CAMOFOX_USER_ID`: stable Camofox user/profile identity used by Hermes, for
-  example `spartan-camofox-main`.
-- `CAMOFOX_SESSION_KEY`: Camofox session key for the selected profile, default
-  manual-login helper value `manual-login`.
-- `CAMOFOX_ADOPT_EXISTING_TAB`: when true, Hermes should adopt the live/manual
-  tab for the selected Camofox session when possible.
-  `sg-camofox-profile-use` writes these profile-selection keys to the private
-  env file, and Compose passes them through to the Hermes container.
+- `CAMOFOX_USER_ID`: optional Camofox user/profile identity. The global Compose
+  default is empty so supervised Hermes profiles do not all claim one browser
+  owner. A client that needs stable state must set its own distinct identity in
+  client/profile-scoped configuration.
+- `CAMOFOX_SESSION_KEY`: optional Camofox session key. The global Compose
+  default is empty for the same ownership boundary.
+- `CAMOFOX_ADOPT_EXISTING_TAB`: whether a client may adopt a live/manual tab.
+  The global default is `false`; do not enable it at container scope when more
+  than one client can reach Camofox.
+- `HERMES_MEET_CAMOFOX_SESSION_KEY`: Google Meet's single-owner compatibility
+  session. When blank, the Meet Camofox integration uses user
+  `spartan-camofox-main` and session `meet`. Only one Meet owner should rely on
+  those fallbacks; additional owners need distinct client-scoped identities.
+  `sg-camofox-profile-use` clears legacy global identity/session selection and
+  leaves adoption disabled while enabling Camofox mode.
 - `CAMOFOX_GEOIP`: whether the Spartan Gate Camofox wrapper lets upstream
   Camofox run public-IP geo probes for configured proxies, default `false`.
   Keep false for the local Tinyproxy path; only enable for a proxy provider
@@ -284,6 +291,17 @@ unless `CAMOFOX_URL` is set.
 - `CAMOFOX_TRACES_MAX_BYTES` and `CAMOFOX_TRACES_TTL_HOURS`: local trace
   retention limits.
 - `CAMOFOX_MAX_OLD_SPACE_SIZE`: Node heap limit passed to the Camofox process.
+- `CAMOFOX_HANDLER_TIMEOUT_MS`, `CAMOFOX_NAVIGATE_TIMEOUT_MS`, and
+  `CAMOFOX_BUILDREFS_TIMEOUT_MS`: explicit request deadlines; defaults are
+  30000, 25000, and 12000 milliseconds.
+- `SPARTAN_CAMOFOX_MONITOR_INTERVAL_SECONDS`,
+  `SPARTAN_CAMOFOX_FAILURE_THRESHOLD`, and
+  `SPARTAN_CAMOFOX_RECOVERY_TIMEOUT_SECONDS`: supervisor cadence and bounded
+  recovery; defaults are 20 seconds, three failures, and 25 seconds.
+- `SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT`/`HARD_PERCENT`: cgroup pressure
+  thresholds, defaults 90/98. Unknown cgroup state fails readiness closed.
+- `SPARTAN_CAMOFOX_BACKOFF_SECONDS`: persistent automatic recycle schedule,
+  default `0,30,120,600,1800`; reset requires 30 continuously healthy minutes.
 
 Camofox uses Camofox's `PROXY_HOST=proxy` and `PROXY_PORT=8888` browser proxy
 configuration in Compose, plus the generic `HTTP_PROXY`/`HTTPS_PROXY` env vars.
