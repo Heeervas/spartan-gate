@@ -77,6 +77,9 @@ exit 2
         self.assertEqual(values["SPARTAN_HERMES_MODE"], "free")
         self.assertEqual(values["COMPOSE_PROJECT_NAME"], "spartan-gate")
         self.assertEqual(values["CAMOFOX_URL"], "")
+        self.assertEqual(values["CAMOFOX_USER_ID"], "")
+        self.assertEqual(values["CAMOFOX_SESSION_KEY"], "")
+        self.assertEqual(values["CAMOFOX_ADOPT_EXISTING_TAB"], "false")
         self.assertIn("HERMES_API_KEY", values)
         self.assertTrue((self.data_root / "current" / "hermes").is_dir())
         self.assertEqual(values["CADDY_AUTH_HASH"], "$2a$test-generated-caddy-hash")
@@ -121,6 +124,18 @@ exit 2
             path_mode(Path(values["SPARTAN_BROWSERLESS_PROFILES_PATH"])),
             0o770,
         )
+
+    def test_browser_tiers_leave_global_camofox_identity_unowned(self):
+        for tier in ("L1", "L2", "L4"):
+            with self.subTest(tier=tier):
+                result = self.run_install(tier, "linux")
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                values = self.read_env()
+                self.assertEqual(values["CAMOFOX_URL"], "http://camofox:9377")
+                self.assertEqual(values["CAMOFOX_USER_ID"], "")
+                self.assertEqual(values["CAMOFOX_SESSION_KEY"], "")
+                self.assertEqual(values["CAMOFOX_ADOPT_EXISTING_TAB"], "false")
 
     def test_install_fails_if_private_env_chmod_fails(self):
         chmod = self.bin_dir / "chmod"

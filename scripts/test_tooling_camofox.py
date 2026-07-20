@@ -130,6 +130,50 @@ class HermesProfileNewTests(unittest.TestCase):
 
 
 class CamofoxContractTests(unittest.TestCase):
+    def test_public_compose_and_env_examples_do_not_claim_global_camofox_owner(self):
+        compose_paths = (
+            ROOT / "infra" / "compose" / "compose.yml",
+            ROOT / "infra" / "compose" / "tiers" / "compose.l1.yml",
+            ROOT / "infra" / "compose" / "tiers" / "compose.l2.yml",
+            ROOT / "private.example" / "compose.local.yml",
+        )
+        for path in compose_paths:
+            with self.subTest(path=path):
+                source = path.read_text(encoding="utf-8")
+                self.assertIn("CAMOFOX_USER_ID: $" + "{CAMOFOX_USER_ID:-}", source)
+                self.assertIn("CAMOFOX_SESSION_KEY: $" + "{CAMOFOX_SESSION_KEY:-}", source)
+                self.assertIn(
+                    "CAMOFOX_ADOPT_EXISTING_TAB: $" + "{CAMOFOX_ADOPT_EXISTING_TAB:-false}",
+                    source,
+                )
+
+        for path in (
+            ROOT / ".env.example",
+            ROOT / "private.example" / "env" / "local.env.example",
+        ):
+            with self.subTest(path=path):
+                values = dict(
+                    line.split("=", 1)
+                    for line in path.read_text(encoding="utf-8").splitlines()
+                    if line.startswith(
+                        (
+                            "CAMOFOX_USER_ID=",
+                            "CAMOFOX_SESSION_KEY=",
+                            "CAMOFOX_ADOPT_EXISTING_TAB=",
+                        )
+                    )
+                )
+                self.assertEqual(values["CAMOFOX_USER_ID"], "")
+                self.assertEqual(values["CAMOFOX_SESSION_KEY"], "")
+                self.assertEqual(values["CAMOFOX_ADOPT_EXISTING_TAB"], "false")
+
+    def test_docs_keep_generic_identity_unowned_and_meet_single_owner_explicit(self):
+        source = (ROOT / "docs" / "env.md").read_text(encoding="utf-8")
+        self.assertIn("The global Compose", source)
+        self.assertIn("default is empty", source)
+        self.assertIn("Google Meet's single-owner compatibility", source)
+        self.assertIn("global default is", source)
+
     def test_doctor_only_requires_camofox_path_when_enabled(self):
         source = (ROOT / "scripts" / "doctor.sh").read_text()
         self.assertIn('camofox_enabled=$(env_value "$env_file" CAMOFOX_URL)', source)
@@ -251,6 +295,32 @@ class AliasHelpTests(unittest.TestCase):
         self.assertIn("sg-browser camofox-viewport-check [width height]", result.stdout)
         self.assertIn("sg-camofox-viewport-check", result.stdout)
         self.assertIn("sg_camofox_viewport_check", result.stdout)
+
+    def test_camofox_profile_use_clears_legacy_global_owner(self):
+        env_dir = self.root / "private" / "env"
+        env_dir.mkdir(parents=True)
+        env_file = env_dir / "local.env"
+        env_file.write_text(
+            "CAMOFOX_USER_ID=legacy-shared-owner\n"
+            "CAMOFOX_SESSION_KEY=legacy-shared-session\n"
+            "CAMOFOX_ADOPT_EXISTING_TAB=true\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_sourced("sg-camofox-profile-use main")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = dict(
+            line.split("=", 1)
+            for line in env_file.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        self.assertEqual(values["COMPOSE_PROFILES"], "camofox")
+        self.assertEqual(values["CAMOFOX_URL"], "http://camofox:9377")
+        self.assertEqual(values["CAMOFOX_USER_ID"], "")
+        self.assertEqual(values["CAMOFOX_SESSION_KEY"], "")
+        self.assertEqual(values["CAMOFOX_ADOPT_EXISTING_TAB"], "false")
+        self.assertIn("client-scoped", result.stdout)
 
     def test_tmux_help_and_navigation_keys_are_discoverable(self):
         result = self.run_sourced(

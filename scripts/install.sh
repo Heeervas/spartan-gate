@@ -364,9 +364,9 @@ write_env_file() {
     fi
     append_env CAMOFOX_API_KEY "$(get_or_generate CAMOFOX_API_KEY 32)"
     append_env CAMOFOX_ACCESS_KEY "$(get_or_generate CAMOFOX_ACCESS_KEY 32)"
-    append_env CAMOFOX_USER_ID "spartan-camofox-main"
-    append_env CAMOFOX_SESSION_KEY "manual-login"
-    append_env CAMOFOX_ADOPT_EXISTING_TAB "true"
+    append_env CAMOFOX_USER_ID ""
+    append_env CAMOFOX_SESSION_KEY ""
+    append_env CAMOFOX_ADOPT_EXISTING_TAB "false"
     append_env CAMOFOX_ENABLE_VNC "1"
     append_env CAMOFOX_VNC_PASSWORD "$(get_or_generate CAMOFOX_VNC_PASSWORD 24)"
     append_env CAMOFOX_IMAGE "spartan-gate-camofox:1.11.2"

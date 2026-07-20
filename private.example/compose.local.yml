@@ -67,14 +67,14 @@ services:
       MASSIVE_API_KEY: ${MASSIVE_API_KEY:-}
       FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
 
-      # private/local: Camofox browser mode credentials for Hermes and
-      # supervised profile gateways.
+      # private/local: Camofox endpoint and optional Meet compatibility
+      # override. Generic clients keep global identity/session empty.
       CAMOFOX_URL: ${CAMOFOX_URL:-}
       CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-}
       CAMOFOX_USER_ID: ${CAMOFOX_USER_ID:-}
       CAMOFOX_SESSION_KEY: ${CAMOFOX_SESSION_KEY:-}
       HERMES_MEET_CAMOFOX_SESSION_KEY: ${HERMES_MEET_CAMOFOX_SESSION_KEY:-}
-      CAMOFOX_ADOPT_EXISTING_TAB: ${CAMOFOX_ADOPT_EXISTING_TAB:-true}
+      CAMOFOX_ADOPT_EXISTING_TAB: ${CAMOFOX_ADOPT_EXISTING_TAB:-false}
 
       # private/local profile examples. Copy these lines for extra profile names.
       TELEGRAM_BOT_TOKEN_COACH: ${HERMES_TELEGRAM_BOT_TOKEN_COACH:-}

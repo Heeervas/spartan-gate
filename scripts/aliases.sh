@@ -31,9 +31,9 @@ for alias_name in \
     sg-hermes-profiles sg-hermes-profile-create sg-hermes-profile-new sg-hermes-gateway-profile \
     sg-clawroute-shell sg-whitelist-domain sg-add-port sg-reader-test \
     sg-browserless-profile-live sg-hermes-chrome-profile sg-hermes-meet sg-hermes-meet-join \
-    sg-browser-mode-apply sg-camofox-profile-live sg-camofox-profile-use \
+    sg-browser-mode-apply sg-camofox-profile-live sg-camofox-profile-use sg-camofox-profile-isolate \
     sg-camofox-profile-save sg-camofox-profile-reset \
-    sg-camofox-health sg-camofox-smoke sg-camofox-viewport-check sg-camofox-url sg-logs-camofox \
+    sg-camofox-health sg-camofox-smoke sg-camofox-acceptance sg-camofox-deep-health-fault-test sg-camofox-viewport-check sg-camofox-url sg-logs-camofox \
     sg-browserless-profile-chrome sg-browserless-snapshot sg-meet-google-check \
     sg-meet-chrome-start sg-meet-chrome-relay-start sg-meet-chrome-ws-url sg-meet-chrome-check \
     sg-urls sg-caddy-validate sg-ports sg-docker-df sg-cache-top \
@@ -494,6 +494,8 @@ Usage:
   sg-browser camofox-reset <profile>
   sg-browser camofox-health
   sg-browser camofox-smoke [url]
+  sg-browser camofox-acceptance [url]
+  sg-browser camofox-fault-test
   sg-browser camofox-viewport-check [width height]
   sg-browser camofox-url
 
@@ -1242,7 +1244,7 @@ sg_validate_compose_profiles_for_mode() {
 }
 
 sg_browser_mode_apply() {
-    local mode active inactive
+    local mode active inactive camofox_profiles_migrated=0
     mode="$(sg_browser_mode)"
     sg_validate_compose_profiles_for_mode "$mode" || return 1
 
@@ -1254,10 +1256,29 @@ sg_browser_mode_apply() {
         inactive="camofox"
     fi
 
+    if [[ "$mode" == "camofox" ]] && sg_compose ps --status running --services hermes 2>/dev/null | grep -qx hermes; then
+        sg_camofox_profile_isolate apply || return 1
+        camofox_profiles_migrated=1
+    fi
+
     printf 'Applying Spartan Gate browser mode: %s\n' "$mode"
     COMPOSE_PROFILES="$inactive" sg_compose stop "$inactive" >/dev/null 2>&1 || true
     COMPOSE_PROFILES="$mode" sg_compose up -d proxy dns searxng reader spartan-route caddy "$active" || return 1
+    if [[ "$mode" == "camofox" && "$camofox_profiles_migrated" -eq 0 ]]; then
+        COMPOSE_PROFILES="$mode" sg_compose up -d hermes || return 1
+        sg_camofox_profile_isolate apply || return 1
+    fi
     COMPOSE_PROFILES="$mode" sg_compose up -d --force-recreate hermes
+}
+
+sg_camofox_profile_isolate() {
+    local action="${1:-apply}"
+    [[ "$action" == "apply" || "$action" == "rollback" ]] || {
+        printf 'Usage: sg-camofox-profile-isolate [apply|rollback]\n' >&2
+        return 2
+    }
+    COMPOSE_PROFILES=camofox sg_compose exec -T hermes sh -s -- "$action" \
+        < "$SPARTAN_GATE_DIR/scripts/camofox-isolate-hermes-profiles.sh"
 }
 
 sg_private_env_file() {
@@ -1511,16 +1532,17 @@ sg_camofox_profile_use() {
         return 1
     fi
     local profile="$1"
-    local session_key="${2:-manual-login}"
-    local user_id
-    user_id="$(sg_camofox_profile_user_id "$profile")" || return 1
+    sg_camofox_profile_user_id "$profile" >/dev/null || return 1
     sg_update_private_env \
         "COMPOSE_PROFILES=camofox" \
         "CAMOFOX_URL=http://camofox:9377" \
-        "CAMOFOX_USER_ID=$user_id" \
-        "CAMOFOX_SESSION_KEY=$session_key" \
-        "CAMOFOX_ADOPT_EXISTING_TAB=true" || return 1
-    printf 'Camofox profile %s selected for Hermes. Run: sg-browser-mode-apply\n' "$profile"
+        "CAMOFOX_USER_ID=" \
+        "CAMOFOX_SESSION_KEY=" \
+        "CAMOFOX_ADOPT_EXISTING_TAB=false" || return 1
+    if [[ "$#" -eq 2 ]]; then
+        printf 'Note: session-key is no longer stored globally; configure it only for its owning client.\n' >&2
+    fi
+    printf 'Camofox enabled with client-scoped identity and global tab adoption disabled. Run: sg-browser-mode-apply\n'
 }
 
 sg_camofox_profile_save() {
@@ -2142,6 +2164,28 @@ async function request(path, options = {}) {
 });
 '
 }
+sg_camofox_acceptance() {
+    local key url
+    key="$(sg_env_value CAMOFOX_ACCESS_KEY change-me-camofox-access-key)"
+    url="${1:-https://example.com/}"
+    sg_compose exec -T \
+        -e CAMOFOX_ACCEPTANCE_KEY="$key" \
+        -e CAMOFOX_ACCEPTANCE_URL="$url" \
+        -e CAMOFOX_ACCEPTANCE_CYCLES="${CAMOFOX_ACCEPTANCE_CYCLES:-20}" \
+        -e CAMOFOX_ACCEPTANCE_CONCURRENCY="${CAMOFOX_ACCEPTANCE_CONCURRENCY:-5}" \
+        camofox node --input-type=module - \
+        < "$SPARTAN_GATE_DIR/scripts/camofox-acceptance.mjs"
+}
+sg_camofox_deep_health_fault_test() {
+    local container_id
+    container_id="$(COMPOSE_PROFILES=camofox sg_compose ps -q camofox)"
+    [[ -n "$container_id" ]] || {
+        printf 'Camofox container is not running.\n' >&2
+        return 1
+    }
+    CAMOFOX_CONTAINER_ID="$container_id" \
+        "$SPARTAN_GATE_DIR/scripts/camofox-deep-health-fault-test.sh"
+}
 sg_camofox_viewport_check() {
     local key width height
     key="$(sg_env_value CAMOFOX_ACCESS_KEY change-me-camofox-access-key)"
@@ -2420,6 +2464,8 @@ sg_browser() {
         camofox-save) shift; sg_camofox_profile_save "$@" ;;
         camofox-reset) shift; sg_camofox_profile_reset "$@" ;;
         camofox-health) shift; sg_camofox_health "$@" ;;
+        camofox-acceptance) shift; sg_camofox_acceptance "$@" ;;
+        camofox-fault-test) shift; sg_camofox_deep_health_fault_test "$@" ;;
         camofox-smoke) shift; sg_camofox_smoke "$@" ;;
         camofox-viewport-check) shift; sg_camofox_viewport_check "$@" ;;
         camofox-url) shift; sg_camofox_url "$@" ;;
@@ -2498,6 +2544,7 @@ sg-browserless-profile-live() { sg_browserless_profile_live "$@"; }
 sg-browser-mode-apply() { sg_browser_mode_apply "$@"; }
 sg-camofox-profile-live() { sg_camofox_profile_live "$@"; }
 sg-camofox-profile-use() { sg_camofox_profile_use "$@"; }
+sg-camofox-profile-isolate() { sg_camofox_profile_isolate "$@"; }
 sg-camofox-profile-save() { sg_camofox_profile_save "$@"; }
 sg-camofox-profile-reset() { sg_camofox_profile_reset "$@"; }
 sg-hermes-chrome-profile() { sg_hermes_chrome_profile "$@"; }
@@ -2514,6 +2561,8 @@ sg-gog-check() { sg_gog_check "$@"; }
 sg-gog-login() { sg_gog_login "$@"; }
 sg-camofox-health() { sg_camofox_health "$@"; }
 sg-camofox-smoke() { sg_camofox_smoke "$@"; }
+sg-camofox-acceptance() { sg_camofox_acceptance "$@"; }
+sg-camofox-deep-health-fault-test() { sg_camofox_deep_health_fault_test "$@"; }
 sg-camofox-viewport-check() { sg_camofox_viewport_check "$@"; }
 sg-camofox-url() { sg_camofox_url "$@"; }
 
