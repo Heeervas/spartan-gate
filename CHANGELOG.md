@@ -5,7 +5,8 @@ All notable changes to Spartan Gate are documented here.
 ## Unreleased
 - Added a PID-1 Camofox supervisor with credentialed loopback deep readiness,
   cgroup/OOM monitoring, process-tree cleanup, and persistent capped automatic
-  backoff without Docker socket access or manual breaker resets.
+  backoff without Docker socket access or manual breaker resets, including one
+  revision-aware rollout attempt that preserves the accumulated penalty.
 - Fenced timed-out Camofox tab creation, cleaned late pages/contaminated
   sessions, returned semantic 503 errors, removed the unbounded upstream probe,
   and made Compose memory admission use its cgroup limit.

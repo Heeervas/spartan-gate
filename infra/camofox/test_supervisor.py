@@ -112,7 +112,103 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(ledger.next_allowed_at, clock.time() + 1800)
         normalized = json.loads(path.read_text())
         self.assertEqual(normalized["recycle_count"], 4)
+        self.assertEqual(normalized["version"], 2)
+        self.assertEqual(
+            normalized["supervisor_revision"],
+            self.supervisor.SUPERVISOR_REVISION,
+        )
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_new_supervisor_revision_gets_one_immediate_attempt(self):
+        path = self.root / "ledger.json"
+        old_revision = "a" * 64
+        new_revision = "b" * 64
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "recycle_count": 4,
+                    "next_allowed_at": 2500,
+                    "healthy_since": None,
+                    "supervisor_revision": old_revision,
+                }
+            )
+        )
+
+        ledger = self.supervisor.load_ledger(
+            path,
+            now=1000,
+            backoffs=(0, 30, 120, 600, 1800),
+            revision=new_revision,
+        )
+
+        self.assertEqual(ledger.recycle_count, 4)
+        self.assertEqual(ledger.next_allowed_at, 0)
+        self.assertEqual(ledger.supervisor_revision, new_revision)
+        normalized = json.loads(path.read_text())
+        self.assertEqual(normalized["supervisor_revision"], new_revision)
+
+        self.assertEqual(ledger.record_recycle(1000, (0, 30, 120, 600, 1800)), 1800)
+        self.supervisor.save_ledger(path, ledger)
+
+        preserved = self.supervisor.load_ledger(
+            path,
+            now=1000,
+            backoffs=(0, 30, 120, 600, 1800),
+            revision=new_revision,
+        )
+        self.assertEqual(preserved.supervisor_revision, new_revision)
+        self.assertEqual(preserved.recycle_count, 4)
+        self.assertEqual(preserved.next_allowed_at, 2800)
+
+    def test_valid_legacy_ledger_migrates_to_immediate_revision_attempt(self):
+        path = self.root / "legacy-ledger.json"
+        revision = "c" * 64
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "recycle_count": 4,
+                    "next_allowed_at": 2500,
+                    "healthy_since": None,
+                }
+            )
+        )
+
+        ledger = self.supervisor.load_ledger(
+            path,
+            now=1000,
+            backoffs=(0, 30, 120, 600, 1800),
+            revision=revision,
+        )
+
+        self.assertEqual(ledger.recycle_count, 4)
+        self.assertEqual(ledger.next_allowed_at, 0)
+        self.assertEqual(json.loads(path.read_text())["version"], 2)
+
+    def test_invalid_revision_ledger_fails_closed(self):
+        path = self.root / "invalid-revision-ledger.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "recycle_count": 0,
+                    "next_allowed_at": 0,
+                    "healthy_since": None,
+                    "supervisor_revision": "invalid",
+                }
+            )
+        )
+
+        ledger = self.supervisor.load_ledger(
+            path,
+            now=1000,
+            backoffs=(0, 30, 120, 600, 1800),
+            revision="d" * 64,
+        )
+
+        self.assertEqual(ledger.recycle_count, 4)
+        self.assertEqual(ledger.next_allowed_at, 2800)
 
     def test_future_and_negative_ledger_values_fail_closed(self):
         for payload in (

@@ -93,6 +93,12 @@ The watchdog ledger is separate from browser credentials:
 /var/lib/spartan-camofox-watchdog/ledger.json
 ```
 
+The ledger is bound to the supervisor revision. Recreating the same revision
+keeps the accumulated backoff, while deploying a different revision grants one
+immediate launch attempt and then reapplies the accumulated backoff level if
+that attempt fails. This allows a fixed image to recover without deleting
+diagnostic state or enabling a same-image force-recreate loop.
+
 Do not mount `docker.sock`, add an autoheal sidecar, or use profile reset as a
 recovery action. For diagnosis, preserve logs before any recreate and inspect
 only allowlisted timestamps, stages, PIDs and resource counters.
@@ -303,7 +309,26 @@ Open a Camofox profile for human login:
 sg-camofox-profile-live main https://accounts.google.com
 ```
 
-Log in through the printed noVNC URL, then select that profile for Hermes:
+The helper opens the selected `userId` in the reserved
+`spartan-operator-login` tab group. Hermes uses `spartan-hermes` in the same
+browser context, so both groups share cookies and login state without adopting
+or navigating each other's tabs. The helper creates the operator tab in
+non-destructive mode: if Camofox is at capacity or navigation hits a proxy
+failure, it fails instead of recycling a tab or rotating the shared browser
+session. Before posting the tab, the helper checks an authenticated,
+versioned capability exposed by the patched Camofox image; an older image
+fails closed and must be rebuilt before the helper can be used. A failed
+operator navigation also removes the newly created operator tab.
+
+If Hermes already uses this profile, log in through the printed noVNC URL and
+checkpoint it without changing Hermes configuration or recreating services:
+
+```sh
+sg-camofox-profile-save main
+```
+
+Only when selecting this profile for Hermes for the first time, and after
+active browser work has finished, apply it explicitly:
 
 ```sh
 sg-camofox-profile-save main
@@ -322,6 +347,9 @@ Hermes' Camofox auth helper. It also receives `CAMOFOX_USER_ID`,
 `CAMOFOX_SESSION_KEY`, and
 `CAMOFOX_ADOPT_EXISTING_TAB` from the selected private env so browser tools use
 the same saved Camofox profile instead of a new ephemeral `hermes_*` session.
+Adoption is restricted to the exact Hermes tab group; the legacy
+`manual-login` value is mapped to `spartan-hermes` at runtime. The reserved
+operator group cannot be selected through `sg-camofox-profile-use`.
 It does not receive the human account password, 2FA material, or personal API
 keys. Use a different profile name, such as `alt`, for isolated cookies and
 login state.

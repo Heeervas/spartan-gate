@@ -12,6 +12,7 @@ from __future__ import annotations
 import ctypes
 import dataclasses
 import datetime
+import hashlib
 import http.client
 import json
 import math
@@ -30,7 +31,8 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import IO, Any
 
 
-VERSION = 1
+VERSION = 2
+LEGACY_VERSION = 1
 DEFAULT_SECRET_FILE = pathlib.Path("/run/spartan-camofox/internal.key")
 DEFAULT_READINESS_FILE = pathlib.Path("/run/spartan-camofox/readiness.json")
 DEFAULT_LEDGER_FILE = pathlib.Path("/var/lib/spartan-camofox-watchdog/ledger.json")
@@ -43,7 +45,16 @@ READY_STATES = frozenset(
 )
 CGROUP_STATES = frozenset({"ok", "unknown"})
 SAFE_VALUE = re.compile(r"^[a-z0-9_.-]{1,64}$")
+REVISION_VALUE = re.compile(r"^[0-9a-f]{64}$")
 MAX_JSON_BYTES = 16 * 1024
+
+
+def supervisor_revision(path: pathlib.Path | None = None) -> str:
+    source = pathlib.Path(__file__) if path is None else path
+    return hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+SUPERVISOR_REVISION = supervisor_revision()
 
 
 def _finite_number(value: Any) -> bool:
@@ -113,17 +124,29 @@ class Ledger:
     recycle_count: int
     next_allowed_at: float
     healthy_since: float | None
+    supervisor_revision: str
 
     @classmethod
-    def clean(cls) -> "Ledger":
-        return cls(recycle_count=0, next_allowed_at=0.0, healthy_since=None)
+    def clean(cls, revision: str = SUPERVISOR_REVISION) -> "Ledger":
+        return cls(
+            recycle_count=0,
+            next_allowed_at=0.0,
+            healthy_since=None,
+            supervisor_revision=revision,
+        )
 
     @classmethod
-    def fail_closed(cls, now: float, backoffs: Sequence[int]) -> "Ledger":
+    def fail_closed(
+        cls,
+        now: float,
+        backoffs: Sequence[int],
+        revision: str = SUPERVISOR_REVISION,
+    ) -> "Ledger":
         return cls(
             recycle_count=len(backoffs) - 1,
             next_allowed_at=now + backoffs[-1],
             healthy_since=None,
+            supervisor_revision=revision,
         )
 
     def record_recycle(self, now: float, backoffs: Sequence[int]) -> int:
@@ -162,6 +185,7 @@ class Ledger:
             "recycle_count": self.recycle_count,
             "next_allowed_at": self.next_allowed_at,
             "healthy_since": self.healthy_since,
+            "supervisor_revision": self.supervisor_revision,
         }
 
 
@@ -174,14 +198,31 @@ def load_ledger(
     *,
     now: float,
     backoffs: Sequence[int],
+    revision: str = SUPERVISOR_REVISION,
 ) -> Ledger:
+    if REVISION_VALUE.fullmatch(revision) is None:
+        raise ValueError("invalid supervisor revision")
     if not path.exists():
-        return Ledger.clean()
+        return Ledger.clean(revision)
     normalized = False
     try:
         raw = json.loads(_read_bounded(path))
-        if not isinstance(raw, dict) or raw.get("version") != VERSION:
+        if not isinstance(raw, dict) or raw.get("version") not in (LEGACY_VERSION, VERSION):
             raise ValueError("invalid ledger version")
+        legacy = raw["version"] == LEGACY_VERSION
+        expected = {"version", "recycle_count", "next_allowed_at", "healthy_since"}
+        if legacy:
+            if set(raw) != expected:
+                raise ValueError("invalid legacy ledger")
+            stored_revision = None
+        else:
+            if set(raw) != expected | {"supervisor_revision"}:
+                raise ValueError("invalid ledger fields")
+            stored_revision = raw.get("supervisor_revision")
+            if not isinstance(stored_revision, str) or REVISION_VALUE.fullmatch(
+                stored_revision
+            ) is None:
+                raise ValueError("invalid ledger revision")
         count = raw.get("recycle_count")
         next_allowed = raw.get("next_allowed_at")
         healthy_since = raw.get("healthy_since")
@@ -194,16 +235,27 @@ def load_ledger(
         ):
             raise ValueError("invalid healthy timestamp")
         maximum_future = now + backoffs[-1]
+        unsafe_normalized = False
         if next_allowed > maximum_future:
             count = len(backoffs) - 1
             next_allowed = maximum_future
             normalized = True
+            unsafe_normalized = True
         if healthy_since is not None and healthy_since > now:
             healthy_since = now
             normalized = True
-        ledger = Ledger(count, float(next_allowed), healthy_since)
+            unsafe_normalized = True
+        if not unsafe_normalized and (legacy or stored_revision != revision):
+            # Grant this runtime revision one attempt now, but retain the
+            # accumulated failure level. If the attempt fails, record_recycle
+            # immediately reapplies that level instead of restarting the
+            # backoff ladder.
+            ledger = Ledger(count, 0.0, None, revision)
+            normalized = True
+        else:
+            ledger = Ledger(count, float(next_allowed), healthy_since, revision)
     except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
-        ledger = Ledger.fail_closed(now, backoffs)
+        ledger = Ledger.fail_closed(now, backoffs, revision)
         normalized = True
     if normalized:
         save_ledger(path, ledger)
