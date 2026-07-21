@@ -268,7 +268,11 @@ export function createSpartanDeepHealthController({
     if (generationAware && lastResult.generation !== generation) {
       return { ok: false, code: 'deep_probe_generation_stale', stage: 'cache', generation, ageMs: Math.max(0, now() - lastProbeAt) };
     }
-    const ageMs = Math.max(0, now() - lastProbeAt);
+    const freshnessAt = lastResult.ok ? lastReadyAt : lastProbeAt;
+    if (freshnessAt === null) {
+      return { ok: false, code: 'deep_probe_uninitialized', stage: 'cache', generation, ageMs: null };
+    }
+    const ageMs = Math.max(0, now() - freshnessAt);
     if (ageMs > Number(cacheMaxAgeMs)) {
       return { ok: false, code: 'deep_probe_cache_stale', stage: 'cache', generation, ageMs };
     }

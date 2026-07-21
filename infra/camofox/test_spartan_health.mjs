@@ -368,8 +368,9 @@ test('bounded lifecycle busy is healthy only after a recent completed ready prob
   assert.equal(recent.readyAgeMs, 10);
   assert.equal(browserCalls, 1);
 
-  await new Promise(resolve => setImmediate(resolve));
   clock = 121;
+  assert.equal(controller.snapshot().code, 'deep_probe_cache_stale');
+  await new Promise(resolve => setImmediate(resolve));
   const stale = await controller.probe();
   assert.equal(stale.ok, false);
   assert.equal(stale.code, 'deep_probe_busy_stale');
