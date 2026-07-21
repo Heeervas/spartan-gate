@@ -189,6 +189,7 @@ RUN python3 /opt/hermes/patches/patch_s6_service_permissions.py
 RUN python3 /opt/hermes/patches/patch_runtime_identity_drop.py
 RUN python3 /opt/hermes/patches/patch_stage2_cdp_env.py
 RUN python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py
+RUN python3 /opt/hermes/patches/patch_camofox_tab_isolation.py
 RUN python3 /opt/hermes/patches/patch_prompt_load_callback.py
 RUN python3 /opt/hermes/patches/patch_checkpoint_rollback_scan.py
 RUN python3 /opt/hermes/patches/patch_mcp_proxy_env.py

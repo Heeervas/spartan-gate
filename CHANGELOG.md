@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Kept Camofox cookies profile-scoped while isolating Hermes tabs by durable
+  session ID, forbade cross-session tab adoption, handled stale 404/410 tab
+  generations explicitly, and stopped managed tab cleanup from deleting the
+  shared persistent browser context.
 - Limited Camofox's internal recovery wait to two minutes; later durable
   escalation levels preserve their penalty but exit PID 1 non-zero so Docker
   restarts the container immediately under `restart: unless-stopped`.
