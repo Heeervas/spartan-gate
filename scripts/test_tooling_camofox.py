@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 
@@ -140,9 +141,64 @@ class CamofoxContractTests(unittest.TestCase):
         self.assertIn('"nonDestructive": true', helper)
         self.assertIn('request("/spartan/capabilities")', helper)
         self.assertIn("operatorTabIsolationVersion !== 1", helper)
+        self.assertIn("operatorLeaseMs < 30 * 60 * 1000", helper)
+        self.assertIn("operatorLeaseRenewal !== true", helper)
+        self.assertIn("/spartan/operator-lease", helper)
+        self.assertIn("sg_camofox_profile_migration_applied", helper)
+        self.assertLess(helper.index("sg_camofox_profile_migration_applied"), helper.index("sg_camofox_ensure_live_service"))
         self.assertLess(helper.index('request("/spartan/capabilities")'), helper.index('request("/tabs"'))
         self.assertIn('sg_env_value CAMOFOX_SESSION_KEY "spartan-hermes"', helper)
         self.assertLess(helper.index("CAMOFOX session key collision"), helper.index("sg_camofox_require_novnc"))
+
+    def test_profile_save_calls_authoritative_checkpoint_not_tab_listing(self):
+        source = (ROOT / "scripts" / "aliases.sh").read_text()
+        start = source.index("sg_camofox_profile_save()")
+        end = source.index("sg_camofox_profile_reset()", start)
+        helper = source[start:end]
+
+        self.assertIn(
+            "/internal/persistence/${encodeURIComponent(userId)}/checkpoint",
+            helper,
+        )
+        self.assertIn('method: "POST"', helper)
+        self.assertNotIn("/tabs?userId=", helper)
+        self.assertIn("storage-state.json", helper)
+
+    def test_profile_use_migrates_before_private_env_write(self):
+        source = (ROOT / "scripts" / "aliases.sh").read_text()
+        start = source.index("sg_camofox_profile_use()")
+        end = source.index("sg_camofox_profile_save()", start)
+        helper = source[start:end]
+
+        self.assertLess(helper.index("sg_camofox_profile_isolate apply"), helper.index("sg_update_private_env"))
+
+    def test_browser_mode_migrates_before_starting_camofox_or_hermes(self):
+        source = (ROOT / "scripts" / "aliases.sh").read_text()
+        start = source.index("sg_browser_mode_apply()")
+        end = source.index("sg_camofox_profile_isolate()", start)
+        helper = source[start:end]
+
+        self.assertLess(
+            helper.index("sg_camofox_profile_isolate apply"),
+            helper.index('sg_compose up -d proxy dns searxng reader spartan-route caddy "$active"'),
+        )
+        self.assertNotIn("camofox_profiles_migrated", helper)
+
+    def test_profile_close_checkpoints_then_deletes_only_operator_tabs(self):
+        source = (ROOT / "scripts" / "camofox-profile-close.js").read_text()
+
+        self.assertIn("spartan-operator-login", source)
+        self.assertIn("/internal/persistence/${encodeURIComponent(userId)}/checkpoint", source)
+        self.assertIn("method: 'DELETE'", source)
+        self.assertNotIn("/sessions/", source)
+        self.assertLess(source.index("/checkpoint"), source.index("method: 'DELETE'"))
+
+        aliases = (ROOT / "scripts" / "aliases.sh").read_text()
+        start = aliases.index("sg_camofox_profile_close()")
+        end = aliases.index("sg_camofox_profile_reset()", start)
+        helper = aliases[start:end]
+        self.assertIn("camofox-profile-close.js", helper)
+        self.assertIn("CAMOFOX_PROFILE_USER_ID", helper)
 
     def test_live_service_never_force_recreates_camofox(self):
         source = (ROOT / "scripts" / "aliases.sh").read_text()
@@ -292,6 +348,7 @@ class AliasHelpTests(unittest.TestCase):
         shutil.copy2(ROOT / "scripts" / "spartan-route-data.py", self.root / "scripts")
         (self.root / "infra" / "compose" / "tiers").mkdir(parents=True)
         (self.root / "runtime" / "spartan-route").mkdir(parents=True, mode=0o700)
+        shutil.copy2(ROOT / "scripts" / "update-private-env-secret.py", self.root / "scripts")
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -337,6 +394,7 @@ sg_env_value() {
   if [[ "$1" == "CAMOFOX_SESSION_KEY" ]]; then printf 'spartan-hermes\n'; fi
 }
 sg_camofox_require_novnc() { :; }
+sg_camofox_profile_migration_applied() { :; }
 sg_camofox_ensure_live_service() { :; }
 sg_camofox_request_node() { printf '<%s>\n' "$@"; }
 sg_camofox_novnc_url() { printf 'https://camofox.invalid/vnc_lite.html'; }
@@ -345,7 +403,11 @@ sg-browser camofox-live main https://accounts.google.com
         result = self.run_sourced(command)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("<CAMOFOX_PROFILE_USER_ID=spartan-camofox-main>", result.stdout)
+        digest = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "camofox-user:/opt/data/browser_auth/camofox",
+        ).hex[:10]
+        self.assertIn(f"<CAMOFOX_PROFILE_USER_ID=hermes_{digest}>", result.stdout)
         self.assertIn("<CAMOFOX_PROFILE_SESSION_KEY=spartan-operator-login>", result.stdout)
         self.assertIn('"nonDestructive": true', result.stdout)
         self.assertIn('request("/spartan/capabilities")', result.stdout)
@@ -402,6 +464,23 @@ sg-browser camofox-live main https://accounts.google.com
         self.assertIn("CAMOFOX session key collision", result.stderr)
         self.assertNotIn("unexpected", result.stdout)
 
+    def test_camofox_live_requires_completed_migration_before_start(self):
+        command = """
+sg_env_value() {
+  if [[ "$1" == "CAMOFOX_SESSION_KEY" ]]; then printf 'spartan-hermes\n'; fi
+}
+sg_camofox_profile_migration_applied() { return 1; }
+sg_camofox_require_novnc() { printf 'unexpected require\n'; }
+sg_camofox_ensure_live_service() { printf 'unexpected start\n'; }
+sg_camofox_request_node() { printf 'unexpected request\n'; }
+sg-browser camofox-live main https://accounts.google.com
+"""
+        result = self.run_sourced(command)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("offline Camofox login migration", result.stderr)
+        self.assertNotIn("unexpected", result.stdout)
+
     def test_camofox_profile_use_clears_legacy_global_owner(self):
         env_dir = self.root / "private" / "env"
         env_dir.mkdir(parents=True)
@@ -413,7 +492,7 @@ sg-browser camofox-live main https://accounts.google.com
             encoding="utf-8",
         )
 
-        result = self.run_sourced("sg-camofox-profile-use main")
+        result = self.run_sourced("sg_camofox_profile_isolate() { printf 'migration applied\n'; }; sg-camofox-profile-use main")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         values = dict(
@@ -427,6 +506,43 @@ sg-browser camofox-live main https://accounts.google.com
         self.assertEqual(values["CAMOFOX_SESSION_KEY"], "")
         self.assertEqual(values["CAMOFOX_ADOPT_EXISTING_TAB"], "false")
         self.assertIn("client-scoped", result.stdout)
+        self.assertIn("migration applied", result.stdout)
+
+    def test_camofox_profile_user_id_matches_hermes_profile_identity(self):
+        result = self.run_sourced(
+            "sg_camofox_profile_user_id main; "
+            "sg_camofox_profile_user_id default; "
+            "sg_camofox_profile_user_id market"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = []
+        for home in ("/opt/data", "/opt/data", "/opt/data/profiles/market"):
+            scope = f"{home}/browser_auth/camofox"
+            digest = uuid.uuid5(uuid.NAMESPACE_URL, f"camofox-user:{scope}").hex[:10]
+            expected.append(f"hermes_{digest}")
+        self.assertEqual(result.stdout.splitlines(), expected)
+
+    def test_wrangler_helpers_are_pinned_and_token_input_is_not_echoed(self):
+        env_dir = self.root / "private" / "env"
+        env_dir.mkdir(parents=True)
+        result = self.run_sourced("printf 'cf-test-secret\\n' | sg-wrangler-token")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertNotIn("cf-test-secret", combined)
+        values = dict(
+            line.split("=", 1)
+            for line in (env_dir / "local.env").read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        self.assertEqual(values["CLOUDFLARE_API_TOKEN"], "cf-test-secret")
+
+        source = (ROOT / "scripts" / "aliases.sh").read_text(encoding="utf-8")
+        self.assertIn("npx --yes wrangler@4.45.0", source)
+        self.assertIn("/opt/hermes/bootstrap/wrangler-auth.py", source)
+        self.assertIn("update-private-env-secret.py", source)
+        self.assertNotIn('sg_update_private_env "CLOUDFLARE_API_TOKEN=$token"', source)
 
     def test_tmux_help_and_navigation_keys_are_discoverable(self):
         result = self.run_sourced(

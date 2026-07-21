@@ -28,11 +28,11 @@ for alias_name in \
     sg-restart-proxy sg-rebuild-hermes sg-rebuild-clawroute sg-rebuild-spartan-route \
     sg-spartan-route-data-check sg-spartan-route-data-migrate sg-logs-hermes \
     sg-logs-clawroute sg-logs-spartan-route sg-hermes-shell sg-hermes-doctor sg-hermes-profile \
-    sg-hermes-profiles sg-hermes-profile-create sg-hermes-profile-new sg-hermes-gateway-profile \
+    sg-hermes-profiles sg-hermes-profile-create sg-wrangler sg-wrangler-login sg-wrangler-token sg-hermes-profile-new sg-hermes-gateway-profile \
     sg-clawroute-shell sg-whitelist-domain sg-add-port sg-reader-test \
     sg-browserless-profile-live sg-hermes-chrome-profile sg-hermes-meet sg-hermes-meet-join \
     sg-browser-mode-apply sg-camofox-profile-live sg-camofox-profile-use sg-camofox-profile-isolate \
-    sg-camofox-profile-save sg-camofox-profile-reset \
+    sg-camofox-profile-save sg-camofox-profile-close sg-camofox-profile-reset \
     sg-camofox-health sg-camofox-smoke sg-camofox-acceptance sg-camofox-deep-health-fault-test sg-camofox-viewport-check sg-camofox-url sg-logs-camofox \
     sg-browserless-profile-chrome sg-browserless-snapshot sg-meet-google-check \
     sg-meet-chrome-start sg-meet-chrome-relay-start sg-meet-chrome-ws-url sg-meet-chrome-check \
@@ -469,6 +469,9 @@ Usage:
   sg-hermes profiles                   list Hermes profiles
   sg-hermes profile-create <name>      create a Hermes profile
   sg-hermes profile-new [args...]      run the profile scaffolding helper
+  sg-hermes wrangler [args...]           run pinned Wrangler 4.45.0
+  sg-hermes wrangler-login              complete assisted Wrangler OAuth
+  sg-hermes wrangler-token              store a private Cloudflare API token
   sg-hermes gateway-profile <name>     start gateway for one profile
 
 Flat aliases remain available:
@@ -491,6 +494,7 @@ Usage:
   sg-browser camofox-live <profile> [url]
   sg-browser camofox-use <profile> [session-key]
   sg-browser camofox-save <profile>
+  sg-browser camofox-close <profile>
   sg-browser camofox-reset <profile>
   sg-browser camofox-health
   sg-browser camofox-smoke [url]
@@ -746,6 +750,9 @@ sg_hermes() {
         profile-create) shift; sg_hermes_profile_create "$@" ;;
         profile-new) shift; sg_hermes_profile_new "$@" ;;
         gateway-profile) shift; sg_hermes_gateway_profile "$@" ;;
+        wrangler) shift; sg_wrangler "$@" ;;
+        wrangler-login) shift; sg_wrangler_login "$@" ;;
+        wrangler-token) shift; sg_wrangler_token "$@" ;;
         *)
             printf 'Unknown sg-hermes command: %s\n\n' "$command" >&2
             sg_hermes_help >&2
@@ -831,6 +838,42 @@ sg_hermes_exec_tty() {
         -e LOGNAME=hermes \
         spartan_gate_hermes "$@"
 }
+sg_wrangler() {
+    sg_hermes_exec npx --yes wrangler@4.45.0 "$@"
+}
+
+sg_wrangler_login() {
+    if [[ "$#" -ne 0 ]]; then
+        printf 'Usage: sg-wrangler-login\n' >&2
+        return 1
+    fi
+    sg_hermes_exec_tty python3 /opt/hermes/bootstrap/wrangler-auth.py
+}
+
+sg_wrangler_token() {
+    if [[ "$#" -ne 0 ]]; then
+        printf 'Usage: sg-wrangler-token\n' >&2
+        return 1
+    fi
+    local token
+    IFS= read -r -s -p 'Cloudflare API token (hidden): ' token
+    printf '\n' >&2
+    if [[ -z "$token" || ${#token} -gt 4096 || "$token" == *$'\n'* || "$token" == *$'\r'* ]]; then
+        token=
+        printf 'Error: invalid Cloudflare API token.\n' >&2
+        return 1
+    fi
+    printf '%s' "$token" | python3 \
+        "$SPARTAN_GATE_DIR/scripts/update-private-env-secret.py" \
+        "$(sg_private_env_file)" CLOUDFLARE_API_TOKEN || {
+        token=
+        return 1
+    }
+    token=
+    printf 'Stored the Cloudflare API token in the private env file.\n'
+    printf 'After active browser work finishes, apply it with: sg up -d hermes\n'
+}
+
 sg_hermes_shell() {
     if [[ "$#" -gt 0 ]]; then
         sg_hermes_exec_tty bash "$@"
@@ -1244,7 +1287,7 @@ sg_validate_compose_profiles_for_mode() {
 }
 
 sg_browser_mode_apply() {
-    local mode active inactive camofox_profiles_migrated=0
+    local mode active inactive
     mode="$(sg_browser_mode)"
     sg_validate_compose_profiles_for_mode "$mode" || return 1
 
@@ -1256,29 +1299,77 @@ sg_browser_mode_apply() {
         inactive="camofox"
     fi
 
-    if [[ "$mode" == "camofox" ]] && sg_compose ps --status running --services hermes 2>/dev/null | grep -qx hermes; then
+    if [[ "$mode" == "camofox" ]]; then
         sg_camofox_profile_isolate apply || return 1
-        camofox_profiles_migrated=1
     fi
 
     printf 'Applying Spartan Gate browser mode: %s\n' "$mode"
     COMPOSE_PROFILES="$inactive" sg_compose stop "$inactive" >/dev/null 2>&1 || true
     COMPOSE_PROFILES="$mode" sg_compose up -d proxy dns searxng reader spartan-route caddy "$active" || return 1
-    if [[ "$mode" == "camofox" && "$camofox_profiles_migrated" -eq 0 ]]; then
-        COMPOSE_PROFILES="$mode" sg_compose up -d hermes || return 1
-        sg_camofox_profile_isolate apply || return 1
-    fi
     COMPOSE_PROFILES="$mode" sg_compose up -d --force-recreate hermes
 }
 
 sg_camofox_profile_isolate() {
     local action="${1:-apply}"
     [[ "$action" == "apply" || "$action" == "rollback" ]] || {
-        printf 'Usage: sg-camofox-profile-isolate [apply|rollback]\n' >&2
+        printf "Usage: sg-camofox-profile-isolate [apply|rollback]\n" >&2
         return 2
     }
-    COMPOSE_PROFILES=camofox sg_compose exec -T hermes sh -s -- "$action" \
-        < "$SPARTAN_GATE_DIR/scripts/camofox-isolate-hermes-profiles.sh"
+    local hermes_root camofox_root migration_image migration_script
+    local hermes_was_running=0 camofox_was_running=0 migration_status
+    hermes_root="$(sg_env_value SPARTAN_HERMES_DATA_PATH "$SPARTAN_GATE_DIR/runtime/hermes")"
+    camofox_root="$(sg_env_value SPARTAN_CAMOFOX_DATA_PATH "$SPARTAN_GATE_DIR/runtime/camofox")"
+    migration_image="$(sg_env_value HERMES_IMAGE spartan-gate-hermes:latest)"
+    migration_script="$SPARTAN_GATE_DIR/scripts/migrate-camofox-logins.py"
+    if [[ "$hermes_root" != /* || "$hermes_root" == "/" || "$camofox_root" != /* || "$camofox_root" == "/" ]]; then
+        printf "Error: Hermes and Camofox migration roots must be explicit absolute non-root paths.\n" >&2
+        return 1
+    fi
+
+    if COMPOSE_PROFILES=camofox sg_compose ps --status running --services hermes 2>/dev/null | grep -qx hermes; then
+        hermes_was_running=1
+    fi
+    if COMPOSE_PROFILES=camofox sg_compose ps --status running --services camofox 2>/dev/null | grep -qx camofox; then
+        camofox_was_running=1
+    fi
+
+    COMPOSE_PROFILES=camofox sg_compose stop hermes || return 1
+    COMPOSE_PROFILES=camofox sg_compose stop camofox || {
+        if [[ "$hermes_was_running" -eq 1 ]]; then
+            COMPOSE_PROFILES=camofox sg_compose up -d hermes || true
+        fi
+        return 1
+    }
+
+    docker run --rm \
+        --network none \
+        --read-only \
+        --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m \
+        --user 0:0 \
+        --cap-drop ALL \
+        --cap-add CHOWN \
+        --cap-add DAC_OVERRIDE \
+        --cap-add FOWNER \
+        --security-opt no-new-privileges:true \
+        --memory 512m \
+        --pids-limit 64 \
+        --entrypoint python3 \
+        --volume "$migration_script:/opt/spartan/migrate-camofox-logins.py:ro" \
+        --volume "$hermes_root:$hermes_root" \
+        --volume "$camofox_root:$camofox_root" \
+        "$migration_image" \
+        /opt/spartan/migrate-camofox-logins.py "$action" \
+        --hermes-root "$hermes_root" \
+        --camofox-root "$camofox_root"
+    migration_status=$?
+
+    if [[ "$camofox_was_running" -eq 1 ]]; then
+        COMPOSE_PROFILES=camofox sg_compose up -d camofox || migration_status=1
+    fi
+    if [[ "$hermes_was_running" -eq 1 ]]; then
+        COMPOSE_PROFILES=camofox sg_compose up -d hermes || migration_status=1
+    fi
+    return "$migration_status"
 }
 
 sg_private_env_file() {
@@ -1337,12 +1428,45 @@ END {
 
 sg_camofox_profile_user_id() {
     local profile="$1"
+    local profile_home
     if [[ ! "$profile" =~ ^[A-Za-z0-9._-]+$ || "$profile" == "." || "$profile" == ".." ]]; then
         printf 'Error: invalid Camofox profile name: %s\n' "$profile" >&2
         return 1
     fi
-    printf 'spartan-camofox-%s\n' "$profile"
+    case "$profile" in
+        main|default) profile_home=/opt/data ;;
+        *) profile_home="/opt/data/profiles/$profile" ;;
+    esac
+    python3 - "$profile_home" <<'PY'
+import sys
+import uuid
+
+scope_root = f"{sys.argv[1]}/browser_auth/camofox"
+digest = uuid.uuid5(
+    uuid.NAMESPACE_URL,
+    f"camofox-user:{scope_root}",
+).hex[:10]
+print(f"hermes_{digest}")
+PY
 }
+sg_camofox_profile_migration_applied() {
+    local root latest
+    root="$(sg_env_value SPARTAN_CAMOFOX_DATA_PATH "$SPARTAN_GATE_DIR/runtime/camofox")"
+    latest="$root/.spartan-backups/camofox-login-migration/latest.json"
+    python3 - "$latest" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    latest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    journal = json.loads(pathlib.Path(latest["journal"]).read_text(encoding="utf-8"))
+except (OSError, KeyError, TypeError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if journal.get("status") == "applied" else 1)
+PY
+}
+
 
 sg_urlencode() {
     python3 - "$1" <<'PY'
@@ -1491,6 +1615,11 @@ sg_camofox_profile_live() {
         printf 'Error: CAMOFOX session key collision: %s is reserved for operator tabs.\n' "$session_key" >&2
         return 1
     fi
+    if ! sg_camofox_profile_migration_applied; then
+        printf 'Error: apply the offline Camofox login migration before opening a derived profile.\n' >&2
+        printf 'Run: sg-camofox-profile-isolate apply\n' >&2
+        return 1
+    fi
     sg_camofox_require_novnc || return 1
 
     sg_camofox_ensure_live_service || return 1
@@ -1517,15 +1646,33 @@ async function request(path, options = {}) {
   }
   if (
     capabilities?.operatorTabIsolationVersion !== 1
+    || !Number.isFinite(capabilities?.operatorLeaseMs)
+    || capabilities.operatorLeaseMs < 30 * 60 * 1000
+    || capabilities?.operatorLeaseRenewal !== true
     || capabilities?.nonDestructiveTabCreate !== true
     || capabilities?.cleanupFailedOperatorNavigation !== true
   ) {
     throw new Error("Running Camofox image does not advertise the required safe operator-tab capability; rebuild Camofox before retrying");
   }
-  const created = await request("/tabs", {
-    method: "POST",
-    body: JSON.stringify({ userId, sessionKey, url, "nonDestructive": true }),
-  });
+  const listed = await request(`/tabs?userId=${encodeURIComponent(userId)}`);
+  const existing = (listed?.tabs || []).find((tab) => tab?.listItemId === sessionKey && tab?.tabId);
+  let created;
+  if (existing) {
+    await request(`/tabs/${encodeURIComponent(existing.tabId)}/spartan/operator-lease`, {
+      method: "POST",
+      body: JSON.stringify({ userId }),
+    });
+    await request(`/tabs/${encodeURIComponent(existing.tabId)}/navigate`, {
+      method: "POST",
+      body: JSON.stringify({ userId, url }),
+    });
+    created = { tabId: existing.tabId, reused: true };
+  } else {
+    created = await request("/tabs", {
+      method: "POST",
+      body: JSON.stringify({ userId, sessionKey, url, "nonDestructive": true }),
+    });
+  }
   console.log(JSON.stringify({ ok: true, userId, sessionKey, url, created }, null, 2));
 })().catch((error) => {
   console.error(error.message || String(error));
@@ -1551,6 +1698,7 @@ sg_camofox_profile_use() {
     fi
     local profile="$1"
     sg_camofox_profile_user_id "$profile" >/dev/null || return 1
+    sg_camofox_profile_isolate apply || return 1
     sg_update_private_env \
         "COMPOSE_PROFILES=camofox" \
         "CAMOFOX_URL=http://camofox:9377" \
@@ -1560,7 +1708,7 @@ sg_camofox_profile_use() {
     if [[ "$#" -eq 2 ]]; then
         printf 'Note: session-key is no longer stored globally; configure it only for its owning client.\n' >&2
     fi
-    printf 'Camofox enabled with client-scoped identity and global tab adoption disabled. Run: sg-browser-mode-apply\n'
+    printf 'Camofox profile %s enabled with client-scoped identity after transactional migration. Run: sg-browser-mode-apply\n' "$profile"
 }
 
 sg_camofox_profile_save() {
@@ -1569,28 +1717,75 @@ sg_camofox_profile_save() {
         return 1
     fi
     local profile="$1"
-    local user_id root
+    local user_id root state_path
     user_id="$(sg_camofox_profile_user_id "$profile")" || return 1
     root="$(sg_env_value SPARTAN_CAMOFOX_DATA_PATH "$SPARTAN_GATE_DIR/runtime/camofox")"
+    state_path="$(python3 - "$root" "$user_id" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256(sys.argv[2].encode()).hexdigest()[:32]
+print(f"{sys.argv[1]}/profiles/{digest}/storage-state.json")
+PY
+)"
     sg_camofox_request_node '
 const key = process.env.CAMOFOX_HELPER_KEY || "";
 const userId = process.env.CAMOFOX_PROFILE_USER_ID;
 const base = "http://127.0.0.1:9377";
-fetch(`${base}/tabs?userId=${encodeURIComponent(userId)}`, {
+const endpoint = `/internal/persistence/${encodeURIComponent(userId)}/checkpoint`;
+fetch(`${base}${endpoint}`, {
+  method: "POST",
   headers: { Authorization: `Bearer ${key}` },
 }).then(async (response) => {
   const text = await response.text();
-  if (!response.ok) throw new Error(`GET /tabs -> ${response.status}: ${text}`);
-  console.log(text || "{}");
+  if (!response.ok) throw new Error(`POST checkpoint -> ${response.status}: ${text}`);
+  const payload = text ? JSON.parse(text) : {};
+  if (payload.persisted !== true) throw new Error(`checkpoint not persisted: ${text}`);
+  console.log(JSON.stringify(payload));
 }).catch((error) => {
   console.error(error.message || String(error));
   process.exit(1);
 });
 ' -e CAMOFOX_PROFILE_USER_ID="$user_id" || return 1
-    printf 'Checked active Camofox profile %s.\n' "$user_id"
+    if [[ ! -s "$state_path" ]]; then
+        printf 'Error: checkpoint succeeded but authoritative storage state is missing.\n' >&2
+        return 1
+    fi
+    if ! python3 - "$state_path" <<'PY'
+import json
+import pathlib
+import sys
+
+state = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if not isinstance(state, dict):
+    raise SystemExit(1)
+cookies = state.get("cookies")
+origins = state.get("origins", [])
+if not isinstance(cookies, list):
+    raise SystemExit(1)
+if not isinstance(origins, list):
+    raise SystemExit(1)
+PY
+    then
+        printf 'Error: authoritative Camofox storage state is invalid.\n' >&2
+        return 1
+    fi
+    printf 'Checkpointed active Camofox profile %s.\n' "$user_id"
     printf 'State root: %s\n' "$root"
-    find "$root" -maxdepth 4 \( -name "$user_id" -o -name "$user_id.json" \) -print 2>/dev/null || true
     printf 'No session deletion was performed.\n'
+}
+
+sg_camofox_profile_close() {
+    if [[ "$#" -ne 1 ]]; then
+        printf 'Usage: sg-camofox-profile-close <profile>\n' >&2
+        return 1
+    fi
+    local profile="$1"
+    local user_id script
+    user_id="$(sg_camofox_profile_user_id "$profile")" || return 1
+    script="$(<"$SPARTAN_GATE_DIR/scripts/camofox-profile-close.js")" || return 1
+    sg_camofox_request_node "$script" -e CAMOFOX_PROFILE_USER_ID="$user_id" || return 1
+    printf 'Checkpointed and closed the operator login tab for profile %s.\n' "$profile"
 }
 
 sg_camofox_profile_reset() {
@@ -2480,6 +2675,7 @@ sg_browser() {
         camofox-live) shift; sg_camofox_profile_live "$@" ;;
         camofox-use) shift; sg_camofox_profile_use "$@" ;;
         camofox-save) shift; sg_camofox_profile_save "$@" ;;
+        camofox-close) shift; sg_camofox_profile_close "$@" ;;
         camofox-reset) shift; sg_camofox_profile_reset "$@" ;;
         camofox-health) shift; sg_camofox_health "$@" ;;
         camofox-acceptance) shift; sg_camofox_acceptance "$@" ;;
@@ -2552,6 +2748,9 @@ sg-hermes-profiles() { sg_hermes_profiles "$@"; }
 sg-hermes-profile-create() { sg_hermes_profile_create "$@"; }
 sg-hermes-profile-new() { sg_hermes_profile_new "$@"; }
 sg-hermes-gateway-profile() { sg_hermes_gateway_profile "$@"; }
+sg-wrangler() { sg_wrangler "$@"; }
+sg-wrangler-login() { sg_wrangler_login "$@"; }
+sg-wrangler-token() { sg_wrangler_token "$@"; }
 sg-hermes-meet() { sg_hermes_meet "$@"; }
 sg-clawroute-shell() { sg_clawroute_shell "$@"; }
 sg-whitelist-domain() { sg_whitelist_domain "$@"; }
@@ -2564,6 +2763,7 @@ sg-camofox-profile-live() { sg_camofox_profile_live "$@"; }
 sg-camofox-profile-use() { sg_camofox_profile_use "$@"; }
 sg-camofox-profile-isolate() { sg_camofox_profile_isolate "$@"; }
 sg-camofox-profile-save() { sg_camofox_profile_save "$@"; }
+sg-camofox-profile-close() { sg_camofox_profile_close "$@"; }
 sg-camofox-profile-reset() { sg_camofox_profile_reset "$@"; }
 sg-hermes-chrome-profile() { sg_hermes_chrome_profile "$@"; }
 sg-hermes-meet-join() { sg_hermes_meet_join "$@"; }

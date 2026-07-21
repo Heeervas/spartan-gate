@@ -183,7 +183,16 @@ def get_camofox_identity(task_id=None):
         aliases = (ROOT / "scripts" / "aliases.sh").read_text()
         body = aliases.split("sg_camofox_profile_isolate() {", 1)[1].split("sg_private_env_file()", 1)[0]
         self.assertNotIn("default market work dreamer coach", body)
-        self.assertIn('sh -s -- "$action"', body)
+        self.assertIn('migrate-camofox-logins.py', body)
+        self.assertIn('sg_compose stop hermes', body)
+        self.assertIn('sg_compose stop camofox', body)
+        self.assertIn('SPARTAN_HERMES_DATA_PATH', body)
+        self.assertIn('SPARTAN_CAMOFOX_DATA_PATH', body)
+        self.assertIn('docker run --rm', body)
+        self.assertIn('--network none', body)
+        self.assertIn('--read-only', body)
+        self.assertIn('--cap-drop ALL', body)
+        self.assertIn('--entrypoint python3', body)
 
 
 if __name__ == "__main__":

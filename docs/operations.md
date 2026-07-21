@@ -367,13 +367,26 @@ forces the page request that refreshes the edge session before noVNC opens its
 WebSocket.
 
 `sg-camofox-profile-live` uses the reserved `spartan-operator-login` tab group
-inside the selected Camofox `userId`. Hermes uses `spartan-hermes`, so both
-groups share cookies but neither adopts or navigates the other's tab. Operator
-tab creation is non-destructive: capacity and navigation/proxy failures abort
-instead of recycling a Hermes tab or rotating the shared browser session. The
-helper verifies a versioned, authenticated safety capability before creating
-the tab; an older running Camofox image fails closed. Failed operator
-navigation removes its newly created tab.
+inside the deterministic, profile-scoped Camofox identity derived from that
+Hermes profile's `HERMES_HOME`. Hermes registry tab groups are keyed by the
+durable Hermes `session_id`, so operator and agent tabs share profile cookies
+but never adopt or navigate each other's tab. Operator creation is
+non-destructive and carries a renewable 30-minute lease. Capacity cleanup,
+idle reaping, session timeout, and soft-memory pressure cannot recycle it while
+leased. The helper verifies versioned, authenticated safety and lease
+capabilities before creating the tab; an older running image fails closed.
+Reopening the helper renews and reuses the existing operator tab. Failed
+operator navigation removes only a newly created tab. Camofox structured logs
+strip query strings and fragments from page URLs, including OAuth callbacks.
+
+Before opening any derived operator tab on an upgraded stack, finish active
+browser work and run the offline migration:
+
+```sh
+sg-camofox-profile-isolate apply
+```
+
+`profile-live` fails closed until the migration journal is applied.
 
 For a profile Hermes already uses, only open and checkpoint the login; do not
 run `use` or recreate services:
@@ -381,32 +394,71 @@ run `use` or recreate services:
 ```sh
 sg-camofox-profile-live main https://accounts.google.com
 sg-camofox-profile-save main
+sg-camofox-profile-close main
 ```
 
-For first-time profile selection, wait until active browser work has finished,
-then run:
+`save` invokes an authenticated server-side checkpoint and succeeds only after
+valid storage state is atomically durable. `close` checkpoints first and then
+deletes only the reserved operator tab. A failed checkpoint retains the live
+context for retry. Managed Camofox storage preserves cookies and origin
+localStorage; it is not a complete Firefox profile and does not promise
+extensions, preferences, downloads, IndexedDB, or every site-storage API.
+
+For first-time profile selection after migration and manual login, run:
 
 ```sh
 sg-camofox-profile-use main
 sg-browser-mode-apply
 ```
 
-`sg-camofox-profile-use` enables Camofox mode but clears legacy global
-user/session ownership and leaves global tab adoption disabled. Supervised
-Hermes profiles derive distinct identities from their own `HERMES_HOME` when
-managed persistence is enabled. The human login helper retains its reserved,
-non-destructive operator tab group; Google Meet remains a single-owner
-compatibility path for the default profile. The migration helper discovers
-configured profiles, preserves one original backup across repeated applies,
-proves the derived identities are distinct without printing them, and does not
-change tokens or private host paths. Use `sg-camofox-profile-reset <profile>`
-only for an explicit destructive reset, never for recovery.
+`sg-camofox-profile-use` rechecks the offline transaction before changing the
+private env, then clears legacy global ownership and leaves global adoption
+disabled. The initial migration helper
+records service state, stops Hermes and Camofox, discovers the default and every
+existing named Hermes profile, and copies the legacy login into all of their
+derived identities. Existing derived targets and every changed config are
+archived and verified before publication; failure or interruption restores the
+complete prior state, and previously running services are restarted. Repeated
+apply is a no-op, so it never overwrites a login created after migration. New
+profiles created later start empty. During the retained rollback window use:
+
+```sh
+sg-camofox-profile-isolate rollback
+```
+
+Credential files remain opaque throughout and their contents are never logged.
+Google Meet remains an explicit single-owner compatibility path for the default
+profile. Use `sg-camofox-profile-reset <profile>` only for an intentional
+destructive reset, never for recovery.
 
 For HTTPS, configure a certificate-valid `TAILSCALE_HOST` that resolves to
 `TAILSCALE_IP`. The helper aborts instead of using the raw IP when DNS is wrong.
 For add-ons, mount `SPARTAN_CAMOFOX_ADDONS_PATH` read-only and set
 `CAMOFOX_ADDONS` to comma-separated container paths below
 `/opt/camofox-addons`.
+
+## Wrangler Authentication
+
+Prefer an API token for unattended work:
+
+```sh
+sg-wrangler-token
+sg up -d hermes
+sg-wrangler whoami
+```
+
+The token prompt is hidden, the value is stored only in the private env file,
+and an existing token survives installer reruns. Hermes must be recreated
+before the new Compose environment is visible.
+
+For OAuth, run `sg-wrangler-login`. Open the printed URL in the Camofox noVNC
+browser, finish authorization, then copy the final
+`http://localhost:8976/oauth/callback?...` URL from the browser bar into the
+hidden terminal prompt. The browser cannot reach Hermes' loopback callback
+directly; the helper validates the exact localhost/port/path plus state and
+submits it from inside Hermes. Callback secrets never enter argv or environment.
+Wrangler is pinned to 4.45.0, its process group is always reaped, and successful
+OAuth credentials persist in the Hermes data mount under `/opt/data`.
 
 ## Health
 
@@ -423,6 +475,13 @@ docker compose -f infra/compose/compose.yml exec spartan-route python3 -c "impor
 ```
 
 Camofox Docker health and public GET /health both reflect deep readiness.
+Cgroup policy rejects new browser sessions at 75% memory. At or above 82% for
+two consecutive five-second samples, Camofox checkpoints and closes at most one
+least-recently-used non-leased context, then latches until usage falls below
+70%. Operator tabs are never soft-eviction victims. A cgroup OOM event or 90%
+hard threshold triggers immediate supervised recovery and may override an
+operator lease because retaining the process is no longer safe.
+
 A PID-1 supervisor validates a real raw context/page lifecycle.
 Public GET /health is now a passive, generation-bound view of the same proof
 and never creates a page in its request path; GET /live remains

@@ -222,6 +222,21 @@ exit 2
         self.assertEqual(after["SPARTAN_HERMES_DATA_PATH"], before["SPARTAN_HERMES_DATA_PATH"])
         self.assertIn('"platform": "wsl"', (self.private_dir / "install-state.json").read_text(encoding="utf-8"))
 
+    def test_install_preserves_cloudflare_api_token_without_printing_it(self):
+        env_dir = self.private_dir / "env"
+        env_dir.mkdir(parents=True)
+        token = "private-cloudflare-token"
+        (env_dir / "local.env").write_text(
+            f"CLOUDFLARE_API_TOKEN={token}\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_install("L1", "linux")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read_env()["CLOUDFLARE_API_TOKEN"], token)
+        self.assertNotIn(token, result.stdout + result.stderr)
+
     def test_install_manages_browserless_derived_and_base_images(self):
         result = self.run_install("L1", "linux")
 

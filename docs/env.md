@@ -102,6 +102,11 @@ the listener. Invalid values fail startup instead of silently removing bounds.
 - `DISCORD_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`, `DISCORD_HOME_CHANNEL`: main Discord gateway.
 - `DISCORD_BOT_TOKEN_<PROFILE>`, `DISCORD_ALLOWED_USERS_<PROFILE>`, `DISCORD_HOME_CHANNEL_<PROFILE>`: dedicated Discord credentials for gateway profiles.
 - `GOOGLE_PROJECT_ID` and `GOOGLE_CLOUD_PROJECT`: optional Google/GogCLI/MCP project identifiers.
+- `CLOUDFLARE_API_TOKEN`: optional Wrangler API token injected into Hermes.
+  Store it with `sg-wrangler-token`; the prompt is hidden and installer reruns
+  preserve the existing private value. The `sg-wrangler-login` alternative
+  completes a validated localhost callback from Hermes stdin and persists
+  Wrangler's filesystem credentials under the `/opt/data` mount.
 
 Profile-specific variables must be present in your private env file and exposed in `private/compose.local.yml` if the profile `.env` references them.
 Named profiles that enable the API server need explicit, non-conflicting
@@ -252,9 +257,10 @@ unless `CAMOFOX_URL` is set.
   Hermes reads `CAMOFOX_API_KEY` for Camofox client bearer auth.
 - `CAMOFOX_ADMIN_KEY`: optional dedicated key for admin stop behavior.
 - `CAMOFOX_USER_ID`: optional Camofox user/profile identity. The global Compose
-  default is empty so supervised Hermes profiles do not all claim one browser
-  owner. A client that needs stable state must set its own distinct identity in
-  client/profile-scoped configuration.
+  default is empty. Managed Hermes clients derive a deterministic
+  `hermes_<digest>` identity from their profile-specific `HERMES_HOME`, and
+  the operator helper uses that exact identity; unrelated profiles never share
+  a context unless explicitly configured to do so.
 - `CAMOFOX_SESSION_KEY`: optional Camofox session key. The global Compose
   default is empty for the same ownership boundary.
 - `CAMOFOX_ADOPT_EXISTING_TAB`: whether a client may adopt a live/manual tab.
@@ -264,11 +270,15 @@ unless `CAMOFOX_URL` is set.
   session. When blank, the Meet Camofox integration uses user
   `spartan-camofox-main` and session `meet`. Only one Meet owner should rely on
   those fallbacks; additional owners need distinct client-scoped identities.
-  `sg-camofox-profile-use` clears legacy global identity/session selection and
-  leaves adoption disabled while enabling Camofox mode. The human login helper
-  uses the reserved `spartan-operator-login` tab group plus non-destructive tab
-  creation, so it can share profile cookies without becoming adoptable by
-  Hermes or recycling an existing tab on capacity/navigation failure.
+  `sg-camofox-profile-use` clears legacy global identity/session selection,
+  leaves adoption disabled, and transactionally copies the legacy login into
+  every existing derived Hermes identity while both services are offline.
+  Repeated apply does not overwrite later logins and new profiles start empty.
+  The human helper uses the reserved `spartan-operator-login` tab group,
+  non-destructive creation, and a renewable 30-minute lease. `profile-save`
+  requests an atomic server-side checkpoint; `profile-close` checkpoints and
+  deletes only that operator tab. Managed storage covers cookies and origin
+  localStorage, not a complete Firefox profile.
 - `CAMOFOX_GEOIP`: whether the Spartan Gate Camofox wrapper lets upstream
   Camofox run public-IP geo probes for configured proxies, default `false`.
   Keep false for the local Tinyproxy path; only enable for a proxy provider
@@ -317,8 +327,16 @@ unless `CAMOFOX_URL` is set.
   real-navigation timeouts latch the current browser generation degraded;
   capacity, validation, proxy/policy, SSL, abort, queue, and handler failures
   do not increment that latch.
-- `SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT`/`HARD_PERCENT`: cgroup pressure
-  thresholds, defaults 90/98. Unknown cgroup state fails readiness closed.
+- `SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO`: new-session admission threshold,
+  default `0.75`.
+- `SPARTAN_CAMOFOX_MEMORY_EVICT_RATIO` and
+  `SPARTAN_CAMOFOX_MEMORY_RESET_RATIO`: soft context eviction and hysteresis
+  reset thresholds, defaults `0.82` and `0.70`. Two consecutive samples at
+  the eviction threshold close at most one least-recently-used non-leased
+  context after checkpoint.
+- `SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT`/`HARD_PERCENT`: supervisor pressure
+  thresholds, defaults `82`/`90`. The hard threshold and cgroup OOM events
+  recover immediately. Unknown cgroup state fails readiness closed.
 - `SPARTAN_CAMOFOX_BACKOFF_SECONDS`: persistent automatic recycle schedule,
   default `0,30,120,600,1800`; reset requires 30 continuously healthy minutes.
 

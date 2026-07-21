@@ -57,6 +57,16 @@ COPY spartan-health.mjs /app/spartan-health.mjs
 COPY spartan-lifecycle.mjs /app/spartan-lifecycle.mjs
 COPY patch-server.js /tmp/spartan-camofox-patch-server.js
 RUN node /tmp/spartan-camofox-patch-server.js && rm /tmp/spartan-camofox-patch-server.js
+COPY patch-log-redaction.js /tmp/spartan-camofox-patch-log-redaction.js
+RUN node /tmp/spartan-camofox-patch-log-redaction.js && rm /tmp/spartan-camofox-patch-log-redaction.js
+COPY patch-persistence.js /tmp/spartan-camofox-patch-persistence.js
+RUN node /tmp/spartan-camofox-patch-persistence.js && rm /tmp/spartan-camofox-patch-persistence.js
+COPY patch-operator-lease.js /tmp/spartan-camofox-patch-operator-lease.js
+RUN node /tmp/spartan-camofox-patch-operator-lease.js && rm /tmp/spartan-camofox-patch-operator-lease.js
+COPY patch-operator-lease-api.js /tmp/spartan-camofox-patch-operator-lease-api.js
+RUN node /tmp/spartan-camofox-patch-operator-lease-api.js && rm /tmp/spartan-camofox-patch-operator-lease-api.js
+COPY patch-memory-pressure.js /tmp/spartan-camofox-patch-memory-pressure.js
+RUN node /tmp/spartan-camofox-patch-memory-pressure.js && rm /tmp/spartan-camofox-patch-memory-pressure.js
 
 # Upstream ships the VNC plugin entry with "enabled": false. The plugin loader
 # skips disabled plugins before the plugin can read ENABLE_VNC, so remove only

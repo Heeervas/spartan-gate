@@ -283,7 +283,7 @@ class SupervisorTests(unittest.TestCase):
             self.supervisor.check_readiness(path, now=1001, max_age=45, proc_root=proc_root)
         )
 
-    def test_cgroup_v2_uses_oom_baseline_then_detects_delta_and_memory_hard_limit(self):
+    def test_cgroup_v2_uses_oom_baseline_then_detects_delta_and_immediate_hard_limit(self):
         cgroup = self.root / "cgroup"
         cgroup.mkdir()
         (cgroup / "memory.current").write_text("500\n")
@@ -304,11 +304,7 @@ class SupervisorTests(unittest.TestCase):
         (cgroup / "memory.current").write_text("990\n")
         third = monitor.sample()
         self.assertEqual(third.percent, 99.0)
-        self.assertFalse(third.hard_trigger)
-        fourth = monitor.sample()
-        self.assertFalse(fourth.hard_trigger)
-        fifth = monitor.sample()
-        self.assertTrue(fifth.hard_trigger)
+        self.assertTrue(third.hard_trigger)
 
         (cgroup / "memory.current").write_text("500\n")
         self.assertFalse(monitor.sample().hard_trigger)

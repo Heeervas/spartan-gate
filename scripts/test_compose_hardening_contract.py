@@ -145,6 +145,7 @@ class ComposeHardeningContractTests(unittest.TestCase):
                 self.assertTrue(service["read_only"])
                 self.assertEqual(service["cap_drop"], ["ALL"])
                 self.assertEqual(set(service["cap_add"]), HERMES_CAPABILITIES)
+                self.assertIn("CLOUDFLARE_API_TOKEN", service["environment"])
                 self.assertIn(
                     "no-new-privileges:true",
                     service["security_opt"],
@@ -247,8 +248,11 @@ class ComposeHardeningContractTests(unittest.TestCase):
             "SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS": "20000",
             "SPARTAN_CAMOFOX_FAILURE_THRESHOLD": "3",
             "SPARTAN_CAMOFOX_BACKOFF_SECONDS": "0,30,120,600,1800",
-            "SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT": "90",
-            "SPARTAN_CAMOFOX_MEMORY_HARD_PERCENT": "98",
+            "SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO": "0.75",
+            "SPARTAN_CAMOFOX_MEMORY_EVICT_RATIO": "0.82",
+            "SPARTAN_CAMOFOX_MEMORY_RESET_RATIO": "0.70",
+            "SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT": "82",
+            "SPARTAN_CAMOFOX_MEMORY_HARD_PERCENT": "90",
         }
         for label, rendered in self.renders.items():
             if "camofox" not in rendered["services"]:

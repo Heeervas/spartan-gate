@@ -7,6 +7,12 @@ All notable changes to Spartan Gate are documented here.
   session ID, forbade cross-session tab adoption, handled stale 404/410 tab
   generations explicitly, and stopped managed tab cleanup from deleting the
   shared persistent browser context.
+- Added atomic, single-flight Camofox storage checkpoints; renewable operator
+  leases; query-secret log redaction; earlier cgroup admission/eviction/hard
+  thresholds; and a transactional, rollbackable legacy-login migration across
+  all existing Hermes profiles. Added pinned Wrangler 4.45.0 helpers for a
+  private API token or stdin-only assisted OAuth callback completion.
+
 - Limited Camofox's internal recovery wait to two minutes; later durable
   escalation levels preserve their penalty but exit PID 1 non-zero so Docker
   restarts the container immediately under `restart: unless-stopped`.

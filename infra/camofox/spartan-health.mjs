@@ -21,7 +21,7 @@ export function readSpartanCgroupMemory(root = '/sys/fs/cgroup') {
   }
 }
 
-export function spartanCgroupAdmissionAllowed({ root, threshold = 0.90 } = {}) {
+export function spartanCgroupAdmissionAllowed({ root, threshold = 0.75 } = {}) {
   if (!Number.isFinite(threshold) || threshold <= 0 || threshold >= 1) {
     return { allowed: false, code: 'memory_threshold_invalid', state: 'unknown' };
   }

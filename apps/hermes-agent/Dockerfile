@@ -179,6 +179,7 @@ RUN mkdir -p /opt/data/.config/pip \
 
 # Main-program wrapper: runs Spartan-specific boot hooks after upstream s6
 # cont-init setup, then delegates command routing and privilege drop to upstream.
+COPY wrangler-auth.py /opt/hermes/bootstrap/wrangler-auth.py
 COPY entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
 RUN chmod +x /opt/hermes/entrypoint-wrapper.sh
 

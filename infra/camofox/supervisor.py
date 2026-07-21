@@ -516,11 +516,7 @@ class CgroupMonitor:
                 oom_delta = oom_kill - self._oom_baseline
                 self._oom_baseline = oom_kill
         soft = percent is not None and percent >= self.soft_percent
-        if percent is not None and percent >= self.hard_percent:
-            self._hard_pressure_samples += 1
-        else:
-            self._hard_pressure_samples = 0
-        hard = oom_delta > 0 or self._hard_pressure_samples >= 3
+        hard = oom_delta > 0 or (percent is not None and percent >= self.hard_percent)
         return CgroupSample(
             status=status,
             current=current,
@@ -1064,7 +1060,7 @@ class Config:
             _env_number(
                 source,
                 "SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT",
-                "90",
+                "82",
                 minimum=1,
                 maximum=99.9,
             )
@@ -1073,7 +1069,7 @@ class Config:
             _env_number(
                 source,
                 "SPARTAN_CAMOFOX_MEMORY_HARD_PERCENT",
-                "98",
+                "90",
                 minimum=1,
                 maximum=100,
             )

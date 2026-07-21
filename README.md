@@ -271,8 +271,17 @@ Hermes before opening the same profile elsewhere.
 
 ### Camofox Profiles
 
-Camofox profiles are keyed by Camofox `userId`, not by Browserless profile
-directories. To seed a logged-in Camofox profile through private noVNC:
+Camofox profiles use a deterministic identity derived from each Hermes
+profile's `HERMES_HOME`; `main` and `default` both address the root Hermes
+profile. Before opening any derived profile on an upgraded stack, finish active
+browser work and migrate the legacy login offline:
+
+```sh
+sg-camofox-profile-isolate apply
+```
+
+`profile-live` fails closed until that transaction is applied. Then seed the
+profile login through private noVNC:
 
 ```sh
 sg-camofox-profile-live main https://accounts.google.com
@@ -282,18 +291,60 @@ Open the printed noVNC URL. Caddy serves it on `CAMOFOX_NOVNC_PORT` and the
 helper verifies that the listener is reachable before printing the login
 instructions. HTTPS requires `TAILSCALE_HOST` to resolve to `TAILSCALE_IP` and
 to be covered by the configured certificate; the helper never falls back to a
-raw IP with an invalid certificate. Log in manually. After the login is
-complete:
+raw IP with an invalid certificate. The operator tab uses its own reserved tab
+group and a renewable 30-minute lease while sharing the selected profile's
+cookies with Hermes. Reopening the helper renews and reuses that tab. Capacity,
+cleanup, and soft-memory pressure cannot recycle it while leased.
+
+If Hermes already uses this profile, log in manually and only checkpoint it:
 
 ```sh
 sg-camofox-profile-save main
+sg-camofox-profile-close main
+```
+
+`save` performs an atomic server-side storage checkpoint. `close` checkpoints
+again, then deletes only the reserved operator tab; it never deletes the
+profile context or a Hermes tab. Camofox `storageState` preserves cookies and
+origin localStorage, not extensions, browser preferences, downloads, or every
+kind of site storage.
+
+After migration and login, select Camofox for Hermes:
+
+```sh
 sg-camofox-profile-use main
 sg-browser-mode-apply
 ```
 
+The one-time offline migration stops Hermes and Camofox, copies the legacy
+login into every existing Hermes profile, archives any prior derived targets
+and configs, and restores the previous running state. It is idempotent; later
+new profiles start empty. Roll it back offline with
+`sg-camofox-profile-isolate rollback` during the retained rollback window.
+
 Hermes receives the Camofox runtime access key needed to call the browser
 service, but not the human account password, 2FA material, or personal API
 keys. Use `sg-camofox-profile-live alt ...` for a separate login profile.
+
+### Wrangler Authentication
+
+For automation, store a Cloudflare API token without echoing it, then recreate
+Hermes so Compose injects it:
+
+```sh
+sg-wrangler-token
+sg up -d hermes
+sg-wrangler whoami
+```
+
+For OAuth instead, run `sg-wrangler-login`. Open its printed authorization URL
+in the Camofox noVNC browser. When Cloudflare redirects to
+`http://localhost:8976/oauth/callback?...`, copy that final URL from the browser
+bar into the helper's hidden terminal prompt. The callback is validated and
+sent from inside Hermes, where Wrangler's filesystem credentials persist under
+`/opt/data`. The helper pins Wrangler `4.45.0`, passes callback secrets only on
+stdin, and terminates the complete child process group on exit.
+
 
 ### 6. Private Local Setup
 
