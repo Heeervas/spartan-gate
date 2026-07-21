@@ -6,6 +6,7 @@ import os
 import sys
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from spartan_route.app import (
     build_request_shape_diagnostics,
     build_routing_policy_snapshot,
     classify_codex_slot_health,
+    codex_slots_with_health,
     compare_session_trace,
     create_app,
     execute_chat,
@@ -252,6 +254,102 @@ class CodexHealthTests(unittest.TestCase):
                 self.assertNotIn("private upstream", result["healthReasons"])
 
 
+    def test_discovering_pending_auth_does_not_look_failed(self) -> None:
+        payload = {
+            "cached": True,
+            "source": "persisted",
+            "accounts": [],
+            "refreshProgress": {
+                "status": "discovering",
+                "completedAccounts": 0,
+                "totalAccounts": None,
+                "pendingSlotIndexes": [0, 1, 2],
+            },
+            "slotErrors": [],
+            "resetCreditErrors": [],
+        }
+        pending = {
+            "authAvailable": False,
+            "rateLimitedUntil": 0,
+            "transientUntil": 0,
+        }
+
+        slots = codex_slots_with_health(
+            payload,
+            [
+                {**pending, "slotIndex": 0, "routingEnabled": True},
+                {**pending, "slotIndex": 1, "routingEnabled": False},
+                {
+                    **pending,
+                    "slotIndex": 2,
+                    "routingEnabled": True,
+                    "rateLimitedUntil": 9_999_999_999,
+                },
+            ],
+        )
+
+        self.assertEqual(
+            [
+                (slot["healthDataSource"], slot["healthStatus"])
+                for slot in slots
+            ],
+            [
+                ("pending", "history"),
+                ("pending", "disabled"),
+                ("pending", "unavailable"),
+            ],
+        )
+
+    def test_slot_health_uses_per_slot_data_source_not_global_cache(self) -> None:
+        healthy = {
+            "routingEnabled": True,
+            "authAvailable": True,
+            "rateLimitedUntil": 0,
+            "transientUntil": 0,
+        }
+        payload = {
+            "cached": False,
+            "source": "mixed",
+            "accounts": [{
+                "accountKey": "complete-account",
+                "slotIndexes": [1],
+                "source": "live",
+                "stale": False,
+            }],
+            "refreshProgress": {
+                "status": "running",
+                "completedAccounts": 1,
+                "totalAccounts": 3,
+                "pendingSlotIndexes": [0],
+            },
+            "slotErrors": [
+                {"slotIndex": 1, "source": "none", "message": "current failure"},
+                {"slotIndex": 2, "source": "persisted", "message": "old failure"},
+            ],
+            "resetCreditErrors": [],
+        }
+
+        slots = codex_slots_with_health(
+            payload,
+            [
+                {**healthy, "slotIndex": 0, "accountKey": "pending-account"},
+                {**healthy, "slotIndex": 1, "accountKey": "complete-account"},
+                {**healthy, "slotIndex": 2, "accountKey": "history-account"},
+            ],
+        )
+
+        self.assertEqual(
+            [
+                (slot["healthDataSource"], slot["healthStatus"])
+                for slot in slots
+            ],
+            [
+                ("pending", "healthy"),
+                ("live", "failed"),
+                ("persisted", "history"),
+            ],
+        )
+
 class AppTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.store = TelemetryStore(":memory:")
@@ -317,6 +415,52 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(query_token.status, 401)
         ok = await self.client.get("/api/routing/live", headers={"Authorization": "Bearer secret"})
         self.assertEqual(ok.status, 200)
+
+    async def test_routing_live_attaches_estimated_units_to_sessions_and_turns(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        auth = CodexAuth("token", account_id="usage-account")
+        state.codex.slots = [CodexSlot(0, path="/tmp/auth.json", auth=auth)]
+        account_key = auth.account_key
+        self.assertIsNotNone(account_key)
+        timestamp = datetime.now(timezone.utc) - timedelta(minutes=1)
+        self.store.log_routing(RoutingLogEntry(
+            timestamp=timestamp.isoformat(),
+            original_model="clawroute/auto",
+            routed_model="codex/gpt-5.6-sol",
+            actual_model="codex/gpt-5.6-sol",
+            tier="complex",
+            input_tokens=900_000,
+            output_tokens=100_000,
+            selected_codex_account_key=account_key,
+            selected_codex_slot_index=0,
+            session_id="unit-session",
+            turn_id="unit-turn",
+            request_id="unit-request",
+            prompt_preview="Show usage units",
+            context_info='{"usage_seen":true}',
+        ))
+        self.store.upsert_usage_snapshots([{
+            "account_key": account_key,
+            "slot_index": 0,
+            "window": "weekly",
+            "used_percent": 10,
+            "reset_at": (timestamp + timedelta(days=7)).isoformat(),
+            "window_minutes": 10080,
+        }], current_account_keys={account_key})
+
+        response = await self.client.get(
+            "/api/routing/live",
+            headers={"Authorization": "Bearer secret"},
+        )
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertTrue(payload["usageUnitEstimate"]["available"])
+        self.assertAlmostEqual(payload["usageUnitEstimate"]["quotaUnitsPerMillionTokens"], 10.0)
+        session = payload["sessions"][0]
+        self.assertAlmostEqual(session["metrics"]["estimatedUsageUnits"], 10.0)
+        self.assertAlmostEqual(session["turns"][0]["metrics"]["estimatedUsageUnits"], 10.0)
 
     async def test_config_api_is_authenticated_and_applies_immediately(self) -> None:
         unauthorized = await self.client.get("/api/config/routing")
@@ -567,6 +711,87 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["totals"]["cacheLikelyHitPercent"], 50.0)
         self.assertEqual(payload["dailyCache"][0]["cache_likely_hit_percent"], 50.0)
 
+    async def test_usage_refresh_post_is_authenticated_202_and_nonblocking(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        auth = CodexAuth("token", account_id="acct")
+        state.codex.slots = [
+            CodexSlot(0, path="/codex-a/auth.json", auth=auth)
+        ]
+        gate = asyncio.Event()
+        original_load_auth = state.codex.load_auth
+
+        async def slow_load_auth(_slot: CodexSlot) -> CodexAuth:
+            await gate.wait()
+            return auth
+
+        state.codex.load_auth = slow_load_auth
+        try:
+            unauthorized = await self.client.post("/api/codex/usage/refresh")
+            self.assertEqual(unauthorized.status, 401)
+
+            response = await asyncio.wait_for(
+                self.client.post(
+                    "/api/codex/usage/refresh",
+                    headers={"Authorization": "Bearer secret"},
+                ),
+                timeout=1,
+            )
+            self.assertEqual(response.status, 202)
+            payload = await response.json()
+            self.assertTrue(payload["refreshing"])
+            self.assertEqual(
+                payload["refreshProgress"],
+                {
+                    "status": "discovering",
+                    "completedAccounts": 0,
+                    "totalAccounts": None,
+                    "pendingSlotIndexes": [0],
+                },
+            )
+            self.assertIn("cacheDaily", payload)
+            self.assertIn("slots", payload)
+            self.assertIn("balancer", payload)
+        finally:
+            gate.set()
+            task = getattr(state.codex, "_usage_refresh_task", None)
+            if task is not None:
+                await asyncio.shield(task)
+            state.codex.load_auth = original_load_auth
+
+    async def test_usage_api_rollup_read_never_queries_routing_log(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        state.codex.slots = []
+        for index in range(32):
+            self.store.log_routing(RoutingLogEntry(
+                timestamp=f"2026-07-19T{index % 24:02d}:00:00Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.5",
+                actual_model="codex/gpt-5.5",
+                tier="complex",
+                input_tokens=100,
+                cached_input_tokens=25,
+                request_id=f"request-{index}",
+                context_info='{"usage_seen":true}',
+            ))
+
+        traced: list[str] = []
+        self.store._conn.set_trace_callback(traced.append)
+        try:
+            response = await self.client.get(
+                "/api/codex/usage?force=true",
+                headers={"Authorization": "Bearer secret"},
+            )
+        finally:
+            self.store._conn.set_trace_callback(None)
+
+        self.assertEqual(response.status, 200)
+        self.assertFalse(
+            any("FROM ROUTING_LOG" in statement.upper() for statement in traced),
+            traced,
+        )
+
     async def test_usage_stays_available_when_daily_cache_read_fails(self) -> None:
         state = self.app[STATE_KEY]
         self.assertIsNotNone(state.codex)
@@ -660,6 +885,102 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         payload = await response.json()
         self.assertFalse(payload["slot"]["routingEnabled"])
         self.assertFalse(self.store.slot_routing_override(0)["routingEnabled"])
+
+    async def test_codex_capacity_patch_is_strict_persistent_and_attached(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        codex_auth = CodexAuth("token", account_id="acct")
+        account_key = codex_auth.account_key
+        self.assertIsNotNone(account_key)
+        state.codex.slots = [CodexSlot(0, path="/tmp/auth.json", auth=codex_auth)]
+        with patch("spartan_route.telemetry.now_iso", return_value="2026-07-07T00:00:00Z"):
+            self.store.upsert_usage_snapshots([{
+                "account_key": account_key,
+                "slot_index": 0,
+                "window": "weekly",
+                "used_percent": 20,
+                "reset_at": "2026-07-08T00:00:00Z",
+                "window_minutes": 10080,
+            }], current_account_keys={account_key})
+        path = f"/api/codex/balancer/accounts/{account_key}/capacity"
+        auth = {"Authorization": "Bearer secret"}
+
+        unauthorized = await self.client.patch(path, json={"capacityMultiplier": 5})
+        self.assertEqual(unauthorized.status, 401)
+        invalid = await self.client.patch(
+            path,
+            headers=auth,
+            json={"capacityMultiplier": 3, "extra": True},
+        )
+        self.assertEqual(invalid.status, 400)
+        unknown = await self.client.patch(
+            "/api/codex/balancer/accounts/0000000000000000/capacity",
+            headers=auth,
+            json={"capacityMultiplier": 5},
+        )
+        self.assertEqual(unknown.status, 404)
+
+        response = await self.client.patch(path, headers=auth, json={"capacityMultiplier": 5})
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["accounts"][0]["capacityMultiplier"], 5)
+        self.assertEqual(payload["accounts"][0]["weekly"]["usedUnits"], 100)
+        self.assertEqual(payload["accounts"][0]["weekly"]["capacityUnits"], 500)
+        self.assertEqual(self.store.codex_capacity_multiplier(account_key), 5)
+
+        response = await self.client.patch(path, headers=auth, json={"capacityMultiplier": 1})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.store.codex_capacity_multiplier(account_key), 1)
+
+    async def test_usage_poll_attaches_estimate_without_querying_routing_log(self) -> None:
+        state = self.app[STATE_KEY]
+        self.assertIsNotNone(state.codex)
+        codex_auth = CodexAuth("token", account_id="acct")
+        account_key = codex_auth.account_key
+        self.assertIsNotNone(account_key)
+        state.codex.slots = [CodexSlot(0, path="/tmp/auth.json", auth=codex_auth)]
+        self.store.log_routing(RoutingLogEntry(
+            timestamp="2026-07-06T12:00:00Z",
+            original_model="clawroute/auto",
+            routed_model="codex/gpt-5.6-sol",
+            actual_model="codex/gpt-5.6-sol",
+            tier="complex",
+            input_tokens=100,
+            output_tokens=10,
+            selected_codex_account_key=account_key,
+            selected_codex_slot_index=0,
+            request_id="usage",
+            context_info='{"usage_seen":true}',
+        ))
+        with patch("spartan_route.telemetry.now_iso", return_value="2026-07-07T00:00:00Z"):
+            self.store.upsert_usage_snapshots([{
+                "account_key": account_key,
+                "slot_index": 0,
+                "window": "weekly",
+                "used_percent": 10,
+                "reset_at": "2026-07-08T00:00:00Z",
+                "window_minutes": 10080,
+            }], current_account_keys={account_key})
+
+        traced: list[str] = []
+        self.store._conn.set_trace_callback(traced.append)
+        try:
+            response = await self.client.get(
+                "/api/codex/usage",
+                headers={"Authorization": "Bearer secret"},
+            )
+        finally:
+            self.store._conn.set_trace_callback(None)
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertTrue(payload["weeklyModelUsage"]["available"])
+        self.assertEqual(payload["weeklyModelUsage"]["models"][0]["model"], "codex/gpt-5.6-sol")
+        self.assertEqual(payload["weeklyModelUsage"]["efficiency"][0]["reasoning"], "default")
+        self.assertFalse(
+            any("FROM ROUTING_LOG" in statement.upper() for statement in traced),
+            traced,
+        )
 
     async def test_codex_balancer_api_exposes_slot_path_after_auth(self) -> None:
         state = self.app[STATE_KEY]
@@ -1427,26 +1748,117 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("likelyUsageCacheText", html)
         self.assertIn("function reasoningSummary", html)
         self.assertIn("function toolSummary", html)
+        self.assertIn("function usageUnitSummary", html)
+        self.assertIn("estimatedUsageUnits", html)
+        self.assertIn("fact('Est. usage'", html)
+        self.assertIn('id="model-filter"', html)
+        self.assertIn('id="reasoning-filter"', html)
+        self.assertIn('id="prompt-filter"', html)
+        self.assertIn('id="filter-status"', html)
+        self.assertIn("new AbortController()", html)
+        self.assertIn("actualToolCalls || 0)} calls", html)
+        self.assertIn("called ${esc(toolNames.join(', '))}", html)
         self.assertIn('class="activity-title"', html)
         self.assertIn("actualToolCallCount", html)
         self.assertIn("Technical identifiers", html)
         self.assertIn("Copy session ID", html)
 
+    def test_codex_dashboard_superseded_load_restores_both_refresh_controls(self) -> None:
+        html = (
+            Path(__file__).resolve().parent / "web" / "dashboard-codex.html"
+        ).read_text(encoding="utf-8")
+
+        helper_start = html.find("function restoreLoadControls")
+        self.assertGreaterEqual(helper_start, 0)
+        helper_end = html.find("\n    function ", helper_start + 1)
+        helper = html[helper_start:helper_end]
+        self.assertIn("refresh", helper)
+        self.assertIn("force", helper)
+        self.assertIn("disabled = false", helper)
+        self.assertIn("textContent", helper)
+
+        load_start = html.find("async function load")
+        load_end = html.find("\n    setInterval", load_start)
+        load = html[load_start:load_end]
+        self.assertIn("activeLoadController.abort()", load)
+        finally_start = load.find("finally")
+        self.assertGreaterEqual(finally_start, 0)
+        self.assertIn("restoreLoadControls()", load[finally_start:])
+
+    def test_codex_dashboard_uses_progressive_post_abort_and_bounded_polling(self) -> None:
+        html = (
+            Path(__file__).resolve().parent / "web" / "dashboard-codex.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("/api/codex/usage/refresh", html)
+        self.assertIn("method: 'POST'", html)
+        self.assertNotIn("?force=true", html)
+        self.assertIn("AbortController", html)
+        self.assertIn("signal:", html)
+        self.assertIn("5000", html)
+        self.assertIn("45000", html)
+        self.assertIn("1000", html)
+        self.assertIn("refreshProgress", html)
+        self.assertIn("completedAccounts", html)
+        self.assertIn("totalAccounts", html)
+        self.assertIn("pendingSlotIndexes", html)
+        self.assertIn("discovering", html)
+        self.assertIn("running", html)
+        self.assertIn("complete", html)
+        self.assertIn("failed", html)
+        self.assertIn("Discovering accounts", html)
+        self.assertIn("healthDataSource", html)
+        self.assertIn("server refresh may still be running", html)
+
     def test_codex_dashboard_uses_threshold_colored_rings(self) -> None:
         html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
 
         self.assertIn("function balanceTone", html)
-        self.assertIn("value <= 10", html)
-        self.assertIn("value <= 30", html)
+        self.assertIn("value >= 90", html)
+        self.assertIn("value >= 70", html)
         self.assertIn("--tone", html)
         self.assertIn("Weekly balance", html)
         self.assertIn("Five-hour balance", html)
         self.assertIn("account.fiveHour", html)
-        self.assertIn("remainingPercent", html)
+        self.assertIn("row.usedPercent ?? (100 - Number(row.remainingPercent || 0))", html)
+        self.assertIn("used * 3.6", html)
+        self.assertIn("row.usedUnits", html)
+        self.assertIn("row.capacityUnits", html)
+        self.assertIn("% raw · x", html)
         self.assertIn("slotPaths", html)
         self.assertIn("likelyUsageCacheText", html)
         self.assertIn("refreshing in background", html)
         self.assertIn("function pollRefresh", html)
+
+    def test_codex_dashboard_supports_capacity_and_model_estimates(self) -> None:
+        html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
+
+        self.assertIn('data-action="capacity"', html)
+        self.assertIn('value="1"', html)
+        self.assertIn('value="5"', html)
+        self.assertIn("/api/codex/balancer/accounts/", html)
+        self.assertIn("encodeURIComponent(accountKey)", html)
+        self.assertIn("capacityMultiplier", html)
+        capacity_handler = html[html.index("accountsEl.addEventListener('change'"):]
+        self.assertIn("++loadGeneration", capacity_handler)
+        self.assertIn("activeLoadController.abort()", capacity_handler)
+        self.assertIn("controller.signal", capacity_handler)
+        self.assertIn("generation === loadGeneration", capacity_handler)
+        self.assertIn('class="expected-table"', html)
+        self.assertIn('id="model-usage"', html)
+        self.assertIn(".expected-table th:nth-child(4)", html)
+        self.assertIn("weeklyModelUsage", html)
+        self.assertIn("expectedUnits", html)
+        self.assertIn("x1EquivalentPercent", html)
+        self.assertIn("x5EquivalentPercent", html)
+        self.assertIn("excludedAccountRequests", html)
+        self.assertIn("unattributedRequests", html)
+        self.assertIn('class="efficiency-table"', html)
+        self.assertIn('id="efficiency"', html)
+        self.assertIn("function renderEfficiency", html)
+        self.assertIn("averageMillionTokensPerSession", html)
+        self.assertIn("percentPerMillionTokens", html)
+        self.assertIn(".efficiency-table th:nth-child(5)", html)
 
     def test_codex_dashboard_merges_usage_and_slot_cards_with_countdowns(self) -> None:
         html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")

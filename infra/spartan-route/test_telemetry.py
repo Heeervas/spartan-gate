@@ -9,6 +9,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -294,6 +295,268 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(metrics["totalLatencyMs"]["avg"], 180000)
         finally:
             store.close()
+
+    def test_daily_rollup_tracks_exact_metrics_without_reading_routing_log(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            entries = [
+                RoutingLogEntry(
+                    timestamp="2026-07-19T08:00:00Z",
+                    original_model="clawroute/auto",
+                    routed_model="codex/gpt-5.5",
+                    actual_model="codex/gpt-5.5",
+                    tier="complex",
+                    input_tokens=1000,
+                    cached_input_tokens=500,
+                    output_tokens=100,
+                    response_time_ms=1000,
+                    upstream_response_time_ms=250,
+                    total_response_time_ms=1200,
+                    context_info='{"usage_seen":true,"cache_likely":true,"cache_low":false}',
+                ),
+                RoutingLogEntry(
+                    timestamp="2026-07-19T09:00:00Z",
+                    original_model="clawroute/auto",
+                    routed_model="codex/gpt-5.5",
+                    actual_model="codex/gpt-5.5",
+                    tier="complex",
+                    input_tokens=2000,
+                    cached_input_tokens=0,
+                    output_tokens=200,
+                    response_time_ms=500,
+                    context_info='{"usage_seen":true,"cache_likely":false,"cache_low":true}',
+                ),
+                RoutingLogEntry(
+                    timestamp="2026-07-19T10:00:00Z",
+                    original_model="clawroute/auto",
+                    routed_model="codex/gpt-5.5",
+                    actual_model="codex/gpt-5.5",
+                    tier="complex",
+                    input_tokens=9000,
+                    cached_input_tokens=9000,
+                    error="codex_stream_timeout",
+                    context_info="{malformed",
+                ),
+                RoutingLogEntry(
+                    timestamp="2026-07-19T11:00:00Z",
+                    original_model="clawroute/auto",
+                    routed_model="openai/gpt-test",
+                    actual_model="openai/gpt-test",
+                    tier="complex",
+                    input_tokens=7000,
+                    cached_input_tokens=7000,
+                    response_time_ms=9999,
+                    context_info='{"usage_seen":true,"cache_likely":true}',
+                ),
+            ]
+            for entry in entries:
+                store.log_routing(entry)
+
+            rollup_columns = {
+                "usage_requests",
+                "usage_input_tokens",
+                "usage_cached_input_tokens",
+                "cache_likely_requests",
+                "cache_likely_input_tokens",
+                "cache_likely_cached_input_tokens",
+                "cache_low_requests",
+                "cache_low_input_tokens",
+                "error_requests",
+                "response_time_sum_ms",
+                "response_time_count",
+                "response_time_max_ms",
+                "upstream_response_time_sum_ms",
+                "upstream_response_time_count",
+                "upstream_response_time_max_ms",
+                "total_response_time_sum_ms",
+                "total_response_time_count",
+                "total_response_time_max_ms",
+                "split_latency_requests",
+                "legacy_latency_requests",
+            }
+            info = {
+                row["name"]: dict(row)
+                for row in store._conn.execute(
+                    "PRAGMA table_info(routing_daily_rollups)"
+                ).fetchall()
+            }
+            self.assertTrue(rollup_columns.issubset(info))
+            for name in rollup_columns:
+                self.assertEqual(info[name]["type"], "INTEGER")
+                self.assertEqual(info[name]["notnull"], 1)
+                self.assertEqual(str(info[name]["dflt_value"]).strip("'()"), "0")
+
+            raw = dict(store._conn.execute(
+                """
+                SELECT *
+                FROM routing_daily_rollups
+                WHERE actual_model = 'codex/gpt-5.5'
+                """
+            ).fetchone())
+            self.assertEqual(raw["requests"], 3)
+            self.assertEqual(raw["usage_requests"], 2)
+            self.assertEqual(raw["usage_input_tokens"], 3000)
+            self.assertEqual(raw["usage_cached_input_tokens"], 500)
+            self.assertEqual(raw["cache_likely_requests"], 1)
+            self.assertEqual(raw["cache_likely_input_tokens"], 1000)
+            self.assertEqual(raw["cache_likely_cached_input_tokens"], 500)
+            self.assertEqual(raw["cache_low_requests"], 1)
+            self.assertEqual(raw["cache_low_input_tokens"], 2000)
+            self.assertEqual(raw["error_requests"], 1)
+            self.assertEqual(raw["response_time_sum_ms"], 1500)
+            self.assertEqual(raw["response_time_count"], 2)
+            self.assertEqual(raw["response_time_max_ms"], 1000)
+            self.assertEqual(raw["upstream_response_time_sum_ms"], 250)
+            self.assertEqual(raw["upstream_response_time_count"], 1)
+            self.assertEqual(raw["upstream_response_time_max_ms"], 250)
+            self.assertEqual(raw["total_response_time_sum_ms"], 1700)
+            self.assertEqual(raw["total_response_time_count"], 2)
+            self.assertEqual(raw["total_response_time_max_ms"], 1200)
+            self.assertEqual(raw["split_latency_requests"], 1)
+            self.assertEqual(raw["legacy_latency_requests"], 2)
+
+            traced: list[str] = []
+            store._conn.set_trace_callback(traced.append)
+            rows = store.daily_cache_rows()
+            store._conn.set_trace_callback(None)
+
+            self.assertFalse(
+                any("FROM ROUTING_LOG" in statement.upper() for statement in traced),
+                traced,
+            )
+            self.assertEqual(rows, [{
+                "day": "2026-07-19",
+                "requests": 2,
+                "logged_requests": 3,
+                "input_tokens": 3000,
+                "cached_input_tokens": 500,
+                "cache_likely_requests": 1,
+                "cache_likely_input_tokens": 1000,
+                "cache_likely_cached_input_tokens": 500,
+                "cache_low_requests": 1,
+                "cache_low_input_tokens": 2000,
+                "errors": 1,
+                "usage_missing_requests": 1,
+                "split_latency_requests": 1,
+                "legacy_latency_requests": 2,
+                "cache_likely_hit_percent": 50.0,
+                "avg_response_time_ms": 250,
+                "max_response_time_ms": 250,
+                "avg_total_response_time_ms": 850,
+                "max_total_response_time_ms": 1200,
+            }])
+        finally:
+            store.close()
+
+    def test_incremental_and_rebuilt_rollups_share_sqlite_utc_date_semantics(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-07-01T00:30:00+02:00",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.5",
+                actual_model="codex/gpt-5.5",
+                tier="complex",
+                input_tokens=100,
+                cached_input_tokens=25,
+                response_time_ms=100,
+                context_info='{"usage_seen":true}',
+            ))
+            incremental = [
+                row["day"]
+                for row in store._conn.execute(
+                    "SELECT day FROM routing_daily_rollups"
+                ).fetchall()
+            ]
+            self.assertEqual(incremental, ["2026-06-30"])
+
+            before = store.daily_cache_rows()
+            with store._lock:
+                store._conn.execute("BEGIN IMMEDIATE")
+                store._rebuild_rollups_unlocked()
+                store._conn.commit()
+            rebuilt_days = [
+                row["day"]
+                for row in store._conn.execute(
+                    "SELECT day FROM routing_daily_rollups"
+                ).fetchall()
+            ]
+            self.assertEqual(rebuilt_days, ["2026-06-30"])
+            self.assertEqual(store.daily_cache_rows(), before)
+        finally:
+            store.close()
+
+    def test_old_rollup_schema_is_altered_and_force_rebuilt_before_first_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "spartan-route.db")
+            initial = TelemetryStore(db_path)
+            initial.close()
+
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO routing_log (
+                        timestamp, original_model, routed_model, actual_model, tier,
+                        input_tokens, cached_input_tokens, output_tokens,
+                        response_time_ms, upstream_response_time_ms, total_response_time_ms,
+                        error, context_info
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "2026-07-19T08:00:00Z",
+                        "clawroute/auto",
+                        "codex/gpt-5.5",
+                        "codex/gpt-5.5",
+                        "complex",
+                        1200,
+                        600,
+                        100,
+                        800,
+                        200,
+                        900,
+                        "",
+                        '{"usage_seen":true,"cache_likely":true}',
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO routing_daily_rollups (
+                        day, actual_model, tier, request_api_kind,
+                        requested_reasoning_effort, requests, input_tokens,
+                        cached_input_tokens, output_tokens
+                    ) VALUES ('1999-01-01', 'codex/stale', 'complex',
+                              'chat_completions', '', 99, 99, 99, 99)
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            migrated = TelemetryStore(db_path)
+            try:
+                columns = {
+                    row["name"]
+                    for row in migrated._conn.execute(
+                        "PRAGMA table_info(routing_daily_rollups)"
+                    ).fetchall()
+                }
+                self.assertIn("usage_requests", columns)
+                self.assertIn("total_response_time_max_ms", columns)
+                raw = dict(migrated._conn.execute(
+                    "SELECT * FROM routing_daily_rollups"
+                ).fetchone())
+                self.assertEqual(raw["day"], "2026-07-19")
+                self.assertEqual(raw["requests"], 1)
+                self.assertEqual(raw["usage_requests"], 1)
+                self.assertEqual(raw["usage_input_tokens"], 1200)
+                self.assertEqual(raw["usage_cached_input_tokens"], 600)
+                self.assertEqual(raw["cache_likely_requests"], 1)
+                self.assertEqual(raw["response_time_sum_ms"], 800)
+                self.assertEqual(raw["upstream_response_time_sum_ms"], 200)
+                self.assertEqual(raw["total_response_time_sum_ms"], 900)
+            finally:
+                migrated.close()
 
     def test_existing_database_gets_additive_routing_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -687,11 +950,11 @@ class TelemetryRetentionTests(unittest.TestCase):
 
                 traced: list[str] = []
                 store._conn.set_trace_callback(traced.append)
-                rows = store.daily_cache_rows()
                 report = store.enforce_routing_retention(
                     now=datetime(2026, 7, 31, tzinfo=timezone.utc),
                     force_rebuild=True,
                 )
+                rows = store.daily_cache_rows()
                 store._conn.set_trace_callback(None)
 
                 self.assertEqual(sum(row["logged_requests"] for row in rows), 50_000)
@@ -718,7 +981,7 @@ class TelemetryRetentionTests(unittest.TestCase):
                     and "FROM routing_log" in statement
                     and ("date(timestamp)" in statement or "substr(timestamp" in statement)
                 }
-                self.assertEqual(len(source_reads), 2)
+                self.assertEqual(len(source_reads), 1)
                 for statement in source_reads:
                     with self.subTest(statement=statement.splitlines()[1].strip()):
                         plan = store._conn.execute(
@@ -900,6 +1163,262 @@ class TelemetryRetentionTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_live_session_filters_search_retained_rows_and_return_whole_turns(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-07-01T09:00:00Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.6-sol",
+                actual_model="codex/gpt-5.6-sol",
+                tier="complex",
+                session_id="old-session",
+                turn_id="matching-turn",
+                request_id="matching-request",
+                prompt_preview="Budget 100%_literal review",
+                requested_reasoning_effort=None,
+                context_info='{"usage_seen":true}',
+            ))
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-07-01T09:01:00Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.4-mini",
+                actual_model="codex/gpt-5.4-mini",
+                tier="simple",
+                session_id="old-session",
+                turn_id="matching-turn",
+                request_id="context-request",
+                prompt_preview="Companion request",
+                requested_reasoning_effort="high",
+                context_info='{"usage_seen":true}',
+            ))
+            for index in range(25):
+                store.log_routing(RoutingLogEntry(
+                    timestamp=f"2026-07-02T{index % 24:02d}:00:00Z",
+                    original_model="clawroute/auto",
+                    routed_model="codex/gpt-5.6-terra",
+                    actual_model="codex/gpt-5.6-terra",
+                    tier="complex",
+                    session_id=f"new-session-{index}",
+                    turn_id=f"new-turn-{index}",
+                    request_id=f"new-request-{index}",
+                    prompt_preview="Budget 100XXliteral review",
+                    requested_reasoning_effort="high",
+                    context_info='{"usage_seen":true}',
+                ))
+
+            payload = store.live_sessions(
+                session_limit=1,
+                turn_limit=1,
+                model="codex/gpt-5.6-sol",
+                reasoning="default",
+                prompt="100%_literal",
+            )
+
+            self.assertEqual(payload["matchingSessions"], 1)
+            self.assertEqual(payload["matchingTurns"], 1)
+            self.assertEqual(payload["sessions"][0]["id"], "old-session")
+            self.assertEqual(payload["sessions"][0]["metrics"]["requests"], 2)
+            self.assertEqual(
+                payload["sessions"][0]["models"],
+                ["codex/gpt-5.4-mini", "codex/gpt-5.6-sol"],
+            )
+            self.assertEqual(payload["appliedFilters"]["prompt"], "100%_literal")
+            self.assertIn("default", payload["filterOptions"]["reasoningEfforts"])
+        finally:
+            store.close()
+
+    def test_live_session_filter_order_and_total_use_matching_rows_before_limits(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            def log(session_id: str, turn_id: str, model: str, prompt: str) -> None:
+                store.log_routing(RoutingLogEntry(
+                    timestamp="2026-07-20T10:00:00Z",
+                    original_model="clawroute/auto",
+                    routed_model=model,
+                    actual_model=model,
+                    tier="complex",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_id=f"{session_id}-{turn_id}-{prompt}",
+                    prompt_preview=prompt,
+                    context_info='{"usage_seen":true}',
+                ))
+
+            log("older-match", "older-turn", "codex/gpt-5.6-sol", "match")
+            log("newer-match", "newer-turn-1", "codex/gpt-5.6-sol", "match")
+            log("newer-match", "newer-turn-2", "codex/gpt-5.6-sol", "match")
+            log("older-match", "older-turn", "codex/gpt-5.4-mini", "later companion")
+
+            payload = store.live_sessions(
+                session_limit=2,
+                turn_limit=1,
+                model="codex/gpt-5.6-sol",
+            )
+
+            self.assertEqual(payload["matchingSessions"], 2)
+            self.assertEqual(payload["matchingTurns"], 3)
+            self.assertEqual([row["id"] for row in payload["sessions"]], ["newer-match", "older-match"])
+            self.assertEqual(payload["sessions"][0]["turnCount"], 2)
+            self.assertTrue(payload["sessions"][0]["hasMoreTurns"])
+            self.assertEqual(payload["sessions"][1]["metrics"]["requests"], 2)
+        finally:
+            store.close()
+
+    def test_weekly_model_estimate_uses_account_identity_and_reports_coverage(self) -> None:
+        store = TelemetryStore(":memory:")
+        account_key = "a" * 16
+        try:
+            rows = [
+                ("usage", "codex/gpt-5.6-sol", 100, 10, '{"usage_seen":true}', account_key, 3),
+                ("missing", "codex/gpt-5.6-sol", 50, 5, '{"usage_seen":false}', account_key, 4),
+                ("unattributed", "codex/gpt-5.6-terra", 20, 2, '{"usage_seen":true}', None, 2),
+            ]
+            for request_id, model, input_tokens, output_tokens, context, key, slot in rows:
+                store.log_routing(RoutingLogEntry(
+                    timestamp="2026-07-06T12:00:00Z",
+                    original_model="clawroute/auto",
+                    routed_model=model,
+                    actual_model=model,
+                    tier="complex",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    selected_codex_account_key=key,
+                    selected_codex_slot_index=slot,
+                    request_id=request_id,
+                    context_info=context,
+                ))
+            snapshot = {
+                "account_key": account_key,
+                "slot_index": 0,
+                "window": "weekly",
+                "used_percent": 50,
+                "reset_at": "2026-07-08T00:00:00Z",
+                "window_minutes": 10080,
+            }
+            with patch("spartan_route.telemetry.now_iso", return_value="2026-07-07T00:00:00Z"):
+                store.upsert_usage_snapshots([snapshot], current_account_keys={account_key})
+
+            estimate = store.codex_usage_estimate({account_key})
+            self.assertTrue(estimate["available"])
+            self.assertEqual(estimate["sampleAccounts"], 1)
+            self.assertEqual(estimate["sampleTokens"], 110)
+            self.assertEqual(estimate["excludedAccountRequests"], 1)
+            self.assertEqual(estimate["excludedAccountTokens"], 55)
+            self.assertEqual(estimate["unattributedRequests"], 1)
+            self.assertEqual(estimate["unattributedTokens"], 22)
+            self.assertEqual(estimate["models"][0]["model"], "codex/gpt-5.6-sol")
+            self.assertAlmostEqual(estimate["models"][0]["expectedUnits"], 50.0)
+
+            store.set_codex_capacity_multiplier(account_key, 5)
+            estimate = store.codex_usage_estimate({account_key})
+            self.assertAlmostEqual(estimate["actualQuotaUnits"], 250.0)
+            self.assertAlmostEqual(estimate["models"][0]["expectedUnits"], 250.0)
+
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-07-13T12:00:00Z",
+                original_model="clawroute/auto",
+                routed_model="codex/gpt-5.6-luna",
+                actual_model="codex/gpt-5.6-luna",
+                tier="complex",
+                input_tokens=200,
+                output_tokens=20,
+                selected_codex_account_key=account_key,
+                selected_codex_slot_index=1,
+                request_id="new-window",
+                context_info='{"usage_seen":true}',
+            ))
+            with patch("spartan_route.telemetry.now_iso", return_value="2026-07-14T00:00:00Z"):
+                store.upsert_usage_snapshots([{
+                    **snapshot,
+                    "slot_index": 1,
+                    "reset_at": "2026-07-15T00:00:00Z",
+                    "used_percent": 25,
+                }], current_account_keys={account_key})
+            estimate = store.codex_usage_estimate({account_key})
+            self.assertEqual([row["model"] for row in estimate["models"]], ["codex/gpt-5.6-luna"])
+            self.assertEqual(
+                store._conn.execute(
+                    "SELECT count(*) FROM codex_window_model_usage WHERE account_key = ?",
+                    (account_key,),
+                ).fetchone()[0],
+                1,
+            )
+        finally:
+            store.close()
+
+    def test_efficiency_groups_model_reasoning_with_account_weighted_rate_and_sessions(self) -> None:
+        store = TelemetryStore(":memory:")
+        account_a = "a" * 16
+        account_b = "b" * 16
+        try:
+            rows = [
+                (account_a, "codex/gpt-5.6-sol", "high", "shared", 900_000, 100_000),
+                (account_b, "codex/gpt-5.6-sol", "high", "shared", 900_000, 100_000),
+                (account_b, "codex/gpt-5.6-terra", "low", "terra-session", 900_000, 100_000),
+            ]
+            for index, (account, model, reasoning, session, input_tokens, output_tokens) in enumerate(rows):
+                store.log_routing(RoutingLogEntry(
+                    timestamp="2026-07-06T12:00:00Z",
+                    original_model="clawroute/auto",
+                    routed_model=model,
+                    actual_model=model,
+                    tier="complex",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    selected_codex_account_key=account,
+                    session_id=session,
+                    request_id=f"request-{index}",
+                    requested_reasoning_effort=reasoning,
+                    context_info='{"usage_seen":true}',
+                ))
+            store.set_codex_capacity_multiplier(account_b, 5)
+            with patch("spartan_route.telemetry.now_iso", return_value="2026-07-07T00:00:00Z"):
+                store.upsert_usage_snapshots([
+                    {
+                        "account_key": account_a, "slot_index": 0, "window": "weekly",
+                        "used_percent": 10, "reset_at": "2026-07-08T00:00:00Z", "window_minutes": 10080,
+                    },
+                    {
+                        "account_key": account_b, "slot_index": 1, "window": "weekly",
+                        "used_percent": 10, "reset_at": "2026-07-08T00:00:00Z", "window_minutes": 10080,
+                    },
+                ], current_account_keys={account_a, account_b})
+
+            estimate = store.codex_usage_estimate({account_a, account_b})
+            rows_by_group = {(row["model"], row["reasoning"]): row for row in estimate["efficiency"]}
+            sol = rows_by_group[("codex/gpt-5.6-sol", "high")]
+            self.assertEqual(sol["sessions"], 1)
+            self.assertEqual(sol["totalTokens"], 2_000_000)
+            self.assertAlmostEqual(sol["expectedUnits"], 35.0)
+            self.assertAlmostEqual(sol["percentPerMillionTokens"], 17.5)
+            self.assertAlmostEqual(sol["averageMillionTokensPerSession"], 2.0)
+            terra = rows_by_group[("codex/gpt-5.6-terra", "low")]
+            self.assertAlmostEqual(terra["percentPerMillionTokens"], 25.0)
+            self.assertAlmostEqual(terra["averageMillionTokensPerSession"], 1.0)
+        finally:
+            store.close()
+
+    def test_capacity_multiplier_persists_and_x1_deletes_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "spartan-route.db")
+            account_key = "b" * 16
+            store = TelemetryStore(db_path)
+            store.set_codex_capacity_multiplier(account_key, 5)
+            store.close()
+
+            store = TelemetryStore(db_path)
+            try:
+                self.assertEqual(store.codex_capacity_multiplier(account_key), 5)
+                store.set_codex_capacity_multiplier(account_key, 1)
+                self.assertEqual(store.codex_capacity_multiplier(account_key), 1)
+                self.assertEqual(
+                    store._conn.execute("SELECT count(*) FROM codex_account_capacity_overrides").fetchone()[0],
+                    0,
+                )
+            finally:
+                store.close()
+
     def test_weekly_snapshot_replaces_obsolete_current_windows_but_keeps_history(self) -> None:
         store = TelemetryStore(":memory:")
         try:
@@ -922,11 +1441,56 @@ class TelemetryRetentionTests(unittest.TestCase):
                 ["weekly"],
             )
             self.assertEqual(
+                store._conn.execute(
+                    "SELECT count(*) FROM codex_window_usage_coverage WHERE account_key = 'acct'"
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
                 store._conn.execute("SELECT count(*) FROM codex_usage_snapshot_history").fetchone()[0],
                 3,
             )
         finally:
             store.close()
+
+
+    def test_window_usage_prunes_accounts_outside_current_configuration(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            def snapshot(account_key: str) -> dict[str, object]:
+                return {
+                    "account_key": account_key,
+                    "slot_index": 0,
+                    "window": "weekly",
+                    "used_percent": 10,
+                    "reset_at": "2026-07-25T10:00:00Z",
+                    "window_minutes": 10080,
+                }
+
+            store.upsert_usage_snapshots([snapshot("b" * 16)], current_account_keys={"b" * 16})
+            store.upsert_usage_snapshots([snapshot("a" * 16)], current_account_keys={"a" * 16})
+
+            rows = store._conn.execute(
+                "SELECT DISTINCT account_key FROM codex_window_usage_coverage WHERE account_key != ''"
+            ).fetchall()
+            self.assertEqual([row["account_key"] for row in rows], ["a" * 16])
+
+            store.upsert_usage_snapshots([], current_account_keys=set())
+            self.assertEqual(
+                store._conn.execute("SELECT count(*) FROM codex_window_model_usage").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                store._conn.execute("SELECT count(*) FROM codex_window_usage_coverage").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                store._conn.execute("SELECT count(*) FROM codex_window_efficiency").fetchone()[0],
+                0,
+            )
+        finally:
+            store.close()
+
 
 
 class QueueTestStore:

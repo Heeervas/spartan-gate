@@ -115,10 +115,12 @@ Kept in v1:
   after bounded write batches. Pruning and derived `routing_daily_rollups`
   rebuilds share one immediate transaction; Codex snapshot history, current
   snapshots, reset credits, slot state, and routing overrides remain intact.
-- Daily usage-cache rows and rollup rebuilds stream over the retained
-  `routing_log` window and aggregate in bounded process memory. They do not ask
-  SQLite to materialize temporary group/sort tables, so the service's fixed
-  32 MiB `/tmp` mount does not scale with telemetry history.
+- Daily usage-cache reads use only the incremental
+  `routing_daily_rollups` table. Ordinary `/api/codex/usage` reads and
+  dashboard polls use bounded snapshot/window aggregate tables and never scan
+  `routing_log`. Startup and retention rebuilds reconstruct the additive daily
+  rollup from retained rows using SQLite `date(timestamp)`, so offset
+  timestamps use the same UTC-day rule as incremental writes.
 - Today's dashboard latency from logged request rows. For new rows,
   `response_time_ms`/`responseTimeMs` means first upstream response time, while
   `total_response_time_ms`/`totalResponseTimeMs` means full request or stream
@@ -133,27 +135,72 @@ Kept in v1:
   invalidated, and the override survives service restart. If a stored override
   clearly belongs to a different slot identity, Spartan Route ignores that
   stale disable and reports an identity mismatch in the dashboard/API.
-- Persisted-first Codex usage polling for the dashboard. Normal
-  `/api/codex/usage` calls return a fresh memory snapshot or the latest
-  database snapshot immediately, then start one background live refresh.
-  Accounts and their usage/reset-credit requests refresh concurrently with a
-  bounded fan-out. `?force=true` waits for that shared refresh;
-  `POST /api/codex/usage/slots/{slot}` performs a focused live check.
+- Persisted-first Codex usage polling uses one progressive,
+  controller-owned single-flight refresh. Auth discovery runs with fan-out four
+  and initially reports `refreshProgress.status: "discovering"` with
+  `totalAccounts: null`; the remaining statuses are exactly `running`,
+  `complete`, and `failed`. Completed accounts are persisted and published
+  independently. Any state with `0 < completedAccounts < totalAccounts` has
+  `source: "mixed"`; each slot independently reports
+  `healthDataSource: "pending" | "live" | "persisted"`. Authenticated
+  `POST /api/codex/usage/refresh` returns 202 immediately, `?force=true`
+  remains the shielded compatibility wait path, and
+  `POST /api/codex/usage/slots/{slot}` remains a focused live check. Persisted
+  account/reset data is shown only when its exact account key belongs to a
+  currently configured slot.
 - Authenticated Codex dashboard/API responses include the configured Codex auth
   path for each slot so local operators can identify accounts. Public health
   responses keep only hashes and never expose raw slot paths.
-- The Codex dashboard presents remaining weekly balance as the primary wheel.
-  The five-hour wheel appears only when upstream returns a recognized primary
-  window; a successful weekly-only response removes the obsolete current
-  five-hour snapshot while retaining its history, and support resumes
-  automatically if the window returns. Slots without usage telemetry still
-  render as slot-only cards, and reset times include countdowns and timestamps.
+- The Codex dashboard presents normalized quota units as the primary balance:
+  x1 plans have 100 units and x5 plans have 500 units. The authenticated
+  `PATCH /api/codex/balancer/accounts/{account_key}/capacity` endpoint accepts
+  only `capacityMultiplier: 1 | 5`; x5 overrides persist by account key and x1
+  removes the override. Ring geometry and warning colors still use the raw
+  provider percentage: 90-100% used is red, 70-89.9% is amber, and lower usage
+  is green.
+- Expected weekly use per model is calibrated from current-window rows that
+  have both a stable selected Codex account key and observed usage metadata.
+  Missing-usage and unattributed rows are reported as excluded coverage rather
+  than inferred into a slot. The estimate is local telemetry, not billing: it
+  can diverge when an account is used outside Spartan Route or when retained
+  logs do not cover the full provider window. The model/reasoning efficiency
+  report uses each account's current weekly calibration to estimate x1
+  percentage points per million tokens, and divides usage-seen tokens by
+  distinct recorded session IDs for average M tokens per session. Its
+  account-weighted differences are observational, not direct per-request quota
+  measurements from the provider.
+- To import legacy ClawRoute x5 overrides, pass each currently active
+  16-character account key shown by the Spartan Route Codex dashboard. The
+  migration copies only the intersection of explicit current keys and legacy
+  x5 keys, reports inactive mismatches, never infers identity from a slot, and
+  is idempotent:
+
+  ```sh
+  python3 scripts/migrate_spartan_route_capacity.py \
+    --active-account-key <current-account-key>
+  ```
+
+  The defaults read `~/.custom_claw/clawroute/data/clawroute.db` and update
+  `~/.custom_claw/spartan-route/data/spartan-route.db`; use `--legacy-db` and
+  `--target-db` for other local layouts.
+  Usage windows are classified by declared duration: 604800 seconds is weekly
+  and 18000 seconds is five-hour, regardless of primary/secondary position.
+  Positional fallback is used only when duration is absent. A recognized
+  weekly-only response is successful, removes the obsolete current five-hour
+  snapshot while retaining history, and support resumes automatically if that
+  window returns. Slots without usage telemetry still render as slot-only
+  cards, and reset times include countdowns and timestamps.
 - The routing dashboard presents sessions as a prompt-led activity feed with
   model, cache percentage, requested reasoning, errors, and actual tool-call
-  activity visible before expansion. Session, turn, request, account, slot, and
-  cache identifiers remain available in disclosed diagnostics. Actual tool
-  counts/names are recorded without arguments when observable; older or
-  unobservable rows report unknown rather than zero.
+  counts visible before expansion. Model, reasoning, and literal prompt-text
+  filters are applied before dashboard limits and retain complete matching
+  turns. Session and turn summaries show estimated Codex quota units using the
+  same current weekly calibration as the Codex model table; only usage-seen
+  `codex/*` tokens contribute, and unavailable calibration is shown as unknown.
+  Tool names move into expanded details. Session, turn, request,
+  account, slot, and cache identifiers remain available in disclosed
+  diagnostics. Actual tool counts/names are recorded without arguments when
+  observable; older or unobservable rows report unknown rather than zero.
 
 With `CLAWROUTE_DEBUG=true`, Spartan Route logs a redacted summary of outbound
 image passthrough payloads. The summary includes fields such as `model`, `size`,
@@ -284,15 +331,13 @@ returned by the Config API. Query-string bearer tokens remain unsupported.
   integration is still under review. Spartan Route therefore fails closed
   instead of translating ordinary OpenAI-compatible requests into `max`.
   The reviewed implementation plan is `plans/ultra-bridge/plan.md`.
-- Balance-loader scheduling, early activation, manual slot activation, capacity
-  multipliers, cold-migration approval flow, cache-miss breaker, alerting, and
-  the analysis dashboard.
+- Balance-loader scheduling, early activation, manual slot activation,
+  cold-migration approval flow, cache-miss breaker, alerting, and the full
+  analysis dashboard.
 - Native Anthropic Messages format. Use OpenAI-compatible Chat Completions or
   OpenRouter-compatible models.
 - Broad provider-specific translation. V1 passes through OpenAI-compatible
   providers and returns clean JSON for unsupported native providers.
-- Quota-unit/session-cost estimates. Those are deferred to v2; v1 keeps raw
-  usage-window percentages, cache metrics, and latency.
 
 ## Run
 

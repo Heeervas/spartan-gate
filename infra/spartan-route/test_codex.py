@@ -230,6 +230,18 @@ class FakeUsageSession:
         })
 
 
+class PayloadUsageSession(FakeUsageSession):
+    def __init__(self, payload: dict[str, Any]):
+        super().__init__()
+        self.payload = payload
+
+    def get(self, url: str, **_kwargs):
+        self.urls.append(url)
+        if "rate-limit-reset-credits" in url:
+            return FakeJsonContextResponse(200, {"available_count": 1, "credits": []})
+        return FakeJsonContextResponse(200, self.payload)
+
+
 class RetryRouter(CodexRouter):
     def __init__(self):
         self.slots = [
@@ -346,6 +358,53 @@ class CodexTests(unittest.TestCase):
         raw = (json.dumps({"tokens": {"access_token": access, "refresh_token": refresh, "account_id": "acct"}}, sort_keys=True) + "\n").encode()
         path.write_bytes(raw)
         return raw
+
+    def usage_router(self, session: Any, store: Any, slots: list[CodexSlot]) -> CodexRouter:
+        with patch.dict(os.environ, {"OPENAI_CODEX_TOKEN": "test-token"}, clear=True):
+            router = CodexRouter(session, store)
+        router.slots = slots
+        return router
+
+    def live_usage_result(
+        self,
+        account_key: str,
+        slots: list[CodexSlot],
+        *,
+        used_percent: float = 40,
+    ) -> dict[str, Any]:
+        updated_at = "2026-07-19T10:00:00Z"
+        weekly = {
+            "window": "weekly",
+            "usedPercent": used_percent,
+            "remainingPercent": 100 - used_percent,
+            "resetAt": "2026-07-25T10:00:00Z",
+            "windowMinutes": 10080,
+            "updatedAt": updated_at,
+        }
+        return {
+            "row": {
+                "accountKey": account_key,
+                "slotIndexes": [slot.index for slot in slots],
+                "slotPaths": [slot.path for slot in slots if slot.path],
+                "source": "live",
+                "stale": False,
+                "fiveHour": None,
+                "weekly": weekly,
+                "resetCredits": None,
+            },
+            "usageError": None,
+            "resetError": None,
+            "usageRecords": [{
+                "account_key": account_key,
+                "slot_index": slots[0].index,
+                "window": "weekly",
+                "used_percent": used_percent,
+                "reset_at": weekly["resetAt"],
+
+                "window_minutes": 10080,
+            }],
+            "resetRecord": None,
+        }
 
     def test_refresh_persists_managed_state_without_mutating_bootstrap_and_survives_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1775,6 +1834,661 @@ class CodexTests(unittest.TestCase):
             chosen = asyncio_run(router.choose_slot(None, set(), set()))
             self.assertIsNotNone(chosen)
             self.assertEqual(chosen[0].index, 1)
+        finally:
+            store.close()
+
+    def test_usage_windows_are_classified_by_duration_before_position(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        cases = [
+            (
+                "weekly-only primary",
+                {
+                    "primary_window": {
+                        "limit_window_seconds": 604800,
+                        "used_percent": 41,
+                        "reset_at": "2026-07-25T10:00:00Z",
+                    },
+                },
+                None,
+                41,
+            ),
+            (
+                "reversed positions",
+                {
+                    "primary_window": {
+                        "limit_window_seconds": 604800,
+                        "used_percent": 42,
+                        "reset_at": "2026-07-25T10:00:00Z",
+                    },
+                    "secondary_window": {
+                        "limit_window_seconds": 18000,
+                        "used_percent": 12,
+                        "reset_at": "2026-07-19T15:00:00Z",
+                    },
+                },
+                12,
+                42,
+            ),
+            (
+                "legacy positional fallback",
+                {
+                    "primary_window": {
+                        "used_percent": 13,
+                        "reset_at": "2026-07-19T15:00:00Z",
+                    },
+                    "secondary_window": {
+                        "used_percent": 43,
+                        "reset_at": "2026-07-25T10:00:00Z",
+                    },
+                },
+                13,
+                43,
+            ),
+            (
+                "unknown duration ignored",
+                {
+                    "primary_window": {
+                        "limit_window_seconds": 3600,
+                        "used_percent": 99,
+                        "reset_at": "2026-07-19T11:00:00Z",
+                    },
+                    "secondary_window": {
+                        "limit_window_seconds": 604800,
+                        "used_percent": 44,
+                        "reset_at": "2026-07-25T10:00:00Z",
+                    },
+                },
+                None,
+                44,
+            ),
+            (
+                "nested recognized candidate survives top-level unknown",
+                {
+                    "primary_window": {
+                        "limit_window_seconds": 3600,
+                        "used_percent": 99,
+                        "reset_at": "2026-07-19T11:00:00Z",
+                    },
+                    "rate_limit": {
+                        "secondary_window": {
+                            "limit_window_seconds": 604800,
+                            "used_percent": 45,
+                            "reset_at": "2026-07-25T10:00:00Z",
+                        },
+                    },
+                },
+                None,
+                45,
+            ),
+        ]
+
+        for label, upstream, expected_five, expected_weekly in cases:
+            with self.subTest(label=label):
+                store = TelemetryStore(":memory:")
+                try:
+                    auth = CodexAuth("token", account_id="acct")
+                    store.upsert_usage_snapshots([
+                        {
+                            "account_key": auth.account_key,
+                            "slot_index": 0,
+                            "window": "fiveHour",
+                            "used_percent": 20,
+                            "reset_at": "2026-07-19T15:00:00Z",
+                            "window_minutes": 300,
+                        },
+                        {
+                            "account_key": auth.account_key,
+                            "slot_index": 0,
+                            "window": "weekly",
+                            "used_percent": 20,
+                            "reset_at": "2026-07-25T10:00:00Z",
+                            "window_minutes": 10080,
+                        },
+                    ])
+                    router = self.usage_router(
+                        PayloadUsageSession(upstream),
+                        store,
+                        [CodexSlot(0, path="/codex-a/auth.json", auth=auth)],
+                    )
+
+                    payload = asyncio_run(
+                        router.usage_snapshot(force=True, slot_indexes={0})
+                    )
+
+                    account = payload["accounts"][0]
+                    self.assertEqual(
+                        account["fiveHour"]["usedPercent"] if account["fiveHour"] else None,
+                        expected_five,
+                    )
+                    self.assertEqual(account["weekly"]["usedPercent"], expected_weekly)
+                    expected_windows = ["weekly"] if expected_five is None else ["fiveHour", "weekly"]
+                    self.assertEqual(
+                        sorted(row["window"] for row in store.usage_snapshots()),
+                        expected_windows,
+                    )
+                finally:
+                    store.close()
+
+    def test_persisted_usage_and_reset_credits_only_include_current_account_identity(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            old_auth = CodexAuth("old-token", account_id="old-account")
+            current_auth = CodexAuth("new-token", account_id="current-account")
+            for account_key, used in (
+                (old_auth.account_key, 91),
+                (current_auth.account_key, 21),
+            ):
+                store.upsert_usage_snapshots([{
+                    "account_key": account_key,
+                    "slot_index": 0,
+                    "window": "weekly",
+                    "used_percent": used,
+                    "reset_at": "2026-07-25T10:00:00Z",
+                    "window_minutes": 10080,
+                }])
+                store.upsert_reset_credits([{
+                    "account_key": account_key,
+                    "slot_index": 0,
+                    "available_count": 1,
+                    "details_available": False,
+                    "credits": [],
+                }])
+
+            router = self.usage_router(
+                FakeUsageSession(),
+                store,
+                [CodexSlot(0, path="/current/auth.json", auth=current_auth)],
+            )
+
+            payload = router._persisted_usage_snapshot()
+
+            self.assertEqual(
+                [account["accountKey"] for account in payload["accounts"]],
+                [current_auth.account_key],
+            )
+            self.assertEqual(payload["accounts"][0]["slotIndexes"], [0])
+            self.assertEqual(payload["accounts"][0]["slotPaths"], ["/current/auth.json"])
+            self.assertEqual(
+                payload["accounts"][0]["resetCredits"]["accountKey"],
+                current_auth.account_key,
+            )
+            self.assertNotIn(old_auth.account_key, str(payload))
+            self.assertEqual(len(store.usage_snapshots()), 2)
+        finally:
+            store.close()
+
+    def test_usage_refresh_publishes_discovering_before_auth_work_finishes(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            auth = CodexAuth("token", account_id="acct")
+            router = self.usage_router(
+                FakeUsageSession(),
+                store,
+                [CodexSlot(0, path="/codex-a/auth.json", auth=auth)],
+            )
+
+            async def exercise() -> None:
+                gate = asyncio.Event()
+
+                async def load_auth(_slot: CodexSlot) -> CodexAuth:
+                    await gate.wait()
+                    return auth
+
+                async def fetch_account(account_key, _auth, slots, _persisted, _clear):
+                    return self.live_usage_result(account_key, slots)
+
+                router.load_auth = load_auth
+                router._fetch_usage_account = fetch_account
+                first = await router.usage_snapshot()
+                try:
+                    self.assertTrue(first["refreshing"])
+                    self.assertEqual(
+                        first["refreshProgress"],
+                        {
+                            "status": "discovering",
+                            "completedAccounts": 0,
+                            "totalAccounts": None,
+                            "pendingSlotIndexes": [0],
+                        },
+                    )
+                finally:
+                    gate.set()
+                    await asyncio.shield(router._usage_refresh_task)
+
+            asyncio_run(exercise())
+        finally:
+            store.close()
+
+    def test_usage_auth_discovery_is_concurrent_and_capped_at_four(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            slots = [
+                CodexSlot(index, path=f"/codex-{index}/auth.json", auth=CodexAuth(f"token-{index}", account_id=f"acct-{index}"))
+                for index in range(6)
+            ]
+            router = self.usage_router(FakeUsageSession(), store, slots)
+
+            async def exercise() -> None:
+                gate = asyncio.Event()
+                active = 0
+                max_active = 0
+
+                async def load_auth(slot: CodexSlot) -> CodexAuth:
+                    nonlocal active, max_active
+                    active += 1
+                    max_active = max(max_active, active)
+                    try:
+                        await gate.wait()
+                        return slot.auth
+                    finally:
+                        active -= 1
+
+                async def fetch_account(account_key, _auth, group_slots, _persisted, _clear):
+                    return self.live_usage_result(account_key, group_slots)
+
+                router.load_auth = load_auth
+                router._fetch_usage_account = fetch_account
+                await router.usage_snapshot()
+                try:
+                    for _ in range(50):
+                        if max_active >= 4:
+                            break
+                        await asyncio.sleep(0)
+                    observed = max_active
+                finally:
+                    gate.set()
+                    await asyncio.shield(router._usage_refresh_task)
+                self.assertEqual(observed, 4)
+
+            asyncio_run(exercise())
+        finally:
+            store.close()
+
+    def test_progress_groups_duplicate_accounts_and_publishes_out_of_order(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            auth_a = CodexAuth("token-a", account_id="acct-a")
+            auth_b = CodexAuth("token-b", account_id="acct-b")
+            slots = [
+                CodexSlot(0, path="/codex-0/auth.json", auth=auth_a),
+                CodexSlot(1, path="/codex-1/auth.json", auth=auth_a),
+                CodexSlot(2, path="/codex-2/auth.json", auth=auth_b),
+                CodexSlot(3, path="/codex-3/auth.json"),
+            ]
+            router = self.usage_router(FakeUsageSession(), store, slots)
+
+            async def exercise() -> None:
+                gates = {
+                    auth_a.account_key: asyncio.Event(),
+                    auth_b.account_key: asyncio.Event(),
+                }
+                started: set[str] = set()
+
+                async def load_auth(slot: CodexSlot) -> CodexAuth | None:
+                    if slot.index == 3:
+                        slot.auth_unavailable_reason = "auth unavailable"
+                        return None
+                    return slot.auth
+
+                async def fetch_account(account_key, _auth, group_slots, _persisted, _clear):
+                    started.add(account_key)
+                    await gates[account_key].wait()
+                    return self.live_usage_result(
+                        account_key,
+                        group_slots,
+                        used_percent=20 if account_key == auth_b.account_key else 40,
+                    )
+
+                router.load_auth = load_auth
+                router._fetch_usage_account = fetch_account
+                await router.usage_snapshot()
+                try:
+                    for _ in range(50):
+                        if len(started) == 2:
+                            break
+                        await asyncio.sleep(0)
+                    self.assertEqual(started, {auth_a.account_key, auth_b.account_key})
+
+                    gates[auth_b.account_key].set()
+                    mixed = None
+                    for _ in range(100):
+                        candidate = await router.usage_snapshot()
+                        if candidate.get("refreshProgress", {}).get("completedAccounts") == 1:
+                            mixed = candidate
+                            break
+                        await asyncio.sleep(0)
+
+                    self.assertIsNotNone(mixed)
+                    self.assertEqual(mixed["source"], "mixed")
+                    self.assertFalse(mixed["cached"])
+                    self.assertTrue(mixed["refreshing"])
+                    self.assertEqual(
+                        mixed["refreshProgress"],
+                        {
+                            "status": "running",
+                            "completedAccounts": 1,
+                            "totalAccounts": 2,
+                            "pendingSlotIndexes": [0, 1],
+                        },
+                    )
+                    self.assertEqual(
+                        [account["accountKey"] for account in mixed["accounts"]],
+                        [auth_b.account_key],
+                    )
+                    self.assertEqual(mixed["accounts"][0]["source"], "live")
+                    self.assertFalse(mixed["accounts"][0]["stale"])
+                    self.assertEqual(
+                        [error["slotIndex"] for error in mixed["slotErrors"]],
+                        [3],
+                    )
+
+                    gates[auth_a.account_key].set()
+                    terminal = await asyncio.shield(router._usage_refresh_task)
+                    self.assertFalse(terminal["refreshing"])
+                    self.assertEqual(terminal["source"], "live")
+                    self.assertEqual(
+                        terminal["refreshProgress"],
+                        {
+                            "status": "complete",
+                            "completedAccounts": 2,
+                            "totalAccounts": 2,
+                            "pendingSlotIndexes": [],
+                        },
+                    )
+                finally:
+                    for gate in gates.values():
+                        gate.set()
+                    task = router._usage_refresh_task
+                    if task is not None and not task.done():
+                        await asyncio.shield(task)
+
+            asyncio_run(exercise())
+        finally:
+            store.close()
+
+    def test_zero_resolved_accounts_completes_with_sanitized_slot_errors(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            slots = [
+                CodexSlot(0, path="/codex-0/auth.json"),
+                CodexSlot(1, path="/codex-1/auth.json"),
+            ]
+            router = self.usage_router(FakeUsageSession(), store, slots)
+
+            async def exercise() -> None:
+                async def load_auth(slot: CodexSlot) -> None:
+                    slot.auth_unavailable_reason = f"private auth detail {slot.index}"
+                    return None
+
+                router.load_auth = load_auth
+                await router.usage_snapshot()
+                terminal = await asyncio.shield(router._usage_refresh_task)
+                self.assertFalse(terminal["refreshing"])
+                self.assertTrue(terminal["cached"])
+                self.assertEqual(terminal["source"], "persisted")
+                self.assertEqual(
+                    terminal["refreshProgress"],
+                    {
+                        "status": "complete",
+                        "completedAccounts": 0,
+                        "totalAccounts": 0,
+                        "pendingSlotIndexes": [],
+                    },
+                )
+                self.assertEqual(
+                    [error["slotIndex"] for error in terminal["slotErrors"]],
+                    [0, 1],
+                )
+                self.assertNotIn("private auth detail", str(terminal))
+
+            asyncio_run(exercise())
+        finally:
+            store.close()
+
+    def test_cancelling_force_waiter_does_not_cancel_single_flight_refresh(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            auth = CodexAuth("token", account_id="acct")
+            router = self.usage_router(
+                FakeUsageSession(),
+                store,
+                [CodexSlot(0, auth=auth)],
+            )
+
+            async def exercise() -> None:
+                gate = asyncio.Event()
+                started = asyncio.Event()
+                calls = 0
+
+                async def fetch_account(account_key, _auth, group_slots, _persisted, _clear):
+                    nonlocal calls
+                    calls += 1
+                    started.set()
+                    await gate.wait()
+                    return self.live_usage_result(account_key, group_slots)
+
+                router._fetch_usage_account = fetch_account
+                waiter = asyncio.create_task(router.usage_snapshot(force=True))
+                await started.wait()
+                shared = router._usage_refresh_task
+                waiter.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await waiter
+
+                self.assertIs(shared, router._usage_refresh_task)
+                self.assertFalse(shared.done())
+                self.assertEqual(calls, 1)
+                gate.set()
+                terminal = await router.usage_snapshot(force=True)
+                self.assertEqual(calls, 1)
+                self.assertEqual(terminal["refreshProgress"]["status"], "complete")
+                self.assertEqual(terminal["accounts"][0]["accountKey"], auth.account_key)
+
+            asyncio_run(exercise())
+        finally:
+            store.close()
+
+    def test_reset_generation_prevents_old_finally_overwriting_new_refresh(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            old_auth = CodexAuth("old-token", account_id="old-account")
+            new_auth = CodexAuth("new-token", account_id="new-account")
+            router = self.usage_router(
+                FakeUsageSession(),
+                store,
+                [CodexSlot(0, auth=old_auth)],
+            )
+
+            async def exercise() -> None:
+                old_started = asyncio.Event()
+                old_cancelled = asyncio.Event()
+                release_old = asyncio.Event()
+
+                async def fetch_account(account_key, _auth, group_slots, _persisted, _clear):
+                    if account_key == old_auth.account_key:
+                        old_started.set()
+                        try:
+                            await asyncio.Event().wait()
+                        except asyncio.CancelledError:
+                            old_cancelled.set()
+                            await release_old.wait()
+                    return self.live_usage_result(account_key, group_slots)
+
+                router._fetch_usage_account = fetch_account
+                await router.usage_snapshot()
+                old_task = router._usage_refresh_task
+                await old_started.wait()
+
+                with patch.object(
+                    router,
+                    "_init_slots",
+                    side_effect=lambda: setattr(
+                        router,
+                        "slots",
+                        [CodexSlot(0, auth=new_auth)],
+                    ),
+                ):
+                    router.reset_state()
+
+                await old_cancelled.wait()
+                await router.usage_snapshot()
+                new_task = router._usage_refresh_task
+                self.assertIsNot(new_task, old_task)
+                new_terminal = await asyncio.shield(new_task)
+                self.assertEqual(
+                    [account["accountKey"] for account in new_terminal["accounts"]],
+                    [new_auth.account_key],
+                )
+
+                release_old.set()
+                await old_task
+                latest = await router.usage_snapshot()
+                self.assertEqual(
+                    [account["accountKey"] for account in latest["accounts"]],
+                    [new_auth.account_key],
+                )
+                self.assertEqual(latest["refreshProgress"]["status"], "complete")
+
+            asyncio_run(exercise())
+        finally:
+            store.close()
+
+    def test_controller_failure_cancels_siblings_before_explicit_retry(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            failing_auth = CodexAuth("failing-token", account_id="failing-account")
+            slow_auth = CodexAuth("slow-token", account_id="slow-account")
+            router = self.usage_router(
+                FakeUsageSession(),
+                store,
+                [
+                    CodexSlot(0, auth=failing_auth),
+                    CodexSlot(1, auth=slow_auth),
+                ],
+            )
+
+            async def exercise() -> None:
+                slow_started = asyncio.Event()
+                release_orphan = asyncio.Event()
+                slow_cancelled = asyncio.Event()
+                slow_tasks: list[asyncio.Task[Any]] = []
+                failing_calls = 0
+                slow_calls = 0
+                active_slow = 0
+                max_active_slow = 0
+
+                async def fetch_account(account_key, _auth, group_slots, _persisted, _clear):
+                    nonlocal failing_calls, slow_calls, active_slow, max_active_slow
+                    if account_key == failing_auth.account_key:
+                        failing_calls += 1
+                        if failing_calls == 1:
+                            await slow_started.wait()
+                            raise RuntimeError("unexpected account failure")
+                        return self.live_usage_result(account_key, group_slots)
+
+                    slow_calls += 1
+                    active_slow += 1
+                    max_active_slow = max(max_active_slow, active_slow)
+                    slow_tasks.append(asyncio.current_task())
+                    try:
+                        if slow_calls == 1:
+                            slow_started.set()
+                            try:
+                                await release_orphan.wait()
+                            except asyncio.CancelledError:
+                                slow_cancelled.set()
+                                raise
+                        return self.live_usage_result(account_key, group_slots)
+                    finally:
+                        active_slow -= 1
+
+                router._fetch_usage_account = fetch_account
+                await router.usage_snapshot()
+                failed = await router._usage_refresh_task
+                self.assertEqual(failed["refreshProgress"]["status"], "failed")
+                with self.subTest("owned sibling drained before failed terminal"):
+                    self.assertTrue(slow_cancelled.is_set())
+                    self.assertTrue(slow_tasks[0].done())
+
+                retry = router.trigger_usage_refresh()
+                self.assertEqual(retry["refreshProgress"]["status"], "discovering")
+                completed = await router._usage_refresh_task
+                self.assertEqual(completed["refreshProgress"]["status"], "complete")
+                with self.subTest("explicit retry does not overlap orphaned work"):
+                    self.assertEqual(max_active_slow, 1)
+                    self.assertEqual((failing_calls, slow_calls), (2, 2))
+
+                release_orphan.set()
+                await asyncio.gather(*slow_tasks, return_exceptions=True)
+
+            asyncio_run(exercise())
+        finally:
+            store.close()
+
+    def test_failed_terminal_remains_observable_until_explicit_retry(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            auth = CodexAuth("token", account_id="acct")
+            router = self.usage_router(
+                FakeUsageSession(),
+                store,
+                [CodexSlot(0, auth=auth)],
+            )
+
+            async def exercise() -> None:
+                discovery_calls = 0
+
+                async def fail_once(_slot: CodexSlot) -> CodexAuth:
+                    nonlocal discovery_calls
+                    discovery_calls += 1
+                    if discovery_calls == 1:
+                        raise RuntimeError("private controller failure")
+                    return auth
+
+                router.load_auth = fail_once
+                await router.usage_snapshot()
+                failed_task = router._usage_refresh_task
+                terminal = await failed_task
+                self.assertEqual(terminal["refreshProgress"]["status"], "failed")
+                self.assertEqual(
+                    terminal["refreshError"],
+                    {"code": "usage_refresh_failed"},
+                )
+                self.assertNotIn("private controller failure", str(terminal))
+
+                observed = await router.usage_snapshot()
+                self.assertEqual(observed["refreshProgress"]["status"], "failed")
+                self.assertIs(router._usage_refresh_task, failed_task)
+                self.assertEqual(discovery_calls, 1)
+
+                retry = router.trigger_usage_refresh()
+                retry_task = router._usage_refresh_task
+                self.assertIsNot(retry_task, failed_task)
+                self.assertEqual(retry["refreshProgress"]["status"], "discovering")
+                completed = await asyncio.shield(retry_task)
+                self.assertEqual(completed["refreshProgress"]["status"], "complete")
+                self.assertEqual(discovery_calls, 2)
+
+            asyncio_run(exercise())
         finally:
             store.close()
 

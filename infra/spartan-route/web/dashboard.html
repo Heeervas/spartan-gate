@@ -78,7 +78,7 @@
       border-color: var(--accent);
       color: var(--accent);
     }
-    nav a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
+    nav a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
       outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
       outline-offset: 2px;
     }
@@ -92,8 +92,27 @@
       padding: 9px 10px;
       font: inherit;
     }
-    .toolbar { margin-bottom: 18px; }
+    .toolbar { margin-bottom: 12px; }
     .token-field { display: grid; gap: 4px; min-width: 240px; }
+    .filters {
+      display: grid;
+      grid-template-columns: minmax(180px, .8fr) minmax(150px, .6fr) minmax(260px, 1.4fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 8px;
+    }
+    .filter-field { display: grid; gap: 4px; min-width: 0; }
+    .filter-field input, .filter-field select {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 9px 10px;
+      font: inherit;
+    }
+    .filter-status { min-height: 20px; margin-bottom: 16px; }
     .grid {
       display: grid;
       grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -147,7 +166,7 @@
     }
     .summary-metrics {
       display: grid;
-      grid-template-columns: repeat(5, minmax(72px, 1fr));
+      grid-template-columns: repeat(6, minmax(72px, 1fr));
       gap: 6px;
       min-width: 0;
     }
@@ -323,7 +342,7 @@
     @media (max-width: 720px) {
       .wrap { width: min(100% - 24px, 1260px); }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .toolbar { display: grid; grid-template-columns: 1fr; }
+      .toolbar, .filters { display: grid; grid-template-columns: 1fr; }
       input { min-width: 0; width: 100%; }
       button, nav a { min-height: 44px; }
       .actions { width: 100%; }
@@ -334,7 +353,6 @@
         width: 100%;
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
-      .fact:last-child { grid-column: 1 / -1; }
       .request > summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .request-primary, .request-latency { grid-column: 1 / -1; }
       .request-field { white-space: normal; overflow-wrap: anywhere; }
@@ -366,6 +384,22 @@
         <button id="refresh" class="primary">Refresh</button>
       </div>
     </div>
+    <div class="filters" aria-label="Routing filters">
+      <label class="filter-field" for="model-filter">
+        <span class="muted">Model</span>
+        <select id="model-filter"><option value="">All models</option></select>
+      </label>
+      <label class="filter-field" for="reasoning-filter">
+        <span class="muted">Reasoning</span>
+        <select id="reasoning-filter"><option value="">All reasoning</option></select>
+      </label>
+      <label class="filter-field" for="prompt-filter">
+        <span class="muted">Prompt starts with / contains</span>
+        <input id="prompt-filter" type="search" maxlength="300" autocomplete="off">
+      </label>
+      <button id="clear-filters" type="button">Clear filters</button>
+    </div>
+    <div class="filter-status muted" id="filter-status" role="status" aria-live="polite"></div>
     <section class="grid" id="metrics"></section>
     <section>
       <div class="section-head">
@@ -380,7 +414,18 @@
     const metricsEl = document.getElementById('metrics');
     const sessionsEl = document.getElementById('sessions');
     const statusEl = document.getElementById('status');
+    const filterStatusEl = document.getElementById('filter-status');
+    const modelFilter = document.getElementById('model-filter');
+    const reasoningFilter = document.getElementById('reasoning-filter');
+    const promptFilter = document.getElementById('prompt-filter');
+    const initialQuery = new URLSearchParams(location.search);
+    let activeLoadController = null;
+    let loadGeneration = 0;
+    let promptTimer = null;
     tokenInput.value = sessionStorage.getItem('spartanRouteToken') || '';
+    modelFilter.dataset.pending = initialQuery.get('model') || '';
+    reasoningFilter.dataset.pending = initialQuery.get('reasoning') || '';
+    promptFilter.value = initialQuery.get('prompt') || '';
 
     document.getElementById('save').onclick = () => {
       sessionStorage.setItem('spartanRouteToken', tokenInput.value.trim());
@@ -389,6 +434,36 @@
     document.getElementById('refresh').onclick = () => load();
     document.getElementById('collapse').onclick = () => {
       sessionsEl.querySelectorAll('details[open]').forEach(item => { item.open = false; });
+    };
+    function selectedFilters() {
+      return {
+        model: modelFilter.value || modelFilter.dataset.pending || '',
+        reasoning: reasoningFilter.value || reasoningFilter.dataset.pending || '',
+        prompt: promptFilter.value.trim(),
+      };
+    }
+    function syncFilterUrl(filters) {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
+      history.replaceState(null, '', `${location.pathname}${query.size ? `?${query}` : ''}`);
+    }
+    function triggerFilterLoad() {
+      modelFilter.dataset.pending = '';
+      reasoningFilter.dataset.pending = '';
+      syncFilterUrl(selectedFilters());
+      load();
+    }
+    modelFilter.addEventListener('change', triggerFilterLoad);
+    reasoningFilter.addEventListener('change', triggerFilterLoad);
+    promptFilter.addEventListener('input', () => {
+      clearTimeout(promptTimer);
+      promptTimer = setTimeout(triggerFilterLoad, 300);
+    });
+    document.getElementById('clear-filters').onclick = () => {
+      modelFilter.value = '';
+      reasoningFilter.value = '';
+      promptFilter.value = '';
+      triggerFilterLoad();
     };
 
     function headers(json = false) {
@@ -440,10 +515,14 @@
     }
     function toolSummary(metrics = {}) {
       const known = Number(metrics.toolTelemetryKnownRequests || 0);
-      if (!known) return 'unknown';
-      const count = Number(metrics.actualToolCalls || 0);
-      const names = (metrics.toolNames || []).join(', ');
-      return names ? `${count} · ${names}` : `${count} calls`;
+      return known ? `${Number(metrics.actualToolCalls || 0)} calls` : 'unknown';
+    }
+    function usageUnitSummary(metrics = {}) {
+      if (metrics.estimatedUsageUnits == null) return 'unknown';
+      const units = Number(metrics.estimatedUsageUnits);
+      if (!Number.isFinite(units)) return 'unknown';
+      const value = units < 0.1 ? units.toFixed(3) : (units < 10 ? units.toFixed(2) : units.toFixed(1));
+      return `~${value}u`;
     }
     function metricLine(metrics = {}, models = []) {
       const cache = Number(metrics.usageSeenRequests || 0) ? pct(metrics.cacheHitPercent) : 'unknown';
@@ -451,6 +530,7 @@
       return [
         fact('Model', models.join(', ') || 'unknown'),
         fact('Cache', cache),
+        fact('Est. usage', usageUnitSummary(metrics)),
         fact('Reasoning', reasoningSummary(metrics)),
         fact('Tools', toolSummary(metrics)),
         fact('Status', errors ? `${errors} errors` : 'OK', errors ? 'bad' : ''),
@@ -499,9 +579,8 @@
       const latencyKind = row.latencySource === 'legacy_response_time' ? 'legacy' : 'first';
       const cachePercent = tokenCachePercent(row.cachedInputTokens, row.inputTokens);
       const reasoning = row.requestedReasoningEffort || row.context?.requested_reasoning_effort || 'default';
-      const tools = row.actualToolCallCount == null
-        ? 'unknown'
-        : ((row.actualToolNames || []).length ? `${row.actualToolCallCount} · ${row.actualToolNames.join(', ')}` : `${row.actualToolCallCount} calls`);
+      const tools = row.actualToolCallCount == null ? 'unknown' : `${row.actualToolCallCount} calls`;
+      const toolNames = Array.isArray(row.actualToolNames) ? row.actualToolNames : [];
       return `<details class="request${row.error ? ' error' : ''}">
         <summary title="${esc(preview)}">
           <span class="request-primary"><strong class="${row.error ? 'bad' : ''}">${esc(row.error ? 'Error' : 'OK')}</strong><span class="muted">${esc(fmtTime(row.timestamp))}</span></span>
@@ -518,6 +597,7 @@
             <span class="meta-pill">${esc(row.tier || 'unknown')}</span>
             <span class="meta-pill">${num(row.inputTokens)} in · ${num(row.cachedInputTokens)} cached · ${num(row.outputTokens)} out</span>
             ${row.toolsAvailable ? '<span class="meta-pill">tools offered</span>' : ''}
+            ${toolNames.length ? `<span class="meta-pill">called ${esc(toolNames.join(', '))}</span>` : ''}
             ${row.context?.request_trace?.delta?.phase ? `<span class="meta-pill">${esc(row.context.request_trace.delta.phase)}</span>` : ''}
           </div>
           ${renderTraceItems(row)}
@@ -532,8 +612,8 @@
         </div>
       </details>`;
     }
-    async function getJson(path) {
-      const response = await fetch(path, { headers: headers() });
+    async function getJson(path, signal = undefined) {
+      const response = await fetch(path, { headers: headers(), signal });
       let payload = null;
       try { payload = await response.json(); } catch (_error) { payload = null; }
       if (!response.ok) {
@@ -595,9 +675,24 @@
         metric('All usage cache', pct(totals.cacheHitPercent), allCacheDetail),
       ].join('');
     }
+    function populateFilter(select, values, allLabel, pending = '') {
+      const current = select.value || pending;
+      select.innerHTML = `<option value="">${esc(allLabel)}</option>${(values || []).map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('')}`;
+      if ([...select.options].some(option => option.value === current)) select.value = current;
+      select.dataset.pending = '';
+    }
+    function renderFilterState(payload) {
+      const options = payload.filterOptions || {};
+      populateFilter(modelFilter, options.models, 'All models', modelFilter.dataset.pending);
+      populateFilter(reasoningFilter, options.reasoningEfforts, 'All reasoning', reasoningFilter.dataset.pending);
+      const active = Object.entries(payload.appliedFilters || {}).filter(([_key, value]) => value);
+      filterStatusEl.textContent = active.length
+        ? `${payload.matchingTurns || 0} matching turns · ${active.map(([key, value]) => `${key}: ${value}`).join(' · ')}`
+        : '';
+    }
     function renderSessions(payload) {
       const sessions = payload.sessions || [];
-      statusEl.textContent = `${sessions.length} shown${payload.hasMoreSessions ? ', more retained' : ''}`;
+      statusEl.textContent = `${sessions.length} shown of ${payload.matchingSessions ?? sessions.length}${payload.hasMoreSessions ? ', more matches' : ''}`;
       sessionsEl.innerHTML = sessions.map((session, index) => {
         const turns = session.turns || [];
         const latestTurn = turns[0] || {};
@@ -642,15 +737,25 @@
       }
     });
     async function load() {
+      const generation = ++loadGeneration;
+      if (activeLoadController) activeLoadController.abort();
+      const controller = new AbortController();
+      activeLoadController = controller;
       try {
         statusEl.textContent = 'Loading...';
+        const filters = selectedFilters();
+        const query = new URLSearchParams({ sessionLimit: '30', turnLimit: '12' });
+        for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
         const [stats, live] = await Promise.all([
-          getJson('/stats'),
-          getJson('/api/routing/live?sessionLimit=30&turnLimit=12'),
+          getJson('/stats', controller.signal),
+          getJson(`/api/routing/live?${query}`, controller.signal),
         ]);
+        if (generation !== loadGeneration || controller.signal.aborted) return;
         renderStats(stats);
+        renderFilterState(live);
         renderSessions(live);
       } catch (error) {
+        if (generation !== loadGeneration || controller.signal.aborted) return;
         statusEl.textContent = '';
         sessionsEl.innerHTML = `<div class="panel bad">${esc(error.message)}</div>`;
       }

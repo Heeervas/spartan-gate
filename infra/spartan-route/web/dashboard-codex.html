@@ -81,7 +81,7 @@
       color: var(--accent);
     }
     button:disabled { cursor: wait; opacity: .65; }
-    nav a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
+    nav a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
       outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
       outline-offset: 2px;
     }
@@ -90,7 +90,7 @@
       color: var(--bad);
     }
     main { padding: 22px 0 40px; }
-    input {
+    input, select {
       min-width: 240px;
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -153,6 +153,17 @@
     .badge-row {
       justify-content: flex-end;
     }
+    .plan-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .plan-control select {
+      min-width: 62px;
+      padding: 4px 6px;
+    }
     .slot-row {
       justify-content: space-between;
       margin-top: 10px;
@@ -214,6 +225,7 @@
       font-size: 13px;
       font-weight: 700;
     }
+    .usage-primary { margin-bottom: 3px; }
     .pill {
       display: inline-flex;
       align-items: center;
@@ -276,6 +288,13 @@
       .account-head, .slot-row { align-items: flex-start; }
       .badge-row { justify-content: flex-start; }
       th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; }
+      .expected-table th:nth-child(2), .expected-table td:nth-child(2),
+      .expected-table th:nth-child(3), .expected-table td:nth-child(3),
+      .expected-table th:nth-child(5), .expected-table td:nth-child(5) { display: none; }
+      .expected-table th:nth-child(4), .expected-table td:nth-child(4) { display: table-cell; }
+      .efficiency-table th:nth-child(3), .efficiency-table td:nth-child(3),
+      .efficiency-table th:nth-child(4), .efficiency-table td:nth-child(4) { display: none; }
+      .efficiency-table th:nth-child(5), .efficiency-table td:nth-child(5) { display: table-cell; }
     }
   </style>
 </head>
@@ -313,6 +332,28 @@
 
     <section>
       <div class="section-head">
+        <h2>Expected Weekly Use</h2>
+        <span class="muted" id="model-usage-meta"></span>
+      </div>
+      <table class="expected-table">
+        <thead><tr><th>Model</th><th>Requests</th><th>Tokens</th><th>Expected units</th><th>x1 raw</th><th>x5 raw</th></tr></thead>
+        <tbody id="model-usage"></tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Model &amp; Reasoning Efficiency</h2>
+        <span class="muted" id="efficiency-meta"></span>
+      </div>
+      <table class="efficiency-table">
+        <thead><tr><th>Model</th><th>Reasoning</th><th>Sessions</th><th>M tokens</th><th>Avg M/session</th><th>Est. %/M tokens</th></tr></thead>
+        <tbody id="efficiency"></tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head">
         <h2>Cache</h2>
       </div>
       <table>
@@ -338,6 +379,10 @@
     const tokenInput = document.getElementById('token');
     const accountsEl = document.getElementById('accounts');
     const usageStatus = document.getElementById('usage-status');
+    const modelUsageEl = document.getElementById('model-usage');
+    const modelUsageMeta = document.getElementById('model-usage-meta');
+    const efficiencyEl = document.getElementById('efficiency');
+    const efficiencyMeta = document.getElementById('efficiency-meta');
     const cacheEl = document.getElementById('cache');
     const leasesEl = document.getElementById('leases');
     const leaseSummary = document.getElementById('lease-summary');
@@ -362,6 +407,10 @@
     }
     function num(value) {
       return Number(value || 0).toLocaleString();
+    }
+    function fmtUnits(value) {
+      const units = Number(value || 0);
+      return units >= 100 ? units.toFixed(0) : units.toFixed(1);
     }
     function fmtTime(value) {
       if (!value) return '-';
@@ -415,21 +464,25 @@
       return `${pct(cached, input)} likely cache`;
     }
     function balanceTone(value) {
-      if (value <= 10) return 'var(--bad)';
-      if (value <= 30) return 'var(--warn)';
+      if (value >= 90) return 'var(--bad)';
+      if (value >= 70) return 'var(--warn)';
       return 'var(--good)';
     }
     function balanceRing(windowName, row, secondary = false) {
       if (!row) return '';
-      const remaining = Math.max(0, Math.min(100, Number(
-        row.remainingPercent ?? (100 - Number(row.usedPercent || 0))
+      const used = Math.max(0, Math.min(100, Number(
+        row.usedPercent ?? (100 - Number(row.remainingPercent || 0))
       )));
+      const multiplier = Number(row.capacityMultiplier || 1);
+      const usedUnits = Number(row.usedUnits ?? (used * multiplier));
+      const capacityUnits = Number(row.capacityUnits ?? (100 * multiplier));
       const resetCopy = row.resetAt ? `resets in ${countdownText(row.resetAt)}` : 'reset time unavailable';
       return `<div class="ring-wrap${secondary ? ' secondary' : ''}">
-        <div class="ring" style="--degrees:${remaining * 3.6}deg;--tone:${balanceTone(remaining)}"><span class="ring-value">${remaining.toFixed(1)}%</span></div>
+        <div class="ring" style="--degrees:${used * 3.6}deg;--tone:${balanceTone(used)}"><span class="ring-value">${esc(fmtUnits(usedUnits))}u</span></div>
         <div>
           <strong>${esc(windowName)}</strong>
-          <div class="muted">remaining</div>
+          <div class="usage-primary"><strong>${esc(fmtUnits(usedUnits))} / ${esc(fmtUnits(capacityUnits))} units</strong></div>
+          <div class="muted">${used.toFixed(1)}% raw · x${esc(multiplier)}</div>
           <div class="muted" title="${esc(resetTitle(row.resetAt))}"${row.resetAt ? ` data-countdown-prefix="resets in " data-countdown="${esc(row.resetAt)}"` : ''}>${esc(resetCopy)}</div>
         </div>
       </div>`;
@@ -504,6 +557,7 @@
           current.fiveHour = current.fiveHour || account.fiveHour;
           current.weekly = current.weekly || account.weekly;
           current.resetCredits = current.resetCredits || account.resetCredits;
+          current.capacityMultiplier = current.capacityMultiplier || account.capacityMultiplier;
           current.stale = current.stale && account.stale;
           continue;
         }
@@ -530,10 +584,12 @@
             source: 'slot-only',
             stale: true,
             slotOnly: true,
+            capacityMultiplier: slot.capacityMultiplier || 1,
           };
           byKey.set(key, card);
         }
         card.slots.push(slot);
+        if (!card.capacityMultiplier && slot.capacityMultiplier) card.capacityMultiplier = slot.capacityMultiplier;
         if (!card.slotIndexes.includes(slot.slotIndex)) card.slotIndexes.push(slot.slotIndex);
         if (slot.slotPath && !card.slotPaths.includes(slot.slotPath)) card.slotPaths.push(slot.slotPath);
       }
@@ -546,6 +602,17 @@
     function sourceBadge(account) {
       if (account.slotOnly) return '<span class="pill warn">slot-only</span>';
       return `<span class="pill">${esc(account.source || 'usage')}</span>${account.stale ? '<span class="pill warn">stale</span>' : ''}`;
+    }
+    function planControl(account) {
+      const accountKey = String(account.accountKey || '');
+      const valid = /^[0-9a-f]{16}$/.test(accountKey);
+      const multiplier = Number(account.capacityMultiplier || 1);
+      return `<label class="plan-control">Plan
+        <select data-action="capacity" data-account="${esc(accountKey)}"${valid ? '' : ' disabled'}>
+          <option value="1"${multiplier === 1 ? ' selected' : ''}>x1</option>
+          <option value="5"${multiplier === 5 ? ' selected' : ''}>x5</option>
+        </select>
+      </label>`;
     }
     function accountHealth(account) {
       const slots = account.slots || [];
@@ -586,7 +653,7 @@
               <div class="muted">slots ${(account.slotIndexes || []).map(esc).join(', ') || '-'}</div>
               <div class="muted">${esc(slotPathText(account.slotPaths))}</div>
             </div>
-            <div class="badge-row">${sourceBadge(account)}<span class="pill health-badge"></span></div>
+            <div class="badge-row">${planControl(account)}${sourceBadge(account)}<span class="pill health-badge"></span></div>
           </div>
           <div class="account-health" role="status"></div>
           <div class="rings">
@@ -606,6 +673,57 @@
         element.querySelector('.account-health').textContent = summary;
       });
       updateCountdowns();
+    }
+    function renderModelUsage(usage = {}) {
+      const models = Array.isArray(usage.models) ? usage.models : [];
+      const reasonLabels = {
+        no_current_weekly_snapshots: 'Waiting for a current weekly balance.',
+        no_attributed_usage_tokens: 'No attributable usage in the current window.',
+        no_positive_weekly_usage: 'Weekly usage has not advanced yet.',
+      };
+      if (!usage.available) {
+        modelUsageMeta.textContent = usage.observedAt ? `as of ${fmtTime(usage.observedAt)}` : '';
+        modelUsageEl.innerHTML = `<tr><td colspan="6" class="muted">${esc(reasonLabels[usage.unavailableReason] || 'Estimate unavailable.')}</td></tr>`;
+        return;
+      }
+      const coverage = [
+        `${num(usage.sampleTokens)} calibration tokens`,
+        `${num(usage.sampleAccounts)} accounts`,
+        usage.excludedAccountRequests ? `${num(usage.excludedAccountRequests)} missing-usage rows excluded` : '',
+        usage.unattributedRequests ? `${num(usage.unattributedRequests)} unattributed rows excluded` : '',
+      ].filter(Boolean);
+      modelUsageMeta.textContent = `${coverage.join(' · ')}${usage.observedAt ? ` · as of ${fmtTime(usage.observedAt)}` : ''}`;
+      modelUsageEl.innerHTML = models.map(row => `<tr>
+        <td>${esc(row.model)}</td>
+        <td>${esc(num(row.requests))}</td>
+        <td title="input ${esc(num(row.inputTokens))} · output ${esc(num(row.outputTokens))}">${esc(num(row.totalTokens))}</td>
+        <td><strong>${esc(fmtUnits(row.expectedUnits))} units</strong></td>
+        <td>${esc(fmtUnits(row.x1EquivalentPercent))}%</td>
+        <td>${esc(fmtUnits(row.x5EquivalentPercent))}%</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="muted">No model usage in the current weekly window.</td></tr>';
+    }
+    function renderEfficiency(usage = {}) {
+      const rows = Array.isArray(usage.efficiency) ? usage.efficiency : [];
+      efficiencyMeta.textContent = usage.available
+        ? `${rows.length} groups · current weekly window · account-weighted calibration`
+        : 'Estimate unavailable';
+      efficiencyEl.innerHTML = rows.map(row => {
+        const average = row.averageMillionTokensPerSession == null
+          ? 'unknown'
+          : Number(row.averageMillionTokensPerSession).toFixed(3);
+        const percent = row.percentPerMillionTokens == null
+          ? 'unknown'
+          : `${fmtUnits(row.percentPerMillionTokens)}%`;
+        const missing = Number(row.requestsWithoutSession || 0);
+        return `<tr>
+          <td>${esc(row.model)}</td>
+          <td>${esc(row.reasoning || 'default')}</td>
+          <td title="${missing ? `${num(missing)} requests without session IDs excluded from the average` : 'All rows have session IDs'}">${esc(num(row.sessions))}</td>
+          <td>${(Number(row.totalTokens || 0) / 1000000).toFixed(2)}</td>
+          <td><strong>${esc(average)}</strong></td>
+          <td><strong>${esc(percent)}</strong></td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="muted">No model and reasoning usage in the current weekly window.</td></tr>';
     }
     function latencyCell(row) {
       const avg = Number(row.avg_response_time_ms || 0);
@@ -681,13 +799,30 @@
       errorsEl.appendChild(upstreamPanel);
     }
     async function fetchJson(path, options = {}) {
-      const response = await fetch(path, options);
-      let payload = null;
-      try { payload = await response.json(); } catch (_error) { payload = null; }
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
+      const timeoutController = new AbortController();
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        timeoutController.abort();
+      }, 5000);
+      if (options.signal) {
+        if (options.signal.aborted) timeoutController.abort();
+        else options.signal.addEventListener('abort', () => timeoutController.abort(), { once: true });
       }
-      return payload;
+      try {
+        const response = await fetch(path, { ...options, signal: timeoutController.signal });
+        let payload = null;
+        try { payload = await response.json(); } catch (_error) { payload = null; }
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
+        }
+        return payload;
+      } catch (error) {
+        if (timedOut) throw new Error('Request timed out after 5 seconds');
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
     }
     async function patchSlot(slotIndex, enabled) {
       await fetchJson(`/api/codex/balancer/slots/${slotIndex}`, {
@@ -704,6 +839,42 @@
       });
       renderPayload(payload);
     }
+    async function patchCapacity(accountKey, capacityMultiplier, signal) {
+      return fetchJson(`/api/codex/balancer/accounts/${encodeURIComponent(accountKey)}/capacity`, {
+        method: 'PATCH',
+        headers: headers(true),
+        body: JSON.stringify({ capacityMultiplier }),
+        signal,
+      });
+    }
+    accountsEl.addEventListener('change', async event => {
+      const select = event.target.closest('select[data-action="capacity"]');
+      if (!select) return;
+      const generation = ++loadGeneration;
+      if (activeLoadController) activeLoadController.abort();
+      restoreLoadControls();
+      const controller = new AbortController();
+      activeLoadController = controller;
+      select.disabled = true;
+      try {
+        const payload = await patchCapacity(
+          select.dataset.account,
+          Number(select.value),
+          controller.signal,
+        );
+        if (generation === loadGeneration && !controller.signal.aborted) renderPayload(payload);
+      } catch (error) {
+        if (generation === loadGeneration && !controller.signal.aborted) {
+          showError(error.message);
+          await load();
+        }
+      } finally {
+        if (generation === loadGeneration) {
+          activeLoadController = null;
+          restoreLoadControls();
+        }
+      }
+    });
     accountsEl.addEventListener('click', async event => {
       const button = event.target.closest('button[data-action]');
       if (!button) return;
@@ -724,56 +895,95 @@
       }
     });
     let loadGeneration = 0;
+    let activeLoadController = null;
+    function restoreLoadControls() {
+      const refresh = document.getElementById('refresh');
+      const force = document.getElementById('force');
+      refresh.disabled = false;
+      refresh.textContent = 'Refresh';
+      force.disabled = false;
+      force.textContent = 'Refresh Live';
+    }
     function renderPayload(payload) {
       const accounts = payload.accounts || [];
       const balancer = payload.balancer || {};
+      const progress = payload.refreshProgress || {};
       const source = payload.source === 'persisted'
         ? `saved ${fmtTime(payload.observedAt)}`
-        : (payload.source === 'memory' ? 'recent live data' : 'live');
+        : (payload.source === 'memory' ? 'recent live data' : payload.source || 'live');
+      let progressStatus = '';
+      if (progress.status === 'discovering' && progress.totalAccounts === null) {
+        progressStatus = 'Discovering accounts…';
+      } else if (progress.status === 'running') {
+        const pending = (progress.pendingSlotIndexes || []).map(index => index + 1);
+        progressStatus = `${progress.completedAccounts} / ${progress.totalAccounts}${pending.length ? ` · pending slots ${pending.join(', ')}` : ''}`;
+      } else if (progress.status === 'complete') {
+        progressStatus = `complete · ${progress.completedAccounts} / ${progress.totalAccounts}`;
+      } else if (progress.status === 'failed') {
+        progressStatus = `failed · ${progress.completedAccounts} / ${progress.totalAccounts ?? '?'}`;
+      }
+      const healthSources = (payload.slots || []).map(slot => slot.healthDataSource).filter(Boolean);
       const status = [
         source,
+        progressStatus,
         payload.refreshing ? 'refreshing in background' : '',
-        payload.partial ? 'partial' : 'complete',
+        payload.partial ? 'partial' : '',
+        healthSources.length ? `slot data: ${[...new Set(healthSources)].join(', ')}` : '',
       ].filter(Boolean).join(' · ');
       usageStatus.textContent = status;
       renderAccountCards(accounts, payload.slots || balancer.slots || [], balancer.activeLeases || []);
+      renderModelUsage(payload.weeklyModelUsage || {});
+      renderEfficiency(payload.weeklyModelUsage || {});
       renderCache(payload.cacheDaily || []);
       renderLeases(balancer.activeLeases || []);
       renderErrors(payload);
       updateCountdowns();
     }
-    async function pollRefresh(generation, attempt = 0) {
-      if (generation !== loadGeneration || attempt >= 24) return;
-      await new Promise(resolve => setTimeout(resolve, 500));
-      if (generation !== loadGeneration) return;
-      try {
-        const payload = await fetchJson('/api/codex/usage', { headers: headers() });
-        if (generation !== loadGeneration) return;
+    async function pollRefresh(generation, signal, deadline) {
+      while (generation === loadGeneration && !signal.aborted) {
+        if (Date.now() >= deadline) {
+          showError('UI polling stopped after 45 seconds; server refresh may still be running.');
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (generation !== loadGeneration || signal.aborted) return;
+        const payload = await fetchJson('/api/codex/usage', { headers: headers(), signal: signal });
+        if (generation !== loadGeneration || signal.aborted) return;
         renderPayload(payload);
-        if (payload.refreshing) await pollRefresh(generation, attempt + 1);
-      } catch (error) {
-        showError(error.message);
+        if (!payload.refreshing) return;
       }
     }
     async function load(force = false) {
       const generation = ++loadGeneration;
+      if (activeLoadController) activeLoadController.abort();
+      restoreLoadControls();
+      const controller = new AbortController();
+      activeLoadController = controller;
       const refreshButton = document.getElementById(force ? 'force' : 'refresh');
-      const originalLabel = refreshButton.textContent;
       refreshButton.disabled = true;
       refreshButton.textContent = force ? 'Refreshing live…' : 'Loading…';
       if (!accountsEl.children.length) {
         accountsEl.innerHTML = '<div class="panel skeleton" role="status" aria-busy="true">Loading saved balances…</div>';
       }
       try {
-        const payload = await fetchJson(`/api/codex/usage${force ? '?force=true' : ''}`, { headers: headers() });
-        if (generation !== loadGeneration) return;
+        const requestOptions = force
+          ? { method: 'POST', headers: headers(), signal: controller.signal }
+          : { method: 'GET', headers: headers(), signal: controller.signal };
+        const payload = await fetchJson(
+          force ? '/api/codex/usage/refresh' : '/api/codex/usage',
+          requestOptions,
+        );
+        if (generation !== loadGeneration || controller.signal.aborted) return;
         renderPayload(payload);
-        if (payload.refreshing && !force) void pollRefresh(generation);
+        if (payload.refreshing) {
+          await pollRefresh(generation, controller.signal, Date.now() + 45000);
+        }
       } catch (error) {
-        if (generation === loadGeneration) showError(error.message);
+        if (generation === loadGeneration && !controller.signal.aborted) showError(error.message);
       } finally {
-        refreshButton.disabled = false;
-        refreshButton.textContent = originalLabel;
+        if (generation === loadGeneration) {
+          restoreLoadControls();
+        }
       }
     }
     setInterval(updateCountdowns, 1000);

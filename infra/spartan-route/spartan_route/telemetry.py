@@ -15,6 +15,28 @@ from typing import Any
 from .util import now_iso
 
 DEFAULT_RETENTION_DAYS = 30
+ROUTING_DAILY_ROLLUP_COLUMNS = {
+    "usage_requests": "INTEGER NOT NULL DEFAULT 0",
+    "usage_input_tokens": "INTEGER NOT NULL DEFAULT 0",
+    "usage_cached_input_tokens": "INTEGER NOT NULL DEFAULT 0",
+    "cache_likely_requests": "INTEGER NOT NULL DEFAULT 0",
+    "cache_likely_input_tokens": "INTEGER NOT NULL DEFAULT 0",
+    "cache_likely_cached_input_tokens": "INTEGER NOT NULL DEFAULT 0",
+    "cache_low_requests": "INTEGER NOT NULL DEFAULT 0",
+    "cache_low_input_tokens": "INTEGER NOT NULL DEFAULT 0",
+    "error_requests": "INTEGER NOT NULL DEFAULT 0",
+    "response_time_sum_ms": "INTEGER NOT NULL DEFAULT 0",
+    "response_time_count": "INTEGER NOT NULL DEFAULT 0",
+    "response_time_max_ms": "INTEGER NOT NULL DEFAULT 0",
+    "upstream_response_time_sum_ms": "INTEGER NOT NULL DEFAULT 0",
+    "upstream_response_time_count": "INTEGER NOT NULL DEFAULT 0",
+    "upstream_response_time_max_ms": "INTEGER NOT NULL DEFAULT 0",
+    "total_response_time_sum_ms": "INTEGER NOT NULL DEFAULT 0",
+    "total_response_time_count": "INTEGER NOT NULL DEFAULT 0",
+    "total_response_time_max_ms": "INTEGER NOT NULL DEFAULT 0",
+    "split_latency_requests": "INTEGER NOT NULL DEFAULT 0",
+    "legacy_latency_requests": "INTEGER NOT NULL DEFAULT 0",
+}
 DEFAULT_ROUTING_ROW_CAP = 50_000
 DEFAULT_QUEUE_CAPACITY = 1024
 DEFAULT_RETENTION_BATCH_SIZE = 256
@@ -175,6 +197,54 @@ class TelemetryStore:
                     window_minutes INTEGER NOT NULL,
                     observed_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS codex_account_capacity_overrides (
+                    account_key TEXT PRIMARY KEY,
+                    capacity_multiplier INTEGER NOT NULL CHECK (capacity_multiplier = 5),
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS codex_window_model_usage (
+                    account_key TEXT NOT NULL,
+                    window TEXT NOT NULL,
+                    reset_at TEXT NOT NULL,
+                    actual_model TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    requests INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (account_key, window, reset_at, actual_model)
+                );
+                CREATE TABLE IF NOT EXISTS codex_window_efficiency (
+                    account_key TEXT NOT NULL,
+                    window TEXT NOT NULL,
+                    reset_at TEXT NOT NULL,
+                    actual_model TEXT NOT NULL,
+                    reasoning_effort TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    has_session INTEGER NOT NULL DEFAULT 0,
+                    window_start TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    requests INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (account_key, window, reset_at, actual_model, reasoning_effort, session_key)
+                );
+                CREATE TABLE IF NOT EXISTS codex_window_usage_coverage (
+                    account_key TEXT NOT NULL,
+                    window TEXT NOT NULL,
+                    reset_at TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    attributed_requests INTEGER NOT NULL DEFAULT 0,
+                    attributed_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    attributed_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    excluded_requests INTEGER NOT NULL DEFAULT 0,
+                    excluded_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    excluded_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (account_key, window, reset_at)
+                );
                 CREATE TABLE IF NOT EXISTS codex_reset_credit_summaries (
                     account_key TEXT PRIMARY KEY,
                     slot_index INTEGER NOT NULL,
@@ -211,7 +281,13 @@ class TelemetryStore:
                 CREATE INDEX IF NOT EXISTS idx_routing_log_session ON routing_log(session_id, id);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_turn ON routing_log(turn_id, id);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_time ON routing_log(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_routing_log_codex_account_time
+                    ON routing_log(selected_codex_account_key, timestamp);
                 """
+            )
+            self._ensure_columns_unlocked(
+                "routing_daily_rollups",
+                ROUTING_DAILY_ROLLUP_COLUMNS,
             )
             self._ensure_columns_unlocked(
                 "routing_log",
@@ -234,8 +310,17 @@ class TelemetryStore:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def log_routing(self, entry: RoutingLogEntry) -> None:
+        context = self._row_context({"context_info": entry.context_info})
+        usage_seen = self._sqlite_json_flag(context.get("usage_seen"))
+        cache_likely = self._sqlite_json_flag(context.get("cache_likely"))
+        cache_low = self._sqlite_json_flag(context.get("cache_low"))
+        response = int(entry.response_time_ms or 0)
+        upstream = int(entry.upstream_response_time_ms or 0)
+        total = int(entry.total_response_time_ms or 0) or response
+        legacy_latency = entry.upstream_response_time_ms is None and entry.total_response_time_ms is None
+
         with self._lock, self._conn:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
                 INSERT INTO routing_log (
                     timestamp, original_model, routed_model, actual_model, tier,
@@ -262,28 +347,68 @@ class TelemetryStore:
                     entry.selected_codex_slot_index, entry.selected_codex_account_key, entry.request_id, entry.turn_id,
                 ),
             )
+            day = self._conn.execute(
+                "SELECT date(timestamp) FROM routing_log WHERE id = ?",
+                (int(cursor.lastrowid),),
+            ).fetchone()[0]
             self._conn.execute(
                 """
                 INSERT INTO routing_daily_rollups (
                     day, actual_model, tier, request_api_kind, requested_reasoning_effort,
-                    requests, input_tokens, cached_input_tokens, output_tokens
-                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+                    requests, input_tokens, cached_input_tokens, output_tokens,
+                    usage_requests, usage_input_tokens, usage_cached_input_tokens,
+                    cache_likely_requests, cache_likely_input_tokens,
+                    cache_likely_cached_input_tokens, cache_low_requests,
+                    cache_low_input_tokens, error_requests, response_time_sum_ms,
+                    response_time_count, response_time_max_ms,
+                    upstream_response_time_sum_ms, upstream_response_time_count,
+                    upstream_response_time_max_ms, total_response_time_sum_ms,
+                    total_response_time_count, total_response_time_max_ms,
+                    split_latency_requests, legacy_latency_requests
+                ) VALUES (
+                    ?, ?, ?, ?, ?, 1, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 ON CONFLICT(day, actual_model, tier, request_api_kind, requested_reasoning_effort)
                 DO UPDATE SET
                     requests = requests + 1,
                     input_tokens = input_tokens + excluded.input_tokens,
                     cached_input_tokens = cached_input_tokens + excluded.cached_input_tokens,
-                    output_tokens = output_tokens + excluded.output_tokens
+                    output_tokens = output_tokens + excluded.output_tokens,
+                    usage_requests = usage_requests + excluded.usage_requests,
+                    usage_input_tokens = usage_input_tokens + excluded.usage_input_tokens,
+                    usage_cached_input_tokens = usage_cached_input_tokens + excluded.usage_cached_input_tokens,
+                    cache_likely_requests = cache_likely_requests + excluded.cache_likely_requests,
+                    cache_likely_input_tokens = cache_likely_input_tokens + excluded.cache_likely_input_tokens,
+                    cache_likely_cached_input_tokens = cache_likely_cached_input_tokens + excluded.cache_likely_cached_input_tokens,
+                    cache_low_requests = cache_low_requests + excluded.cache_low_requests,
+                    cache_low_input_tokens = cache_low_input_tokens + excluded.cache_low_input_tokens,
+                    error_requests = error_requests + excluded.error_requests,
+                    response_time_sum_ms = response_time_sum_ms + excluded.response_time_sum_ms,
+                    response_time_count = response_time_count + excluded.response_time_count,
+                    response_time_max_ms = max(response_time_max_ms, excluded.response_time_max_ms),
+                    upstream_response_time_sum_ms = upstream_response_time_sum_ms + excluded.upstream_response_time_sum_ms,
+                    upstream_response_time_count = upstream_response_time_count + excluded.upstream_response_time_count,
+                    upstream_response_time_max_ms = max(upstream_response_time_max_ms, excluded.upstream_response_time_max_ms),
+                    total_response_time_sum_ms = total_response_time_sum_ms + excluded.total_response_time_sum_ms,
+                    total_response_time_count = total_response_time_count + excluded.total_response_time_count,
+                    total_response_time_max_ms = max(total_response_time_max_ms, excluded.total_response_time_max_ms),
+                    split_latency_requests = split_latency_requests + excluded.split_latency_requests,
+                    legacy_latency_requests = legacy_latency_requests + excluded.legacy_latency_requests
                 """,
                 (
-                    entry.timestamp[:10],
-                    entry.actual_model,
-                    entry.tier,
-                    entry.request_api_kind,
-                    entry.requested_reasoning_effort or "",
-                    entry.input_tokens,
-                    entry.cached_input_tokens,
-                    entry.output_tokens,
+                    day, entry.actual_model, entry.tier, entry.request_api_kind,
+                    entry.requested_reasoning_effort or "", entry.input_tokens,
+                    entry.cached_input_tokens, entry.output_tokens, int(usage_seen),
+                    entry.input_tokens if usage_seen else 0,
+                    entry.cached_input_tokens if usage_seen else 0,
+                    int(cache_likely), entry.input_tokens if cache_likely else 0,
+                    entry.cached_input_tokens if cache_likely else 0,
+                    int(cache_low), entry.input_tokens if cache_low else 0,
+                    int(entry.error not in (None, "")), response,
+                    int(response != 0), response, upstream, int(upstream != 0),
+                    upstream, total, int(total != 0), total,
+                    int(upstream != 0), int(legacy_latency),
                 ),
             )
             self._conn.commit()
@@ -421,14 +546,19 @@ class TelemetryStore:
         rollups: dict[tuple[str, str, str, str, str], list[Any]] = {}
         cursor = self._conn.execute(
             """
-            SELECT substr(timestamp, 1, 10) AS day,
+            SELECT date(timestamp) AS day,
                    actual_model,
                    tier,
                    request_api_kind,
                    coalesce(requested_reasoning_effort, '') AS requested_reasoning_effort,
                    input_tokens,
                    cached_input_tokens,
-                   output_tokens
+                   output_tokens,
+                   response_time_ms,
+                   upstream_response_time_ms,
+                   total_response_time_ms,
+                   error,
+                   context_info
             FROM routing_log
             """
         )
@@ -443,12 +573,44 @@ class TelemetryStore:
             )
             aggregate = rollups.get(key)
             if aggregate is None:
-                aggregate = [*key, 0, 0, 0, 0]
+                aggregate = [*key, *([0] * 24)]
                 rollups[key] = aggregate
+            input_tokens = int(row["input_tokens"] or 0)
+            cached_tokens = int(row["cached_input_tokens"] or 0)
+            response = int(row["response_time_ms"] or 0)
+            upstream_raw = row["upstream_response_time_ms"]
+            total_raw = row["total_response_time_ms"]
+            upstream = int(upstream_raw or 0)
+            total = int(total_raw or 0) or response
+            context = self._row_context(row)
+            usage_seen = self._sqlite_json_flag(context.get("usage_seen"))
+            cache_likely = self._sqlite_json_flag(context.get("cache_likely"))
+            cache_low = self._sqlite_json_flag(context.get("cache_low"))
+
             aggregate[5] += 1
-            aggregate[6] += int(row["input_tokens"] or 0)
-            aggregate[7] += int(row["cached_input_tokens"] or 0)
+            aggregate[6] += input_tokens
+            aggregate[7] += cached_tokens
             aggregate[8] += int(row["output_tokens"] or 0)
+            aggregate[9] += int(usage_seen)
+            aggregate[10] += input_tokens if usage_seen else 0
+            aggregate[11] += cached_tokens if usage_seen else 0
+            aggregate[12] += int(cache_likely)
+            aggregate[13] += input_tokens if cache_likely else 0
+            aggregate[14] += cached_tokens if cache_likely else 0
+            aggregate[15] += int(cache_low)
+            aggregate[16] += input_tokens if cache_low else 0
+            aggregate[17] += int(row["error"] not in (None, ""))
+            aggregate[18] += response
+            aggregate[19] += int(response != 0)
+            aggregate[20] = max(aggregate[20], response)
+            aggregate[21] += upstream
+            aggregate[22] += int(upstream != 0)
+            aggregate[23] = max(aggregate[23], upstream)
+            aggregate[24] += total
+            aggregate[25] += int(total != 0)
+            aggregate[26] = max(aggregate[26], total)
+            aggregate[27] += int(upstream != 0)
+            aggregate[28] += int(upstream_raw is None and total_raw is None)
 
         self._conn.execute("DELETE FROM routing_daily_rollups")
         if rollups:
@@ -456,8 +618,20 @@ class TelemetryStore:
                 """
                 INSERT INTO routing_daily_rollups (
                     day, actual_model, tier, request_api_kind, requested_reasoning_effort,
-                    requests, input_tokens, cached_input_tokens, output_tokens
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    requests, input_tokens, cached_input_tokens, output_tokens,
+                    usage_requests, usage_input_tokens, usage_cached_input_tokens,
+                    cache_likely_requests, cache_likely_input_tokens,
+                    cache_likely_cached_input_tokens, cache_low_requests,
+                    cache_low_input_tokens, error_requests, response_time_sum_ms,
+                    response_time_count, response_time_max_ms,
+                    upstream_response_time_sum_ms, upstream_response_time_count,
+                    upstream_response_time_max_ms, total_response_time_sum_ms,
+                    total_response_time_count, total_response_time_max_ms,
+                    split_latency_requests, legacy_latency_requests
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 rollups.values(),
             )
@@ -467,15 +641,16 @@ class TelemetryStore:
         with self._lock:
             cursor = self._conn.execute(
                 """
-                SELECT date(timestamp) AS day,
-                       input_tokens,
-                       cached_input_tokens,
-                       response_time_ms,
-                       upstream_response_time_ms,
-                       total_response_time_ms,
-                       error,
-                       context_info
-                FROM routing_log
+                SELECT day, requests, usage_requests, usage_input_tokens,
+                       usage_cached_input_tokens, cache_likely_requests,
+                       cache_likely_input_tokens, cache_likely_cached_input_tokens,
+                       cache_low_requests, cache_low_input_tokens, error_requests,
+                       response_time_sum_ms, response_time_count, response_time_max_ms,
+                       upstream_response_time_sum_ms, upstream_response_time_count,
+                       upstream_response_time_max_ms, total_response_time_sum_ms,
+                       total_response_time_count, total_response_time_max_ms,
+                       split_latency_requests, legacy_latency_requests
+                FROM routing_daily_rollups
                 WHERE actual_model LIKE 'codex/%'
                 """
             )
@@ -511,49 +686,41 @@ class TelemetryStore:
                     }
                     by_day[day] = aggregate
 
-                aggregate["logged_requests"] += 1
-                context = self._row_context(row)
-                usage_seen = self._sqlite_json_flag(context.get("usage_seen"))
-                cache_likely = self._sqlite_json_flag(context.get("cache_likely"))
-                cache_low = self._sqlite_json_flag(context.get("cache_low"))
-                input_tokens = int(row.get("input_tokens") or 0)
-                cached_tokens = int(row.get("cached_input_tokens") or 0)
-                if usage_seen:
-                    aggregate["requests"] += 1
-                    aggregate["input_tokens"] += input_tokens
-                    aggregate["cached_input_tokens"] += cached_tokens
-                else:
-                    aggregate["usage_missing_requests"] += 1
-                if cache_likely:
-                    aggregate["cache_likely_requests"] += 1
-                    aggregate["cache_likely_input_tokens"] += input_tokens
-                    aggregate["cache_likely_cached_input_tokens"] += cached_tokens
-                if cache_low:
-                    aggregate["cache_low_requests"] += 1
-                    aggregate["cache_low_input_tokens"] += input_tokens
-                if row.get("error") not in (None, ""):
-                    aggregate["errors"] += 1
+                logged = int(row["requests"] or 0)
+                usage_requests = int(row["usage_requests"] or 0)
+                aggregate["logged_requests"] += logged
+                aggregate["requests"] += usage_requests
+                aggregate["input_tokens"] += int(row["usage_input_tokens"] or 0)
+                aggregate["cached_input_tokens"] += int(row["usage_cached_input_tokens"] or 0)
+                aggregate["usage_missing_requests"] += logged - usage_requests
+                for target, source in (
+                    ("cache_likely_requests", "cache_likely_requests"),
+                    ("cache_likely_input_tokens", "cache_likely_input_tokens"),
+                    ("cache_likely_cached_input_tokens", "cache_likely_cached_input_tokens"),
+                    ("cache_low_requests", "cache_low_requests"),
+                    ("cache_low_input_tokens", "cache_low_input_tokens"),
+                    ("errors", "error_requests"),
+                    ("split_latency_requests", "split_latency_requests"),
+                    ("legacy_latency_requests", "legacy_latency_requests"),
+                ):
+                    aggregate[target] += int(row[source] or 0)
 
-                response = int(row.get("response_time_ms") or 0)
-                upstream_raw = row.get("upstream_response_time_ms")
-                total_raw = row.get("total_response_time_ms")
-                upstream = int(upstream_raw or 0)
-                total = int(total_raw or 0) or response
-                if response:
-                    aggregate["_response_sum"] += response
-                    aggregate["_response_count"] += 1
-                    aggregate["_response_max"] = max(aggregate["_response_max"] or response, response)
-                if upstream:
-                    aggregate["_upstream_sum"] += upstream
-                    aggregate["_upstream_count"] += 1
-                    aggregate["_upstream_max"] = max(aggregate["_upstream_max"] or upstream, upstream)
-                    aggregate["split_latency_requests"] += 1
-                if total:
-                    aggregate["_total_sum"] += total
-                    aggregate["_total_count"] += 1
-                    aggregate["_total_max"] = max(aggregate["_total_max"] or total, total)
-                if upstream_raw is None and total_raw is None:
-                    aggregate["legacy_latency_requests"] += 1
+                for aggregate_prefix, column_prefix in (
+                    ("response", "response"),
+                    ("upstream", "upstream_response"),
+                    ("total", "total_response"),
+                ):
+                    count = int(row[f"{column_prefix}_time_count"] or 0)
+                    aggregate[f"_{aggregate_prefix}_sum"] += int(
+                        row[f"{column_prefix}_time_sum_ms"] or 0
+                    )
+                    aggregate[f"_{aggregate_prefix}_count"] += count
+                    if count:
+                        maximum = int(row[f"{column_prefix}_time_max_ms"] or 0)
+                        aggregate[f"_{aggregate_prefix}_max"] = max(
+                            aggregate[f"_{aggregate_prefix}_max"] or maximum,
+                            maximum,
+                        )
 
         rows = []
         for day in sorted(by_day, key=lambda value: (value is not None, value or "")):
@@ -665,35 +832,146 @@ class TelemetryStore:
             "splitLatencyRequests": split_latency_requests,
         }
 
+    def routing_filter_options(self) -> dict[str, list[str]]:
+        with self._lock:
+            model_rows = self._conn.execute(
+                """
+                SELECT DISTINCT actual_model
+                FROM routing_daily_rollups
+                WHERE requests > 0
+                ORDER BY actual_model
+                """
+            ).fetchall()
+            reasoning_rows = self._conn.execute(
+                """
+                SELECT DISTINCT requested_reasoning_effort
+                FROM routing_daily_rollups
+                WHERE requests > 0
+                ORDER BY requested_reasoning_effort
+                """
+            ).fetchall()
+        reasoning = [
+            str(row["requested_reasoning_effort"]).strip().lower() or "default"
+            for row in reasoning_rows
+        ]
+        return {
+            "models": [str(row["actual_model"]) for row in model_rows],
+            "reasoningEfforts": sorted(set(reasoning), key=lambda value: (value != "default", value)),
+        }
+
     def live_sessions(
         self,
         limit: int = 30,
         session_limit: int | None = None,
         turn_limit: int = 20,
+        *,
+        model: str | None = None,
+        reasoning: str | None = None,
+        prompt: str | None = None,
     ) -> dict[str, Any]:
         safe_limit = max(1, min(100, int(session_limit if session_limit is not None else limit)))
         safe_turn_limit = max(1, min(100, int(turn_limit)))
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT *
+        filters = {
+            "model": (model or "").strip(),
+            "reasoning": (reasoning or "").strip().lower(),
+            "prompt": (prompt or "").strip(),
+        }
+        clauses = ["session_id IS NOT NULL"]
+        params: list[Any] = []
+        if filters["model"]:
+            clauses.append("actual_model = ?")
+            params.append(filters["model"])
+        if filters["reasoning"] == "default":
+            clauses.append("trim(coalesce(requested_reasoning_effort, '')) = ''")
+        elif filters["reasoning"]:
+            clauses.append("lower(trim(coalesce(requested_reasoning_effort, ''))) = ?")
+            params.append(filters["reasoning"])
+        if filters["prompt"]:
+            escaped = filters["prompt"].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append("lower(coalesce(prompt_preview, '')) LIKE lower(?) ESCAPE '\\'")
+            params.append(f"%{escaped}%")
+        where_sql = " AND ".join(clauses)
+        selection_sql = f"""
+            WITH matching_turns AS (
+                SELECT
+                    session_id,
+                    coalesce(nullif(turn_id, ''), nullif(request_id, ''), 'unknown') AS effective_turn_id,
+                    max(id) AS last_match_id
                 FROM routing_log
-                WHERE session_id IS NOT NULL
-                ORDER BY id DESC
+                WHERE {where_sql}
+                GROUP BY session_id, effective_turn_id
+            ),
+            ranked_turns AS (
+                SELECT
+                    session_id,
+                    effective_turn_id,
+                    last_match_id,
+                    row_number() OVER (
+                        PARTITION BY session_id ORDER BY last_match_id DESC
+                    ) AS turn_rank,
+                    count(*) OVER (PARTITION BY session_id) AS matching_turn_count,
+                    count(*) OVER () AS total_matching_turns
+                FROM matching_turns
+            ),
+            ranked_sessions AS (
+                SELECT session_id, max(last_match_id) AS last_match_id
+                FROM matching_turns
+                GROUP BY session_id
+            ),
+            limited_sessions AS (
+                SELECT
+                    session_id,
+                    last_match_id,
+                    count(*) OVER () AS total_sessions
+                FROM ranked_sessions
+                ORDER BY last_match_id DESC
                 LIMIT ?
-                """,
-                (safe_limit * 20,),
+            )
+            SELECT
+                turns.session_id,
+                turns.effective_turn_id,
+                turns.last_match_id,
+                turns.matching_turn_count,
+                turns.total_matching_turns,
+                sessions.total_sessions
+            FROM ranked_turns turns
+            JOIN limited_sessions sessions USING(session_id)
+            WHERE turns.turn_rank <= ?
+            ORDER BY sessions.last_match_id DESC, turns.last_match_id DESC
+        """
+        with self._lock:
+            selected_rows = self._conn.execute(
+                selection_sql,
+                (*params, safe_limit, safe_turn_limit),
             ).fetchall()
+            selected = {
+                (str(row["session_id"]), str(row["effective_turn_id"])): dict(row)
+                for row in selected_rows
+            }
+            session_ids = list(dict.fromkeys(str(row["session_id"]) for row in selected_rows))
+            if session_ids:
+                placeholders = ",".join("?" for _ in session_ids)
+                rows = self._conn.execute(
+                    f"SELECT * FROM routing_log WHERE session_id IN ({placeholders}) ORDER BY id DESC",
+                    session_ids,
+                ).fetchall()
+            else:
+                rows = []
+
         sessions: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            item = dict(row)
-            sid = item.get("session_id") or "unknown"
-            turn_id = item.get("turn_id") or item.get("request_id") or "unknown"
+        for raw_row in rows:
+            item = dict(raw_row)
+            sid = str(item.get("session_id") or "unknown")
+            turn_id = str(item.get("turn_id") or item.get("request_id") or "unknown")
+            if (sid, turn_id) not in selected:
+                continue
+            match_meta = selected[(sid, turn_id)]
             session = sessions.setdefault(sid, {
                 "id": sid,
                 "startedAt": item["timestamp"],
                 "lastAt": item["timestamp"],
                 "lastId": item["id"],
+                "matchLastId": int(match_meta["last_match_id"]),
                 "metrics": self._empty_metrics(),
                 "models": set(),
                 "tiers": set(),
@@ -702,6 +980,7 @@ class TelemetryStore:
             session["startedAt"] = min(session["startedAt"], item["timestamp"])
             session["lastAt"] = max(session["lastAt"], item["timestamp"])
             session["lastId"] = max(session["lastId"], item["id"])
+            session["matchLastId"] = max(session["matchLastId"], int(match_meta["last_match_id"]))
             self._add_metrics(session["metrics"], item)
             session["models"].add(item["actual_model"])
             session["tiers"].add(item["tier"])
@@ -710,6 +989,7 @@ class TelemetryStore:
                 "startedAt": item["timestamp"],
                 "lastAt": item["timestamp"],
                 "lastId": item["id"],
+                "matchLastId": int(match_meta["last_match_id"]),
                 "metrics": self._empty_metrics(),
                 "models": set(),
                 "tiers": set(),
@@ -722,22 +1002,37 @@ class TelemetryStore:
             self._add_metrics(turn["metrics"], item)
             turn["models"].add(item["actual_model"])
             turn["tiers"].add(item["tier"])
-        values = sorted(sessions.values(), key=lambda session: session["lastId"], reverse=True)[:safe_limit]
+
+        values = sorted(sessions.values(), key=lambda session: session["matchLastId"], reverse=True)
+        selected_meta = {str(row["session_id"]): dict(row) for row in selected_rows}
         for session in values:
             self._finalize_metrics(session["metrics"])
-            turns = sorted(session["turns"].values(), key=lambda turn: turn["lastId"], reverse=True)
-            session["turnCount"] = len(turns)
-            session["hasMoreTurns"] = len(turns) > safe_turn_limit
-            session["turns"] = turns[:safe_turn_limit]
+            turns = sorted(session["turns"].values(), key=lambda turn: turn["matchLastId"], reverse=True)
+            matching_turn_count = int(selected_meta[session["id"]]["matching_turn_count"])
+            session["turnCount"] = matching_turn_count
+            session["hasMoreTurns"] = matching_turn_count > len(turns)
+            session["turns"] = turns
             session["models"] = sorted(session["models"])
             session["tiers"] = sorted(session["tiers"])
             session.pop("lastId", None)
+            session.pop("matchLastId", None)
             for turn in session["turns"]:
                 self._finalize_metrics(turn["metrics"])
                 turn["models"] = sorted(turn["models"])
                 turn["tiers"] = sorted(turn["tiers"])
                 turn.pop("lastId", None)
-        return {"sessions": values, "hasMoreSessions": len(sessions) > safe_limit, "retentionDays": self.retention_days}
+                turn.pop("matchLastId", None)
+        total_sessions = int(selected_rows[0]["total_sessions"]) if selected_rows else 0
+        total_matching_turns = int(selected_rows[0]["total_matching_turns"]) if selected_rows else 0
+        return {
+            "sessions": values,
+            "hasMoreSessions": total_sessions > safe_limit,
+            "matchingSessions": total_sessions,
+            "matchingTurns": total_matching_turns,
+            "retentionDays": self.retention_days,
+            "filterOptions": self.routing_filter_options(),
+            "appliedFilters": filters,
+        }
 
     def turn_requests(self, turn_id: str, limit: int = 200) -> dict[str, Any]:
         safe_limit = max(1, min(200, int(limit)))
@@ -837,8 +1132,266 @@ class TelemetryStore:
                 self._conn.rollback()
                 raise
 
-    def upsert_usage_snapshots(self, records: list[dict[str, Any]]) -> None:
-        if not records:
+    @staticmethod
+    def _window_start(reset_at: str, window_minutes: int) -> str:
+        text = str(reset_at).replace("Z", "+00:00")
+        reset = datetime.fromisoformat(text)
+        if reset.tzinfo is None:
+            reset = reset.replace(tzinfo=timezone.utc)
+        return (reset.astimezone(timezone.utc) - timedelta(minutes=int(window_minutes))).isoformat()
+
+    def _replace_window_usage_unlocked(
+        self,
+        record: dict[str, Any],
+        observed_at: str,
+    ) -> None:
+        account_key = str(record["account_key"])
+        window = str(record["window"])
+        reset_at = str(record["reset_at"])
+        window_start = self._window_start(reset_at, int(record["window_minutes"]))
+        self._conn.execute(
+            "DELETE FROM codex_window_model_usage WHERE account_key = ? AND window = ?",
+            (account_key, window),
+        )
+        self._conn.execute(
+            "DELETE FROM codex_window_usage_coverage WHERE account_key = ? AND window = ?",
+            (account_key, window),
+        )
+        self._conn.execute(
+            "DELETE FROM codex_window_efficiency WHERE account_key = ? AND window = ?",
+            (account_key, window),
+        )
+        usage_seen = """
+            CASE
+                WHEN json_valid(context_info)
+                THEN coalesce(json_extract(context_info, '$.usage_seen'), 0)
+                ELSE 0
+            END = 1
+        """
+        model_rows = self._conn.execute(
+            f"""
+            SELECT
+                actual_model,
+                count(*) AS requests,
+                coalesce(sum(input_tokens), 0) AS input_tokens,
+                coalesce(sum(cached_input_tokens), 0) AS cached_input_tokens,
+                coalesce(sum(output_tokens), 0) AS output_tokens
+            FROM routing_log
+            WHERE selected_codex_account_key = ?
+              AND actual_model LIKE 'codex/%'
+              AND julianday(timestamp) >= julianday(?)
+              AND julianday(timestamp) <= julianday(?)
+              AND {usage_seen}
+            GROUP BY actual_model
+            """,
+            (account_key, window_start, observed_at),
+        ).fetchall()
+        self._conn.executemany(
+            """
+            INSERT INTO codex_window_model_usage (
+                account_key, window, reset_at, actual_model, window_start,
+                observed_at, requests, input_tokens, cached_input_tokens, output_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    account_key,
+                    window,
+                    reset_at,
+                    row["actual_model"],
+                    window_start,
+                    observed_at,
+                    row["requests"],
+                    row["input_tokens"],
+                    row["cached_input_tokens"],
+                    row["output_tokens"],
+                )
+                for row in model_rows
+            ],
+        )
+        efficiency_rows = self._conn.execute(
+            f"""
+            SELECT
+                actual_model,
+                coalesce(nullif(lower(trim(requested_reasoning_effort)), ''), 'default') AS reasoning_effort,
+                CASE
+                    WHEN nullif(trim(session_id), '') IS NOT NULL THEN 'session:' || session_id
+                    ELSE 'request:' || coalesce(nullif(request_id, ''), cast(id AS TEXT))
+                END AS session_key,
+                CASE WHEN nullif(trim(session_id), '') IS NOT NULL THEN 1 ELSE 0 END AS has_session,
+                count(*) AS requests,
+                coalesce(sum(input_tokens), 0) AS input_tokens,
+                coalesce(sum(cached_input_tokens), 0) AS cached_input_tokens,
+                coalesce(sum(output_tokens), 0) AS output_tokens
+            FROM routing_log
+            WHERE selected_codex_account_key = ?
+              AND actual_model LIKE 'codex/%'
+              AND julianday(timestamp) >= julianday(?)
+              AND julianday(timestamp) <= julianday(?)
+              AND {usage_seen}
+            GROUP BY actual_model, reasoning_effort, session_key, has_session
+            """,
+            (account_key, window_start, observed_at),
+        ).fetchall()
+        self._conn.executemany(
+            """
+            INSERT INTO codex_window_efficiency (
+                account_key, window, reset_at, actual_model, reasoning_effort,
+                session_key, has_session, window_start, observed_at, requests,
+                input_tokens, cached_input_tokens, output_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    account_key, window, reset_at, row["actual_model"],
+                    row["reasoning_effort"], row["session_key"], row["has_session"],
+                    window_start, observed_at, row["requests"], row["input_tokens"],
+                    row["cached_input_tokens"], row["output_tokens"],
+                )
+                for row in efficiency_rows
+            ],
+        )
+        coverage = self._conn.execute(
+            f"""
+            SELECT
+                coalesce(sum(CASE WHEN {usage_seen} THEN 1 ELSE 0 END), 0) AS attributed_requests,
+                coalesce(sum(CASE WHEN {usage_seen} THEN input_tokens ELSE 0 END), 0) AS attributed_input_tokens,
+                coalesce(sum(CASE WHEN {usage_seen} THEN output_tokens ELSE 0 END), 0) AS attributed_output_tokens,
+                coalesce(sum(CASE WHEN NOT ({usage_seen}) THEN 1 ELSE 0 END), 0) AS excluded_requests,
+                coalesce(sum(CASE WHEN NOT ({usage_seen}) THEN input_tokens ELSE 0 END), 0) AS excluded_input_tokens,
+                coalesce(sum(CASE WHEN NOT ({usage_seen}) THEN output_tokens ELSE 0 END), 0) AS excluded_output_tokens
+            FROM routing_log
+            WHERE selected_codex_account_key = ?
+              AND actual_model LIKE 'codex/%'
+              AND julianday(timestamp) >= julianday(?)
+              AND julianday(timestamp) <= julianday(?)
+            """,
+            (account_key, window_start, observed_at),
+        ).fetchone()
+        self._conn.execute(
+            """
+            INSERT INTO codex_window_usage_coverage (
+                account_key, window, reset_at, window_start, observed_at,
+                attributed_requests, attributed_input_tokens, attributed_output_tokens,
+                excluded_requests, excluded_input_tokens, excluded_output_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_key,
+                window,
+                reset_at,
+                window_start,
+                observed_at,
+                coverage["attributed_requests"],
+                coverage["attributed_input_tokens"],
+                coverage["attributed_output_tokens"],
+                coverage["excluded_requests"],
+                coverage["excluded_input_tokens"],
+                coverage["excluded_output_tokens"],
+            ),
+        )
+
+    def _replace_global_unattributed_unlocked(
+        self,
+        account_keys: set[str],
+        observed_at: str,
+    ) -> None:
+        self._conn.execute(
+            "DELETE FROM codex_window_usage_coverage WHERE account_key = '' AND window = 'weekly'"
+        )
+        if not account_keys:
+            return
+        placeholders = ",".join("?" for _ in account_keys)
+        snapshots = self._conn.execute(
+            f"""
+            SELECT reset_at, window_minutes, updated_at
+            FROM codex_usage_snapshots
+            WHERE window = 'weekly' AND account_key IN ({placeholders})
+            """,
+            sorted(account_keys),
+        ).fetchall()
+        if not snapshots:
+            return
+        ranges = [
+            (self._window_start(row["reset_at"], int(row["window_minutes"])), str(row["updated_at"]))
+            for row in snapshots
+        ]
+        range_sql = " OR ".join(
+            "(julianday(timestamp) >= julianday(?) AND julianday(timestamp) <= julianday(?))"
+            for _ in ranges
+        )
+        params = [value for pair in ranges for value in pair]
+        coverage = self._conn.execute(
+            f"""
+            SELECT
+                count(*) AS requests,
+                coalesce(sum(input_tokens), 0) AS input_tokens,
+                coalesce(sum(output_tokens), 0) AS output_tokens
+            FROM routing_log
+            WHERE nullif(selected_codex_account_key, '') IS NULL
+              AND actual_model LIKE 'codex/%'
+              AND ({range_sql})
+            """,
+            params,
+        ).fetchone()
+        self._conn.execute(
+            """
+            INSERT INTO codex_window_usage_coverage (
+                account_key, window, reset_at, window_start, observed_at,
+                attributed_requests, attributed_input_tokens, attributed_output_tokens,
+                excluded_requests, excluded_input_tokens, excluded_output_tokens
+            ) VALUES ('', 'weekly', 'current-union', ?, ?, 0, 0, 0, ?, ?, ?)
+            """,
+            (
+                min(start for start, _end in ranges),
+                max(end for _start, end in ranges),
+                coverage["requests"],
+                coverage["input_tokens"],
+                coverage["output_tokens"],
+            ),
+        )
+
+    def _prune_window_usage_unlocked(
+        self,
+        current_account_keys: set[str],
+        refreshed_windows: dict[str, set[str]],
+    ) -> None:
+        tables = (
+            "codex_window_model_usage",
+            "codex_window_efficiency",
+            "codex_window_usage_coverage",
+        )
+        current_keys = sorted(current_account_keys)
+        for table in tables:
+            if current_keys:
+                placeholders = ",".join("?" for _ in current_keys)
+                self._conn.execute(
+                    f"DELETE FROM {table} WHERE account_key != '' AND account_key NOT IN ({placeholders})",
+                    current_keys,
+                )
+            else:
+                self._conn.execute(f"DELETE FROM {table} WHERE account_key != ''")
+            for account_key, windows in refreshed_windows.items():
+                ordered_windows = sorted(windows)
+                if ordered_windows:
+                    placeholders = ",".join("?" for _ in ordered_windows)
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE account_key = ? AND window NOT IN ({placeholders})",
+                        (account_key, *ordered_windows),
+                    )
+                else:
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE account_key = ?",
+                        (account_key,),
+                    )
+
+    def upsert_usage_snapshots(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        current_account_keys: set[str] | None = None,
+    ) -> None:
+        if not records and current_account_keys is None:
             return
         observed_at = now_iso()
         authoritative_accounts = {
@@ -846,6 +1399,10 @@ class TelemetryStore:
             for record in records
             if record.get("window") == "weekly"
         }
+        refreshed_windows: dict[str, set[str]] = {}
+        for record in records:
+            refreshed_windows.setdefault(str(record["account_key"]), set()).add(str(record["window"]))
+        current_keys = set(authoritative_accounts if current_account_keys is None else current_account_keys)
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -883,10 +1440,262 @@ class TelemetryStore:
                             record["used_percent"], record["reset_at"], record["window_minutes"], observed_at,
                         ),
                     )
+                    self._replace_window_usage_unlocked(record, observed_at)
+                self._prune_window_usage_unlocked(current_keys, refreshed_windows)
+                self._replace_global_unattributed_unlocked(current_keys, observed_at)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
+
+    def codex_capacity_multiplier(self, account_key: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT capacity_multiplier FROM codex_account_capacity_overrides WHERE account_key = ?",
+                (account_key,),
+            ).fetchone()
+        return int(row["capacity_multiplier"]) if row is not None else 1
+
+    def set_codex_capacity_multiplier(self, account_key: str, multiplier: int) -> None:
+        if multiplier not in {1, 5} or isinstance(multiplier, bool):
+            raise ValueError("capacity multiplier must be 1 or 5")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                if multiplier == 1:
+                    self._conn.execute(
+                        "DELETE FROM codex_account_capacity_overrides WHERE account_key = ?",
+                        (account_key,),
+                    )
+                else:
+                    self._conn.execute(
+                        """
+                        INSERT INTO codex_account_capacity_overrides (
+                            account_key, capacity_multiplier, updated_at
+                        ) VALUES (?, 5, ?)
+                        ON CONFLICT(account_key) DO UPDATE SET
+                            capacity_multiplier = 5,
+                            updated_at = excluded.updated_at
+                        """,
+                        (account_key, now_iso()),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def codex_usage_estimate(self, active_account_keys: set[str]) -> dict[str, Any]:
+        keys = sorted({key for key in active_account_keys if key})
+        unavailable = {
+            "available": False,
+            "source": "calibrated_total_tokens",
+            "unavailableReason": "no_current_weekly_accounts",
+            "models": [],
+            "efficiency": [],
+        }
+        if not keys:
+            return unavailable
+        placeholders = ",".join("?" for _ in keys)
+        with self._lock:
+            snapshots = [dict(row) for row in self._conn.execute(
+                f"""
+                SELECT * FROM codex_usage_snapshots
+                WHERE window = 'weekly' AND account_key IN ({placeholders})
+                """,
+                keys,
+            ).fetchall()]
+            model_rows = [dict(row) for row in self._conn.execute(
+                f"""
+                SELECT * FROM codex_window_model_usage
+                WHERE window = 'weekly' AND account_key IN ({placeholders})
+                """,
+                keys,
+            ).fetchall()]
+            efficiency_rows = [dict(row) for row in self._conn.execute(
+                f"""
+                SELECT * FROM codex_window_efficiency
+                WHERE window = 'weekly' AND account_key IN ({placeholders})
+                """,
+                keys,
+            ).fetchall()]
+            coverage_rows = [dict(row) for row in self._conn.execute(
+                f"""
+                SELECT * FROM codex_window_usage_coverage
+                WHERE window = 'weekly' AND (account_key IN ({placeholders}) OR account_key = '')
+                """,
+                keys,
+            ).fetchall()]
+            override_rows = self._conn.execute(
+                f"""
+                SELECT account_key, capacity_multiplier
+                FROM codex_account_capacity_overrides
+                WHERE account_key IN ({placeholders})
+                """,
+                keys,
+            ).fetchall()
+        multipliers = {str(row["account_key"]): int(row["capacity_multiplier"]) for row in override_rows}
+        snapshots_by_account = {str(row["account_key"]): row for row in snapshots}
+        current_models = [
+            row for row in model_rows
+            if (snapshot := snapshots_by_account.get(str(row["account_key"])))
+            and row["reset_at"] == snapshot["reset_at"]
+        ]
+        current_efficiency = [
+            row for row in efficiency_rows
+            if (snapshot := snapshots_by_account.get(str(row["account_key"])))
+            and row["reset_at"] == snapshot["reset_at"]
+        ]
+        current_coverage = [
+            row for row in coverage_rows
+            if row["account_key"]
+            and (snapshot := snapshots_by_account.get(str(row["account_key"])))
+            and row["reset_at"] == snapshot["reset_at"]
+        ]
+        coverage_by_account = {str(row["account_key"]): row for row in current_coverage}
+        actual_units = 0.0
+        sample_tokens = 0
+        sample_accounts = 0
+        account_rates: dict[str, float] = {}
+        for account_key, snapshot in snapshots_by_account.items():
+            coverage = coverage_by_account.get(account_key)
+            attributed = (
+                int(coverage["attributed_input_tokens"]) + int(coverage["attributed_output_tokens"])
+                if coverage else 0
+            )
+            used = float(snapshot["used_percent"] or 0)
+            if attributed > 0 and used > 0:
+                sample_accounts += 1
+                sample_tokens += attributed
+                account_units = used * multipliers.get(account_key, 1)
+                actual_units += account_units
+                account_rates[account_key] = account_units * 1_000_000 / attributed
+        rate = actual_units * 1_000_000 / sample_tokens if sample_tokens else None
+        by_model: dict[str, dict[str, Any]] = {}
+        for row in current_models:
+            model = str(row["actual_model"])
+            aggregate = by_model.setdefault(model, {
+                "model": model,
+                "requests": 0,
+                "inputTokens": 0,
+                "cachedInputTokens": 0,
+                "outputTokens": 0,
+            })
+            aggregate["requests"] += int(row["requests"])
+            aggregate["inputTokens"] += int(row["input_tokens"])
+            aggregate["cachedInputTokens"] += int(row["cached_input_tokens"])
+            aggregate["outputTokens"] += int(row["output_tokens"])
+        models = []
+        for aggregate in by_model.values():
+            total_tokens = aggregate["inputTokens"] + aggregate["outputTokens"]
+            expected_units = total_tokens / 1_000_000 * rate if rate is not None else None
+            models.append({
+                **aggregate,
+                "totalTokens": total_tokens,
+                "expectedUnits": expected_units,
+                "x1EquivalentPercent": expected_units,
+                "x5EquivalentPercent": expected_units / 5 if expected_units is not None else None,
+            })
+        models.sort(key=lambda row: row["totalTokens"], reverse=True)
+        by_efficiency: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in current_efficiency:
+            group_key = (str(row["actual_model"]), str(row["reasoning_effort"]))
+            aggregate = by_efficiency.setdefault(group_key, {
+                "model": group_key[0],
+                "reasoning": group_key[1],
+                "requests": 0,
+                "inputTokens": 0,
+                "cachedInputTokens": 0,
+                "outputTokens": 0,
+                "calibratedTokens": 0,
+                "expectedUnits": 0.0,
+                "sessionTokens": 0,
+                "requestsWithoutSession": 0,
+                "_sessions": set(),
+            })
+            input_tokens = int(row["input_tokens"])
+            output_tokens = int(row["output_tokens"])
+            total_tokens = input_tokens + output_tokens
+            requests = int(row["requests"])
+            aggregate["requests"] += requests
+            aggregate["inputTokens"] += input_tokens
+            aggregate["cachedInputTokens"] += int(row["cached_input_tokens"])
+            aggregate["outputTokens"] += output_tokens
+            if int(row["has_session"]):
+                aggregate["_sessions"].add(str(row["session_key"]))
+                aggregate["sessionTokens"] += total_tokens
+            else:
+                aggregate["requestsWithoutSession"] += requests
+            account_rate = account_rates.get(str(row["account_key"]))
+            if account_rate is not None:
+                aggregate["calibratedTokens"] += total_tokens
+                aggregate["expectedUnits"] += total_tokens / 1_000_000 * account_rate
+        efficiency = []
+        for aggregate in by_efficiency.values():
+            sessions = len(aggregate.pop("_sessions"))
+            total_tokens = aggregate["inputTokens"] + aggregate["outputTokens"]
+            calibrated_tokens = aggregate["calibratedTokens"]
+            expected_units = aggregate["expectedUnits"] if calibrated_tokens else None
+            efficiency.append({
+                **aggregate,
+                "totalTokens": total_tokens,
+                "sessions": sessions,
+                "percentPerMillionTokens": (
+                    expected_units * 1_000_000 / calibrated_tokens
+                    if expected_units is not None and calibrated_tokens else None
+                ),
+                "averageMillionTokensPerSession": (
+                    aggregate["sessionTokens"] / 1_000_000 / sessions if sessions else None
+                ),
+                "averageUnitsPerSession": (
+                    expected_units / sessions if expected_units is not None and sessions else None
+                ),
+                "cachePercent": (
+                    aggregate["cachedInputTokens"] * 100 / aggregate["inputTokens"]
+                    if aggregate["inputTokens"] else 0
+                ),
+            })
+        efficiency.sort(key=lambda row: row["totalTokens"], reverse=True)
+        global_coverage = next((row for row in coverage_rows if row["account_key"] == ""), None)
+        attributed_requests = sum(int(row["attributed_requests"]) for row in current_coverage)
+        attributed_tokens = sum(
+            int(row["attributed_input_tokens"]) + int(row["attributed_output_tokens"])
+            for row in current_coverage
+        )
+        excluded_requests = sum(int(row["excluded_requests"]) for row in current_coverage)
+        excluded_tokens = sum(
+            int(row["excluded_input_tokens"]) + int(row["excluded_output_tokens"])
+            for row in current_coverage
+        )
+        unavailable_reason = None
+        if not snapshots:
+            unavailable_reason = "no_current_weekly_snapshots"
+        elif not sample_tokens:
+            unavailable_reason = "no_attributed_usage_tokens"
+        elif actual_units <= 0:
+            unavailable_reason = "no_positive_weekly_usage"
+        bounds = current_coverage or current_models
+        return {
+            "available": unavailable_reason is None,
+            "source": "calibrated_total_tokens",
+            "unavailableReason": unavailable_reason,
+            "actualQuotaUnits": actual_units,
+            "quotaUnitsPerMillionTokens": rate,
+            "sampleAccounts": sample_accounts,
+            "sampleTokens": sample_tokens,
+            "attributedRequests": attributed_requests,
+            "attributedTokens": attributed_tokens,
+            "excludedAccountRequests": excluded_requests,
+            "excludedAccountTokens": excluded_tokens,
+            "unattributedRequests": int(global_coverage["excluded_requests"]) if global_coverage else 0,
+            "unattributedTokens": (
+                int(global_coverage["excluded_input_tokens"]) + int(global_coverage["excluded_output_tokens"])
+                if global_coverage else 0
+            ),
+            "windowStart": min((str(row["window_start"]) for row in bounds), default=None),
+            "observedAt": max((str(row["observed_at"]) for row in bounds), default=None),
+            "models": models,
+            "efficiency": efficiency,
+        }
 
     def usage_snapshots(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -998,6 +1807,9 @@ class TelemetryStore:
             "inputTokens": 0,
             "cachedInputTokens": 0,
             "outputTokens": 0,
+            "codexInputTokens": 0,
+            "codexOutputTokens": 0,
+            "codexUsageSeenRequests": 0,
             "errors": 0,
             "usageSeenRequests": 0,
             "usageMissingRequests": 0,
@@ -1049,6 +1861,10 @@ class TelemetryStore:
             metrics["inputTokens"] += int(row.get("input_tokens") or 0)
             metrics["cachedInputTokens"] += int(row.get("cached_input_tokens") or 0)
             metrics["outputTokens"] += int(row.get("output_tokens") or 0)
+            if str(row.get("actual_model") or "").startswith("codex/"):
+                metrics["codexInputTokens"] += int(row.get("input_tokens") or 0)
+                metrics["codexOutputTokens"] += int(row.get("output_tokens") or 0)
+                metrics["codexUsageSeenRequests"] += 1
         else:
             metrics["usageMissingRequests"] += 1
         if context.get("cache_likely"):

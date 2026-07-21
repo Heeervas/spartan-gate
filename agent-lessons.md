@@ -1,6 +1,6 @@
 # Agent Lessons
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 ## Security
 
@@ -18,6 +18,15 @@ Last updated: 2026-07-18
 
 ## Runtime
 
+- Codex usage windows are identified by `limit_window_seconds`, not by primary/
+  secondary position: 18,000 seconds is five-hour and 604,800 seconds is
+  weekly. Use positional fallback only when duration is absent; a weekly-only
+  payload is valid.
+- Polling endpoints must read incremental rollups, never scan and parse retained
+  `routing_log` rows on every request.
+- Shared single-flight tasks require shielded waiters, controller-owned child
+  `cancel()` plus `gather()`, and generation-guarded publication so an old
+  controller or `finally` cannot overwrite newer state.
 - Hermes uses s6 initialization. Configuration migrations required by
   supervised services must run before profile reconciliation.
 - Browser backends are separate operational modes. Do not claim that an

@@ -1,8 +1,22 @@
 # Current State
 
-Date: 2026-07-13
+Date: 2026-07-19
 
 ## Latest Update
+
+Spartan Route now classifies Codex balance windows by
+`limit_window_seconds`, accepts weekly-only responses, suppresses obsolete
+five-hour rows, and filters persisted balances to current account identities.
+Usage refresh is progressive and single-flight through the nonblocking POST,
+while polling reads incremental daily rollups instead of scanning
+`routing_log`. The full suite passes 179/179. Only `spartan-route` was rebuilt
+and recreated; neighboring services remained unchanged, healthy, and at restart
+count 0. Runtime acceptance measured the initial authenticated GET at 0.0227 s,
+subsequent polling at 0.0075 s maximum, and POST 202 at 0.021 s. Live refresh
+returned weekly balances for all four accounts with no false `fiveHour` rows.
+Slot 4 still reports the pre-existing `reauth_required` condition.
+
+## Onest Update
 
 Onest 1.000 is now installed at build time in the Hermes and Camofox images
 and in the local Browserless wrapper, with checksum verification, Fontconfig

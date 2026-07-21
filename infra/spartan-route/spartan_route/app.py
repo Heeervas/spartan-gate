@@ -2050,21 +2050,92 @@ async def stats(request: web.Request) -> web.Response:
     })
 
 
+def attach_routing_usage_units(
+    state: SpartanRouteState,
+    payload: dict[str, Any],
+) -> None:
+    estimate: dict[str, Any] = {
+        "available": False,
+        "unavailableReason": "codex_unavailable",
+        "quotaUnitsPerMillionTokens": None,
+    }
+    if state.codex is not None:
+        try:
+            account_keys = {
+                str(slot.get("accountKey"))
+                for slot in state.codex.slot_status()
+                if isinstance(slot, Mapping) and slot.get("accountKey")
+            }
+            estimate = state.telemetry.codex_usage_estimate(account_keys)
+        except Exception as exc:
+            record_telemetry_failure(state, "read", "routing_usage_estimate", exc)
+            estimate = {
+                "available": False,
+                "unavailableReason": "telemetry_unavailable",
+                "quotaUnitsPerMillionTokens": None,
+            }
+        else:
+            state.telemetry.record_health_success("read", "routing_usage_estimate")
+    raw_rate = estimate.get("quotaUnitsPerMillionTokens")
+    rate = float(raw_rate) if isinstance(raw_rate, (int, float)) and raw_rate > 0 else None
+    for session in payload.get("sessions", []):
+        if not isinstance(session, dict):
+            continue
+        items = [session, *(session.get("turns") or [])]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            metrics = item.get("metrics")
+            if not isinstance(metrics, dict):
+                continue
+            codex_tokens = int(metrics.get("codexInputTokens") or 0) + int(
+                metrics.get("codexOutputTokens") or 0
+            )
+            metrics["estimatedUsageUnits"] = (
+                codex_tokens / 1_000_000 * rate
+                if rate is not None and int(metrics.get("codexUsageSeenRequests") or 0) > 0
+                else None
+            )
+    payload["usageUnitEstimate"] = {
+        "available": rate is not None,
+        "source": estimate.get("source", "calibrated_total_tokens"),
+        "unavailableReason": estimate.get("unavailableReason"),
+        "quotaUnitsPerMillionTokens": rate,
+        "sampleTokens": int(estimate.get("sampleTokens") or 0),
+        "observedAt": estimate.get("observedAt"),
+    }
+
+
 async def api_routing_live(request: web.Request) -> web.Response:
     state = get_state(request)
-    limit = int(request.query.get("limit") or "30")
-    session_limit = int(request.query.get("sessionLimit") or limit)
-    turn_limit = int(request.query.get("turnLimit") or "20")
+    limit = parse_int(request.query.get("limit"), 30, 1, 100)
+    session_limit = parse_int(request.query.get("sessionLimit"), limit, 1, 100)
+    turn_limit = parse_int(request.query.get("turnLimit"), 20, 1, 100)
+    filters = {
+        "model": (request.query.get("model") or "").strip(),
+        "reasoning": (request.query.get("reasoning") or "").strip().lower(),
+        "prompt": (request.query.get("prompt") or "").strip(),
+    }
+    for name, maximum in (("model", 160), ("reasoning", 64), ("prompt", 300)):
+        if len(filters[name]) > maximum:
+            return response_json_error(
+                f"{name} filter is too long",
+                400,
+                "invalid_routing_filter",
+                "invalid_request_error",
+            )
     try:
         payload = state.telemetry.live_sessions(
             limit=limit,
             session_limit=session_limit,
             turn_limit=turn_limit,
+            **filters,
         )
     except Exception as exc:
         record_telemetry_failure(state, "read", "routing_live", exc)
         return telemetry_unavailable_response()
     state.telemetry.record_health_success("read", "routing_live")
+    attach_routing_usage_units(state, payload)
     return web.json_response(payload)
 
 
@@ -2166,21 +2237,82 @@ def codex_slots_with_health(
 ) -> list[dict[str, Any]]:
     slot_errors = payload.get("slotErrors")
     reset_errors = payload.get("resetCreditErrors")
+    accounts = payload.get("accounts")
+    progress = payload.get("refreshProgress")
     safe_slot_errors = slot_errors if isinstance(slot_errors, list) else []
     safe_reset_errors = reset_errors if isinstance(reset_errors, list) else []
-    cached = bool(payload.get("cached"))
-    return [
-        {
+    safe_accounts = accounts if isinstance(accounts, list) else []
+    pending = {
+        int(index)
+        for index in (
+            progress.get("pendingSlotIndexes", [])
+            if isinstance(progress, Mapping)
+            else []
+        )
+        if isinstance(index, int)
+    }
+
+    rows = []
+    for slot in slots:
+        slot_index = int(slot.get("slotIndex") or 0)
+
+        def matches(error: Mapping[str, Any]) -> bool:
+            try:
+                return int(error.get("slotIndex")) == slot_index
+            except (TypeError, ValueError):
+                return False
+
+        slot_specific_errors = [error for error in safe_slot_errors if matches(error)]
+        reset_specific_errors = [error for error in safe_reset_errors if matches(error)]
+        has_live_account = any(
+            account.get("source") == "live"
+            and slot_index in (account.get("slotIndexes") or [])
+            for account in safe_accounts
+            if isinstance(account, Mapping)
+        )
+        has_live_error = any(
+            error.get("source") != "persisted"
+            for error in [*slot_specific_errors, *reset_specific_errors]
+            if isinstance(error, Mapping)
+        )
+        if slot_index in pending:
+            data_source = "pending"
+            health_slot_errors: list[dict[str, Any]] = []
+            health_reset_errors: list[dict[str, Any]] = []
+        elif has_live_account or has_live_error:
+            data_source = "live"
+            health_slot_errors = slot_specific_errors
+            health_reset_errors = reset_specific_errors
+        else:
+            data_source = "persisted"
+            health_slot_errors = slot_specific_errors
+            health_reset_errors = reset_specific_errors
+        health_slot = (
+            {**slot, "authAvailable": True}
+            if data_source == "pending"
+            else slot
+        )
+        health = classify_codex_slot_health(
+            health_slot,
+            slot_errors=health_slot_errors,
+            reset_credit_errors=health_reset_errors,
+            cached=data_source == "persisted",
+        )
+        if (
+            data_source == "pending"
+            and not bool(slot.get("authAvailable"))
+            and health["healthStatus"] == "healthy"
+        ):
+            health.update({
+                "healthStatus": "history",
+                "healthReasons": ["Awaiting live authentication"],
+            })
+        rows.append({
             **slot,
-            **classify_codex_slot_health(
-                slot,
-                slot_errors=safe_slot_errors,
-                reset_credit_errors=safe_reset_errors,
-                cached=cached,
-            ),
-        }
-        for slot in slots
-    ]
+            "healthDataSource": data_source,
+            **health,
+        })
+    return rows
 
 
 def attach_codex_telemetry(
@@ -2211,9 +2343,56 @@ def attach_codex_telemetry(
     else:
         state.telemetry.record_health_success("read", "slot_status")
     slots = codex_slots_with_health(payload, slot_rows)
+    account_keys = {
+        str(account.get("accountKey"))
+        for account in payload.get("accounts", [])
+        if isinstance(account, Mapping) and account.get("accountKey")
+    }
+    account_keys.update(
+        str(slot.get("accountKey"))
+        for slot in slots
+        if isinstance(slot, Mapping) and slot.get("accountKey")
+    )
+    try:
+        multipliers = {
+            account_key: state.telemetry.codex_capacity_multiplier(account_key)
+            for account_key in account_keys
+        }
+        estimate = state.telemetry.codex_usage_estimate(account_keys)
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "codex_usage_estimate", exc)
+        add_telemetry_error(payload, telemetry_error("codex_usage_estimate"))
+        multipliers = {account_key: 1 for account_key in account_keys}
+        estimate = {
+            "available": False,
+            "source": "calibrated_total_tokens",
+            "unavailableReason": "telemetry_unavailable",
+            "models": [],
+        }
+    else:
+        state.telemetry.record_health_success("read", "codex_usage_estimate")
+    for account in payload.get("accounts", []):
+        if not isinstance(account, dict):
+            continue
+        account_key = str(account.get("accountKey") or "")
+        multiplier = multipliers.get(account_key, 1)
+        account["capacityMultiplier"] = multiplier
+        for window_name in ("weekly", "fiveHour"):
+            window = account.get(window_name)
+            if not isinstance(window, dict):
+                continue
+            used_percent = max(0.0, min(100.0, parse_float(window.get("usedPercent"), 0.0)))
+            window["capacityMultiplier"] = multiplier
+            window["capacityUnits"] = 100 * multiplier
+            window["usedUnits"] = used_percent * multiplier
+            window["remainingUnits"] = max(0.0, 100.0 - used_percent) * multiplier
+    for slot in slots:
+        account_key = str(slot.get("accountKey") or "")
+        slot["capacityMultiplier"] = multipliers.get(account_key, 1)
     balancer["slots"] = slots
     payload["slots"] = slots
     payload["balancer"] = balancer
+    payload["weeklyModelUsage"] = estimate
 
 
 async def api_codex_usage(request: web.Request) -> web.Response:
@@ -2223,6 +2402,15 @@ async def api_codex_usage(request: web.Request) -> web.Response:
     payload = await state.codex.usage_snapshot(force=request.query.get("force") == "true")
     attach_codex_telemetry(state, payload)
     return web.json_response(payload)
+
+
+async def api_codex_usage_refresh(request: web.Request) -> web.Response:
+    state = get_state(request)
+    if state.codex is None:
+        return response_json_error("Codex router is not ready", 503, "codex_unavailable")
+    payload = state.codex.trigger_usage_refresh()
+    attach_codex_telemetry(state, payload)
+    return web.json_response(payload, status=202)
 
 
 async def api_codex_usage_slot(request: web.Request) -> web.Response:
@@ -2281,6 +2469,63 @@ async def api_codex_balancer_slot(request: web.Request) -> web.Response:
         return telemetry_unavailable_response()
     state.telemetry.record_health_success("read", "slot_status")
     return web.json_response({"slot": slot, "balancer": balancer})
+
+
+async def api_codex_account_capacity(request: web.Request) -> web.Response:
+    state = get_state(request)
+    if state.codex is None:
+        return response_json_error("Codex router is not ready", 503, "codex_unavailable")
+    account_key = request.match_info["account_key"]
+    if re.fullmatch(r"[0-9a-f]{16}", account_key) is None:
+        return response_json_error(
+            "Invalid Codex account key",
+            400,
+            "invalid_account_key",
+            "invalid_request_error",
+        )
+    body = await read_json_object(request)
+    if isinstance(body, web.Response):
+        return body
+    if set(body) != {"capacityMultiplier"}:
+        return response_json_error(
+            "capacityMultiplier is required and must be the only field",
+            400,
+            "invalid_capacity_multiplier",
+            "invalid_request_error",
+        )
+    multiplier = body["capacityMultiplier"]
+    if isinstance(multiplier, bool) or not isinstance(multiplier, int) or multiplier not in {1, 5}:
+        return response_json_error(
+            "capacityMultiplier must be 1 or 5",
+            400,
+            "invalid_capacity_multiplier",
+            "invalid_request_error",
+        )
+    try:
+        current_keys = {
+            str(slot.get("accountKey"))
+            for slot in state.codex.slot_status()
+            if slot.get("accountKey")
+        }
+    except Exception as exc:
+        record_telemetry_failure(state, "read", "slot_status", exc)
+        return telemetry_unavailable_response()
+    if account_key not in current_keys:
+        return response_json_error(
+            "Codex account is not currently configured",
+            404,
+            "account_not_found",
+            "invalid_request_error",
+        )
+    try:
+        state.telemetry.set_codex_capacity_multiplier(account_key, multiplier)
+    except Exception as exc:
+        record_telemetry_failure(state, "write", "capacity_multiplier", exc)
+        return telemetry_unavailable_response()
+    state.telemetry.record_health_success("write", "capacity_multiplier")
+    payload = await state.codex.usage_snapshot()
+    attach_codex_telemetry(state, payload)
+    return web.json_response(payload)
 
 
 async def dashboard_file(request: web.Request) -> web.StreamResponse:
@@ -2375,9 +2620,14 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     app.router.add_get("/api/routing/turns/{turn_id}", api_routing_turn)
     app.router.add_get("/api/codex/cache/day", api_codex_cache_day)
     app.router.add_get("/api/codex/usage", api_codex_usage)
+    app.router.add_post("/api/codex/usage/refresh", api_codex_usage_refresh)
     app.router.add_post(r"/api/codex/usage/slots/{slot_index:\d+}", api_codex_usage_slot)
     app.router.add_get("/api/codex/balancer", api_codex_balancer)
     app.router.add_patch(r"/api/codex/balancer/slots/{slot_index:\d+}", api_codex_balancer_slot)
+    app.router.add_patch(
+        r"/api/codex/balancer/accounts/{account_key}/capacity",
+        api_codex_account_capacity,
+    )
     app.router.add_post("/v1/chat/completions", chat_completions)
     app.router.add_post("/v1/responses", responses)
     app.router.add_post("/v1/images/generations", image_generations)

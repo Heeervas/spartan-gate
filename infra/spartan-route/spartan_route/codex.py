@@ -57,6 +57,39 @@ CODEX_AUTH_STORE_VERSION = 1
 CODEX_AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 CODEX_AUTH_MAX_BYTES = 1_048_576
 
+def normalize_usage_windows(payload: dict[str, Any]) -> dict[str, tuple[dict[str, Any], int]]:
+    """Return recognized usage windows, preferring declared duration over position."""
+    rate_limit = payload.get("rate_limit") if isinstance(payload.get("rate_limit"), dict) else {}
+    candidates = (
+        ("primary", payload.get("primary_window")),
+        ("secondary", payload.get("secondary_window")),
+        ("primary", rate_limit.get("primary_window")),
+        ("secondary", rate_limit.get("secondary_window")),
+    )
+    windows: dict[str, tuple[dict[str, Any], int]] = {}
+    for position, candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        duration = candidate.get("limit_window_seconds")
+        if duration is None:
+            window_name = "fiveHour" if position == "primary" else "weekly"
+            seconds = FIVE_HOURS_SECONDS if position == "primary" else SEVEN_DAYS_SECONDS
+        else:
+            try:
+                seconds = int(duration)
+            except (TypeError, ValueError):
+                continue
+            if seconds == FIVE_HOURS_SECONDS:
+                window_name = "fiveHour"
+            elif seconds == SEVEN_DAYS_SECONDS:
+                window_name = "weekly"
+            else:
+                continue
+        windows.setdefault(window_name, (candidate, seconds))
+    return windows
+
+
+
 
 class CodexAuthStoreError(RuntimeError):
     def __init__(self, code: str, *, retryable: bool = True, retry_after: float | None = None):
@@ -527,6 +560,8 @@ class CodexRouter:
         self._availability_event_loop: asyncio.AbstractEventLoop | None = None
         self._usage_cache: dict[str, Any] | None = None
         self._usage_refresh_task: asyncio.Task[dict[str, Any]] | None = None
+        self._usage_progress_snapshot: dict[str, Any] | None = None
+        self._usage_generation = 0
         # Constructor-only injection keeps production fixed at /app/data/codex-auth.
         self.auth_store_root = Path(auth_store_root) if auth_store_root is not None else CODEX_AUTH_STORE_ROOT
         self._init_slots()
@@ -545,6 +580,7 @@ class CodexRouter:
         self.slots = [CodexSlot(index, path=path) for index, path in enumerate(resolve_auth_paths())]
 
     def reset_state(self) -> None:
+        self._usage_generation = int(getattr(self, "_usage_generation", 0)) + 1
         task = getattr(self, "_usage_refresh_task", None)
         if task is not None and not task.done():
             task.cancel()
@@ -552,11 +588,13 @@ class CodexRouter:
         self.slots = []
         self.leases.clear()
         self.refresh_locks.clear()
+        self._usage_progress_snapshot = None
         self._notify_availability_changed()
         self._usage_cache = None
         self._init_slots()
 
     async def cleanup(self) -> None:
+        self._usage_generation = int(getattr(self, "_usage_generation", 0)) + 1
         task = getattr(self, "_usage_refresh_task", None)
         self._usage_refresh_task = None
         if task is not None and not task.done():
@@ -2505,8 +2543,21 @@ class CodexRouter:
             self._usage_cache = None
             return payload
 
+        task = getattr(self, "_usage_refresh_task", None)
+        if task is not None and not task.done():
+            if force:
+                return copy.deepcopy(await asyncio.shield(task))
+            snapshot = getattr(self, "_usage_progress_snapshot", None)
+            if snapshot is not None:
+                return copy.deepcopy(snapshot)
+        if task is not None and task.done() and not force:
+            snapshot = getattr(self, "_usage_progress_snapshot", None)
+            progress = snapshot.get("refreshProgress") if isinstance(snapshot, dict) else None
+            if isinstance(progress, dict) and progress.get("status") == "failed":
+                return copy.deepcopy(snapshot)
+
         signature = self._usage_cache_signature()
-        if not force and self._usage_cache:
+        if not force and getattr(self, "_usage_cache", None):
             if self._usage_cache["expiresAt"] > time.time() and self._usage_cache["signature"] == signature:
                 cached_payload = copy.deepcopy(self._usage_cache["payload"])
                 cached_payload.update({
@@ -2519,35 +2570,277 @@ class CodexRouter:
 
         refresh = self._ensure_usage_refresh()
         if force:
-            payload = copy.deepcopy(await refresh)
-            payload.update({"cached": False, "source": "live", "refreshing": False})
-            return payload
+            return copy.deepcopy(await asyncio.shield(refresh))
+        return copy.deepcopy(self._usage_progress_snapshot or self._persisted_usage_snapshot())
 
-        payload = self._persisted_usage_snapshot()
-        payload.update({"cached": True, "source": "persisted", "refreshing": True})
-        return payload
+    def trigger_usage_refresh(self) -> dict[str, Any]:
+        self._ensure_usage_refresh()
+        return copy.deepcopy(self._usage_progress_snapshot or self._persisted_usage_snapshot())
+
+    def _publish_usage_snapshot(self, generation: int, payload: dict[str, Any]) -> bool:
+        if generation != int(getattr(self, "_usage_generation", 0)):
+            return False
+        self._usage_progress_snapshot = copy.deepcopy(payload)
+        return True
 
     def _ensure_usage_refresh(self) -> asyncio.Task[dict[str, Any]]:
         task = getattr(self, "_usage_refresh_task", None)
         if task is None or task.done():
-            task = asyncio.create_task(self._refresh_usage_cache())
+            generation = int(getattr(self, "_usage_generation", 0)) + 1
+            self._usage_generation = generation
+            payload = self._persisted_usage_snapshot()
+            payload.update({
+                "cached": True,
+                "source": "persisted",
+                "refreshing": True,
+                "refreshProgress": {
+                    "status": "discovering",
+                    "completedAccounts": 0,
+                    "totalAccounts": None,
+                    "pendingSlotIndexes": sorted(slot.index for slot in self.slots),
+                },
+            })
+            self._publish_usage_snapshot(generation, payload)
+            task = asyncio.create_task(self._refresh_usage_cache(generation))
             self._usage_refresh_task = task
         return task
 
-    async def _refresh_usage_cache(self) -> dict[str, Any]:
-        payload = await self._fetch_usage_snapshot()
-        observed_at = now_iso()
-        payload.update({"cached": False, "source": "live", "refreshing": False, "observedAt": observed_at})
-        expires_at = time.time() + CODEX_USAGE_CACHE_TTL_SECONDS
-        self._usage_cache = {
-            "expiresAt": expires_at,
-            "signature": self._usage_cache_signature(),
-            "payload": copy.deepcopy(payload),
-        }
-        payload["cacheExpiresAt"] = self._iso_from_epoch(expires_at)
-        return payload
+    async def _refresh_usage_cache(self, generation: int) -> dict[str, Any]:
+        payload = copy.deepcopy(self._usage_progress_snapshot or self._persisted_usage_snapshot())
+        total_accounts: int | None = None
+        completed_accounts = 0
+        cancelled = False
+        failed = False
+        discovery_tasks: list[asyncio.Task[Any]] = []
+        account_tasks: list[asyncio.Task[Any]] = []
+        try:
+            discovery_semaphore = asyncio.Semaphore(4)
 
-    def _persisted_usage_snapshot(self) -> dict[str, Any]:
+            async def discover(slot: CodexSlot) -> tuple[CodexSlot, CodexAuth | None]:
+                async with discovery_semaphore:
+                    return slot, await self.load_auth(slot)
+
+            discovered: list[tuple[CodexSlot, CodexAuth | None]] = []
+            discovery_slot_errors: list[dict[str, Any]] = []
+            pending_discovery = {slot.index for slot in self.slots}
+            discovery_tasks = [asyncio.create_task(discover(slot)) for slot in self.slots]
+            for future in asyncio.as_completed(discovery_tasks):
+                slot, auth = await future
+                discovered.append((slot, auth))
+                pending_discovery.discard(slot.index)
+                if not auth or not auth.account_key:
+                    discovery_slot_errors.append({
+                        "slotIndex": slot.index,
+                        "source": "none",
+                        "message": "authentication unavailable",
+                    })
+                discovery_payload = copy.deepcopy(payload)
+                discovery_payload["slotErrors"] = copy.deepcopy(discovery_slot_errors)
+                discovery_payload["partial"] = bool(
+                    discovery_slot_errors or discovery_payload.get("partial")
+                )
+                discovery_payload["refreshProgress"] = {
+                    "status": "discovering",
+                    "completedAccounts": 0,
+                    "totalAccounts": None,
+                    "pendingSlotIndexes": sorted(pending_discovery),
+                }
+                self._publish_usage_snapshot(generation, discovery_payload)
+
+            groups: dict[str, dict[str, Any]] = {}
+            active_slots: dict[str, list[CodexSlot]] = {}
+            slot_errors = discovery_slot_errors
+            for slot, auth in sorted(discovered, key=lambda item: item[0].index):
+                account_key = auth.account_key if auth else None
+                if not auth or not account_key:
+                    continue
+                groups.setdefault(account_key, {"auth": auth, "slots": []})["slots"].append(slot)
+                active_slots.setdefault(account_key, []).append(slot)
+
+            payload = self._persisted_usage_snapshot(active_slots)
+            payload["slotErrors"] = slot_errors
+            payload["partial"] = bool(slot_errors or payload.get("partial"))
+            total_accounts = len(groups)
+            pending_indexes = sorted(
+                slot.index for group in groups.values() for slot in group["slots"]
+            )
+            payload.update({
+                "cached": True,
+                "source": "persisted",
+                "refreshing": total_accounts > 0,
+                "refreshProgress": {
+                    "status": "running" if total_accounts else "complete",
+                    "completedAccounts": 0,
+                    "totalAccounts": total_accounts,
+                    "pendingSlotIndexes": pending_indexes,
+                },
+            })
+            self._publish_usage_snapshot(generation, payload)
+
+            persisted_reset: dict[str, dict[str, Any]] = {}
+            if total_accounts:
+                try:
+                    persisted_reset = self.telemetry.reset_credit_snapshots()
+                except Exception as exc:
+                    self.telemetry.record_health_failure("read", "reset_credit_snapshots")
+                    print(f"[spartan-route] telemetry reset-credit read failed ({type(exc).__name__})", file=sys.stderr)
+                    telemetry_error = {
+                        "code": "telemetry_read_failed",
+                        "operation": "reset_credit_snapshots",
+                    }
+                    if telemetry_error not in payload.setdefault("telemetryErrors", []):
+                        payload["telemetryErrors"].append(telemetry_error)
+                    payload["partial"] = True
+                else:
+                    self.telemetry.record_health_success("read", "reset_credit_snapshots")
+
+            account_semaphore = asyncio.Semaphore(4)
+
+            async def fetch_group(account_key: str, group: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+                async with account_semaphore:
+                    result = await self._fetch_usage_account(
+                        account_key,
+                        group["auth"],
+                        group["slots"],
+                        persisted_reset.get(account_key),
+                        False,
+                    )
+                    return account_key, result
+
+            account_tasks = [
+                asyncio.create_task(fetch_group(account_key, group))
+                for account_key, group in groups.items()
+            ]
+            for future in asyncio.as_completed(account_tasks):
+                account_key, item = await future
+                persistence_errors: list[dict[str, str]] = []
+                operations = (
+                    (
+                        "usage_snapshots",
+                        item["usageRecords"],
+                        lambda records: self.telemetry.upsert_usage_snapshots(
+                            records,
+                            current_account_keys=set(groups),
+                        ),
+                    ),
+                    (
+                        "reset_credit_snapshots",
+                        [item["resetRecord"]] if item.get("resetRecord") else [],
+                        self.telemetry.upsert_reset_credits,
+                    ),
+                )
+                for operation, records, persist in operations:
+                    try:
+                        persist(records)
+                    except Exception as exc:
+                        self.telemetry.record_health_failure("write", operation)
+                        print(f"[spartan-route] telemetry {operation} write failed ({type(exc).__name__})", file=sys.stderr)
+                        persistence_errors.append({
+                            "code": "telemetry_persistence_failed",
+                            "operation": operation,
+                        })
+                    else:
+                        self.telemetry.record_health_success("write", operation)
+
+                accounts = [
+                    account for account in payload.get("accounts", [])
+                    if account.get("accountKey") != account_key
+                ]
+                accounts.append(item["row"])
+                accounts.sort(key=lambda row: min(row.get("slotIndexes") or [9999]))
+                payload["accounts"] = accounts
+                if item.get("usageError"):
+                    payload.setdefault("slotErrors", []).append(item["usageError"])
+                if item.get("resetError"):
+                    payload.setdefault("resetCreditErrors", []).append(item["resetError"])
+                for error in persistence_errors:
+                    errors = payload.setdefault("telemetryErrors", [])
+                    if error not in errors:
+                        errors.append(error)
+
+                completed_accounts += 1
+                finished = {slot.index for slot in groups[account_key]["slots"]}
+                pending_indexes = [index for index in pending_indexes if index not in finished]
+                payload["partial"] = bool(
+                    payload.get("slotErrors")
+                    or payload.get("resetCreditErrors")
+                    or payload.get("telemetryErrors")
+                )
+                payload.update({
+                    "cached": False,
+                    "source": "live" if completed_accounts == total_accounts else "mixed",
+                    "refreshing": completed_accounts < total_accounts,
+                    "observedAt": now_iso(),
+                    "refreshProgress": {
+                        "status": "complete" if completed_accounts == total_accounts else "running",
+                        "completedAccounts": completed_accounts,
+                        "totalAccounts": total_accounts,
+                        "pendingSlotIndexes": pending_indexes,
+                    },
+                })
+                self._publish_usage_snapshot(generation, payload)
+        except asyncio.CancelledError:
+            cancelled = True
+            owned_tasks = [*discovery_tasks, *account_tasks]
+            for owned_task in owned_tasks:
+                if not owned_task.done():
+                    owned_task.cancel()
+            if owned_tasks:
+                await asyncio.gather(*owned_tasks, return_exceptions=True)
+        except Exception as exc:
+            failed = True
+            owned_tasks = [*discovery_tasks, *account_tasks]
+            for owned_task in owned_tasks:
+                if not owned_task.done():
+                    owned_task.cancel()
+            if owned_tasks:
+                await asyncio.gather(*owned_tasks, return_exceptions=True)
+            print(f"[spartan-route] Codex usage refresh failed ({type(exc).__name__})", file=sys.stderr)
+        finally:
+            if cancelled or failed:
+                payload.update({
+                    "cached": completed_accounts == 0,
+                    "source": "persisted" if completed_accounts == 0 else "mixed",
+                    "refreshing": False,
+                    "partial": True,
+                    "refreshProgress": {
+                        "status": "failed",
+                        "completedAccounts": completed_accounts,
+                        "totalAccounts": total_accounts,
+                        "pendingSlotIndexes": [],
+                    },
+                    "refreshError": {
+                        "code": "usage_refresh_cancelled" if cancelled else "usage_refresh_failed",
+                    },
+                })
+                self._publish_usage_snapshot(generation, payload)
+            elif total_accounts is not None:
+                payload["refreshing"] = False
+                payload["refreshProgress"] = {
+                    "status": "complete",
+                    "completedAccounts": completed_accounts,
+                    "totalAccounts": total_accounts,
+                    "pendingSlotIndexes": [],
+                }
+                if total_accounts == 0:
+                    payload.update({"cached": True, "source": "persisted"})
+                self._publish_usage_snapshot(generation, payload)
+
+            if generation == int(getattr(self, "_usage_generation", 0)) and not cancelled and not failed:
+                expires_at = time.time() + CODEX_USAGE_CACHE_TTL_SECONDS
+                payload["cacheExpiresAt"] = self._iso_from_epoch(expires_at)
+                self._usage_cache = {
+                    "expiresAt": expires_at,
+                    "signature": self._usage_cache_signature(),
+                    "payload": copy.deepcopy(payload),
+                }
+                self._publish_usage_snapshot(generation, payload)
+        return copy.deepcopy(payload)
+
+    def _persisted_usage_snapshot(
+        self,
+        active_slots: dict[str, list[CodexSlot]] | None = None,
+    ) -> dict[str, Any]:
         telemetry_errors: list[dict[str, str]] = []
         try:
             usage_rows = self.telemetry.usage_snapshots()
@@ -2568,30 +2861,32 @@ class CodexRouter:
         else:
             self.telemetry.record_health_success("read", "reset_credit_snapshots")
 
+        if active_slots is None:
+            active_slots = {}
+            for slot in self.slots:
+                account_key = slot.account_key()
+                if account_key:
+                    active_slots.setdefault(account_key, []).append(slot)
+
         accounts: dict[str, dict[str, Any]] = {}
         observed_at: str | None = None
-        slots_by_index = {slot.index: slot for slot in self.slots}
         for record in usage_rows:
             account_key = str(record.get("account_key") or "")
-            if not account_key:
+            current_slots = active_slots.get(account_key)
+            if not account_key or not current_slots:
                 continue
-            slot_index = int(record.get("slot_index") or 0)
-            slot = slots_by_index.get(slot_index)
-            slot_path = self.slot_path_label(slot) if slot is not None else None
             row = accounts.setdefault(account_key, {
                 "accountKey": account_key,
-                "slotIndexes": [],
-                "slotPaths": [],
+                "slotIndexes": sorted(slot.index for slot in current_slots),
+                "slotPaths": list(dict.fromkeys(
+                    path for path in (self.slot_path_label(slot) for slot in current_slots) if path
+                )),
                 "source": "persisted",
                 "stale": True,
                 "fiveHour": None,
                 "weekly": None,
                 "resetCredits": reset_rows.get(account_key),
             })
-            if slot_index not in row["slotIndexes"]:
-                row["slotIndexes"].append(slot_index)
-            if slot_path and slot_path not in row["slotPaths"]:
-                row["slotPaths"].append(slot_path)
             updated_at = str(record.get("updated_at") or "")
             if updated_at and (observed_at is None or updated_at > observed_at):
                 observed_at = updated_at
@@ -2669,7 +2964,13 @@ class CodexRouter:
         reset_records = [item["resetRecord"] for item in fetched if item.get("resetRecord")]
 
         for operation, persist in (
-            ("usage_snapshots", lambda: self.telemetry.upsert_usage_snapshots(usage_records)),
+            (
+                "usage_snapshots",
+                lambda: self.telemetry.upsert_usage_snapshots(
+                    usage_records,
+                    current_account_keys=set(groups),
+                ),
+            ),
             ("reset_credit_snapshots", lambda: self.telemetry.upsert_reset_credits(reset_records)),
         ):
             try:
@@ -2735,18 +3036,16 @@ class CodexRouter:
         reset_record: dict[str, Any] | None = None
 
         if isinstance(usage_result, BaseException):
-            usage_error = {"slotIndex": slot.index, "source": "none", "message": str(usage_result)}
+            usage_error = {
+                "slotIndex": slot.index,
+                "source": "none",
+                "message": "Codex usage check failed",
+            }
         elif not isinstance(usage_result, dict):
             usage_error = {"slotIndex": slot.index, "source": "none", "message": "Codex usage payload was not an object"}
         else:
-            rate_limit = usage_result.get("rate_limit") if isinstance(usage_result.get("rate_limit"), dict) else {}
             live_window_used: list[float] = []
-            for window_name, source, seconds in (
-                ("fiveHour", usage_result.get("primary_window") or rate_limit.get("primary_window"), FIVE_HOURS_SECONDS),
-                ("weekly", usage_result.get("secondary_window") or rate_limit.get("secondary_window"), SEVEN_DAYS_SECONDS),
-            ):
-                if not isinstance(source, dict):
-                    continue
+            for window_name, (source, seconds) in normalize_usage_windows(usage_result).items():
                 reset_at = source.get("reset_at")
                 if isinstance(reset_at, (int, float)):
                     reset_at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(float(reset_at)))
@@ -2789,7 +3088,7 @@ class CodexRouter:
             reset_error = {
                 "slotIndex": slot.index,
                 "source": "persisted" if row["resetCredits"] else "none",
-                "message": str(reset_result),
+                "message": "Codex reset-credit check failed",
             }
         else:
             try:
@@ -2798,7 +3097,7 @@ class CodexRouter:
                 reset_error = {
                     "slotIndex": slot.index,
                     "source": "persisted" if row["resetCredits"] else "none",
-                    "message": str(exc),
+                    "message": "Codex reset-credit payload was invalid",
                 }
             else:
                 row["resetCredits"] = reset["api"]
