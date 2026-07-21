@@ -2751,6 +2751,22 @@ if (spartanReadinessRevisionCount === 0) {
         spartanCreateNavigation = spartanNavigationReadiness.begin();
         await page.goto(url);`,
       ],
+      [
+        `      if (url) {
+        try {`,
+        `      if (url) {
+        spartanCreateNavigation = spartanNavigationReadiness.begin();
+        try {`,
+      ],
+      [
+        `      if (url) {
+        spartanCreateFence.stage = 'navigate';
+        try {`,
+        `      if (url) {
+        spartanCreateFence.stage = 'navigate';
+        spartanCreateNavigation = spartanNavigationReadiness.begin();
+        try {`,
+      ],
     ],
     'create outcome begin',
   );
@@ -2787,6 +2803,10 @@ if (spartanReadinessRevisionCount === 0) {
       [
         '        await spartanObserveNavigationAttempt(() => page.goto(url));\n      }',
         '        await spartanObserveNavigationAttempt(() => page.goto(url));\n        spartanCreateNavigation?.success();\n      }',
+      ],
+      [
+        '        }\n      }\n      return { tabId };',
+        '        }\n        spartanCreateNavigation?.success();\n      }\n      return { tabId };',
       ],
     ],
     'create outcome success',
