@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -155,6 +156,36 @@ class CamofoxTabIsolationPatchTests(unittest.TestCase):
         compile(camofox, "browser_camofox.py", "exec")
         compile(browser_tool, "browser_tool.py", "exec")
 
+    def test_cli_preserves_each_target_mode_on_first_and_idempotent_run(self):
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            camofox_path = tmp / "browser_camofox.py"
+            browser_tool_path = tmp / "browser_tool.py"
+            camofox_path.write_text(camofox_fixture(), encoding="utf-8")
+            browser_tool_path.write_text(browser_tool_fixture(), encoding="utf-8")
+            camofox_path.chmod(0o640)
+            browser_tool_path.chmod(0o644)
+
+            command = [
+                sys.executable,
+                str(PATCH_PATH),
+                "--camofox-path",
+                str(camofox_path),
+                "--browser-tool-path",
+                str(browser_tool_path),
+            ]
+            for _ in range(2):
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(stat.S_IMODE(camofox_path.stat().st_mode), 0o640)
+                self.assertEqual(stat.S_IMODE(browser_tool_path.stat().st_mode), 0o644)
+
     def test_transform_failure_does_not_write_either_file(self):
         with tempfile.TemporaryDirectory() as raw_tmp:
             tmp = Path(raw_tmp)
@@ -163,6 +194,8 @@ class CamofoxTabIsolationPatchTests(unittest.TestCase):
             original = camofox_fixture()
             camofox_path.write_text(original, encoding="utf-8")
             browser_tool_path.write_text("# drifted upstream\n", encoding="utf-8")
+            camofox_path.chmod(0o640)
+            browser_tool_path.chmod(0o644)
 
             result = subprocess.run(
                 [
@@ -184,6 +217,8 @@ class CamofoxTabIsolationPatchTests(unittest.TestCase):
                 browser_tool_path.read_text(encoding="utf-8"),
                 "# drifted upstream\n",
             )
+            self.assertEqual(stat.S_IMODE(camofox_path.stat().st_mode), 0o640)
+            self.assertEqual(stat.S_IMODE(browser_tool_path.stat().st_mode), 0o644)
 
 
 if __name__ == "__main__":

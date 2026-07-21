@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import stat
 import tempfile
 
 
@@ -180,12 +181,17 @@ def patch_browser_tool(source: str) -> str:
 
 
 def _write_pair_atomic(updates: list[tuple[Path, str]]) -> None:
+    prepared = [
+        (target, content, stat.S_IMODE(target.stat().st_mode))
+        for target, content in updates
+    ]
     staged: list[tuple[Path, Path]] = []
     try:
-        for target, content in updates:
+        for target, content, mode in prepared:
             fd, raw_tmp = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
             tmp = Path(raw_tmp)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), mode)
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())

@@ -201,6 +201,10 @@ RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py
 # Keep installed code owned by root so the hermes workload cannot mutate future
 # Python imports, gateway source, Node dependencies, or bundled patches.
 RUN chown -R root:root /opt/hermes
+RUN test "$(stat -c '%u:%g' /opt/hermes/tools/browser_camofox.py)" = "0:0" \
+    && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_tool.py)" = "0:0" \
+    && setpriv --reuid=65534 --regid=65534 --clear-groups \
+        python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/tools/browser_camofox.py", "/opt/hermes/tools/browser_tool.py")]'
 
 # NOTE: No USER directive - the container starts as root so upstream /init can
 # run cont-init hooks, drop Hermes workloads to the configured UID/GID, and
