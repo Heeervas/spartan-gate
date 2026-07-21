@@ -156,6 +156,12 @@ Docker health to become `unhealthy`, and waits for a different healthy browser
 PID without a Docker container restart. A trap resumes the old PID if recovery
 does not replace it.
 
+Fault injection deliberately uses the same durable recovery ledger as a real
+failure. Repeating it before the 30-minute healthy-reset window expires can
+move the next child recycle to a later configured backoff step (`30s`, `2m`,
+`10m`, then `30m`). Do not delete or reset the ledger after a test; wait for the
+healthy window when measuring steady-state recovery latency.
+
 Rollback is independent by owner:
 
 1. Revert the supervisor/Compose commit and rebuild/recreate only Camofox while
