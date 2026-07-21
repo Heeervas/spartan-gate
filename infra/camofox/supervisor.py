@@ -564,6 +564,16 @@ class DeepHealthResult:
         )
 
     @property
+    def recovery_deferred(self) -> bool:
+        return bool(
+            self.structured
+            and not self.healthy
+            and self.code == "deep_probe_busy_stale"
+            and self.stage == "lifecycle"
+            and self.browser_generation is not None
+        )
+
+    @property
     def real_ready(self) -> bool:
         return bool(
             self.structured
@@ -762,10 +772,12 @@ class RecoveryPolicy:
         self.failure_threshold = failure_threshold
         self.failure_count = 0
 
-    def observe(self, *, healthy: bool, hard_trigger: bool) -> str:
+    def observe(
+        self, *, healthy: bool, hard_trigger: bool, defer_recovery: bool = False
+    ) -> str:
         if healthy:
             self.failure_count = 0
-        else:
+        elif not defer_recovery or hard_trigger:
             self.failure_count += 1
         if hard_trigger or self.failure_count >= self.failure_threshold:
             return "recover"
@@ -1455,6 +1467,7 @@ class SupervisorRuntime:
                 decision = policy.observe(
                     healthy=deep_health.healthy,
                     hard_trigger=hard_trigger,
+                    defer_recovery=deep_health.recovery_deferred,
                 )
                 health_fields = deep_health.log_fields()
                 recovery_reason = (

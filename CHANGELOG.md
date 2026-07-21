@@ -3,6 +3,9 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Kept stale Camofox readiness fail-closed during bounded lifecycle work without
+  letting those busy samples consume the supervisor recovery threshold; owners
+  that exceed their deadline still advance normal recovery.
 - Prevented cached noVNC shells from skipping Caddy edge-session refresh by
   versioning live-profile URLs and marking authenticated noVNC responses
   `no-store`, while retaining fail-closed WebSocket authorization.

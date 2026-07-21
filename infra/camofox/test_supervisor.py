@@ -601,6 +601,79 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(policy.failure_count, 0)
         self.assertEqual(policy.observe(healthy=True, hard_trigger=True), "recover")
 
+    def test_bounded_busy_health_does_not_consume_recovery_threshold(self):
+        timeout = self.supervisor.parse_deep_health_response(
+            503,
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "deep_probe_timeout",
+                    "stage": "new_page",
+                    "browserGeneration": 1,
+                }
+            ).encode(),
+        )
+        busy = self.supervisor.parse_deep_health_response(
+            503,
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "deep_probe_busy_stale",
+                    "stage": "lifecycle",
+                    "browserGeneration": 1,
+                }
+            ).encode(),
+        )
+        ready = self.supervisor.parse_deep_health_response(
+            200,
+            json.dumps(
+                {
+                    "ok": True,
+                    "code": "ready",
+                    "stage": "complete",
+                    "browserGeneration": 1,
+                }
+            ).encode(),
+        )
+        policy = self.supervisor.RecoveryPolicy(failure_threshold=3)
+
+        self.assertEqual(
+            policy.observe(
+                healthy=timeout.healthy,
+                hard_trigger=timeout.hard_trigger,
+                defer_recovery=timeout.recovery_deferred,
+            ),
+            "unhealthy",
+        )
+        self.assertEqual(policy.failure_count, 1)
+        for _ in range(2):
+            self.assertEqual(
+                policy.observe(
+                    healthy=busy.healthy,
+                    hard_trigger=busy.hard_trigger,
+                    defer_recovery=busy.recovery_deferred,
+                ),
+                "unhealthy",
+            )
+            self.assertEqual(policy.failure_count, 1)
+        self.assertEqual(
+            policy.observe(
+                healthy=ready.healthy,
+                hard_trigger=ready.hard_trigger,
+                defer_recovery=ready.recovery_deferred,
+            ),
+            "healthy",
+        )
+        self.assertEqual(policy.failure_count, 0)
+        self.assertEqual(
+            policy.observe(
+                healthy=busy.healthy,
+                hard_trigger=True,
+                defer_recovery=busy.recovery_deferred,
+            ),
+            "recover",
+        )
+
     def test_stop_group_forwards_term_then_kill_and_reports_d_survivor(self):
         sent = []
         clock = FakeClock()

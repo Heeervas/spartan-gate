@@ -432,8 +432,12 @@ poll performs at most one recovery for that child PID/generation tuple, and a
 replacement is healthy only after a different generation passes a deep probe.
 A busy owner is healthy only while it remains inside its declared deadline and
 the last completed real probe is at most 45 seconds old; busy never refreshes
-that proof. A queued create is registered before lifecycle admission, and an
-overdue token also makes deep health fail. The token uses the effective request
+that proof. Once the proof becomes stale, health remains 503 but bounded busy
+samples do not consume the supervisor's recovery threshold. A real-ready probe
+resets earlier failures; an owner that exceeds its deadline reports a terminal
+failure and advances recovery normally. A queued create is registered before
+lifecycle admission, and an overdue token also makes deep health fail. The
+token uses the effective request
 deadline, including the bounded proxy-rotation allowance, rather than the base
 30-second handler timeout. Dead-session cleanup invalidates a create bound to
 that exact context and defers close until its underlying promise settles.

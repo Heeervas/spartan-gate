@@ -93,7 +93,11 @@ Capacity rejection, queue/handler timeouts, validation, policy/proxy/SSL
 failures, aborts, and creates without a URL do not participate. The next
 supervisor poll treats the latched code as a hard browser fault and attempts
 one recovery for the exact child PID and browser generation. Other deep
-failures retain the normal three-sample threshold.
+failures retain the normal three-sample threshold. A stale proof while a
+lifecycle owner is still inside its declared deadline remains unhealthy, but
+does not consume that threshold; a later real-ready probe resets prior failures.
+An owner that exceeds its deadline instead reports a terminal lifecycle failure
+and advances recovery normally.
 
 If in-process recovery does not publish and deeply verify a different browser
 generation, the supervisor terminates the Node/Camoufox process tree and
