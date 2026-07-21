@@ -68,6 +68,7 @@ function refreshActiveTabsGauge() {}
 function handleRouteError(err, _req, res) { sendError(res, err); }
 function isProxyError() { return true; }
 function isTimeoutError() { return true; }
+function isDeadContextError() { return false; }
 const reporter = {};
 let virtualDisplay = null;
 let browserLaunchProxy = null;

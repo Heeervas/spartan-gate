@@ -688,7 +688,8 @@ class SupervisorTests(unittest.TestCase):
         dockerfile = MODULE_PATH.with_name("Dockerfile").read_text()
         self.assertIn("RUN command -v python3 >/dev/null", dockerfile)
         self.assertIn("COPY spartan-health.mjs /app/spartan-health.mjs", dockerfile)
-        self.assertIn("COPY --chmod=0755 supervisor.py /usr/local/bin/spartan-camofox-supervisor.py", dockerfile)
+        self.assertIn("COPY supervisor.py /usr/local/bin/spartan-camofox-supervisor.py", dockerfile)
+        self.assertIn("RUN chmod 0755 /usr/local/bin/spartan-camofox-supervisor.py", dockerfile)
         self.assertIn(
             'CMD ["python3", "/usr/local/bin/spartan-camofox-supervisor.py", "run"]',
             dockerfile,
