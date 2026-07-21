@@ -71,5 +71,6 @@ RUN node -e "const fs=require('fs'); const path='server.js'; let s=fs.readFileSy
 
 # Keep the browser API under an independent PID-1 watchdog. The supervisor
 # receives its internal loopback credential through a 0600 file, not argv.
-COPY --chmod=0755 supervisor.py /usr/local/bin/spartan-camofox-supervisor.py
+COPY supervisor.py /usr/local/bin/spartan-camofox-supervisor.py
+RUN chmod 0755 /usr/local/bin/spartan-camofox-supervisor.py
 CMD ["python3", "/usr/local/bin/spartan-camofox-supervisor.py", "run"]
