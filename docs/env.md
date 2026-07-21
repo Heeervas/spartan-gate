@@ -265,7 +265,10 @@ unless `CAMOFOX_URL` is set.
   `spartan-camofox-main` and session `meet`. Only one Meet owner should rely on
   those fallbacks; additional owners need distinct client-scoped identities.
   `sg-camofox-profile-use` clears legacy global identity/session selection and
-  leaves adoption disabled while enabling Camofox mode.
+  leaves adoption disabled while enabling Camofox mode. The human login helper
+  uses the reserved `spartan-operator-login` tab group plus non-destructive tab
+  creation, so it can share profile cookies without becoming adoptable by
+  Hermes or recycling an existing tab on capacity/navigation failure.
 - `CAMOFOX_GEOIP`: whether the Spartan Gate Camofox wrapper lets upstream
   Camofox run public-IP geo probes for configured proxies, default `false`.
   Keep false for the local Tinyproxy path; only enable for a proxy provider

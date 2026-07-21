@@ -362,9 +362,27 @@ dedicated `CADDY_CAMOFOX_EDGE_TOKEN`; missing or invalid WebSocket sessions fail
 closed without reopening Safari's authentication dialog. Edge cookies and the
 Basic `Authorization` header are removed before requests reach Camofox.
 
+`sg-camofox-profile-live` uses the reserved `spartan-operator-login` tab group
+inside the selected Camofox `userId`. Hermes uses `spartan-hermes`, so both
+groups share cookies but neither adopts or navigates the other's tab. Operator
+tab creation is non-destructive: capacity and navigation/proxy failures abort
+instead of recycling a Hermes tab or rotating the shared browser session. The
+helper verifies a versioned, authenticated safety capability before creating
+the tab; an older running Camofox image fails closed. Failed operator
+navigation removes its newly created tab.
+
+For a profile Hermes already uses, only open and checkpoint the login; do not
+run `use` or recreate services:
+
 ```sh
 sg-camofox-profile-live main https://accounts.google.com
 sg-camofox-profile-save main
+```
+
+For first-time profile selection, wait until active browser work has finished,
+then run:
+
+```sh
 sg-camofox-profile-use main
 sg-browser-mode-apply
 ```
@@ -372,11 +390,13 @@ sg-browser-mode-apply
 `sg-camofox-profile-use` enables Camofox mode but clears legacy global
 user/session ownership and leaves global tab adoption disabled. Supervised
 Hermes profiles derive distinct identities from their own `HERMES_HOME` when
-managed persistence is enabled. Google Meet remains a single-owner compatibility
-path for the default profile. The helper discovers configured profiles, preserves one original backup across
-repeated applies, proves the derived identities are distinct without printing them,
-and does not change tokens or private host paths. Use `sg-camofox-profile-reset
-<profile>` only for an explicit destructive reset, never for recovery.
+managed persistence is enabled. The human login helper retains its reserved,
+non-destructive operator tab group; Google Meet remains a single-owner
+compatibility path for the default profile. The migration helper discovers
+configured profiles, preserves one original backup across repeated applies,
+proves the derived identities are distinct without printing them, and does not
+change tokens or private host paths. Use `sg-camofox-profile-reset <profile>`
+only for an explicit destructive reset, never for recovery.
 
 For HTTPS, configure a certificate-valid `TAILSCALE_HOST` that resolves to
 `TAILSCALE_IP`. The helper aborts instead of using the raw IP when DNS is wrong.

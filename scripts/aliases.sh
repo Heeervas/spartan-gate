@@ -1482,9 +1482,15 @@ sg_camofox_profile_live() {
     local profile="$1"
     local url="${2:-https://accounts.google.com}"
     local user_id
-    local session_key="manual-login"
+    local session_key="spartan-operator-login"
+    local hermes_session_key
     local novnc_url
     user_id="$(sg_camofox_profile_user_id "$profile")" || return 1
+    hermes_session_key="$(sg_env_value CAMOFOX_SESSION_KEY "spartan-hermes")"
+    if [[ "$hermes_session_key" == "$session_key" ]]; then
+        printf 'Error: CAMOFOX session key collision: %s is reserved for operator tabs.\n' "$session_key" >&2
+        return 1
+    fi
     sg_camofox_require_novnc || return 1
 
     sg_camofox_ensure_live_service || return 1
@@ -1503,9 +1509,22 @@ async function request(path, options = {}) {
   try { return text ? JSON.parse(text) : null; } catch { return text; }
 }
 (async () => {
+  let capabilities;
+  try {
+    capabilities = await request("/spartan/capabilities");
+  } catch (error) {
+    throw new Error(`Running Camofox image lacks the safe operator-tab capability; rebuild Camofox before retrying (${error.message || error})`);
+  }
+  if (
+    capabilities?.operatorTabIsolationVersion !== 1
+    || capabilities?.nonDestructiveTabCreate !== true
+    || capabilities?.cleanupFailedOperatorNavigation !== true
+  ) {
+    throw new Error("Running Camofox image does not advertise the required safe operator-tab capability; rebuild Camofox before retrying");
+  }
   const created = await request("/tabs", {
     method: "POST",
-    body: JSON.stringify({ userId, sessionKey, url }),
+    body: JSON.stringify({ userId, sessionKey, url, "nonDestructive": true }),
   });
   console.log(JSON.stringify({ ok: true, userId, sessionKey, url, created }, null, 2));
 })().catch((error) => {
@@ -1520,10 +1539,9 @@ async function request(path, options = {}) {
     printf 'CAMOFOX_USER_ID:     %s\n' "$user_id"
     printf 'CAMOFOX_SESSION_KEY: %s\n' "$session_key"
     printf 'Camofox noVNC:       %s\n' "$novnc_url"
-    printf '\nAfter logging in, run:\n'
+    printf '\nThis operator tab shares profile cookies but is isolated from Hermes tab adoption.\n'
+    printf 'After logging in, verify persisted state with:\n'
     printf '  sg-camofox-profile-save %s\n' "$profile"
-    printf '  sg-camofox-profile-use %s\n' "$profile"
-    printf '  sg-browser-mode-apply\n'
 }
 
 sg_camofox_profile_use() {

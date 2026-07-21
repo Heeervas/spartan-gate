@@ -130,6 +130,28 @@ class HermesProfileNewTests(unittest.TestCase):
 
 
 class CamofoxContractTests(unittest.TestCase):
+    def test_camofox_live_uses_reserved_non_destructive_operator_group(self):
+        source = (ROOT / "scripts" / "aliases.sh").read_text()
+        start = source.index("sg_camofox_profile_live()")
+        end = source.index("sg_camofox_profile_use()", start)
+        helper = source[start:end]
+
+        self.assertIn('local session_key="spartan-operator-login"', helper)
+        self.assertIn('"nonDestructive": true', helper)
+        self.assertIn('request("/spartan/capabilities")', helper)
+        self.assertIn("operatorTabIsolationVersion !== 1", helper)
+        self.assertLess(helper.index('request("/spartan/capabilities")'), helper.index('request("/tabs"'))
+        self.assertIn('sg_env_value CAMOFOX_SESSION_KEY "spartan-hermes"', helper)
+        self.assertLess(helper.index("CAMOFOX session key collision"), helper.index("sg_camofox_require_novnc"))
+
+    def test_live_service_never_force_recreates_camofox(self):
+        source = (ROOT / "scripts" / "aliases.sh").read_text()
+        start = source.index("sg_camofox_ensure_live_service()")
+        end = source.index("sg_camofox_profile_live()", start)
+        helper = source[start:end]
+
+        self.assertNotIn("--force-recreate", helper)
+        self.assertIn("Not recreating camofox automatically", helper)
     def test_public_compose_and_env_examples_do_not_claim_global_camofox_owner(self):
         compose_paths = (
             ROOT / "infra" / "compose" / "compose.yml",
@@ -295,6 +317,77 @@ class AliasHelpTests(unittest.TestCase):
         self.assertIn("sg-browser camofox-viewport-check [width height]", result.stdout)
         self.assertIn("sg-camofox-viewport-check", result.stdout)
         self.assertIn("sg_camofox_viewport_check", result.stdout)
+
+    def test_camofox_live_passes_operator_group_without_switching_hermes(self):
+        command = """
+sg_env_value() {
+  if [[ "$1" == "CAMOFOX_SESSION_KEY" ]]; then printf 'spartan-hermes\n'; fi
+}
+sg_camofox_require_novnc() { :; }
+sg_camofox_ensure_live_service() { :; }
+sg_camofox_request_node() { printf '<%s>\n' "$@"; }
+sg_camofox_novnc_url() { printf 'https://camofox.invalid/vnc_lite.html'; }
+sg-browser camofox-live main https://accounts.google.com
+"""
+        result = self.run_sourced(command)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("<CAMOFOX_PROFILE_USER_ID=spartan-camofox-main>", result.stdout)
+        self.assertIn("<CAMOFOX_PROFILE_SESSION_KEY=spartan-operator-login>", result.stdout)
+        self.assertIn('"nonDestructive": true', result.stdout)
+        self.assertIn('request("/spartan/capabilities")', result.stdout)
+        self.assertNotIn("selected for Hermes", result.stdout)
+        self.assertNotIn("sg-browser-mode-apply", result.stdout)
+
+    def test_camofox_live_unsupported_server_fails_before_tab_post(self):
+        source = (self.root / "scripts" / "aliases.sh").read_text()
+        helper = source.split("sg_camofox_profile_live()", 1)[1].split("sg_camofox_profile_use()", 1)[0]
+        script = helper.split("sg_camofox_request_node '", 1)[1].split(
+            "' -e CAMOFOX_PROFILE_USER_ID=", 1
+        )[0]
+        prelude = """
+global.fetch = async (url, options = {}) => {
+  console.log(`${options.method || "GET"} ${url}`);
+  return { ok: false, status: 404, text: async () => "not found" };
+};
+"""
+        env = os.environ.copy()
+        env.update(
+            CAMOFOX_HELPER_KEY="test-key",
+            CAMOFOX_PROFILE_USER_ID="spartan-camofox-main",
+            CAMOFOX_PROFILE_SESSION_KEY="spartan-operator-login",
+            CAMOFOX_PROFILE_URL="https://accounts.google.com",
+        )
+
+        result = subprocess.run(
+            ["node", "-e", prelude + script],
+            cwd=self.root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GET http://127.0.0.1:9377/spartan/capabilities", result.stdout)
+        self.assertNotIn("POST http://127.0.0.1:9377/tabs", result.stdout)
+        self.assertIn("lacks the safe operator-tab capability", result.stderr)
+
+    def test_camofox_live_collision_fails_before_start_or_request(self):
+        command = """
+sg_env_value() {
+  if [[ "$1" == "CAMOFOX_SESSION_KEY" ]]; then printf 'spartan-operator-login\n'; fi
+}
+sg_camofox_require_novnc() { printf 'unexpected require\n'; }
+sg_camofox_ensure_live_service() { printf 'unexpected start\n'; }
+sg_camofox_request_node() { printf 'unexpected request\n'; }
+sg-browser camofox-live main https://accounts.google.com
+"""
+        result = self.run_sourced(command)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CAMOFOX session key collision", result.stderr)
+        self.assertNotIn("unexpected", result.stdout)
 
     def test_camofox_profile_use_clears_legacy_global_owner(self):
         env_dir = self.root / "private" / "env"

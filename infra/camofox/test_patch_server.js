@@ -10,6 +10,7 @@ import crypto from 'crypto';
 const reporter = {};
 const CONFIG = { nodeEnv: 'production' };
 function isProxyError() { return true; }
+function isTimeoutError() { return true; }
 class StaleRefsError extends Error {}
 function log() {}
 function safeError(err) {
@@ -39,6 +40,9 @@ let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
 const MAX_SESSIONS = 8;
+const MAX_TABS_PER_SESSION = 4;
+const MAX_TABS_GLOBAL = 16;
+const proxyPool = { canRotateSessions: true };
 const HANDLER_TIMEOUT_MS = 30000;
 const TAB_LOCK_TIMEOUT_MS = 35000;
 const sessions = new Map();
@@ -99,7 +103,9 @@ async function restartBrowser(reason) {
   }
 }
 
-function getTotalTabCount() { return 0; }
+function getTotalTabCount() { return 16; }
+async function recycleOldestTab() { return true; }
+async function closeSharedSessionForProxyRetry() {}
 
 async function closeBrowserFully(reason) {
   if (_browserClosePromise) return _browserClosePromise;
@@ -258,17 +264,31 @@ app.post('/tabs', async (req, res) => {
     const resolvedSessionKey = sessionKey || listItemId;
     const result = await withTimeout((async () => {
       let session = await getSession(userId, { trace: !!trace });
+      let totalTabs = 0;
+      for (const group of session.tabGroups.values()) totalTabs += group.size;
+      if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
+        const recycled = await recycleOldestTab(session, req.reqId, userId);
+        if (!recycled) throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
+      }
       const group = getTabGroup(session, resolvedSessionKey);
       const page = await session.context.newPage();
       const tabId = fly.makeTabId();
       let tabState = createTabState(page);
+      attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
+      attachPopupHandler(page, userId, resolvedSessionKey);
       if (url) {
-        const urlErr = validateUrl(url);
-        if (urlErr) throw new Error(urlErr);
-        await page.goto(url);
+        try {
+          await page.goto(url);
+        } catch (navErr) {
+          if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
+            await closeSharedSessionForProxyRetry();
+          } else {
+            throw navErr;
+          }
+        }
       }
-      return { tabId, url: page.url() };
+      return { tabId };
     })(), requestTimeoutMs(), 'tab create');
     res.json(result);
   } catch (err) {
@@ -417,6 +437,12 @@ try {
   assert.match(once, /err\.code = 'clipper_bridge_timeout'/, 'clipper bridge timeouts must return a semantic code');
   assert.match(once, /if \(err\.code\) return err\.message;/, 'coded errors must keep actionable messages');
   assert.match(once, /body\.code = err\.code/, 'global errors must include semantic codes in the response body');
+  assert.match(once, /const spartanNonDestructiveCreate = req\.body\?\.nonDestructive === true;/, 'tab creation must accept explicit non-destructive mode');
+  assert.match(once, /app\.get\('\/spartan\/capabilities', authMiddleware\(\)/, 'operator safety capability must be authenticated');
+  assert.match(once, /operatorTabIsolationVersion: 1/, 'operator safety capability must be versioned');
+  assert.match(once, /spartanNonDestructiveCreate[\s\S]*tab_capacity_reached/, 'non-destructive capacity pressure must return a coded error');
+  assert.match(once, /if \(!spartanNonDestructiveCreate && \(isProxyError\(navErr\)/, 'non-destructive navigation must not rotate the shared session');
+  assert.match(once, /await spartanCleanupCreatedTab\(\)/, 'failed operator navigation must clean up its new tab');
   assert.match(once, /app\.get\('\/spartan\/health\/deep'/, 'deep health route must be installed');
   assert.match(once, /spartanInternalRequestAuthorized/, 'deep health must require internal authorization');
   assert.match(

@@ -14,7 +14,20 @@ SPARTAN_LIFECYCLE = ROOT / "infra" / "camofox" / "spartan-lifecycle.mjs"
 SERVER_FIXTURE = """\
 import crypto from 'crypto';
 import fs from 'fs';
-const app = { get() {}, post() {}, delete() {} };
+const routes = new Map();
+const app = {
+  get(route, ...handlers) { routes.set(String(route), handlers.at(-1)); },
+  post(route, ...handlers) { routes.set(String(route), handlers.at(-1)); },
+  delete(route, ...handlers) { routes.set(`DELETE ${String(route)}`, handlers.at(-1)); },
+};
+const spartanTestState = {
+  totalTabs: 16,
+  recycleCalls: 0,
+  rotateCalls: 0,
+  cleanupCalls: 0,
+  failNavigation: false,
+  lastGroup: null,
+};
 const MAX_SESSIONS = 8;
 const sessions = new Map();
 const tabLocks = new Map();
@@ -48,16 +61,20 @@ function sendError(res, err, extraFields = {}) {
   }
   res.status(status).json(body);
 }
-function clearTabDownloads() {}
-function safePageClose() {}
+async function clearTabDownloads() {}
+async function safePageClose() { spartanTestState.cleanupCalls++; }
 function refreshTabLockQueueDepth() {}
 function refreshActiveTabsGauge() {}
-function handleRouteError() {}
+function handleRouteError(err, _req, res) { sendError(res, err); }
 function isProxyError() { return true; }
+function isTimeoutError() { return true; }
 const reporter = {};
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
+const MAX_TABS_PER_SESSION = 4;
+const MAX_TABS_GLOBAL = 16;
+const proxyPool = { canRotateSessions: true };
 
 function getTabLock(tabId) {
   if (!tabLocks.has(tabId)) {
@@ -96,7 +113,19 @@ let browser = null;
 let browserLaunchPromise = null;
 let _browserClosePromise = null;
 let spartanTestLaunchFactory = async () => ({
-  newContext: async () => ({ pages: () => [] }),
+  newContext: async () => ({
+    pages: () => [],
+    addCookies: async () => {},
+    close: async () => {},
+    newPage: async () => ({
+      on() {},
+      url: () => 'https://example.invalid/',
+      close: async () => {},
+      goto: async () => {
+        if (spartanTestState.failNavigation) throw new Error('proxy failed');
+      },
+    }),
+  }),
 });
 function spartanSetTestLaunchFactory(factory) {
   spartanTestLaunchFactory = factory;
@@ -120,7 +149,14 @@ async function restartBrowser(reason) {
   }
 }
 
-function getTotalTabCount() { return 0; }
+function getTotalTabCount() { return spartanTestState.totalTabs; }
+async function recycleOldestTab() {
+  spartanTestState.recycleCalls++;
+  return true;
+}
+async function closeSharedSessionForProxyRetry() {
+  spartanTestState.rotateCalls++;
+}
 
 async function closeBrowserFully(reason) {
   if (_browserClosePromise) return _browserClosePromise;
@@ -297,6 +333,21 @@ function reapOrphanPages(now = Date.now()) {
 const orphanPageReaper = setInterval(() => reapOrphanPages(), 60_000);
 orphanPageReaper.unref();
 
+function getTabGroup(session, sessionKey) {
+  let group = session.tabGroups.get(sessionKey);
+  if (!group) {
+    group = new Map();
+    session.tabGroups.set(sessionKey, group);
+  }
+  spartanTestState.lastGroup = group;
+  return group;
+}
+const fly = { makeTabId() { return 'tab'; } };
+function createTabState(page) { return { page, visitedUrls: new Set() }; }
+function attachDownloadListener() {}
+const pluginEvents = { emit() {} };
+function validateUrl() { return null; }
+
 async function launch(vdDisplay, launchProxy) {
     const useVirtualDisplay = !!vdDisplay;
     log('info', 'launching camoufox', {
@@ -329,21 +380,34 @@ app.post('/tabs', async (req, res) => {
     const resolvedSessionKey = sessionKey || listItemId;
     const result = await withTimeout((async () => {
       let session = await getSession(userId, { trace: !!trace });
+      let totalTabs = 0;
+      for (const group of session.tabGroups.values()) totalTabs += group.size;
+      if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
+        const recycled = await recycleOldestTab(session, req.reqId, userId);
+        if (!recycled) throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
+      }
       const group = getTabGroup(session, resolvedSessionKey);
       const page = await session.context.newPage();
       const tabId = fly.makeTabId();
       let tabState = createTabState(page);
+      attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
+      attachPopupHandler(page, userId, resolvedSessionKey);
       if (url) {
-        const urlErr = validateUrl(url);
-        if (urlErr) throw new Error(urlErr);
-        await page.goto(url);
+        try {
+          await page.goto(url);
+        } catch (navErr) {
+          if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
+            await closeSharedSessionForProxyRetry();
+          } else {
+            throw navErr;
+          }
+        }
       }
-      return { tabId, url: page.url() };
+      return { tabId };
     })(), requestTimeoutMs(), 'tab create');
     res.json(result);
   } catch (err) {
-    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
@@ -445,7 +509,26 @@ async function closeBrowser() {
   _nativeMemBaseline = null;
 }
 
-export { sessions, closeSession, destroySession, reapTimedOutSessions, evictOldestForMemory, pressureCleanupEmptySessions, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit, spartanWithPendingUserCreate, spartanBindPendingCreateSession, spartanPendingUserCreateSnapshot, spartanBrowserLifecycle, spartanGuardPage, ensureBrowser, spartanSetTestLaunchFactory };
+export {
+  routes,
+  spartanTestState,
+  sessions,
+  closeSession,
+  destroySession,
+  reapTimedOutSessions,
+  evictOldestForMemory,
+  pressureCleanupEmptySessions,
+  reapEmptySessions,
+  reapOrphanPages,
+  spartanWithCreateLimit,
+  spartanWithPendingUserCreate,
+  spartanBindPendingCreateSession,
+  spartanPendingUserCreateSnapshot,
+  spartanBrowserLifecycle,
+  spartanGuardPage,
+  ensureBrowser,
+  spartanSetTestLaunchFactory,
+};
 """
 
 
@@ -1489,6 +1572,99 @@ await assert.rejects(
   spartanWithCreateLimit(async () => {}),
   error => error?.code === 'browser_lifecycle_degraded',
 );
+"""
+        )
+
+        result = subprocess.run(
+            ["node", runner.name],
+            cwd=self.root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_non_destructive_create_never_recycles_or_rotates_shared_state(self):
+        first = self.run_patcher()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        runner = self.root / "non-destructive-runtime.mjs"
+        runner.write_text(
+            """import assert from 'node:assert/strict';
+import { routes, spartanTestState as state } from './server.js';
+
+const handler = routes.get('/tabs');
+const capabilitiesHandler = routes.get('/spartan/capabilities');
+assert.equal(typeof handler, 'function');
+assert.equal(typeof capabilitiesHandler, 'function');
+
+function response() {
+  return {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+}
+
+let res = response();
+await capabilitiesHandler({}, res);
+assert.equal(res.statusCode, 200);
+assert.equal(res.body.operatorTabIsolationVersion, 1);
+assert.equal(res.body.nonDestructiveTabCreate, true);
+assert.equal(res.body.cleanupFailedOperatorNavigation, true);
+
+state.totalTabs = 16;
+res = response();
+await handler(
+  { body: { userId: 'profile', sessionKey: 'operator', nonDestructive: true }, reqId: 'capacity' },
+  res,
+);
+assert.equal(res.statusCode, 429);
+assert.equal(res.body.code, 'tab_capacity_reached');
+assert.equal(state.recycleCalls, 0);
+assert.equal(state.rotateCalls, 0);
+
+state.totalTabs = 0;
+state.failNavigation = true;
+res = response();
+await handler(
+  {
+    body: {
+      userId: 'profile',
+      sessionKey: 'operator',
+      url: 'https://example.com',
+      nonDestructive: true,
+    },
+    reqId: 'navigation',
+  },
+  res,
+);
+assert.ok(res.statusCode >= 400);
+assert.equal(state.recycleCalls, 0);
+assert.equal(state.rotateCalls, 0);
+assert.equal(state.cleanupCalls, 1);
+assert.equal(state.lastGroup.size, 0);
+
+state.totalTabs = 16;
+state.failNavigation = false;
+res = response();
+await handler(
+  { body: { userId: 'profile', sessionKey: 'normal' }, reqId: 'normal-capacity' },
+  res,
+);
+assert.equal(res.statusCode, 200);
+assert.equal(state.recycleCalls, 1);
+
+state.totalTabs = 0;
+state.failNavigation = true;
+res = response();
+await handler(
+  { body: { userId: 'profile', sessionKey: 'normal', url: 'https://example.com' }, reqId: 'normal-navigation' },
+  res,
+);
+assert.equal(res.statusCode, 200);
+assert.equal(state.rotateCalls, 1);
 """
         )
 

@@ -775,6 +775,120 @@ if (!source.includes('/tabs/:tabId/viewport')) {
   source = source.replace(viewportRouteMarker, viewportRouteOnly);
 }
 
+const createTabRouteStart = "app.post('/tabs', async (req, res) => {";
+const createTabRouteNext = "app.post('/tabs/:tabId/navigate', async (req, res) => {";
+const operatorCapabilityRouteMarker = "app.get('/spartan/capabilities'";
+if (!source.includes(operatorCapabilityRouteMarker)) {
+  if (!source.includes(createTabRouteStart)) {
+    throw new Error('expected Camofox create-tab route marker not found');
+  }
+  const operatorCapabilityRoute = `app.get('/spartan/capabilities', authMiddleware(), (_req, res) => {
+  res.json({
+    operatorTabIsolationVersion: 1,
+    nonDestructiveTabCreate: true,
+    cleanupFailedOperatorNavigation: true,
+  });
+});
+
+`;
+  source = source.replace(createTabRouteStart, operatorCapabilityRoute + createTabRouteStart);
+}
+
+const createTabRouteStartIndex = source.indexOf(createTabRouteStart);
+const createTabRouteNextIndex = source.indexOf(createTabRouteNext, createTabRouteStartIndex);
+if (createTabRouteStartIndex === -1 || createTabRouteNextIndex === -1) {
+  throw new Error('expected Camofox create-tab route markers not found');
+}
+let createTabRoute = source.slice(createTabRouteStartIndex, createTabRouteNextIndex);
+if (!createTabRoute.includes('const spartanNonDestructiveCreate')) {
+  const requestMarker = "    const { userId, sessionKey, listItemId, url, trace } = req.body;\n";
+  const capacityMarker = `      if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
+        const recycled = await recycleOldestTab(session, req.reqId, userId);
+        if (!recycled) {
+          throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
+        }
+      }`;
+  const compactCapacityMarker = `      if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
+        const recycled = await recycleOldestTab(session, req.reqId, userId);
+        if (!recycled) throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
+      }`;
+  const capacityReplacement = `      if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
+        if (spartanNonDestructiveCreate) {
+          const err = new Error('Maximum tabs reached; refusing to recycle an active tab');
+          err.statusCode = 429;
+          err.code = 'tab_capacity_reached';
+          throw err;
+        }
+        const recycled = await recycleOldestTab(session, req.reqId, userId);
+        if (!recycled) {
+          throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
+        }
+      }`;
+  const retryMarker = "          if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {";
+
+  if (!createTabRoute.includes(requestMarker)) {
+    throw new Error('expected Camofox create-tab request marker not found');
+  }
+  const capacityAnchor = createTabRoute.includes(capacityMarker)
+    ? capacityMarker
+    : (createTabRoute.includes(compactCapacityMarker) ? compactCapacityMarker : null);
+  if (!capacityAnchor) {
+    throw new Error('expected Camofox create-tab capacity marker not found');
+  }
+  if (!createTabRoute.includes(retryMarker)) {
+    throw new Error('expected Camofox create-tab retry marker not found');
+  }
+
+  createTabRoute = createTabRoute
+    .replace(
+      requestMarker,
+      requestMarker + "    const spartanNonDestructiveCreate = req.body?.nonDestructive === true;\n",
+    )
+    .replace(capacityAnchor, capacityReplacement)
+    .replace(
+      retryMarker,
+      "          if (!spartanNonDestructiveCreate && (isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {",
+    );
+}
+
+if (!createTabRoute.includes('const spartanCleanupCreatedTab')) {
+  const cleanupMarker = `      group.set(tabId, tabState);
+      attachPopupHandler(page, userId, resolvedSessionKey);`;
+  const cleanupReplacement = `${cleanupMarker}
+      const spartanCleanupCreatedTab = async () => {
+        if (tabState.navigateAbort) tabState.navigateAbort.abort();
+        await clearTabDownloads(tabState).catch(() => {});
+        await safePageClose(tabState.page);
+        group.delete(tabId);
+        if (group.size === 0) session.tabGroups.delete(resolvedSessionKey);
+        refreshActiveTabsGauge();
+      };`;
+  const throwMarker = "            throw navErr;\n";
+  const throwCount = createTabRoute.split(throwMarker).length - 1;
+
+  if (!createTabRoute.includes(cleanupMarker)) {
+    throw new Error('expected Camofox created-tab cleanup marker not found');
+  }
+  if (throwCount !== 1) {
+    throw new Error('expected one Camofox create-tab navigation throw marker');
+  }
+
+  let cleanupBeforeThrow = "            if (spartanNonDestructiveCreate) await spartanCleanupCreatedTab();\n";
+  if (!createTabRoute.includes("navErr.code = 'proxy_forbidden'")) {
+    cleanupBeforeThrow = `            if (isProxyError(navErr)) {
+              navErr.statusCode = 403;
+              navErr.code = 'proxy_forbidden';
+            }
+` + cleanupBeforeThrow;
+  }
+  createTabRoute = createTabRoute
+    .replace(cleanupMarker, cleanupReplacement)
+    .replace(throwMarker, cleanupBeforeThrow + throwMarker);
+}
+
+source = source.slice(0, createTabRouteStartIndex) + createTabRoute + source.slice(createTabRouteNextIndex);
+
+
 const navigateProxyErrorPattern = /(\n\s*} else \{\n)(\s*)throw navErr;\n(\s*}\n\s*})/;
 let navigateProxyErrorPatchCount = 0;
 source = source.replace(new RegExp(navigateProxyErrorPattern.source, 'g'), (_match, prefix, indent, suffix) => {
@@ -877,16 +991,16 @@ if (!source.includes('async function spartanWithCreateLimit(')) {
   source = source.replace(spartanCreateLimitMarker, spartanCreateLimitReplacement);
 }
 
-const createTabRouteStart = "app.post('/tabs', async (req, res) => {";
-const createTabRouteEnd = "\n});\n\n// Navigate";
-const createTabRouteStartIndex = source.indexOf(createTabRouteStart);
-if (createTabRouteStartIndex !== -1) {
-  const createTabRouteEndIndex = source.indexOf(createTabRouteEnd, createTabRouteStartIndex);
-  if (createTabRouteEndIndex === -1) throw new Error('expected Camofox create-tab route end marker not found');
-  let createTabRoute = source.slice(createTabRouteStartIndex, createTabRouteEndIndex);
-  if (!createTabRoute.includes('const spartanCreateFence =')) {
-    const routeOpen = `${createTabRouteStart}\n  try {`;
-    const routeOpenReplacement = `${createTabRouteStart}\n  const spartanCreateFence = {\n    active: true,\n    stage: 'validate',\n    startedAt: Date.now(),\n    session: null,\n    page: null,\n    group: null,\n    tabId: null,\n    userKey: null,\n  };\n  try {`;
+const spartanLifecycleCreateTabRouteStart = "app.post('/tabs', async (req, res) => {";
+const spartanLifecycleCreateTabRouteEnd = "\n});\n\n// Navigate";
+const spartanLifecycleCreateTabRouteStartIndex = source.indexOf(spartanLifecycleCreateTabRouteStart);
+if (spartanLifecycleCreateTabRouteStartIndex !== -1) {
+  const spartanLifecycleCreateTabRouteEndIndex = source.indexOf(spartanLifecycleCreateTabRouteEnd, spartanLifecycleCreateTabRouteStartIndex);
+  if (spartanLifecycleCreateTabRouteEndIndex === -1) throw new Error('expected Camofox create-tab route end marker not found');
+  let spartanLifecycleCreateTabRoute = source.slice(spartanLifecycleCreateTabRouteStartIndex, spartanLifecycleCreateTabRouteEndIndex);
+  if (!spartanLifecycleCreateTabRoute.includes('const spartanCreateFence =')) {
+    const routeOpen = `${spartanLifecycleCreateTabRouteStart}\n  try {`;
+    const routeOpenReplacement = `${spartanLifecycleCreateTabRouteStart}\n  const spartanCreateFence = {\n    active: true,\n    stage: 'validate',\n    startedAt: Date.now(),\n    session: null,\n    page: null,\n    group: null,\n    tabId: null,\n    userKey: null,\n  };\n  try {`;
     const getSessionMarker = '      let session = await getSession(userId, { trace: !!trace });';
     const getSessionReplacement = `      spartanCreateFence.stage = 'get_session';
       spartanCreateFence.userKey = normalizeUserId(userId);
@@ -918,11 +1032,18 @@ if (createTabRouteStartIndex !== -1) {
     const tabIdMarker = '      const tabId = fly.makeTabId();';
     const tabIdReplacement = `${tabIdMarker}
       spartanCreateFence.tabId = tabId;`;
-    const navigationMarker = `      if (url) {
+    const navigationMarkerBasic = `      if (url) {
         const urlErr = validateUrl(url);`;
-    const navigationReplacement = `      if (url) {
-        spartanCreateFence.stage = 'navigate';
-        const urlErr = validateUrl(url);`;
+    const navigationMarkerWithRetry = `      if (url) {
+        try {`;
+    const navigationMarker = spartanLifecycleCreateTabRoute.includes(navigationMarkerBasic)
+      ? navigationMarkerBasic
+      : navigationMarkerWithRetry;
+    const navigationReplacement = navigationMarker.replace(
+      '      if (url) {',
+      `      if (url) {
+        spartanCreateFence.stage = 'navigate';`,
+    );
     const createPromiseCloseMarker = `    })(), requestTimeoutMs(), 'tab create');`;
     const createOperationOpenMarker = 'const result = await withTimeout((async () => {';
     const createOperationOpenReplacement = 'const result = await withTimeout(spartanWithCreateLimit(async () => {';
@@ -933,8 +1054,15 @@ if (createTabRouteStartIndex !== -1) {
         if (spartanPendingCreates.size === 0) delete spartanCreateFence.session._spartanPendingCreates;
       }
     }), requestTimeoutMs(), 'tab create');`;
-    const catchMarker = `  } catch (err) {
+    const catchMarkerWithLog = `  } catch (err) {
     log('error', 'tab create failed', { reqId: req.reqId, error: err.message });`;
+    const catchMarkerBare = '  } catch (err) {';
+    const catchMarker = spartanLifecycleCreateTabRoute.includes(catchMarkerWithLog)
+      ? catchMarkerWithLog
+      : catchMarkerBare;
+    const preservedCatchLog = catchMarker === catchMarkerWithLog
+      ? "    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });\n"
+      : "";
     const catchReplacement = `  } catch (err) {
     spartanCreateFence.active = false;
     const spartanCreateTimedOut = err?.code === 'tab_create_timeout'
@@ -967,7 +1095,7 @@ if (createTabRouteStartIndex !== -1) {
         });
       }
     }
-    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });`;
+${preservedCatchLog}`;
 
     for (const [marker, replacement, label] of [
       [routeOpen, routeOpenReplacement, 'route open'],
@@ -980,10 +1108,10 @@ if (createTabRouteStartIndex !== -1) {
       [createPromiseCloseMarker, createPromiseCloseReplacement, 'promise close'],
       [catchMarker, catchReplacement, 'catch'],
     ]) {
-      if (!createTabRoute.includes(marker)) throw new Error(`expected Camofox create-tab ${label} marker not found`);
-      createTabRoute = createTabRoute.replace(marker, replacement);
+      if (!spartanLifecycleCreateTabRoute.includes(marker)) throw new Error(`expected Camofox create-tab ${label} marker not found`);
+      spartanLifecycleCreateTabRoute = spartanLifecycleCreateTabRoute.replace(marker, replacement);
     }
-    source = source.slice(0, createTabRouteStartIndex) + createTabRoute + source.slice(createTabRouteEndIndex);
+    source = source.slice(0, spartanLifecycleCreateTabRouteStartIndex) + spartanLifecycleCreateTabRoute + source.slice(spartanLifecycleCreateTabRouteEndIndex);
   }
 }
 
