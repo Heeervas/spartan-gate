@@ -361,6 +361,10 @@ HttpOnly session covering later HTTP assets and the WebSocket. Camofox uses the
 dedicated `CADDY_CAMOFOX_EDGE_TOKEN`; missing or invalid WebSocket sessions fail
 closed without reopening Safari's authentication dialog. Edge cookies and the
 Basic `Authorization` header are removed before requests reach Camofox.
+The live-profile URL includes a stable version query to bypass any older cached
+noVNC shell, and Caddy marks authenticated noVNC responses `no-store`. This
+forces the page request that refreshes the edge session before noVNC opens its
+WebSocket.
 
 `sg-camofox-profile-live` uses the reserved `spartan-operator-login` tab group
 inside the selected Camofox `userId`. Hermes uses `spartan-hermes`, so both

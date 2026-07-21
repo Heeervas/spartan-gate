@@ -400,6 +400,9 @@ The printed noVNC URL opens `vnc_lite.html` directly and includes the VNC
 password from `CAMOFOX_VNC_PASSWORD` in the URL fragment. The fragment is not
 sent to Caddy or websockify. If Camofox is already running and noVNC is healthy,
 the helper reuses it instead of rebuilding or recreating the service.
+The URL also carries a version query that bypasses older cached noVNC shells.
+Caddy marks authenticated noVNC responses `no-store`, ensuring that loading the
+page refreshes the edge-session cookie before the WebSocket handshake.
 
 Hermes receives the runtime `CAMOFOX_ACCESS_KEY` needed to call Camofox, and
 also receives that same protected-route token as `CAMOFOX_API_KEY` for upstream

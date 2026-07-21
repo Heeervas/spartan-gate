@@ -1380,7 +1380,7 @@ sg_camofox_novnc_url() {
         encoded_password="$(sg_urlencode "$password")" || return 1
         fragment="${fragment}&password=${encoded_password}"
     fi
-    printf '%s://%s:%s/vnc_lite.html#%s\n' "$scheme" "$host" "$port" "$fragment"
+    printf '%s://%s:%s/vnc_lite.html?spartan_edge_auth=1#%s\n' "$scheme" "$host" "$port" "$fragment"
 }
 
 sg_camofox_novnc_reachable() {

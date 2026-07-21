@@ -3,6 +3,9 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Prevented cached noVNC shells from skipping Caddy edge-session refresh by
+  versioning live-profile URLs and marking authenticated noVNC responses
+  `no-store`, while retaining fail-closed WebSocket authorization.
 - Added a PID-1 Camofox supervisor with credentialed loopback deep readiness,
   cgroup/OOM monitoring, process-tree cleanup, and persistent capped automatic
   backoff without Docker socket access or manual breaker resets, including one

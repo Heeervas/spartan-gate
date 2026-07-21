@@ -231,6 +231,19 @@ class CamofoxContractTests(unittest.TestCase):
         self.assertIn(":26080 {", source)
         self.assertIn("reverse_proxy http://camofox:6080", source)
 
+    def test_novnc_refreshes_edge_session_instead_of_reusing_cached_shell(self):
+        aliases = (ROOT / "scripts" / "aliases.sh").read_text()
+        start = aliases.index("sg_camofox_novnc_url()")
+        end = aliases.index("sg_camofox_request_node()", start)
+        helper = aliases[start:end]
+        self.assertIn("/vnc_lite.html?spartan_edge_auth=1#", helper)
+
+        caddyfile = (ROOT / "infra" / "caddy" / "Caddyfile").read_text()
+        site = caddyfile.split(":26080 {", 1)[1].split(
+            "\n}\n\nimport /etc/caddy/local.d/*.caddy", 1
+        )[0]
+        self.assertGreaterEqual(site.count('Cache-Control "no-store"'), 2)
+
     def test_camofox_image_does_not_install_unused_xdotool_resize_dependency(self):
         source = (ROOT / "infra" / "camofox" / "Dockerfile").read_text()
         self.assertNotIn("xdotool", source)

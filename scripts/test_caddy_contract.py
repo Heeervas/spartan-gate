@@ -50,6 +50,7 @@ class CaddyContractTests(unittest.TestCase):
         self.assertNotIn("header_up Cookie", camofox)
         self.assertIn("respond \"Unauthorized\" 401", camofox)
         self.assertIn("basic_auth", camofox)
+        self.assertGreaterEqual(camofox.count('Cache-Control "no-store"'), 2)
         self.assertEqual("; Secure" in camofox, secure)
         self.assertLess(camofox.index("basic_auth"), camofox.rindex("spartan_edge_camofox="))
 
