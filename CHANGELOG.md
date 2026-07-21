@@ -3,6 +3,9 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Limited Camofox's internal recovery wait to two minutes; later durable
+  escalation levels preserve their penalty but exit PID 1 non-zero so Docker
+  restarts the container immediately under `restart: unless-stopped`.
 - Kept stale Camofox readiness fail-closed during bounded lifecycle work without
   letting those busy samples consume the supervisor recovery threshold; owners
   that exceed their deadline still advance normal recovery.

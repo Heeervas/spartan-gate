@@ -674,6 +674,51 @@ class SupervisorTests(unittest.TestCase):
             "recover",
         )
 
+    def test_backoff_over_two_minutes_is_delegated_to_docker(self):
+        clock = FakeClock()
+        initial_time = clock.time()
+        ledger_file = self.root / "watchdog" / "ledger.json"
+        readiness_file = self.root / "run" / "readiness.json"
+        config = self.supervisor.Config.from_env(
+            {
+                "SPARTAN_CAMOFOX_LEDGER_FILE": str(ledger_file),
+                "SPARTAN_CAMOFOX_READINESS_FILE": str(readiness_file),
+                "SPARTAN_CAMOFOX_INTERNAL_SECRET_FILE": str(
+                    self.root / "run" / "internal.key"
+                ),
+                "SPARTAN_CAMOFOX_CGROUP_ROOT": str(self.root / "cgroup"),
+                "SPARTAN_CAMOFOX_PROC_ROOT": str(self.root / "proc"),
+                "SPARTAN_CAMOFOX_WORKDIR": str(self.root),
+            }
+        )
+        stream = io.StringIO()
+        runtime = self.supervisor.SupervisorRuntime(
+            config,
+            logger=self.supervisor.EventLogger(stream=stream, now=clock.time),
+            wall_time=clock.time,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+        runtime.ledger.recycle_count = 4
+        runtime.ledger.next_allowed_at = clock.time() + 1800
+        self.supervisor.save_ledger(ledger_file, runtime.ledger)
+
+        self.assertFalse(runtime._wait_backoff())
+        self.assertTrue(runtime.docker_restart_requested)
+        self.assertEqual(runtime.ledger.recycle_count, 4)
+        self.assertEqual(runtime.ledger.next_allowed_at, 0)
+        self.assertEqual(json.loads(ledger_file.read_text())["next_allowed_at"], 0)
+        self.assertEqual(runtime._shutdown(), 1)
+        self.assertIn('"event":"docker_restart_requested"', stream.getvalue())
+
+        runtime.docker_restart_requested = False
+        runtime.ledger.next_allowed_at = clock.time() + 120
+        self.supervisor.save_ledger(ledger_file, runtime.ledger)
+
+        self.assertTrue(runtime._wait_backoff())
+        self.assertFalse(runtime.docker_restart_requested)
+        self.assertEqual(clock.time(), initial_time + 120)
+
     def test_stop_group_forwards_term_then_kill_and_reports_d_survivor(self):
         sent = []
         clock = FakeClock()

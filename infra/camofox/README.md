@@ -102,11 +102,14 @@ and advances recovery normally.
 If in-process recovery does not publish and deeply verify a different browser
 generation, the supervisor terminates the Node/Camoufox process tree and
 relaunches it only after every tracked PID has disappeared.
-The durable retry schedule is `0s, 30s, 2m, 10m, 30m`, capped at one attempt per
-30 minutes during a sustained fault and reset only after 30 continuously
+The durable escalation schedule remains `0s, 30s, 2m, 10m, 30m`, but PID 1
+waits internally for at most two minutes. A scheduled delay above two minutes
+preserves the accumulated recycle level, clears only the pending wait timestamp,
+and exits non-zero so Compose's `restart: unless-stopped` policy restarts the
+container immediately. The escalation level resets only after 30 continuously
 healthy minutes. If a process remains in uninterruptible `D` state, readiness
-stays unhealthy and no second browser is launched; the supervisor retries
-cleanup at the maximum backoff.
+stays unhealthy and Docker cannot start a replacement container until the old
+namespace is actually stopped, so no second browser is launched.
 
 Local capacity exhaustion returns 429 immediately; queue timeout, navigation
 timeout, degraded/recovering browser state, and other internal inability return
@@ -142,10 +145,10 @@ The watchdog ledger is separate from browser credentials:
 ```
 
 The ledger is bound to the supervisor revision. Recreating the same revision
-keeps the accumulated backoff, while deploying a different revision grants one
-immediate launch attempt and then reapplies the accumulated backoff level if
-that attempt fails. This allows a fixed image to recover without deleting
-diagnostic state or enabling a same-image force-recreate loop.
+keeps the accumulated recycle level, while deploying a different revision
+grants one immediate launch attempt. Delays through two minutes remain internal;
+later levels request a Docker restart without deleting the accumulated penalty.
+This allows a fixed image to recover without deleting diagnostic state.
 
 Do not mount `docker.sock`, add an autoheal sidecar, or use profile reset as a
 recovery action. For diagnosis, preserve logs before any recreate and inspect
@@ -184,9 +187,10 @@ does not replace it.
 
 Fault injection deliberately uses the same durable recovery ledger as a real
 failure. Repeating it before the 30-minute healthy-reset window expires can
-move the next child recycle to a later configured backoff step (`30s`, `2m`,
-`10m`, then `30m`). Do not delete or reset the ledger after a test; wait for the
-healthy window when measuring steady-state recovery latency.
+move the next child recycle to a later escalation step. The supervisor waits
+for `30s` and `2m` itself; the former `10m` and `30m` levels now exit non-zero
+and delegate immediate container restart to Docker. Do not delete or reset the
+ledger after a test.
 
 Rollback is independent by owner:
 

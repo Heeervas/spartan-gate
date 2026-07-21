@@ -446,8 +446,12 @@ The unsafe deprecated `POST /tabs/open` alias returns HTTP 410; use
 The supervisor performs one
 internal recovery after three
 failures, and then recycles its child process tree under persistent exponential
-backoff. It does not use Docker control APIs. If an unkillable `D` process
-survives, it refuses to launch a second browser and remains unhealthy. Preserve
+backoff. Delays through two minutes are handled inside PID 1. A later escalation
+clears only the pending wait timestamp, exits non-zero, and relies on Compose's
+`restart: unless-stopped` policy for immediate container restart; profiles,
+cookies, and the accumulated recycle level remain persistent. The supervisor
+does not use Docker control APIs. If an unkillable `D` process survives, Docker
+cannot finish the old container and no second browser is launched. Preserve
 redacted Camofox logs before any explicit recreate; do not delete profiles or
 watchdog state as a diagnostic shortcut.
 

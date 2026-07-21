@@ -39,6 +39,7 @@ DEFAULT_LEDGER_FILE = pathlib.Path("/var/lib/spartan-camofox-watchdog/ledger.jso
 DEFAULT_CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup")
 DEFAULT_PROC_ROOT = pathlib.Path("/proc")
 DEFAULT_BACKOFFS = (0, 30, 120, 600, 1800)
+MAX_INTERNAL_BACKOFF_SECONDS = 120
 
 READY_STATES = frozenset(
     {"starting", "ready", "recovering", "backoff", "unhealthy", "stopping"}
@@ -880,6 +881,7 @@ class EventLogger:
             "child_stopped",
             "cleanup_blocked",
             "backoff_wait",
+            "docker_restart_requested",
             "supervisor_stopping",
             "configuration_error",
             "runtime_error",
@@ -1206,6 +1208,7 @@ class SupervisorRuntime:
         self.tracked: tuple[ProcessInfo, ...] = ()
         self.blocked = False
         self.stop_requested = False
+        self.docker_restart_requested = False
         self._last_ready: bool | None = None
         self.recovery_attempts = RecoveryAttemptGuard()
 
@@ -1251,12 +1254,25 @@ class SupervisorRuntime:
             self._reap_adopted()
             self.sleep(min(0.25, remaining))
 
+    def _delegate_backoff_to_docker(self, delay_seconds: float) -> None:
+        self.ledger.next_allowed_at = 0.0
+        save_ledger(self.config.ledger_file, self.ledger)
+        self.docker_restart_requested = True
+        self._publish("unhealthy")
+        self.logger.emit(
+            "docker_restart_requested",
+            delay_seconds=round(delay_seconds, 3),
+        )
+
     def _wait_backoff(self) -> bool:
         logged = False
         while not self.stop_requested:
             remaining = self.ledger.next_allowed_at - self.wall_time()
             if remaining <= 0:
                 return True
+            if remaining > MAX_INTERNAL_BACKOFF_SECONDS:
+                self._delegate_backoff_to_docker(remaining)
+                return False
             self._publish("backoff")
             if not logged:
                 self.logger.emit("backoff_wait", delay_seconds=round(remaining, 3))
@@ -1367,8 +1383,11 @@ class SupervisorRuntime:
         self.blocked = False
         if record_recycle:
             delay = self.ledger.record_recycle(self.wall_time(), self.config.backoffs)
-            save_ledger(self.config.ledger_file, self.ledger)
-            self.logger.emit("backoff_wait", delay_seconds=delay)
+            if delay > MAX_INTERNAL_BACKOFF_SECONDS:
+                self._delegate_backoff_to_docker(delay)
+            else:
+                save_ledger(self.config.ledger_file, self.ledger)
+                self.logger.emit("backoff_wait", delay_seconds=delay)
         return True
 
     def _retry_blocked_cleanup(self) -> bool:
@@ -1383,7 +1402,7 @@ class SupervisorRuntime:
         self._publish("stopping")
         if self.pgid is not None:
             self._stop_lifecycle(record_recycle=False)
-        return 0
+        return 1 if self.docker_restart_requested else 0
 
     def _attempt_internal_recovery(
         self,
@@ -1437,7 +1456,7 @@ class SupervisorRuntime:
             self.logger.emit("subreaper_unavailable")
         self.logger.emit("supervisor_started", pid=os.getpid(), ppid=os.getppid())
         self._publish("starting")
-        while not self.stop_requested:
+        while not self.stop_requested and not self.docker_restart_requested:
             if self.blocked:
                 if not self._retry_blocked_cleanup():
                     continue
