@@ -643,7 +643,18 @@ def parse_deep_health_response(status: int, body: bytes) -> DeepHealthResult:
 
 class RecoveryAttemptGuard:
     def __init__(self):
+        self._child_pid: int | None = None
         self._attempted: set[tuple[int, int | None]] = set()
+
+    def start_child(self, child_pid: int) -> None:
+        if (
+            not isinstance(child_pid, int)
+            or isinstance(child_pid, bool)
+            or child_pid <= 1
+        ):
+            raise ValueError("invalid recovery child pid")
+        self._child_pid = child_pid
+        self._attempted.clear()
 
     def claim(self, child_pid: int, browser_generation: int | None) -> bool:
         if (
@@ -652,6 +663,8 @@ class RecoveryAttemptGuard:
             or child_pid <= 1
         ):
             raise ValueError("invalid recovery child pid")
+        if child_pid != self._child_pid:
+            raise ValueError("recovery child pid is not current")
         if browser_generation is not None and not _safe_browser_generation(
             browser_generation
         ):
@@ -1258,6 +1271,7 @@ class SupervisorRuntime:
         if info is None:
             raise RuntimeError("child identity unavailable")
         self.child_info = info
+        self.recovery_attempts.start_child(info.pid)
         self.tracked = lifecycle_processes(info, self.pgid, self.config.proc_root)
         self.blocked = False
         self.logger.emit(

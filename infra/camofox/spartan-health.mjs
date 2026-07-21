@@ -106,7 +106,7 @@ export function createSpartanNavigationReadiness({
   let state = null;
 
   function readGeneration() {
-    const generation = Number(getGeneration());
+    const generation = getGeneration();
     if (!Number.isSafeInteger(generation) || generation < 0) {
       throw new TypeError('navigation readiness generation must be a non-negative safe integer');
     }
@@ -206,6 +206,7 @@ export function createSpartanDeepHealthController({
   }
   const exposureTimeoutMs = Number(probeTimeoutMs) + Number(cleanupTimeoutMs);
   let inflightProbe = null;
+  let inflightProbeGeneration = null;
   let inflightRecovery = null;
   let lastReadyAt = null;
   let lastReadyGeneration = null;
@@ -214,7 +215,7 @@ export function createSpartanDeepHealthController({
 
   function readGeneration() {
     if (!generationAware) return null;
-    const generation = Number(getGeneration());
+    const generation = getGeneration();
     if (!Number.isSafeInteger(generation) || generation < 0) {
       const error = new Error('deep health generation must be a non-negative safe integer');
       error.code = 'deep_probe_generation_invalid';
@@ -369,6 +370,11 @@ export function createSpartanDeepHealthController({
   }
 
   function probe() {
+    const requestedGeneration = readGeneration();
+    if (inflightProbe && generationAware && inflightProbeGeneration !== requestedGeneration) {
+      inflightProbe = null;
+      inflightProbeGeneration = null;
+    }
     if (!inflightProbe) {
       let reportFailure;
       const earlyFailure = new Promise(resolve => { reportFailure = resolve; });
@@ -419,9 +425,16 @@ export function createSpartanDeepHealthController({
       }));
       exposed.then(publishResult, () => {});
       inflightProbe = exposed;
+      inflightProbeGeneration = requestedGeneration;
+      const clearInflight = () => {
+        if (inflightProbe === exposed) {
+          inflightProbe = null;
+          inflightProbeGeneration = null;
+        }
+      };
       underlying.then(
-        () => { if (inflightProbe === exposed) inflightProbe = null; },
-        () => { if (inflightProbe === exposed) inflightProbe = null; },
+        clearInflight,
+        clearInflight,
       );
     }
     return inflightProbe;
@@ -442,14 +455,16 @@ export function createSpartanDeepHealthController({
             }, replacementGeneration);
           }
           const verification = await probe();
+          const verifiedGeneration = readGeneration();
           return verification.code === 'ready'
             && (!generationAware || verification.generation === replacementGeneration)
+            && (!generationAware || verifiedGeneration === replacementGeneration)
             ? withGeneration({ ok: true, code: 'recovered' }, replacementGeneration)
             : withGeneration({
                 ok: false,
                 code: 'recovery_probe_failed',
                 stage: verification.stage,
-              }, replacementGeneration);
+              }, verifiedGeneration);
         });
       const exposedRecovery = bounded(
         recovery,

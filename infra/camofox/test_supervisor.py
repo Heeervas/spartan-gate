@@ -522,11 +522,18 @@ class SupervisorTests(unittest.TestCase):
     def test_recovery_attempt_is_claimed_once_per_pid_and_generation(self):
         attempts = self.supervisor.RecoveryAttemptGuard()
 
+        attempts.start_child(100)
         self.assertTrue(attempts.claim(100, 0))
         self.assertFalse(attempts.claim(100, 0))
         self.assertTrue(attempts.claim(100, 1))
+        with self.assertRaisesRegex(ValueError, "not current"):
+            attempts.claim(101, 0)
+
+        attempts.start_child(101)
         self.assertTrue(attempts.claim(101, 0))
         self.assertFalse(attempts.claim(101, 0))
+        attempts.start_child(101)
+        self.assertTrue(attempts.claim(101, 0))
 
     def test_recovery_verification_requires_ready_from_a_different_generation(self):
         failed = self.supervisor.parse_deep_health_response(

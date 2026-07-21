@@ -470,6 +470,87 @@ test('recovery requires a newly published generation and verifies that generatio
   assert.equal(controller.snapshot().code, 'deep_probe_uninitialized');
 });
 
+test('generation readers reject coercible non-number values', () => {
+  for (const invalid of [null, false, '', '1']) {
+    const navigation = createSpartanNavigationReadiness({
+      getGeneration: () => invalid,
+      markDegraded: () => {},
+    });
+    assert.throws(() => navigation.snapshot(), /non-negative safe integer/);
+
+    const controller = createSpartanDeepHealthController({
+      getGeneration: () => invalid,
+      getBrowser: async () => ({}),
+      recoverBrowser: async () => {},
+    });
+    assert.equal(controller.snapshot().code, 'deep_probe_generation_invalid');
+  }
+});
+
+test('recovery does not reuse an inflight probe from the failed generation', async () => {
+  let generation = 1;
+  let contextCalls = 0;
+  let releaseOld;
+  const oldGate = new Promise(resolve => { releaseOld = resolve; });
+  const controller = createSpartanDeepHealthController({
+    getGeneration: () => generation,
+    getBrowser: async () => ({
+      newContext: async () => {
+        contextCalls++;
+        if (generation === 1) await oldGate;
+        return {
+          newPage: async () => fakePage(),
+          close: async () => {},
+        };
+      },
+    }),
+    recoverBrowser: async () => { generation = 2; },
+    probeTimeoutMs: 40,
+    cleanupTimeoutMs: 5,
+  });
+
+  const oldProbe = controller.probe();
+  await new Promise(resolve => setImmediate(resolve));
+  const recovered = await controller.recover();
+  assert.deepEqual(recovered, { ok: true, code: 'recovered', generation: 2 });
+  assert.equal(contextCalls, 2);
+  releaseOld();
+  await oldProbe;
+});
+
+test('recovery fails if the verified replacement is no longer current', async () => {
+  let generation = 1;
+  let changeDuringVerification = false;
+  const controller = createSpartanDeepHealthController({
+    getGeneration: () => generation,
+    getBrowser: async () => ({
+      newContext: async () => ({
+        newPage: async () => fakePage({
+          evaluate: async () => {
+            if (changeDuringVerification) generation = 3;
+            return 'ready';
+          },
+        }),
+        close: async () => {},
+      }),
+    }),
+    recoverBrowser: async () => {
+      generation = 2;
+      changeDuringVerification = true;
+    },
+  });
+
+  const result = await controller.recover();
+  assert.deepEqual(result, {
+    ok: false,
+    code: 'recovery_probe_failed',
+    stage: 'complete',
+    generation: 3,
+  });
+  assert.equal(controller.snapshot().code, 'deep_probe_uninitialized');
+  assert.equal(controller.snapshot().generation, 3);
+});
+
 test('invalid health deadlines and exclusivity fail closed', () => {
   const base = { getBrowser: async () => ({}), recoverBrowser: async () => {} };
   assert.throws(() => createSpartanDeepHealthController({ ...base, probeTimeoutMs: 0 }), /probeTimeoutMs/);
