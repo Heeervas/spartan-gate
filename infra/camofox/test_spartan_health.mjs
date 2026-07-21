@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createSpartanDeepHealthController, spartanCgroupAdmissionAllowed, spartanInternalRequestAuthorized } from './spartan-health.mjs';
+import {
+  createSpartanDeepHealthController,
+  createSpartanNavigationReadiness,
+  spartanCgroupAdmissionAllowed,
+  spartanInternalRequestAuthorized,
+} from './spartan-health.mjs';
 
 function fakePage(overrides = {}) {
   return {
@@ -14,6 +19,60 @@ function fakePage(overrides = {}) {
     ...overrides,
   };
 }
+
+test('navigation readiness latches only terminal qualifying failures for one generation', () => {
+  let generation = 7;
+  let clock = 100;
+  const degraded = [];
+  const readiness = createSpartanNavigationReadiness({
+    getGeneration: () => generation,
+    markDegraded: code => degraded.push(code),
+    now: () => clock++,
+  });
+
+  readiness.begin().failure({ qualifying: true });
+  readiness.begin().failure({ qualifying: true });
+  readiness.begin().success();
+  assert.equal(readiness.snapshot().consecutiveFailures, 0);
+
+  const terminal = readiness.begin();
+  assert.equal(terminal.failure({ qualifying: true }).consecutiveFailures, 1);
+  assert.equal(terminal.success().reason, 'already_settled');
+  readiness.begin().failure({ qualifying: false });
+  readiness.begin({ participates: false }).failure({ qualifying: true });
+  assert.equal(readiness.snapshot().consecutiveFailures, 1);
+
+  readiness.begin().failure({ qualifying: true });
+  const latched = readiness.begin().failure({ qualifying: true });
+  assert.equal(latched.latched, true);
+  assert.deepEqual(degraded, ['browser_navigation_degraded']);
+  readiness.begin().success();
+  readiness.begin().failure({ qualifying: true });
+  assert.equal(readiness.snapshot().latched, true);
+  assert.equal(readiness.snapshot().consecutiveFailures, 3);
+  assert.deepEqual(degraded, ['browser_navigation_degraded']);
+
+  generation++;
+  assert.deepEqual(readiness.snapshot(), {
+    generation: 8,
+    consecutiveFailures: 0,
+    latched: false,
+    latchedAt: null,
+    lastSuccessAt: null,
+  });
+});
+
+test('late navigation completion from an old generation cannot mutate the replacement', () => {
+  let generation = 1;
+  const readiness = createSpartanNavigationReadiness({
+    getGeneration: () => generation,
+    markDegraded: () => assert.fail('stale result must not degrade replacement'),
+  });
+  const oldAttempt = readiness.begin();
+  generation = 2;
+  assert.equal(oldAttempt.failure({ qualifying: true }).reason, 'stale_generation');
+  assert.equal(readiness.snapshot().consecutiveFailures, 0);
+});
 
 test('deep probe completes the raw lifecycle and cleans up', async () => {
   let pageClosed = 0;
@@ -339,6 +398,76 @@ test('busy before any real probe is unhealthy and cannot verify recovery', async
   assert.equal(recovery.ok, false);
   assert.equal(recovery.code, 'recovery_probe_failed');
   assert.equal(recoveryCalls, 1);
+});
+
+test('passive readiness cache fails closed when absent, stale, or from another generation', async () => {
+  let generation = 3;
+  let clock = 1000;
+  const controller = createSpartanDeepHealthController({
+    getGeneration: () => generation,
+    getBrowser: async () => ({
+      newContext: async () => ({
+        newPage: async () => fakePage(),
+        close: async () => {},
+      }),
+    }),
+    recoverBrowser: async () => {},
+    cacheMaxAgeMs: 45,
+    now: () => clock,
+  });
+
+  assert.deepEqual(controller.snapshot(), {
+    ok: false,
+    code: 'deep_probe_uninitialized',
+    stage: 'cache',
+    generation: 3,
+    ageMs: null,
+  });
+  const ready = await controller.probe();
+  assert.equal(ready.generation, 3);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(controller.snapshot().ok, true);
+
+  clock = 1046;
+  assert.equal(controller.snapshot().code, 'deep_probe_cache_stale');
+  generation = 4;
+  const replacement = controller.snapshot();
+  assert.equal(replacement.ok, false);
+  assert.equal(replacement.code, 'deep_probe_generation_stale');
+  assert.equal(replacement.generation, 4);
+});
+
+test('recovery requires a newly published generation and verifies that generation', async () => {
+  let generation = 1;
+  let publishReplacement = true;
+  const controller = createSpartanDeepHealthController({
+    getGeneration: () => generation,
+    getBrowser: async () => ({
+      newContext: async () => ({
+        newPage: async () => fakePage(),
+        close: async () => {},
+      }),
+    }),
+    recoverBrowser: async () => {
+      if (publishReplacement) generation++;
+    },
+  });
+
+  const recovered = await controller.recover();
+  assert.deepEqual(recovered, { ok: true, code: 'recovered', generation: 2 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(controller.snapshot().generation, 2);
+  assert.equal(controller.snapshot().ok, true);
+
+  publishReplacement = false;
+  const unchanged = await controller.recover();
+  assert.deepEqual(unchanged, {
+    ok: false,
+    code: 'recovery_generation_unchanged',
+    stage: 'recovery',
+    generation: 2,
+  });
+  assert.equal(controller.snapshot().code, 'deep_probe_uninitialized');
 });
 
 test('invalid health deadlines and exclusivity fail closed', () => {

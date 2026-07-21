@@ -86,6 +86,94 @@ export function spartanInternalRequestAuthorized(req, secretPath) {
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
 }
 
+export function createSpartanNavigationReadiness({
+  failureThreshold = 3,
+  getGeneration,
+  markDegraded,
+  now = () => Date.now(),
+} = {}) {
+  if (!Number.isInteger(failureThreshold) || failureThreshold < 1 || failureThreshold > 100) {
+    throw new TypeError('navigation readiness failureThreshold must be an integer between 1 and 100');
+  }
+  if (typeof getGeneration !== 'function') {
+    throw new TypeError('navigation readiness getGeneration must be a function');
+  }
+  if (typeof markDegraded !== 'function') {
+    throw new TypeError('navigation readiness markDegraded must be a function');
+  }
+  if (typeof now !== 'function') throw new TypeError('navigation readiness now must be a function');
+
+  let state = null;
+
+  function readGeneration() {
+    const generation = Number(getGeneration());
+    if (!Number.isSafeInteger(generation) || generation < 0) {
+      throw new TypeError('navigation readiness generation must be a non-negative safe integer');
+    }
+    return generation;
+  }
+
+  function currentState() {
+    const generation = readGeneration();
+    if (!state || state.generation !== generation) {
+      state = {
+        generation,
+        consecutiveFailures: 0,
+        latched: false,
+        latchedAt: null,
+        lastSuccessAt: null,
+      };
+    }
+    return state;
+  }
+
+  function begin({ participates = true } = {}) {
+    const generation = readGeneration();
+    let settled = false;
+
+    function settle(kind, qualifying = false) {
+      if (settled) return { accepted: false, reason: 'already_settled' };
+      settled = true;
+      if (!participates) return { accepted: false, reason: 'not_participating' };
+      const current = currentState();
+      if (current.generation !== generation) {
+        return { accepted: false, reason: 'stale_generation' };
+      }
+      if (current.latched) return { accepted: false, reason: 'latched' };
+      if (kind === 'success') {
+        current.consecutiveFailures = 0;
+        current.lastSuccessAt = now();
+        return { accepted: true, latched: false, consecutiveFailures: 0 };
+      }
+      if (!qualifying) return { accepted: false, reason: 'not_qualifying' };
+      current.consecutiveFailures++;
+      if (current.consecutiveFailures >= failureThreshold) {
+        current.latched = true;
+        current.latchedAt = now();
+        markDegraded('browser_navigation_degraded');
+      }
+      return {
+        accepted: true,
+        latched: current.latched,
+        consecutiveFailures: current.consecutiveFailures,
+      };
+    }
+
+    return {
+      generation,
+      success: () => settle('success'),
+      failure: ({ qualifying = false } = {}) => settle('failure', qualifying),
+    };
+  }
+
+  function snapshot() {
+    const current = currentState();
+    return { ...current };
+  }
+
+  return { begin, snapshot };
+}
+
 export function createSpartanDeepHealthController({
   getBrowser,
   recoverBrowser,
@@ -95,12 +183,15 @@ export function createSpartanDeepHealthController({
   recoveryTimeoutMs = 20000,
   runExclusive = operation => operation(),
   now = () => Date.now(),
+  getGeneration = null,
+  cacheMaxAgeMs = busyMaxAgeMs,
 }) {
   for (const [name, value] of [
     ['probeTimeoutMs', probeTimeoutMs],
     ['cleanupTimeoutMs', cleanupTimeoutMs],
     ['busyMaxAgeMs', busyMaxAgeMs],
     ['recoveryTimeoutMs', recoveryTimeoutMs],
+    ['cacheMaxAgeMs', cacheMaxAgeMs],
   ]) {
     if (!Number.isFinite(Number(value)) || Number(value) < 1) {
       throw new TypeError(`deep health ${name} must be positive`);
@@ -109,10 +200,79 @@ export function createSpartanDeepHealthController({
   if (typeof runExclusive !== 'function') {
     throw new TypeError('deep health runExclusive must be a function');
   }
+  const generationAware = getGeneration !== null && getGeneration !== undefined;
+  if (generationAware && typeof getGeneration !== 'function') {
+    throw new TypeError('deep health getGeneration must be a function or null');
+  }
   const exposureTimeoutMs = Number(probeTimeoutMs) + Number(cleanupTimeoutMs);
   let inflightProbe = null;
   let inflightRecovery = null;
   let lastReadyAt = null;
+  let lastReadyGeneration = null;
+  let lastResult = null;
+  let lastProbeAt = null;
+
+  function readGeneration() {
+    if (!generationAware) return null;
+    const generation = Number(getGeneration());
+    if (!Number.isSafeInteger(generation) || generation < 0) {
+      const error = new Error('deep health generation must be a non-negative safe integer');
+      error.code = 'deep_probe_generation_invalid';
+      error.stage = 'generation';
+      throw error;
+    }
+    return generation;
+  }
+
+  function withGeneration(result, generation = readGeneration()) {
+    return generationAware ? { ...result, generation } : result;
+  }
+
+  function invalidate() {
+    lastReadyAt = null;
+    lastReadyGeneration = null;
+    lastResult = null;
+    lastProbeAt = null;
+  }
+
+  function publishResult(result) {
+    let generation;
+    try {
+      generation = readGeneration();
+    } catch {
+      return;
+    }
+    if (generationAware && result?.generation !== generation) return;
+    lastResult = { ...result };
+    lastProbeAt = now();
+    if (result?.ok && result.code === 'ready') {
+      lastReadyAt = lastProbeAt;
+      lastReadyGeneration = generation;
+    }
+  }
+
+  function snapshot() {
+    let generation;
+    try {
+      generation = readGeneration();
+    } catch (error) {
+      return { ok: false, code: error.code, stage: error.stage, generation: null, ageMs: null };
+    }
+    if (inflightRecovery) {
+      return { ok: false, code: 'browser_recovering', stage: 'recovery', generation, ageMs: 0 };
+    }
+    if (!lastResult || lastProbeAt === null) {
+      return { ok: false, code: 'deep_probe_uninitialized', stage: 'cache', generation, ageMs: null };
+    }
+    if (generationAware && lastResult.generation !== generation) {
+      return { ok: false, code: 'deep_probe_generation_stale', stage: 'cache', generation, ageMs: Math.max(0, now() - lastProbeAt) };
+    }
+    const ageMs = Math.max(0, now() - lastProbeAt);
+    if (ageMs > Number(cacheMaxAgeMs)) {
+      return { ok: false, code: 'deep_probe_cache_stale', stage: 'cache', generation, ageMs };
+    }
+    return { ...lastResult, ageMs };
+  }
 
   async function runProbe(reportFailure) {
     const startedAt = now();
@@ -122,6 +282,7 @@ export function createSpartanDeepHealthController({
     let context;
     let page;
     let stage = 'ensure_browser';
+    let generation = readGeneration();
     try {
       const browser = await bounded(
         Promise.resolve().then(() => getBrowser()),
@@ -130,6 +291,7 @@ export function createSpartanDeepHealthController({
         null,
         settlements,
       );
+      generation = readGeneration();
       stage = 'new_context';
       context = await bounded(
         browser.newContext(),
@@ -171,14 +333,14 @@ export function createSpartanDeepHealthController({
         error.stage = stage;
         throw error;
       }
-      return { ok: true, code: 'ready', stage: 'complete', durationMs: Math.max(0, now() - startedAt) };
+      return withGeneration({ ok: true, code: 'ready', stage: 'complete', durationMs: Math.max(0, now() - startedAt) }, generation);
     } catch (error) {
-      const result = {
+      const result = withGeneration({
         ok: false,
         code: error?.code || 'deep_probe_failed',
         stage: error?.stage || stage,
         durationMs: Math.max(0, now() - startedAt),
-      };
+      }, generation);
       reportFailure(result);
       return result;
     } finally {
@@ -213,50 +375,49 @@ export function createSpartanDeepHealthController({
       const startedAt = now();
       const underlying = Promise.resolve()
         .then(() => runExclusive(() => runProbe(reportFailure)))
-        .then(result => {
-          if (result?.ok && result.code === 'ready') lastReadyAt = now();
-          return result;
-        })
         .catch(error => {
           if (error?.code === 'browser_lifecycle_busy') {
+            const generation = readGeneration();
             const readyAgeMs = lastReadyAt === null
+              || (generationAware && lastReadyGeneration !== generation)
               ? null
               : Math.max(0, now() - lastReadyAt);
             if (readyAgeMs !== null && readyAgeMs <= Number(busyMaxAgeMs)) {
-              return {
+              return withGeneration({
                 ok: true,
                 code: 'busy',
                 stage: 'lifecycle',
                 readyAgeMs,
                 durationMs: Math.max(0, now() - startedAt),
-              };
+              }, generation);
             }
-            return {
+            return withGeneration({
               ok: false,
               code: 'deep_probe_busy_stale',
               stage: 'lifecycle',
               readyAgeMs,
               durationMs: Math.max(0, now() - startedAt),
-            };
+            }, generation);
           }
-          return {
+          return withGeneration({
             ok: false,
             code: error?.code || 'deep_probe_failed',
             stage: error?.stage || 'lifecycle',
             durationMs: Math.max(0, now() - startedAt),
-          };
+          });
         });
       const reported = Promise.race([earlyFailure, underlying]);
       const exposed = bounded(
         reported,
         exposureTimeoutMs,
         'lifecycle_settle',
-      ).catch(error => ({
+      ).catch(error => withGeneration({
         ok: false,
         code: error?.code || 'deep_probe_failed',
         stage: error?.stage || 'lifecycle_settle',
         durationMs: Math.max(0, now() - startedAt),
       }));
+      exposed.then(publishResult, () => {});
       inflightProbe = exposed;
       underlying.then(
         () => { if (inflightProbe === exposed) inflightProbe = null; },
@@ -269,15 +430,26 @@ export function createSpartanDeepHealthController({
   function recover() {
     if (!inflightRecovery) {
       const recovery = Promise.resolve().then(async () => {
-          lastReadyAt = null;
+          const failedGeneration = readGeneration();
+          invalidate();
           await recoverBrowser();
-          // A successful probe from the previous browser generation must not
-          // validate the replacement.
-          lastReadyAt = null;
+          const replacementGeneration = readGeneration();
+          if (generationAware && replacementGeneration === failedGeneration) {
+            return withGeneration({
+              ok: false,
+              code: 'recovery_generation_unchanged',
+              stage: 'recovery',
+            }, replacementGeneration);
+          }
           const verification = await probe();
           return verification.code === 'ready'
-            ? { ok: true, code: 'recovered' }
-            : { ok: false, code: 'recovery_probe_failed', stage: verification.stage };
+            && (!generationAware || verification.generation === replacementGeneration)
+            ? withGeneration({ ok: true, code: 'recovered' }, replacementGeneration)
+            : withGeneration({
+                ok: false,
+                code: 'recovery_probe_failed',
+                stage: verification.stage,
+              }, replacementGeneration);
         });
       const exposedRecovery = bounded(
         recovery,
@@ -298,5 +470,5 @@ export function createSpartanDeepHealthController({
     return inflightRecovery;
   }
 
-  return { probe, recover };
+  return { probe, recover, snapshot, invalidate };
 }
