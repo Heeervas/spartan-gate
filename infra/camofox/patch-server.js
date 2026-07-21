@@ -888,6 +888,35 @@ if (!createTabRoute.includes('const spartanCleanupCreatedTab')) {
 
 source = source.slice(0, createTabRouteStartIndex) + createTabRoute + source.slice(createTabRouteNextIndex);
 
+const operatorTabIsolationRevisionMarker = '// spartan-camofox-operator-tab-isolation-v1';
+const operatorTabIsolationRequiredMarkers = [
+  [operatorCapabilityRouteMarker, 'capability route'],
+  ['operatorTabIsolationVersion: 1', 'capability version'],
+  ['nonDestructiveTabCreate: true', 'non-destructive capability'],
+  ['cleanupFailedOperatorNavigation: true', 'cleanup capability'],
+  ['const spartanNonDestructiveCreate = req.body?.nonDestructive === true;', 'request opt-in'],
+  ["err.code = 'tab_capacity_reached';", 'capacity rejection'],
+  ['if (!spartanNonDestructiveCreate && (isProxyError(navErr) || isTimeoutError(navErr))', 'rotation guard'],
+  ['const spartanCleanupCreatedTab = async () => {', 'cleanup helper'],
+  ['if (spartanNonDestructiveCreate) await spartanCleanupCreatedTab();', 'cleanup invocation'],
+];
+for (const [marker, label] of operatorTabIsolationRequiredMarkers) {
+  const count = source.split(marker).length - 1;
+  if (count !== 1) {
+    throw new Error('Camofox operator tab isolation v1 marker is incomplete: ' + label);
+  }
+}
+const operatorTabIsolationRevisionCount = source.split(operatorTabIsolationRevisionMarker).length - 1;
+if (operatorTabIsolationRevisionCount > 1) {
+  throw new Error('duplicate Camofox operator tab isolation v1 revision marker');
+}
+if (operatorTabIsolationRevisionCount === 0) {
+  source = source.replace(
+    operatorCapabilityRouteMarker,
+    operatorTabIsolationRevisionMarker + '\n' + operatorCapabilityRouteMarker,
+  );
+}
+
 
 const navigateProxyErrorPattern = /(\n\s*} else \{\n)(\s*)throw navErr;\n(\s*}\n\s*})/;
 let navigateProxyErrorPatchCount = 0;

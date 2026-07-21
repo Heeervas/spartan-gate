@@ -443,6 +443,7 @@ try {
   assert.match(once, /spartanNonDestructiveCreate[\s\S]*tab_capacity_reached/, 'non-destructive capacity pressure must return a coded error');
   assert.match(once, /if \(!spartanNonDestructiveCreate && \(isProxyError\(navErr\)/, 'non-destructive navigation must not rotate the shared session');
   assert.match(once, /await spartanCleanupCreatedTab\(\)/, 'failed operator navigation must clean up its new tab');
+  assert.match(once, /spartan-camofox-operator-tab-isolation-v1/, 'operator isolation migration must be versioned');
   assert.match(once, /app\.get\('\/spartan\/health\/deep'/, 'deep health route must be installed');
   assert.match(once, /spartanInternalRequestAuthorized/, 'deep health must require internal authorization');
   assert.match(
@@ -592,6 +593,25 @@ try {
   const partialTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'spartan-camofox-partial-'));
   try {
     const partialServerPath = path.join(partialTemp, 'server.js');
+    fs.writeFileSync(path.join(partialTemp, 'package.json'), '{"type":"module"}\n');
+    const operatorPartial = once.replace(
+      "err.code = 'tab_capacity_reached';",
+      "err.code = 'operator_capacity_marker_removed';",
+    );
+    assert.notStrictEqual(operatorPartial, once, 'operator partial fixture must remove a required marker');
+    fs.writeFileSync(partialServerPath, operatorPartial);
+    const operatorRejected = spawnSync(process.execPath, [patch], {
+      cwd: partialTemp,
+      encoding: 'utf8',
+    });
+    assert.notStrictEqual(operatorRejected.status, 0, 'partial operator migration must fail closed');
+    assert.match(operatorRejected.stderr, /operator tab isolation v1 marker is incomplete/);
+    assert.strictEqual(
+      fs.readFileSync(partialServerPath, 'utf8'),
+      operatorPartial,
+      'a rejected partial operator migration must not rewrite server.js',
+    );
+
     const partial = once.replace(
       'spartanNavigateOutcome = spartanNavigationReadiness.begin();',
       'spartanNavigateOutcome = null; // deliberately incomplete revision fixture',
