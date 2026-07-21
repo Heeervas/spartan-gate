@@ -13,6 +13,12 @@ All notable changes to Spartan Gate are documented here.
   empty-group/session and orphan-page reapers from invalidating newly created
   tabs by holding explicit fences only while the underlying create work is
   pending.
+- Made Camofox public health a passive generation-bound readiness cache, added
+  browser-independent liveness, and latched three terminal real-navigation
+  timeouts as a hard browser fault. Recovery is single-flight per child PID and
+  browser generation and succeeds only after a different generation passes a
+  deep probe; local capacity now sheds with 429 while internal timeouts and
+  degraded browser state remain 503.
 - Stopped sharing one global Camofox owner/session across supervised Hermes
   profiles, disabled global tab adoption across L1/L2/L4/install/examples, and
   retained Google Meet as an explicit default-profile single-owner exception.

@@ -310,6 +310,10 @@ unless `CAMOFOX_URL` is set.
   lifecycle is busy, and current-owner drain budgets; defaults are 8000, 1000,
   45000, and 2000 milliseconds. An HTTP timeout never releases a lifecycle
   lease while its underlying browser operation is still running.
+  The same 45-second proof bounds passive public readiness. Three terminal
+  real-navigation timeouts latch the current browser generation degraded;
+  capacity, validation, proxy/policy, SSL, abort, queue, and handler failures
+  do not increment that latch.
 - `SPARTAN_CAMOFOX_MEMORY_SOFT_PERCENT`/`HARD_PERCENT`: cgroup pressure
   thresholds, defaults 90/98. Unknown cgroup state fails readiness closed.
 - `SPARTAN_CAMOFOX_BACKOFF_SECONDS`: persistent automatic recycle schedule,

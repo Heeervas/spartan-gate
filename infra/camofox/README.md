@@ -78,14 +78,36 @@ When the global access gate is enabled, the supervisor also supplies that
 bearer only over the same proxy-disabled loopback connection. Neither
 credential is passed in argv, logged, or exposed on the Compose network.
 
-Three consecutive deep failures trigger one in-process browser recovery. If
-that path does not return healthy, the supervisor terminates the Node/Camoufox
-process tree and relaunches it only after every tracked PID has disappeared.
+Public GET /health is passive readiness: it never launches a browser or runs a
+probe in the request path. It returns 200 only while the last private deep probe
+is fresh, belongs to the currently published browser generation, and the
+lifecycle coordinator is not degraded or recovering. Missing, stale, or
+wrong-generation proof returns 503. GET /live only proves that the Node event
+loop can answer and remains independent of browser readiness.
+
+Three consecutive terminal timeouts from real goto work in POST /tabs with a
+URL or POST /tabs/:tabId/navigate latch browser_navigation_degraded for that
+browser generation. Retries and cleanup settle the attempt only once; late
+completions from an old generation cannot clear or contaminate its replacement.
+Capacity rejection, queue/handler timeouts, validation, policy/proxy/SSL
+failures, aborts, and creates without a URL do not participate. The next
+supervisor poll treats the latched code as a hard browser fault and attempts
+one recovery for the exact child PID and browser generation. Other deep
+failures retain the normal three-sample threshold.
+
+If in-process recovery does not publish and deeply verify a different browser
+generation, the supervisor terminates the Node/Camoufox process tree and
+relaunches it only after every tracked PID has disappeared.
 The durable retry schedule is `0s, 30s, 2m, 10m, 30m`, capped at one attempt per
 30 minutes during a sustained fault and reset only after 30 continuously
 healthy minutes. If a process remains in uninterruptible `D` state, readiness
 stays unhealthy and no second browser is launched; the supervisor retries
 cleanup at the maximum backoff.
+
+Local capacity exhaustion returns 429 immediately; queue timeout, navigation
+timeout, degraded/recovering browser state, and other internal inability return
+503. Fly admission keeps its existing replay-oriented 503 behavior. Only
+allowlisted semantic fields are exposed; logs retain redacted diagnostic detail.
 
 Each create registers a per-request token immediately after request validation
 and before it waits for the global lifecycle FIFO. The registry is bounded to

@@ -398,8 +398,14 @@ sg-status
 docker compose -f infra/compose/compose.yml exec spartan-route python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:18790/health').read().decode())"
 ```
 
-Camofox Docker health is deep readiness, not its shallow unauthenticated
-`GET /health`. A PID-1 supervisor validates a real raw context/page lifecycle.
+Camofox Docker health and public GET /health both reflect deep readiness.
+A PID-1 supervisor validates a real raw context/page lifecycle.
+Public GET /health is now a passive, generation-bound view of the same proof
+and never creates a page in its request path; GET /live remains
+browser-independent event-loop liveness. Three terminal real-navigation
+timeouts latch the current browser generation unhealthy. The next supervisor
+poll performs at most one recovery for that child PID/generation tuple, and a
+replacement is healthy only after a different generation passes a deep probe.
 A busy owner is healthy only while it remains inside its declared deadline and
 the last completed real probe is at most 45 seconds old; busy never refreshes
 that proof. A queued create is registered before lifecycle admission, and an
