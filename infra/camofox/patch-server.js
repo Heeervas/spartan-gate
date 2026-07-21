@@ -1127,6 +1127,7 @@ if (!source.includes("app.get('/spartan/health/deep'")) {
 // fail before the single server.js write at the end of this patcher.
 const spartanLifecycleVersionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;';
 const spartanLifecycleRevisionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;';
+const spartanLifecycleQueuedCreateMarker = 'const SPARTAN_QUEUED_CREATE_FENCE_REVISION = 1;';
 const spartanLifecycleRuntimeBlock = `const userConcurrency = new Map();
 
 const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;
@@ -1688,7 +1689,6 @@ app.post('/spartan/recover', async (req, res) => {
     ['spartanTrackLifecyclePromise(promise)', 'timeout promise tracking'],
     ['SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1', 'fixed lifecycle capacity'],
     ["spartanBrowserLifecycle.run('cookie_import'", 'cookie import'],
-    ["spartanBrowserLifecycle.run('tab_open'", 'tabs open'],
     ['const closing = spartanBrowserLifecycle.run(', 'session close'],
     ['currentSession !== sourceSession', 'popup generation fence'],
     ['&& !session._closing', 'reaper closing guard'],
@@ -1696,6 +1696,12 @@ app.post('/spartan/recover', async (req, res) => {
     if (!source.includes(marker)) {
       throw new Error(`Camofox lifecycle v1 marker is incomplete: ${label}`);
     }
+  }
+  if (
+    !source.includes("spartanBrowserLifecycle.run('tab_open'")
+    && !source.includes("'legacy_tab_open_disabled'")
+  ) {
+    throw new Error('Camofox lifecycle v1 marker is incomplete: tabs open');
   }
 }
 
@@ -1888,6 +1894,367 @@ ${spartanLifecycleRevisionMarker}`,
   ]) {
     if (source.includes(forbidden)) {
       throw new Error('Camofox lifecycle revision 2 retains a broad operation guard');
+    }
+  }
+}
+
+// Revision 3 closes the admission-to-lease gap: queued creates protect an
+// existing session before the lifecycle mutex is acquired, so automatic
+// context reapers cannot close and reopen it in the same request burst.
+const spartanLifecycleQueuedCreateCount = source.split(spartanLifecycleQueuedCreateMarker).length - 1;
+if (spartanLifecycleQueuedCreateCount > 1) {
+  throw new Error('duplicate Camofox queued-create coordinator revision marker');
+}
+if (
+  spartanLifecycleQueuedCreateCount > 0
+  && (
+    source.split(spartanLifecycleVersionMarker).length - 1 !== 1
+    || source.split(spartanLifecycleRevisionMarker).length - 1 !== 1
+  )
+) {
+  throw new Error('Camofox queued-create revision exists without prior lifecycle revisions');
+}
+if (spartanLifecycleQueuedCreateCount === 0) {
+  const coordinatorMarker = `const spartanBrowserLifecycle = createSpartanBrowserLifecycleCoordinator({
+  maxQueued: MAX_SESSIONS,
+  backgroundAgingMs: 1000,
+});
+`;
+  const queuedCreateRegistry = `${coordinatorMarker}
+const SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS + 1;
+const spartanPendingUserCreates = new Map();
+let spartanPendingUserCreateCount = 0;
+
+function spartanHasPendingUserCreate(userId) {
+  const pending = spartanPendingUserCreates.get(normalizeUserId(userId));
+  return pending instanceof Set && pending.size > 0;
+}
+
+function spartanPendingUserCreateSnapshot(now = Date.now()) {
+  let oldestAgeMs = 0;
+  let deadlineExceeded = false;
+  for (const pending of spartanPendingUserCreates.values()) {
+    for (const token of pending) {
+      oldestAgeMs = Math.max(oldestAgeMs, Math.max(0, now - token.startedAt));
+      if (now >= token.deadlineAt) deadlineExceeded = true;
+    }
+  }
+  return {
+    count: spartanPendingUserCreateCount,
+    oldestAgeMs,
+    deadlineExceeded,
+  };
+}
+
+function spartanDeferUserSessionDestroy(userId, session) {
+  const key = normalizeUserId(userId);
+  const pending = spartanPendingUserCreates.get(key);
+  if (!session || !(pending instanceof Set)) return false;
+  const affected = [...pending].filter(token => token.fence?.session === session);
+  if (affected.length === 0) return false;
+  session._closing = true;
+  if (sessions.get(key) === session) sessions.delete(key);
+  if (!(session._spartanDeferredDestroyTokens instanceof Set)) {
+    session._spartanDeferredDestroyTokens = new Set();
+  }
+  for (const token of affected) {
+    token.invalidatedSession = session;
+    token.fence.active = false;
+    session._spartanDeferredDestroyTokens.add(token);
+  }
+  return true;
+}
+function spartanBindPendingCreateSession(userId, fence, session) {
+  if (!fence || typeof fence !== 'object') {
+    throw new TypeError('queued create fence must be an object');
+  }
+  const key = normalizeUserId(userId);
+  fence.userKey = key;
+  fence.session = session;
+  if (!session || session._closing || sessions.get(key) !== session) {
+    fence.active = false;
+    throw spartanBrowserLifecycleError(
+      'session_invalidated_during_create',
+      'session was invalidated before tab creation could bind to it',
+    );
+  }
+  return session;
+}
+
+
+async function spartanWithPendingUserCreate(userId, fence, operation, deadlineAt) {
+  if (!fence || typeof fence !== 'object') {
+    throw new TypeError('queued create fence must be an object');
+  }
+  if (typeof operation !== 'function') {
+    throw new TypeError('queued create operation must be a function');
+  }
+  const startedAt = Date.now();
+  const numericDeadlineAt = Number(deadlineAt ?? (startedAt + requestTimeoutMs()));
+  if (!Number.isFinite(numericDeadlineAt) || numericDeadlineAt <= 0) {
+    throw new TypeError('queued create deadline must be a positive finite timestamp');
+  }
+  if (spartanPendingUserCreateCount >= SPARTAN_PENDING_USER_CREATE_LIMIT) {
+    throw spartanBrowserLifecycleError(
+      'browser_lifecycle_queue_full',
+      'Camofox queued create registry is full',
+    );
+  }
+  const key = normalizeUserId(userId);
+  let pending = spartanPendingUserCreates.get(key);
+  if (!(pending instanceof Set)) {
+    pending = new Set();
+    spartanPendingUserCreates.set(key, pending);
+  }
+  const token = { fence, startedAt, deadlineAt: numericDeadlineAt, invalidatedSession: null };
+  pending.add(token);
+  spartanPendingUserCreateCount++;
+  let result;
+  let failure = null;
+  try {
+    result = await operation();
+  } catch (error) {
+    failure = error;
+  }
+  if (pending.delete(token)) spartanPendingUserCreateCount--;
+  if (pending.size === 0 && spartanPendingUserCreates.get(key) === pending) {
+    spartanPendingUserCreates.delete(key);
+  }
+  if (token.invalidatedSession) {
+    const invalidatedSession = token.invalidatedSession;
+    const deferred = invalidatedSession._spartanDeferredDestroyTokens;
+    if (deferred instanceof Set) {
+      deferred.delete(token);
+      if (deferred.size === 0) {
+        delete invalidatedSession._spartanDeferredDestroyTokens;
+        closeSession(key, invalidatedSession, {
+          reason: 'deferred_destroy_session',
+          clearDownloads: true,
+          clearLocks: true,
+        }).catch(() => {});
+      }
+    }
+    throw spartanBrowserLifecycleError(
+      'session_destroyed_during_create',
+      'session was invalidated while tab creation was active',
+    );
+  }
+  if (failure) throw failure;
+  return result;
+}
+`;
+  const createAdmissionOpen = 'const result = await withTimeout(spartanWithCreateLimit(async () => {';
+  const createAdmissionReplacement = `const spartanCreateTimeoutMs = requestTimeoutMs();
+    const spartanCreateDeadlineAt = Date.now() + spartanCreateTimeoutMs;
+    const result = await withTimeout(spartanWithPendingUserCreate(userId, spartanCreateFence, () => spartanWithCreateLimit(async () => {`;
+  const createQueueTimeout = '    }, Math.max(1, requestTimeoutMs() - 1000)).finally(() => {';
+  const createQueueTimeoutReplacement = '    }, Math.max(1, spartanCreateDeadlineAt - Date.now() - 1000)).finally(() => {';
+  const createAdmissionClose = `    }), requestTimeoutMs(), 'tab create');`;
+  const createAdmissionCloseReplacement = `    }), spartanCreateDeadlineAt), spartanCreateTimeoutMs, 'tab create');`;
+  const createSessionBind = '      spartanCreateFence.session = session;';
+  const createSessionBindReplacement = '      spartanBindPendingCreateSession(userId, spartanCreateFence, session);';
+  const sessionPendingMarker = `const spartanSessionCreatePending = session._spartanPendingCreates instanceof Set
+      && session._spartanPendingCreates.size > 0;`;
+  const sessionPendingReplacement = `const spartanSessionCreatePending = spartanHasPendingUserCreate(userId)
+      || (
+        session._spartanPendingCreates instanceof Set
+        && session._spartanPendingCreates.size > 0
+      );`;
+  const groupPendingMarker = `const spartanGroupCreatePending = session._spartanPendingCreates instanceof Set
+        && [...session._spartanPendingCreates].some(pending => pending.group === group);`;
+  const groupPendingReplacement = `const spartanGroupCreatePending = spartanHasPendingUserCreate(userId)
+        || (
+          session._spartanPendingCreates instanceof Set
+          && [...session._spartanPendingCreates].some(pending => pending.group === group)
+        );`;
+  const explicitCloseMarker = `  if (!session) return;
+  if (!spartanBrowserLifecycle.hasLease()) {`;
+  const explicitCloseReplacement = `  if (!session) return;
+  if (
+    reason === 'api_delete_session'
+    && spartanHasPendingUserCreate(userId)
+  ) {
+    throw spartanBrowserLifecycleError(
+      'session_create_pending',
+      'session has pending tab creation',
+    );
+  }
+  if (!spartanBrowserLifecycle.hasLease()) {`;
+  const deepSnapshotMarker = `    const lifecycle = spartanBrowserLifecycle.snapshot();
+    const fallbackDeadlineExceeded`;
+  const deepSnapshotReplacement = `    const lifecycle = spartanBrowserLifecycle.snapshot();
+    const pendingCreate = spartanPendingUserCreateSnapshot();
+    const fallbackDeadlineExceeded`;
+  const deepDeadlineMarker = 'if (lifecycle.ownerDeadlineExceeded || fallbackDeadlineExceeded) {';
+  const deepDeadlineReplacement = 'if (pendingCreate.deadlineExceeded || lifecycle.ownerDeadlineExceeded || fallbackDeadlineExceeded) {';
+  const destroySessionMarker = `function destroySession(userId) {
+  const key = normalizeUserId(userId);
+  const session = sessions.get(key);
+  if (!session) return;
+  log('warn', 'destroying dead session', { userId: key });
+  sessions.delete(key);
+  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+}`;
+  const destroySessionReplacement = `function destroySession(userId) {
+  const key = normalizeUserId(userId);
+  const session = sessions.get(key);
+  if (!session) return;
+  if (spartanDeferUserSessionDestroy(key, session)) {
+    log('warn', 'deferring dead session destroy until active create settles', { userId: key });
+    return;
+  }
+  log('warn', 'destroying dead session', { userId: key });
+  sessions.delete(key);
+  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+}`;
+  const destroySessionPresent = source.includes('function destroySession(userId)');
+  if (destroySessionPresent && !source.includes(destroySessionMarker)) {
+    throw new Error(
+      'unsupported Camofox destroy-session variant; refusing partial queued-create migration',
+    );
+  }
+  const legacyOpenRange = spartanLifecycleRange(
+    "app.post('/tabs/open', async (req, res) => {",
+    '\n});\n\n// POST /start',
+    'legacy tabs open',
+  );
+  if (!legacyOpenRange.value.includes("spartanBrowserLifecycle.run('tab_open'")) {
+    throw new Error('unsupported Camofox legacy tabs-open variant');
+  }
+  const disabledLegacyOpenRoute = `app.post('/tabs/open', (_req, res) => {
+  return res.status(410).json({
+    error: 'Deprecated endpoint disabled; use POST /tabs',
+    code: 'legacy_tab_open_disabled',
+  });`;
+
+  for (const [marker, label] of [
+    [coordinatorMarker, 'coordinator registry insertion'],
+    [createAdmissionOpen, 'queued create admission open'],
+    [createQueueTimeout, 'queued create shared deadline'],
+    [createAdmissionClose, 'queued create admission close'],
+    [sessionPendingMarker, 'queued create empty-session fence'],
+    [createSessionBind, 'queued create session generation bind'],
+    [groupPendingMarker, 'queued create empty-group fence'],
+    [explicitCloseMarker, 'explicit session close fence'],
+    [deepSnapshotMarker, 'queued create health snapshot'],
+    [deepDeadlineMarker, 'queued create health deadline'],
+  ]) {
+    const count = source.split(marker).length - 1;
+    if (count !== 1) {
+      throw new Error(`expected one Camofox ${label} marker, found ${count}`);
+    }
+  }
+
+  spartanReplaceLifecycleOnce(coordinatorMarker, queuedCreateRegistry, 'queued create registry');
+  spartanReplaceLifecycleOnce(createAdmissionOpen, createAdmissionReplacement, 'queued create admission open');
+  spartanReplaceLifecycleOnce(createQueueTimeout, createQueueTimeoutReplacement, 'queued create shared deadline');
+  spartanReplaceLifecycleOnce(createAdmissionClose, createAdmissionCloseReplacement, 'queued create admission close');
+  spartanReplaceLifecycleOnce(createSessionBind, createSessionBindReplacement, 'queued create session generation bind');
+  if (destroySessionPresent) {
+    spartanReplaceLifecycleOnce(destroySessionMarker, destroySessionReplacement, 'deferred destroy session');
+  }
+  spartanReplaceLifecycleRange(legacyOpenRange, disabledLegacyOpenRoute);
+  spartanReplaceLifecycleOnce(sessionPendingMarker, sessionPendingReplacement, 'queued create empty-session fence');
+  spartanReplaceLifecycleOnce(groupPendingMarker, groupPendingReplacement, 'queued create empty-group fence');
+  spartanReplaceLifecycleOnce(explicitCloseMarker, explicitCloseReplacement, 'explicit session close fence');
+  spartanReplaceLifecycleOnce(deepSnapshotMarker, deepSnapshotReplacement, 'queued create health snapshot');
+  spartanReplaceLifecycleOnce(deepDeadlineMarker, deepDeadlineReplacement, 'queued create health deadline');
+
+  const optionalAutomaticClosers = [
+    {
+      presence: "reason: 'session_timeout'",
+      marker: 'if (now - session.lastAccess > SESSION_TIMEOUT_MS) {',
+      replacement: `// Spartan queued-create fence: session timeout.
+    if (
+      now - session.lastAccess > SESSION_TIMEOUT_MS
+      && !spartanHasPendingUserCreate(userId)
+    ) {`,
+      label: 'session timeout fence',
+    },
+    {
+      presence: "reason: 'memory_pressure'",
+      marker: `for (const [key, session] of sessions) {
+        if (session._closing) continue;
+        if (session.lastAccess < oldestAccess) {`,
+      replacement: `// Spartan queued-create fence: memory pressure.
+      for (const [key, session] of sessions) {
+        if (session._closing || spartanHasPendingUserCreate(key)) continue;
+        if (session.lastAccess < oldestAccess) {`,
+      label: 'memory pressure fence',
+    },
+    {
+      presence: "reason: 'pressure_cleanup_empty_session'",
+      marker: `for (const [userId, session] of Array.from(sessions.entries())) {
+      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {`,
+      replacement: `for (const [userId, session] of Array.from(sessions.entries())) {
+      // Spartan queued-create fence: pressure cleanup.
+      if (spartanHasPendingUserCreate(userId)) continue;
+      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {`,
+      label: 'pressure cleanup iteration fence',
+    },
+    {
+      presence: "reason: 'pressure_cleanup_empty_session'",
+      marker: 'if (closeEmptySessions && session.tabGroups.size === 0) {',
+      replacement: `if (
+        closeEmptySessions
+        && session.tabGroups.size === 0
+        && !spartanHasPendingUserCreate(userId)
+      ) {`,
+      label: 'pressure cleanup close fence',
+    },
+  ];
+  for (const item of optionalAutomaticClosers) {
+    if (!source.includes(item.presence)) continue;
+    const count = source.split(item.marker).length - 1;
+    if (count !== 1) {
+      throw new Error(`expected one Camofox ${item.label} marker, found ${count}`);
+    }
+    spartanReplaceLifecycleOnce(item.marker, item.replacement, item.label);
+  }
+
+  spartanReplaceLifecycleOnce(
+    spartanLifecycleRevisionMarker,
+    `${spartanLifecycleRevisionMarker}
+${spartanLifecycleQueuedCreateMarker}`,
+    'queued create revision marker',
+  );
+} else {
+  for (const [marker, label] of [
+    ['const SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS + 1;', 'bounded queued create registry'],
+    ['async function spartanWithPendingUserCreate(', 'queued create scope'],
+    ['const spartanCreateTimeoutMs = requestTimeoutMs();', 'queued create effective timeout'],
+    ['spartanCreateDeadlineAt - Date.now() - 1000', 'queued create shared deadline'],
+    ['spartanCreateDeadlineAt), spartanCreateTimeoutMs', 'queued create outer deadline'],
+    ['now >= token.deadlineAt', 'per-token queued create deadline'],
+    ['function spartanDeferUserSessionDestroy(', 'deferred session destroy'],
+    ['const spartanSessionCreatePending = spartanHasPendingUserCreate(userId)', 'queued create empty-session fence'],
+    ['spartanBindPendingCreateSession(userId, spartanCreateFence, session)', 'queued create session generation bind'],
+    ['const spartanGroupCreatePending = spartanHasPendingUserCreate(userId)', 'queued create empty-group fence'],
+    ["reason === 'api_delete_session'", 'explicit session close fence'],
+    ['const pendingCreate = spartanPendingUserCreateSnapshot();', 'queued create health snapshot'],
+    ['if (pendingCreate.deadlineExceeded || lifecycle.ownerDeadlineExceeded', 'queued create health deadline'],
+    ["code: 'legacy_tab_open_disabled'", 'disabled legacy tabs open'],
+  ]) {
+    if (!source.includes(marker)) {
+      throw new Error(`Camofox lifecycle revision 3 marker is incomplete: ${label}`);
+    }
+  }
+  if (
+    source.includes('function destroySession(userId)')
+    && !source.includes('spartanDeferUserSessionDestroy(key, session)')
+  ) {
+    throw new Error(
+      'Camofox lifecycle revision 3 marker is incomplete: deferred destroy session',
+    );
+  }
+  for (const [presence, guard, label] of [
+    ["reason: 'session_timeout'", '// Spartan queued-create fence: session timeout.', 'session timeout fence'],
+    ["reason: 'memory_pressure'", '// Spartan queued-create fence: memory pressure.', 'memory pressure fence'],
+    ["reason: 'pressure_cleanup_empty_session'", '// Spartan queued-create fence: pressure cleanup.', 'pressure cleanup iteration fence'],
+    ["reason: 'pressure_cleanup_empty_session'", '&& !spartanHasPendingUserCreate(userId)', 'pressure cleanup close fence'],
+  ]) {
+    if (source.includes(presence) && !source.includes(guard)) {
+      throw new Error(`Camofox lifecycle revision 3 marker is incomplete: ${label}`);
     }
   }
 }

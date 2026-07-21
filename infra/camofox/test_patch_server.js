@@ -149,6 +149,15 @@ async function getSession(userId, { trace = false } = {}) {
   }
   return session;
 }
+function destroySession(userId) {
+  const key = normalizeUserId(userId);
+  const session = sessions.get(key);
+  if (!session) return;
+  log('warn', 'destroying dead session', { userId: key });
+  sessions.delete(key);
+  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+}
+
 
 function attachPopupHandler(page, userId, sessionKey) {
   page.on('popup', (popupPage) => {
@@ -392,6 +401,20 @@ try {
     1,
     'generated server must contain exactly one narrow coordinator revision',
   );
+  assert.strictEqual(
+    (once.match(/const SPARTAN_QUEUED_CREATE_FENCE_REVISION = 1;/g) || []).length,
+    1,
+    'generated server must contain exactly one queued-create fence revision',
+  );
+  assert.match(once, /const SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS \+ 1;/, 'pre-admission fences must be bounded by queue capacity');
+  assert.match(once, /function spartanPendingUserCreateSnapshot\(/, 'queued creates must expose non-sensitive health state');
+  assert.match(once, /pendingCreate\.deadlineExceeded/, 'expired queued creates must make deep health fail');
+  assert.match(once, /now >= token\.deadlineAt/, 'queued-create health must honor each effective request deadline');
+  assert.match(once, /const spartanCreateTimeoutMs = requestTimeoutMs\(\);/, 'create timeout must be computed once');
+  assert.match(once, /spartanDeferUserSessionDestroy\(key, session\)/, 'dead-session cleanup must defer while its create is active');
+  assert.match(once, /session_destroyed_during_create/, 'an invalidated create must fail explicitly');
+  assert.match(once, /spartanBindPendingCreateSession\(userId, spartanCreateFence, session\)/, 'create must validate the session generation after await');
+  assert.match(once, /session_invalidated_during_create/, 'the getSession bind race must fail explicitly');
   assert.match(once, /SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1/, 'lifecycle capacity must fail closed above one');
   assert.match(
     once,
@@ -408,12 +431,13 @@ try {
   assert.match(once, /ownerDeadlineExceeded/, 'health must distinguish bounded busy from stuck');
   assert.match(once, /browser_lifecycle_busy/, 'bounded busy must be explicit');
   assert.match(once, /spartanBrowserLifecycle\.run\('cookie_import'/, 'cookie context mutation must be atomic');
-  assert.match(once, /spartanBrowserLifecycle\.run\('tab_open'/, 'OpenClaw tab creation must be atomic');
+  assert.doesNotMatch(once, /spartanBrowserLifecycle\.run\('tab_open'/, 'unsafe legacy tab creation must be removed');
+  assert.match(once, /legacy_tab_open_disabled/, 'deprecated tabs/open must fail closed');
   assert.doesNotMatch(once, /spartanCreateWaiters|spartanActiveCreates/, 'legacy create FIFO must be fully migrated');
   assert.doesNotMatch(once, /Active health probe -- detect hung browser/, 'unbounded upstream probe must be removed');
   assert.match(once, /const spartanCreateFence =/, 'tab create must fence late completions');
   assert.match(once, /async function spartanWithCreateLimit\(operation, queueTimeoutMs/, 'tab creates must use the bounded global FIFO limiter');
-  assert.match(once, /withTimeout\(spartanWithCreateLimit\(async \(\) =>/, 'create lifecycle must run inside the limiter');
+  assert.match(once, /withTimeout\(spartanWithPendingUserCreate\(userId, spartanCreateFence, \(\) => spartanWithCreateLimit\(async \(\) =>/, 'create admission fence must be registered before entering the limiter');
   assert.match(once, /sessions\.get\(spartanCreateFence\.userKey\) === session/, 'late session cleanup must use compare-and-delete');
   assert.match(once, /spartanPagePromise\.then/, 'late pages must be observed for cleanup');
   assert.match(once, /code: 'tab_create_timeout'/, 'tab timeout must be semantic');
@@ -426,8 +450,8 @@ try {
   );
   assert.match(
     once,
-    /const spartanSessionCreatePending =[\s\S]*session\.tabGroups\.size === 0[\s\S]*!spartanSessionCreatePending/,
-    'empty-session reaping must preserve only sessions with active creates',
+    /const spartanSessionCreatePending = spartanHasPendingUserCreate\(userId\)[\s\S]*session\.tabGroups\.size === 0[\s\S]*!spartanSessionCreatePending/,
+    'empty-session reaping must preserve queued and active creates',
   );
   assert.match(
     once,

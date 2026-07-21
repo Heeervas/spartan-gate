@@ -22,6 +22,7 @@ const failuresTotal = { labels() { return { inc() {} }; } };
 const MAX_DOWNLOAD_INLINE_BYTES = 1024;
 const HANDLER_TIMEOUT_MS = 30000;
 const TAB_LOCK_TIMEOUT_MS = 35000;
+const SESSION_TIMEOUT_MS = 60000;
 const CONFIG = { nodeEnv: 'production' };
 function authMiddleware() {}
 function normalizeUserId(value) { return value; }
@@ -159,6 +160,15 @@ async function closeSession(userId, session, {
   sessions.delete(key);
 }
 
+function destroySession(userId) {
+  const key = normalizeUserId(userId);
+  const session = sessions.get(key);
+  if (!session) return;
+  log('warn', 'destroying dead session', { userId: key });
+  sessions.delete(key);
+  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+}
+
 async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
   for (const [userId, session] of sessions) {
     await closeSession(userId, session, { reason, clearDownloads, clearLocks });
@@ -197,6 +207,49 @@ function attachPopupHandler(page, userId, sessionKey) {
 }
 
 function pressureHash(value) { return value; }
+
+function reapTimedOutSessions(now = Date.now()) {
+  for (const [userId, session] of Array.from(sessions.entries())) {
+    if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
+      session._closing = true;
+      closeSession(userId, session, {
+        reason: 'session_timeout', clearDownloads: true, clearLocks: true,
+      }).catch(() => {});
+    }
+  }
+}
+
+function evictOldestForMemory() {
+  let oldestKey = null;
+  let oldestAccess = Infinity;
+  for (const [key, session] of sessions) {
+        if (session._closing) continue;
+        if (session.lastAccess < oldestAccess) {
+      oldestAccess = session.lastAccess;
+      oldestKey = key;
+    }
+  }
+  if (!oldestKey) return;
+  const session = sessions.get(oldestKey);
+  session._closing = true;
+  closeSession(oldestKey, session, {
+    reason: 'memory_pressure', clearDownloads: true, clearLocks: true,
+  }).catch(() => {});
+}
+
+async function pressureCleanupEmptySessions(closeEmptySessions = true) {
+  for (const [userId, session] of Array.from(sessions.entries())) {
+      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {
+        if (group.size === 0) session.tabGroups.delete(listItemId);
+      }
+    if (closeEmptySessions && session.tabGroups.size === 0) {
+      session._closing = true;
+      await closeSession(userId, session, {
+        reason: 'pressure_cleanup_empty_session', clearDownloads: true, clearLocks: true,
+      });
+    }
+  }
+}
 
 function reapEmptySessions(now = Date.now()) {
   for (const [userId, session] of sessions) {
@@ -375,7 +428,7 @@ async function closeBrowser() {
   _nativeMemBaseline = null;
 }
 
-export { sessions, closeSession, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit, spartanBrowserLifecycle, spartanGuardPage, ensureBrowser, spartanSetTestLaunchFactory };
+export { sessions, closeSession, destroySession, reapTimedOutSessions, evictOldestForMemory, pressureCleanupEmptySessions, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit, spartanWithPendingUserCreate, spartanBindPendingCreateSession, spartanPendingUserCreateSnapshot, spartanBrowserLifecycle, spartanGuardPage, ensureBrowser, spartanSetTestLaunchFactory };
 """
 
 
@@ -475,6 +528,31 @@ class CamofoxPatchServerTests(unittest.TestCase):
             patched.count("const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;"),
             1,
         )
+        self.assertEqual(
+            patched.count("const SPARTAN_QUEUED_CREATE_FENCE_REVISION = 1;"),
+            1,
+        )
+        self.assertIn(
+            "const SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS + 1;",
+            patched,
+        )
+        self.assertIn("function spartanPendingUserCreateSnapshot(", patched)
+        self.assertIn("pendingCreate.deadlineExceeded", patched)
+        self.assertIn("now >= token.deadlineAt", patched)
+        self.assertIn("const spartanCreateTimeoutMs = requestTimeoutMs();", patched)
+        self.assertIn(
+            "spartanDeferUserSessionDestroy(key, session)",
+            patched,
+        )
+        self.assertIn("session_destroyed_during_create", patched)
+        self.assertIn("spartanBindPendingCreateSession(userId, spartanCreateFence, session)", patched)
+        self.assertIn("session_invalidated_during_create", patched)
+        self.assertIn("legacy_tab_open_disabled", patched)
+        self.assertIn(
+            "spartanWithPendingUserCreate(userId, spartanCreateFence, "
+            "() => spartanWithCreateLimit(async () =>",
+            patched,
+        )
         self.assertIn("SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1", patched)
         self.assertIn(
             "SPARTAN_PAGE_LIFECYCLE_METHODS = "
@@ -491,7 +569,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertIn("ownerDeadlineExceeded", patched)
         self.assertIn("browser_lifecycle_busy", patched)
         self.assertIn("spartanBrowserLifecycle.run('cookie_import'", patched)
-        self.assertIn("spartanBrowserLifecycle.run('tab_open'", patched)
+        self.assertNotIn("spartanBrowserLifecycle.run('tab_open'", patched)
         self.assertNotIn("spartanCreateWaiters", patched)
         self.assertNotIn("spartanActiveCreates", patched)
         self.assertNotIn("Active health probe -- detect hung browser", patched)
@@ -502,8 +580,24 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertIn("stage: spartanCreateFence.stage", patched)
         self.assertIn("spartanCgroupAdmissionAllowed", patched)
         self.assertIn("if (sessions.get(key) === session) sessions.delete(key);", patched)
-        self.assertIn("const spartanSessionCreatePending =", patched)
-        self.assertIn("const spartanGroupCreatePending =", patched)
+        self.assertIn(
+            "const spartanSessionCreatePending = "
+            "spartanHasPendingUserCreate(userId)",
+            patched,
+        )
+        self.assertIn(
+            "const spartanGroupCreatePending = "
+            "spartanHasPendingUserCreate(userId)",
+            patched,
+        )
+        self.assertIn(
+            "session._closing || spartanHasPendingUserCreate(key)",
+            patched,
+        )
+        self.assertGreaterEqual(
+            patched.count("&& !spartanHasPendingUserCreate(userId)"),
+            2,
+        )
         self.assertIn("spartanPendingCreates.delete(spartanCreateFence)", patched)
         self.assertNotIn(
             "now - session.lastAccess >= requestTimeoutMs() + 5000",
@@ -673,6 +767,206 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         self.assertEqual(self.server.read_text(), final)
 
+    def test_migrates_revision_two_to_queued_create_fence(self):
+        first = self.run_patcher()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        final = self.server.read_text()
+
+        def replace_once(value, old, new):
+            self.assertEqual(value.count(old), 1, old[:80])
+            return value.replace(old, new, 1)
+
+        revision_two = replace_once(
+            final,
+            "const SPARTAN_QUEUED_CREATE_FENCE_REVISION = 1;\n",
+            "",
+        )
+        registry_start = revision_two.index(
+            "\nconst SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS + 1;"
+        )
+        registry_end = revision_two.index(
+            "const spartanGuardedBrowsers = new WeakSet();",
+            registry_start,
+        )
+        revision_two = revision_two[:registry_start] + revision_two[registry_end:]
+        revision_two = replace_once(
+            revision_two,
+            """const spartanCreateTimeoutMs = requestTimeoutMs();
+    const spartanCreateDeadlineAt = Date.now() + spartanCreateTimeoutMs;
+    const result = await withTimeout(spartanWithPendingUserCreate(userId, spartanCreateFence, () => spartanWithCreateLimit(async () => {""",
+            "const result = await withTimeout(spartanWithCreateLimit(async () => {",
+        )
+        revision_two = replace_once(
+            revision_two,
+            "    }, Math.max(1, spartanCreateDeadlineAt - Date.now() - 1000)"
+            ").finally(() => {",
+            "    }, Math.max(1, requestTimeoutMs() - 1000)).finally(() => {",
+        )
+        revision_two = replace_once(
+            revision_two,
+            "    }), spartanCreateDeadlineAt), "
+            "spartanCreateTimeoutMs, 'tab create');",
+            "    }), requestTimeoutMs(), 'tab create');",
+        )
+        revision_two = replace_once(
+            revision_two,
+            """function destroySession(userId) {
+  const key = normalizeUserId(userId);
+  const session = sessions.get(key);
+  if (!session) return;
+  if (spartanDeferUserSessionDestroy(key, session)) {
+    log('warn', 'deferring dead session destroy until active create settles', { userId: key });
+    return;
+  }
+  log('warn', 'destroying dead session', { userId: key });
+  sessions.delete(key);
+  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+}""",
+            """function destroySession(userId) {
+  const key = normalizeUserId(userId);
+  const session = sessions.get(key);
+  if (!session) return;
+  log('warn', 'destroying dead session', { userId: key });
+  sessions.delete(key);
+  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+}""",
+        )
+        revision_two = replace_once(
+            revision_two,
+            "spartanBindPendingCreateSession(userId, spartanCreateFence, session);",
+            "spartanCreateFence.session = session;",
+        )
+        revision_two = replace_once(
+            revision_two,
+            """const spartanSessionCreatePending = spartanHasPendingUserCreate(userId)
+      || (
+        session._spartanPendingCreates instanceof Set
+        && session._spartanPendingCreates.size > 0
+      );""",
+            """const spartanSessionCreatePending = session._spartanPendingCreates instanceof Set
+      && session._spartanPendingCreates.size > 0;""",
+        )
+        revision_two = replace_once(
+            revision_two,
+            """const spartanGroupCreatePending = spartanHasPendingUserCreate(userId)
+        || (
+          session._spartanPendingCreates instanceof Set
+          && [...session._spartanPendingCreates].some(pending => pending.group === group)
+        );""",
+            """const spartanGroupCreatePending = session._spartanPendingCreates instanceof Set
+        && [...session._spartanPendingCreates].some(pending => pending.group === group);""",
+        )
+        revision_two = replace_once(
+            revision_two,
+            """  if (
+    reason === 'api_delete_session'
+    && spartanHasPendingUserCreate(userId)
+  ) {
+    throw spartanBrowserLifecycleError(
+      'session_create_pending',
+      'session has pending tab creation',
+    );
+  }
+""",
+            "",
+        )
+        revision_two = replace_once(
+            revision_two,
+            "    const pendingCreate = spartanPendingUserCreateSnapshot();\n",
+            "",
+        )
+        revision_two = replace_once(
+            revision_two,
+            "if (pendingCreate.deadlineExceeded || "
+            "lifecycle.ownerDeadlineExceeded || fallbackDeadlineExceeded) {",
+            "if (lifecycle.ownerDeadlineExceeded || fallbackDeadlineExceeded) {",
+        )
+        revision_two = replace_once(
+            revision_two,
+            """// Spartan queued-create fence: session timeout.
+    if (
+      now - session.lastAccess > SESSION_TIMEOUT_MS
+      && !spartanHasPendingUserCreate(userId)
+    ) {""",
+            "if (now - session.lastAccess > SESSION_TIMEOUT_MS) {",
+        )
+        revision_two = replace_once(
+            revision_two,
+            """// Spartan queued-create fence: memory pressure.
+      for (const [key, session] of sessions) {
+        if (session._closing || spartanHasPendingUserCreate(key)) continue;""",
+            """for (const [key, session] of sessions) {
+        if (session._closing) continue;""",
+        )
+        revision_two = replace_once(
+            revision_two,
+            """for (const [userId, session] of Array.from(sessions.entries())) {
+      // Spartan queued-create fence: pressure cleanup.
+      if (spartanHasPendingUserCreate(userId)) continue;
+      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {""",
+            """for (const [userId, session] of Array.from(sessions.entries())) {
+      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {""",
+        )
+        revision_two = replace_once(
+            revision_two,
+            """if (
+        closeEmptySessions
+        && session.tabGroups.size === 0
+        && !spartanHasPendingUserCreate(userId)
+      ) {""",
+            "if (closeEmptySessions && session.tabGroups.size === 0) {",
+        )
+        legacy_open_start = "app.post('/tabs/open', async (req, res) => {"
+        legacy_open_end = "\n});\n\n// POST /start"
+        fixture_open_start = SERVER_FIXTURE.index(legacy_open_start)
+        fixture_open_end = SERVER_FIXTURE.index(
+            legacy_open_end,
+            fixture_open_start,
+        )
+        open_route_body = SERVER_FIXTURE[
+            fixture_open_start + len(legacy_open_start):fixture_open_end
+        ]
+        indented_open_route_body = "\n".join(
+            f"    {line}" if line else line
+            for line in open_route_body.split("\n")
+        )
+        coordinated_open_route = (
+            """app.post('/tabs/open', async (req, res) => {
+  try {
+    return await spartanBrowserLifecycle.run('tab_open', async () => {"""
+            + indented_open_route_body
+            + """
+    }, {
+      priority: 'foreground',
+      waitTimeoutMs: Math.max(1, requestTimeoutMs() - 1000),
+      deadlineAt: Date.now() + requestTimeoutMs(),
+    });
+  } catch (err) {
+    log('error', 'openclaw tab lifecycle admission failed', {
+      reqId: req.reqId,
+      code: err?.code || 'browser_lifecycle_failed',
+    });
+    handleRouteError(err, req, res);
+  }
+});"""
+        )
+        revision_two = replace_once(
+            revision_two,
+            """app.post('/tabs/open', (_req, res) => {
+  return res.status(410).json({
+    error: 'Deprecated endpoint disabled; use POST /tabs',
+    code: 'legacy_tab_open_disabled',
+  });
+});""",
+            coordinated_open_route,
+        )
+        self.server.write_text(revision_two)
+
+        migrated = self.run_patcher()
+
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.assertEqual(self.server.read_text(), final)
+
     def test_rejects_invalid_global_create_limits(self):
         first = self.run_patcher()
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -696,7 +990,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
         runner = self.root / "reaper-runtime.mjs"
         runner.write_text(
             """import assert from 'node:assert/strict';
-import { sessions, closeSession, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit, spartanBrowserLifecycle, spartanGuardPage, ensureBrowser, spartanSetTestLaunchFactory } from './server.js';
+import { sessions, closeSession, destroySession, reapTimedOutSessions, evictOldestForMemory, pressureCleanupEmptySessions, reapEmptySessions, reapOrphanPages, spartanWithCreateLimit, spartanWithPendingUserCreate, spartanBindPendingCreateSession, spartanPendingUserCreateSnapshot, spartanBrowserLifecycle, spartanGuardPage, ensureBrowser, spartanSetTestLaunchFactory } from './server.js';
 
 let releaseOldContext;
 const oldContextClosed = new Promise(resolve => { releaseOldContext = resolve; });
@@ -749,6 +1043,153 @@ await new Promise(resolve => setImmediate(resolve));
 assert.equal(reaperCloseCalls, 1);
 releaseReaperClose();
 await new Promise(resolve => setImmediate(resolve));
+
+let queuedCreateCloseCalls = 0;
+let releaseQueuedCreateA;
+let releaseQueuedCreateB;
+const queuedCreateGateA = new Promise(resolve => { releaseQueuedCreateA = resolve; });
+const queuedCreateGateB = new Promise(resolve => { releaseQueuedCreateB = resolve; });
+const queuedCreateSession = {
+  lastAccess: 20_000,
+  tabGroups: new Map([['queued-empty', new Map()]]),
+  context: {
+    close: async () => { queuedCreateCloseCalls++; },
+    pages: () => [],
+  },
+};
+sessions.clear();
+sessions.set('queued-create-user', queuedCreateSession);
+const queuedCreateA = spartanWithPendingUserCreate(
+  'queued-create-user',
+  {},
+  async () => { await queuedCreateGateA; },
+);
+const queuedCreateB = spartanWithPendingUserCreate(
+  'queued-create-user',
+  {},
+  async () => { await queuedCreateGateB; },
+);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(spartanPendingUserCreateSnapshot().count, 2);
+assert.equal(spartanPendingUserCreateSnapshot(Date.now() + 30_001).deadlineExceeded, true);
+reapEmptySessions(80_000);
+reapOrphanPages(80_000);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(queuedCreateSession._closing, undefined);
+assert.equal(queuedCreateSession.tabGroups.has('queued-empty'), true);
+assert.equal(queuedCreateCloseCalls, 0);
+releaseQueuedCreateA();
+await queuedCreateA;
+assert.equal(spartanPendingUserCreateSnapshot().count, 1);
+reapEmptySessions(80_000);
+assert.equal(queuedCreateSession._closing, undefined);
+releaseQueuedCreateB();
+await queuedCreateB;
+assert.equal(spartanPendingUserCreateSnapshot().count, 0);
+reapEmptySessions(80_000);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(queuedCreateSession._closing, true);
+assert.equal(queuedCreateSession.tabGroups.has('queued-empty'), false);
+assert.equal(queuedCreateCloseCalls, 1);
+let releaseLongDeadlineCreate;
+const longDeadlineGate = new Promise(resolve => { releaseLongDeadlineCreate = resolve; });
+const longDeadlineStartedAt = Date.now();
+const longDeadlineCreate = spartanWithPendingUserCreate(
+  'long-deadline',
+  {},
+  async () => { await longDeadlineGate; },
+  longDeadlineStartedAt + 180_000,
+);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(
+  spartanPendingUserCreateSnapshot(longDeadlineStartedAt + 30_001).deadlineExceeded,
+  false,
+);
+assert.equal(
+  spartanPendingUserCreateSnapshot(longDeadlineStartedAt + 180_001).deadlineExceeded,
+  true,
+);
+releaseLongDeadlineCreate();
+await longDeadlineCreate;
+await assert.rejects(
+  spartanWithPendingUserCreate('invalid-deadline', {}, async () => {}, Number.NaN),
+  /positive finite timestamp/,
+);
+
+
+const boundedReleases = [];
+const boundedCreates = Array.from({ length: 9 }, (_, index) =>
+  spartanWithPendingUserCreate(
+    `bounded-${index}`,
+    {},
+    () => new Promise(resolve => { boundedReleases[index] = resolve; }),
+  )
+);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(spartanPendingUserCreateSnapshot().count, 9);
+await assert.rejects(
+  spartanWithPendingUserCreate('bounded-overflow', {}, async () => {}),
+  error => error?.code === 'browser_lifecycle_queue_full',
+);
+assert.equal(spartanPendingUserCreateSnapshot().count, 9);
+for (const release of boundedReleases) release();
+await Promise.all(boundedCreates);
+assert.equal(spartanPendingUserCreateSnapshot().count, 0);
+
+let releaseUnderlyingCreate;
+const underlyingCreateGate = new Promise(resolve => { releaseUnderlyingCreate = resolve; });
+const underlyingCreate = spartanWithPendingUserCreate(
+  'underlying-timeout',
+  {},
+  async () => { await underlyingCreateGate; },
+);
+await assert.rejects(
+  Promise.race([
+    underlyingCreate,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('visible timeout')), 10)),
+  ]),
+  /visible timeout/,
+);
+assert.equal(spartanPendingUserCreateSnapshot().count, 1);
+releaseUnderlyingCreate();
+await underlyingCreate;
+assert.equal(spartanPendingUserCreateSnapshot().count, 0);
+
+for (const [name, invoke] of [
+  ['timeout', () => reapTimedOutSessions(90_001)],
+  ['memory', () => evictOldestForMemory()],
+  ['pressure', () => pressureCleanupEmptySessions(true)],
+]) {
+  let automaticCloseCalls = 0;
+  let releaseAutomaticCreate;
+  const automaticGate = new Promise(resolve => { releaseAutomaticCreate = resolve; });
+  const automaticSession = {
+    lastAccess: 0,
+    tabGroups: new Map(),
+    context: {
+      close: async () => { automaticCloseCalls++; },
+      pages: () => [],
+    },
+  };
+  sessions.clear();
+  sessions.set(`automatic-${name}`, automaticSession);
+  const pendingAutomaticCreate = spartanWithPendingUserCreate(
+    `automatic-${name}`,
+    {},
+    async () => { await automaticGate; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  await invoke();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(automaticSession._closing, undefined, name);
+  assert.equal(automaticCloseCalls, 0, name);
+  releaseAutomaticCreate();
+  await pendingAutomaticCreate;
+  await invoke();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(automaticSession._closing, true, name);
+  assert.equal(automaticCloseCalls, 1, name);
+}
 
 let orphanCloseCalls = 0;
 const registeredPage = {};
@@ -814,10 +1255,17 @@ const timeoutHolder = spartanWithCreateLimit(async () => {
 });
 await new Promise(resolve => setImmediate(resolve));
 let expiredRan = false;
-const expiredWaiter = spartanWithCreateLimit(async () => { expiredRan = true; }, 10);
+const expiredWaiter = spartanWithPendingUserCreate(
+  'queue-timeout',
+  {},
+  () => spartanWithCreateLimit(async () => { expiredRan = true; }, 10),
+);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(spartanPendingUserCreateSnapshot().count, 1);
 const queueTimerKeepalive = setTimeout(() => {}, 1000);
 await assert.rejects(expiredWaiter, error => error?.code === 'browser_lifecycle_queue_timeout');
 clearTimeout(queueTimerKeepalive);
+assert.equal(spartanPendingUserCreateSnapshot().count, 0);
 assert.equal(expiredRan, false);
 releaseTimeout();
 await timeoutHolder;
@@ -851,7 +1299,22 @@ const recoverySession = {
 sessions.set('recovery-close', recoverySession);
 const interruptedClose = closeSession('recovery-close', recoverySession);
 await new Promise(resolve => setImmediate(resolve));
+let recoveryQueuedRan = false;
+const queuedDuringRecovery = spartanWithPendingUserCreate(
+  'recovery-queued',
+  {},
+  () => spartanWithCreateLimit(async () => { recoveryQueuedRan = true; }),
+);
+const queuedDuringRecoveryRejected = assert.rejects(
+  queuedDuringRecovery,
+  error => error?.code === 'browser_lifecycle_invalidated',
+);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(spartanPendingUserCreateSnapshot().count, 1);
 const coordinatedRecovery = spartanBrowserLifecycle.recover(async () => {});
+await queuedDuringRecoveryRejected;
+assert.equal(spartanPendingUserCreateSnapshot().count, 0);
+assert.equal(recoveryQueuedRan, false);
 releaseRecoveryClose();
 await assert.rejects(
   interruptedClose,
@@ -859,6 +1322,100 @@ await assert.rejects(
 );
 await coordinatedRecovery;
 assert.equal(spartanBrowserLifecycle.snapshot().degradedCode, null);
+
+let explicitCloseCalls = 0;
+let releaseExplicitCreate;
+const explicitCreateGate = new Promise(resolve => { releaseExplicitCreate = resolve; });
+const explicitSession = {
+  tabGroups: new Map(),
+  context: { close: async () => { explicitCloseCalls++; } },
+};
+sessions.set('explicit-pending', explicitSession);
+const explicitPending = spartanWithPendingUserCreate(
+  'explicit-pending',
+  {},
+  async () => { await explicitCreateGate; },
+);
+await assert.rejects(
+  closeSession('explicit-pending', explicitSession, { reason: 'api_delete_session' }),
+  error => error?.code === 'session_create_pending',
+);
+assert.equal(explicitCloseCalls, 0);
+releaseExplicitCreate();
+await explicitPending;
+await closeSession('explicit-pending', explicitSession, { reason: 'api_delete_session' });
+let deferredDestroyCloseCalls = 0;
+let bindRaceCloseCalls = 0;
+let resolveBindRaceSession;
+const bindRaceSessionGate = new Promise(resolve => { resolveBindRaceSession = resolve; });
+const bindRaceSession = {
+  tabGroups: new Map(),
+  context: { close: async () => { bindRaceCloseCalls++; } },
+};
+const bindRaceFence = { active: true, session: null, userKey: null };
+sessions.set('bind-race', bindRaceSession);
+const bindRaceCreate = spartanWithPendingUserCreate(
+  'bind-race',
+  bindRaceFence,
+  async () => {
+    const returnedSession = await bindRaceSessionGate;
+    spartanBindPendingCreateSession('bind-race', bindRaceFence, returnedSession);
+    return 'must-not-succeed';
+  },
+);
+await new Promise(resolve => setImmediate(resolve));
+resolveBindRaceSession(bindRaceSession);
+destroySession('bind-race');
+await assert.rejects(
+  bindRaceCreate,
+  error => error?.code === 'session_invalidated_during_create',
+);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(bindRaceFence.session, bindRaceSession);
+assert.equal(bindRaceFence.active, false);
+assert.equal(bindRaceSession._closing, true);
+assert.equal(bindRaceCloseCalls, 1);
+assert.equal(sessions.has('bind-race'), false);
+
+let releaseDeferredDestroyCreate;
+const deferredDestroyGate = new Promise(resolve => { releaseDeferredDestroyCreate = resolve; });
+const deferredDestroySession = {
+  tabGroups: new Map(),
+  context: { close: async () => { deferredDestroyCloseCalls++; } },
+};
+const deferredDestroyReplacement = {
+  tabGroups: new Map([['live', new Map([['tab', {}]])]]),
+  context: { close: async () => {} },
+};
+const deferredDestroyFence = { active: true, session: null };
+sessions.set('deferred-destroy', deferredDestroySession);
+const deferredDestroyCreate = spartanWithPendingUserCreate(
+  'deferred-destroy',
+  deferredDestroyFence,
+  async () => {
+    deferredDestroyFence.session = deferredDestroySession;
+    await deferredDestroyGate;
+    return 'must-not-succeed';
+  },
+);
+await new Promise(resolve => setImmediate(resolve));
+destroySession('deferred-destroy');
+assert.equal(sessions.has('deferred-destroy'), false);
+assert.equal(deferredDestroySession._closing, true);
+assert.equal(deferredDestroyFence.active, false);
+assert.equal(deferredDestroyCloseCalls, 0);
+sessions.set('deferred-destroy', deferredDestroyReplacement);
+releaseDeferredDestroyCreate();
+await assert.rejects(
+  deferredDestroyCreate,
+  error => error?.code === 'session_destroyed_during_create',
+);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(deferredDestroyCloseCalls, 1);
+assert.equal(deferredDestroySession._spartanDeferredDestroyTokens, undefined);
+assert.equal(sessions.get('deferred-destroy'), deferredDestroyReplacement);
+
+assert.equal(explicitCloseCalls, 1);
 
 const alreadyClosedSession = {
   tabGroups: new Map(),
@@ -990,6 +1547,23 @@ await assert.rejects(
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("expected Camofox downloads route marker not found", result.stderr)
         self.assertEqual(self.server.read_text(), original)
+    def test_refuses_unknown_destroy_session_variant_before_write(self):
+        original = SERVER_FIXTURE.replace(
+            "log('warn', 'destroying dead session', { userId: key });",
+            "log('warn', 'destroying stale session', { userId: key });",
+        )
+        self.assertNotEqual(original, SERVER_FIXTURE)
+        self.server.write_text(original)
+
+        result = self.run_patcher()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "unsupported Camofox destroy-session variant",
+            result.stderr,
+        )
+        self.assertEqual(self.server.read_text(), original)
+
 
 
 if __name__ == "__main__":
