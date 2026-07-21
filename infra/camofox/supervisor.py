@@ -47,6 +47,36 @@ CGROUP_STATES = frozenset({"ok", "unknown"})
 SAFE_VALUE = re.compile(r"^[a-z0-9_.-]{1,64}$")
 REVISION_VALUE = re.compile(r"^[0-9a-f]{64}$")
 MAX_JSON_BYTES = 16 * 1024
+MAX_DEEP_HEALTH_BYTES = 4096
+MAX_SAFE_BROWSER_GENERATION = (1 << 53) - 1
+DEEP_HEALTH_STAGES = frozenset(
+    {
+        "cleanup",
+        "complete",
+        "ensure_browser",
+        "evaluate",
+        "goto",
+        "lifecycle",
+        "lifecycle_settle",
+        "new_context",
+        "new_page",
+    }
+)
+DEEP_HEALTH_FAILURE_CODES = frozenset(
+    {
+        "browser_lifecycle_degraded",
+        "browser_lifecycle_invalidated",
+        "browser_lifecycle_queue_timeout",
+        "browser_lifecycle_recovering",
+        "browser_lifecycle_stuck",
+        "browser_navigation_degraded",
+        "deep_probe_busy_stale",
+        "deep_probe_cleanup_failed",
+        "deep_probe_failed",
+        "deep_probe_sentinel",
+        "deep_probe_timeout",
+    }
+)
 
 
 def supervisor_revision(path: pathlib.Path | None = None) -> str:
@@ -502,6 +532,147 @@ class CgroupMonitor:
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class DeepHealthResult:
+    structured: bool
+    healthy: bool
+    code: str | None
+    stage: str | None
+    browser_generation: int | None
+
+    def __bool__(self) -> bool:
+        raise TypeError("DeepHealthResult must be checked through typed properties")
+
+    @classmethod
+    def ordinary_unhealthy(cls) -> "DeepHealthResult":
+        return cls(
+            structured=False,
+            healthy=False,
+            code=None,
+            stage=None,
+            browser_generation=None,
+        )
+
+    @property
+    def hard_trigger(self) -> bool:
+        return bool(
+            self.structured
+            and not self.healthy
+            and self.code == "browser_navigation_degraded"
+            and self.stage == "lifecycle"
+            and self.browser_generation is not None
+        )
+
+    @property
+    def real_ready(self) -> bool:
+        return bool(
+            self.structured
+            and self.healthy
+            and self.code == "ready"
+            and self.stage == "complete"
+            and self.browser_generation is not None
+        )
+
+    def log_fields(self) -> dict[str, Any]:
+        if not self.structured:
+            return {}
+        return {
+            "code": self.code,
+            "stage": self.stage,
+            "browser_generation": self.browser_generation,
+        }
+
+
+def _safe_browser_generation(value: Any) -> bool:
+    return bool(
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= MAX_SAFE_BROWSER_GENERATION
+    )
+
+
+def parse_deep_health_response(status: int, body: bytes) -> DeepHealthResult:
+    fallback = DeepHealthResult.ordinary_unhealthy()
+    if (
+        not isinstance(status, int)
+        or isinstance(status, bool)
+        or status not in {http.client.OK, http.client.SERVICE_UNAVAILABLE}
+        or not isinstance(body, bytes)
+        or len(body) > MAX_DEEP_HEALTH_BYTES
+    ):
+        return fallback
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeError, TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+    if not isinstance(payload, dict):
+        return fallback
+    ok = payload.get("ok")
+    code = payload.get("code")
+    stage = payload.get("stage")
+    generation = payload.get("browserGeneration")
+    if (
+        not isinstance(ok, bool)
+        or not isinstance(code, str)
+        or code not in DEEP_HEALTH_FAILURE_CODES | {"busy", "ready"}
+        or not isinstance(stage, str)
+        or stage not in DEEP_HEALTH_STAGES
+        or not _safe_browser_generation(generation)
+    ):
+        return fallback
+    if status != (http.client.OK if ok else http.client.SERVICE_UNAVAILABLE):
+        return fallback
+    if code == "ready":
+        if not ok or stage != "complete":
+            return fallback
+    elif code == "busy":
+        if not ok or stage != "lifecycle":
+            return fallback
+    elif ok:
+        return fallback
+    if code == "browser_navigation_degraded" and stage != "lifecycle":
+        return fallback
+    return DeepHealthResult(
+        structured=True,
+        healthy=ok,
+        code=code,
+        stage=stage,
+        browser_generation=generation,
+    )
+
+
+class RecoveryAttemptGuard:
+    def __init__(self):
+        self._attempted: set[tuple[int, int | None]] = set()
+
+    def claim(self, child_pid: int, browser_generation: int | None) -> bool:
+        if (
+            not isinstance(child_pid, int)
+            or isinstance(child_pid, bool)
+            or child_pid <= 1
+        ):
+            raise ValueError("invalid recovery child pid")
+        if browser_generation is not None and not _safe_browser_generation(
+            browser_generation
+        ):
+            raise ValueError("invalid recovery browser generation")
+        key = (child_pid, browser_generation)
+        if key in self._attempted:
+            return False
+        self._attempted.add(key)
+        return True
+
+
+def recovery_probe_replaced(
+    failed: DeepHealthResult, verification: DeepHealthResult
+) -> bool:
+    return bool(
+        failed.browser_generation is not None
+        and verification.real_ready
+        and verification.browser_generation != failed.browser_generation
+    )
+
+
 class InternalClient:
     HEADER = "X-Spartan-Camofox-Internal"
 
@@ -521,13 +692,15 @@ class InternalClient:
         self.access_key = access_key
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def _request(self, *, path: str, method: str, timeout: float) -> bool:
+    def _request(
+        self, *, path: str, method: str, timeout: float
+    ) -> tuple[int, bytes] | None:
         try:
             secret = _read_bounded(self.secret_file, 256).strip()
         except (OSError, UnicodeError, ValueError):
-            return False
+            return None
         if not re.fullmatch(r"[0-9a-f]{64}", secret):
-            return False
+            return None
         headers = {self.HEADER: secret, "Connection": "close"}
         if self.access_key:
             headers["Authorization"] = f"Bearer {self.access_key}"
@@ -539,20 +712,36 @@ class InternalClient:
         )
         try:
             with self._opener.open(request, timeout=timeout) as response:
-                response.read(4096)
-                return response.status == http.client.OK
-        except (OSError, TimeoutError, urllib.error.URLError, urllib.error.HTTPError):
-            return False
+                return (
+                    int(response.status),
+                    response.read(MAX_DEEP_HEALTH_BYTES + 1),
+                )
+        except urllib.error.HTTPError as error:
+            try:
+                return (
+                    int(error.code),
+                    error.read(MAX_DEEP_HEALTH_BYTES + 1),
+                )
+            except (OSError, TypeError, ValueError):
+                return None
+            finally:
+                error.close()
+        except (OSError, TimeoutError, urllib.error.URLError):
+            return None
 
-    def deep_health(self) -> bool:
-        return self._request(
+    def deep_health(self) -> DeepHealthResult:
+        response = self._request(
             path="/spartan/health/deep", method="GET", timeout=self.health_timeout
         )
+        if response is None:
+            return DeepHealthResult.ordinary_unhealthy()
+        return parse_deep_health_response(*response)
 
     def recover(self) -> bool:
-        return self._request(
+        response = self._request(
             path="/spartan/recover", method="POST", timeout=self.recovery_timeout
         )
+        return bool(response is not None and response[0] == http.client.OK)
 
 
 class RecoveryPolicy:
@@ -676,6 +865,9 @@ class EventLogger:
             "pid",
             "ppid",
             "state",
+            "code",
+            "stage",
+            "browser_generation",
             "reason",
             "failure_count",
             "percent",
@@ -990,6 +1182,7 @@ class SupervisorRuntime:
         self.blocked = False
         self.stop_requested = False
         self._last_ready: bool | None = None
+        self.recovery_attempts = RecoveryAttemptGuard()
 
     def _publish(self, state: str, cgroup_status: str = "unknown") -> None:
         child = self.child_info
@@ -1166,6 +1359,52 @@ class SupervisorRuntime:
             self._stop_lifecycle(record_recycle=False)
         return 0
 
+    def _attempt_internal_recovery(
+        self,
+        *,
+        policy: RecoveryPolicy,
+        failed_health: DeepHealthResult,
+        cgroup_status: str,
+        reason: str,
+    ) -> bool:
+        child_pid = (
+            self.child_info.pid if self.child_info is not None else self.child.pid
+        )
+        health_fields = failed_health.log_fields()
+        if not self.recovery_attempts.claim(
+            child_pid, failed_health.browser_generation
+        ):
+            self.logger.emit(
+                "recovery_failed",
+                reason="recovery_already_attempted",
+                **health_fields,
+            )
+            return False
+        self._publish("recovering", cgroup_status=cgroup_status)
+        self.logger.emit(
+            "recovery_requested",
+            failure_count=policy.failure_count,
+            reason=reason,
+            **health_fields,
+        )
+        if not self.client.recover():
+            self.logger.emit(
+                "recovery_failed", reason="internal_recovery_failed"
+            )
+            return False
+        verification = self.client.deep_health()
+        if not recovery_probe_replaced(failed_health, verification):
+            self.logger.emit(
+                "recovery_failed",
+                reason="recovery_probe_not_replaced",
+                **verification.log_fields(),
+            )
+            return False
+        policy.recovery_succeeded()
+        self.logger.emit("recovery_succeeded", **verification.log_fields())
+        self._publish("starting", cgroup_status=cgroup_status)
+        return True
+
     def run(self) -> int:
         self.install_signal_handlers()
         if not enable_subreaper():
@@ -1197,12 +1436,27 @@ class SupervisorRuntime:
                 sample = self.cgroup.sample()
                 if sample.status == "unknown":
                     self.logger.emit("cgroup_degraded", reason="cgroup_unknown")
-                deep_healthy = self.client.deep_health()
+                deep_health = self.client.deep_health()
+                hard_trigger = sample.hard_trigger or deep_health.hard_trigger
                 decision = policy.observe(
-                    healthy=deep_healthy,
-                    hard_trigger=sample.hard_trigger,
+                    healthy=deep_health.healthy,
+                    hard_trigger=hard_trigger,
                 )
-                fully_healthy = deep_healthy and sample.status == "ok" and not sample.hard_trigger
+                health_fields = deep_health.log_fields()
+                recovery_reason = (
+                    "memory_hard"
+                    if sample.hard_trigger
+                    else (
+                        "browser_navigation_degraded"
+                        if deep_health.hard_trigger
+                        else "deep_unhealthy"
+                    )
+                )
+                fully_healthy = (
+                    deep_health.healthy
+                    and sample.status == "ok"
+                    and not sample.hard_trigger
+                )
                 if fully_healthy:
                     first_healthy = self.ledger.healthy_since is None
                     reset = self.ledger.mark_healthy(self.wall_time(), self.config.stable_reset)
@@ -1210,7 +1464,9 @@ class SupervisorRuntime:
                         save_ledger(self.config.ledger_file, self.ledger)
                     self._publish("ready", cgroup_status="ok")
                     if self._last_ready is not True:
-                        self.logger.emit("probe_ready", failure_count=0)
+                        self.logger.emit(
+                            "probe_ready", failure_count=0, **health_fields
+                        )
                     self._last_ready = True
                 else:
                     if self.ledger.mark_unhealthy():
@@ -1219,25 +1475,20 @@ class SupervisorRuntime:
                     self.logger.emit(
                         "probe_failed",
                         failure_count=policy.failure_count,
-                        reason="memory_hard" if sample.hard_trigger else "deep_unhealthy",
+                        reason=recovery_reason,
                         percent=round(sample.percent, 3) if sample.percent is not None else None,
                         oom_delta=sample.oom_delta,
+                        **health_fields,
                     )
                     self._last_ready = False
 
                 if decision == "recover":
-                    self._publish("recovering", cgroup_status=sample.status)
-                    self.logger.emit(
-                        "recovery_requested",
-                        failure_count=policy.failure_count,
-                        reason="memory_hard" if sample.hard_trigger else "deep_unhealthy",
-                    )
-                    if self.client.recover():
-                        policy.recovery_succeeded()
-                        self.logger.emit("recovery_succeeded")
-                        self._publish("starting", cgroup_status=sample.status)
-                    else:
-                        self.logger.emit("recovery_failed", reason="internal_recovery_failed")
+                    if not self._attempt_internal_recovery(
+                        policy=policy,
+                        failed_health=deep_health,
+                        cgroup_status=sample.status,
+                        reason=recovery_reason,
+                    ):
                         self._stop_lifecycle(record_recycle=True)
                         break
                 self._wait(self.config.monitor_interval)

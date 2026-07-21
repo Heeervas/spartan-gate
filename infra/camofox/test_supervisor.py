@@ -355,8 +355,19 @@ class SupervisorTests(unittest.TestCase):
                 seen["path"] = handler.path
                 seen["secret"] = handler.headers.get("X-Spartan-Camofox-Internal")
                 seen["authorization"] = handler.headers.get("Authorization")
+                body = json.dumps(
+                    {
+                        "ok": True,
+                        "code": "ready",
+                        "stage": "complete",
+                        "browserGeneration": 7,
+                    }
+                ).encode("utf-8")
                 handler.send_response(200)
+                handler.send_header("Content-Type", "application/json")
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
+                handler.wfile.write(body)
 
             def log_message(self, *args):
                 return
@@ -372,7 +383,14 @@ class SupervisorTests(unittest.TestCase):
                 recovery_timeout=1,
                 access_key="test-access-key",
             )
-            self.assertTrue(client.deep_health())
+            health = client.deep_health()
+            self.assertTrue(health.healthy)
+            self.assertTrue(health.real_ready)
+            self.assertEqual(health.code, "ready")
+            self.assertEqual(health.stage, "complete")
+            self.assertEqual(health.browser_generation, 7)
+            with self.assertRaisesRegex(TypeError, "typed properties"):
+                bool(health)
         finally:
             server.shutdown()
             server.server_close()
@@ -381,6 +399,190 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(seen["path"], "/spartan/health/deep")
         self.assertEqual(seen["secret"], secret)
         self.assertEqual(seen["authorization"], "Bearer test-access-key")
+
+    def test_deep_health_parses_structured_503_without_trusting_extra_fields(self):
+        secret_path = self.root / "run" / "internal.key"
+        self.supervisor.ensure_internal_secret(secret_path)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(handler):
+                body = json.dumps(
+                    {
+                        "ok": False,
+                        "code": "browser_navigation_degraded",
+                        "stage": "lifecycle",
+                        "browserGeneration": 9,
+                        "untrusted": "ignored",
+                    }
+                ).encode("utf-8")
+                handler.send_response(503)
+                handler.send_header("Content-Type", "application/json")
+                handler.send_header("Content-Length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
+            def log_message(self, *args):
+                return
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = self.supervisor.InternalClient(
+                port=server.server_port,
+                secret_file=secret_path,
+                health_timeout=1,
+                recovery_timeout=1,
+            )
+            health = client.deep_health()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertFalse(health.healthy)
+        self.assertTrue(health.structured)
+        self.assertTrue(health.hard_trigger)
+        self.assertEqual(health.code, "browser_navigation_degraded")
+        self.assertEqual(health.stage, "lifecycle")
+        self.assertEqual(health.browser_generation, 9)
+
+    def test_malformed_or_unknown_deep_health_is_an_ordinary_threshold_failure(self):
+        valid = {
+            "ok": False,
+            "code": "browser_navigation_degraded",
+            "stage": "lifecycle",
+            "browserGeneration": 4,
+        }
+        malformed = [
+            (503, b"{"),
+            (
+                503,
+                json.dumps(
+                    {
+                        key: value
+                        for key, value in valid.items()
+                        if key != "browserGeneration"
+                    }
+                ).encode(),
+            ),
+            (503, json.dumps({**valid, "browserGeneration": True}).encode()),
+            (503, json.dumps({**valid, "browserGeneration": -1}).encode()),
+            (503, json.dumps({**valid, "browserGeneration": 2**53}).encode()),
+            (503, json.dumps({**valid, "code": "future_health_code"}).encode()),
+            (503, json.dumps({**valid, "stage": "future_health_stage"}).encode()),
+            (200, json.dumps(valid).encode()),
+        ]
+        for status, body in malformed:
+            with self.subTest(status=status, body=body):
+                health = self.supervisor.parse_deep_health_response(status, body)
+                self.assertFalse(health.healthy)
+                self.assertFalse(health.structured)
+                self.assertFalse(health.hard_trigger)
+                self.assertIsNone(health.code)
+                self.assertIsNone(health.stage)
+                self.assertIsNone(health.browser_generation)
+
+        fallback = self.supervisor.parse_deep_health_response(*malformed[0])
+        policy = self.supervisor.RecoveryPolicy(failure_threshold=3)
+        self.assertEqual(
+            policy.observe(healthy=fallback.healthy, hard_trigger=fallback.hard_trigger),
+            "unhealthy",
+        )
+        self.assertEqual(
+            policy.observe(healthy=fallback.healthy, hard_trigger=fallback.hard_trigger),
+            "unhealthy",
+        )
+        self.assertEqual(
+            policy.observe(healthy=fallback.healthy, hard_trigger=fallback.hard_trigger),
+            "recover",
+        )
+
+    def test_navigation_degraded_is_an_immediate_hard_recovery_trigger(self):
+        health = self.supervisor.parse_deep_health_response(
+            503,
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "browser_navigation_degraded",
+                    "stage": "lifecycle",
+                    "browserGeneration": 11,
+                }
+            ).encode(),
+        )
+        policy = self.supervisor.RecoveryPolicy(failure_threshold=3)
+
+        self.assertTrue(health.hard_trigger)
+        self.assertEqual(
+            policy.observe(healthy=health.healthy, hard_trigger=health.hard_trigger),
+            "recover",
+        )
+        self.assertEqual(policy.failure_count, 1)
+
+    def test_recovery_attempt_is_claimed_once_per_pid_and_generation(self):
+        attempts = self.supervisor.RecoveryAttemptGuard()
+
+        self.assertTrue(attempts.claim(100, 0))
+        self.assertFalse(attempts.claim(100, 0))
+        self.assertTrue(attempts.claim(100, 1))
+        self.assertTrue(attempts.claim(101, 0))
+        self.assertFalse(attempts.claim(101, 0))
+
+    def test_recovery_verification_requires_ready_from_a_different_generation(self):
+        failed = self.supervisor.parse_deep_health_response(
+            503,
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "deep_probe_timeout",
+                    "stage": "goto",
+                    "browserGeneration": 20,
+                }
+            ).encode(),
+        )
+        same_generation = self.supervisor.parse_deep_health_response(
+            200,
+            json.dumps(
+                {
+                    "ok": True,
+                    "code": "ready",
+                    "stage": "complete",
+                    "browserGeneration": 20,
+                }
+            ).encode(),
+        )
+        busy_new_generation = self.supervisor.parse_deep_health_response(
+            200,
+            json.dumps(
+                {
+                    "ok": True,
+                    "code": "busy",
+                    "stage": "lifecycle",
+                    "browserGeneration": 21,
+                }
+            ).encode(),
+        )
+        ready_new_generation = self.supervisor.parse_deep_health_response(
+            200,
+            json.dumps(
+                {
+                    "ok": True,
+                    "code": "ready",
+                    "stage": "complete",
+                    "browserGeneration": 21,
+                }
+            ).encode(),
+        )
+
+        self.assertFalse(
+            self.supervisor.recovery_probe_replaced(failed, same_generation)
+        )
+        self.assertFalse(
+            self.supervisor.recovery_probe_replaced(failed, busy_new_generation)
+        )
+        self.assertTrue(
+            self.supervisor.recovery_probe_replaced(failed, ready_new_generation)
+        )
 
     def test_policy_recovers_on_third_failure_or_immediate_hard_trigger(self):
         policy = self.supervisor.RecoveryPolicy(failure_threshold=3)
