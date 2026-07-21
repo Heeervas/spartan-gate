@@ -402,7 +402,14 @@ Camofox Docker health is deep readiness, not its shallow unauthenticated
 `GET /health`. A PID-1 supervisor validates a real raw context/page lifecycle.
 A busy owner is healthy only while it remains inside its declared deadline and
 the last completed real probe is at most 45 seconds old; busy never refreshes
-that proof. Overdue or stale state is unhealthy. The supervisor performs one
+that proof. A queued create is registered before lifecycle admission, and an
+overdue token also makes deep health fail. The token uses the effective request
+deadline, including the bounded proxy-rotation allowance, rather than the base
+30-second handler timeout. Dead-session cleanup invalidates a create bound to
+that exact context and defers close until its underlying promise settles.
+The unsafe deprecated `POST /tabs/open` alias returns HTTP 410; use
+`POST /tabs`. Overdue or stale state is unhealthy.
+The supervisor performs one
 internal recovery after three
 failures, and then recycles its child process tree under persistent exponential
 backoff. It does not use Docker control APIs. If an unkillable `D` process

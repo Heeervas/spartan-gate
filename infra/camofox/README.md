@@ -87,13 +87,27 @@ healthy minutes. If a process remains in uninterruptible `D` state, readiness
 stays unhealthy and no second browser is launched; the supervisor retries
 cleanup at the maximum backoff.
 
-Empty-group/session deletion and orphan-page reaping skip only the groups or
-sessions represented by an active per-create fence. The fence remains attached
-until the underlying create promise settles, including after an HTTP timeout;
-unrelated tab activity cannot extend garbage retention. Session teardown also
-uses compare-and-delete, so an old context finishing asynchronously cannot
-remove a same-user replacement. Together these fence create-versus-reaper races
-without keeping failed tabs or orphan pages alive indefinitely.
+Each create registers a per-request token immediately after request validation
+and before it waits for the global lifecycle FIFO. The registry is bounded to
+one running create plus `MAX_SESSIONS` waiters and ref-counted per user. Empty
+groups, session timeout, memory-pressure eviction, pressure cleanup, and the
+empty-session reaper preserve a user while any queued token remains. After
+admission, the existing per-session fence continues to protect the exact group
+and orphan-page cleanup.
+
+Both fences remain until the underlying create promise settles, including after
+an HTTP timeout. Each token stores the request's effective absolute deadline:
+30 seconds normally or the longer proxy-rotation allowance when configured.
+Deep health therefore rejects a truly overdue create without killing a valid
+long-running proxy retry.
+
+Dead-context, proxy, and navigation-error teardown marks the exact session
+closing, invalidates any create already bound to it, and delays context close
+until that create settles. The invalidated request fails explicitly, while
+compare-and-delete preserves any same-user replacement. The deprecated
+`POST /tabs/open` path is disabled with HTTP 410; callers must use the fenced
+`POST /tabs` route. These bounds close the admission-versus-reaper and
+create-versus-destroy races without retaining unrelated garbage indefinitely.
 
 The watchdog ledger is separate from browser credentials:
 
@@ -122,11 +136,14 @@ It executes 20 sequential lifecycles and five concurrent identities, requires
 each evaluation to return `true`, closes each tab in `finally`, and requires
 `activeTabs` to return to the captured baseline.
 
-The five clients remain concurrent, but create lifecycles use one global FIFO
-slot by default. The FIFO is capped at `MAX_SESSIONS` waiters and cancels a
-waiter before its outer handler deadline. Local evidence showed that two
-simultaneous Camoufox context navigations could both stall while five parallel
-proxy requests completed.
+The five clients remain concurrent at the API, but create lifecycles use one
+global FIFO slot. The FIFO is capped at `MAX_SESSIONS` waiters, with one
+additional bounded token for the running create, and cancels a waiter before
+its outer handler deadline. Registering that token before FIFO admission keeps
+the minute reapers from closing an empty context underneath a queued burst.
+Local evidence also showed that allowing two Camoufox context navigations at
+once could stall both, so the browser mutation lane intentionally remains
+single-owner.
 
 Then exercise supervised recovery with a bounded, reversible browser-only fault:
 
