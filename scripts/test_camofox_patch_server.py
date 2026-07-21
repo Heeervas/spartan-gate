@@ -351,14 +351,31 @@ app.post('/tabs', async (req, res) => {
 // Navigate
 
 app.post('/tabs/:tabId/navigate', async (req, res) => {
+  const tabId = req.params.tabId;
   try {
-    await navigateCurrentPage();
-  } catch (navErr) {
-    if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
-      await rotate();
-    } else {
-      throw navErr;
+    const { userId, url } = req.body;
+    await ensureBrowser();
+    const targetUrl = url;
+    if (!targetUrl) throw new Error('url or macro required');
+    const urlErr = validateUrl(targetUrl);
+    if (urlErr) throw new Error(urlErr);
+    const navigateCurrentPage = async () => {
+      await page.goto(targetUrl);
+    };
+    try {
+      await navigateCurrentPage();
+    } catch (navErr) {
+      if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
+        await rotate();
+        await navigateCurrentPage();
+      } else {
+        throw navErr;
+      }
     }
+    // For Google SERP: skip eager ref building during navigate.
+    res.json({ ok: true, tabId, userId });
+  } catch (err) {
+    handleRouteError(err, req, res);
   }
 });
 
@@ -629,7 +646,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.server.read_text(), patched)
 
-    def test_migrates_revision_one_to_narrow_revision_two(self):
+    def test_rejects_lifecycle_revision_one_mixed_with_readiness_v2(self):
         first = self.run_patcher()
         self.assertEqual(first.returncode, 0, first.stderr)
         final = self.server.read_text()
@@ -764,10 +781,11 @@ class CamofoxPatchServerTests(unittest.TestCase):
 
         migrated = self.run_patcher()
 
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.assertEqual(self.server.read_text(), final)
+        self.assertNotEqual(migrated.returncode, 0)
+        self.assertIn("expected one Camofox lifecycle", migrated.stderr)
+        self.assertEqual(self.server.read_text(), legacy)
 
-    def test_migrates_revision_two_to_queued_create_fence(self):
+    def test_rejects_queued_create_revision_mixed_with_readiness_v2(self):
         first = self.run_patcher()
         self.assertEqual(first.returncode, 0, first.stderr)
         final = self.server.read_text()
@@ -964,8 +982,9 @@ class CamofoxPatchServerTests(unittest.TestCase):
 
         migrated = self.run_patcher()
 
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.assertEqual(self.server.read_text(), final)
+        self.assertNotEqual(migrated.returncode, 0)
+        self.assertIn("readiness revision 2 marker is incomplete", migrated.stderr)
+        self.assertEqual(self.server.read_text(), revision_two)
 
     def test_rejects_invalid_global_create_limits(self):
         first = self.run_patcher()

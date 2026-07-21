@@ -28,6 +28,13 @@ function sendError(res, err, extraFields = {}) {
   }
   res.status(status).json(body);
 }
+function handleRouteError(err, req, res, extraFields = {}) {
+  const failureType = classifyError(err);
+  const action = actionFromReq(req);
+  failuresTotal.labels(failureType, action).inc();
+  sendError(res, err, extraFields);
+}
+
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
@@ -266,20 +273,41 @@ app.post('/tabs', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
+    if (FLY_MACHINE_ID && err.statusCode === 503) {
+      res.set('fly-replay', \`app=\${CONFIG.flyAppName || 'camofox-browser'}\`);
+      return res.status(503).json({ error: safeError(err), code: err.code || 'admission_rejected' });
+    }
     handleRouteError(err, req, res);
   }
 });
 
 // Navigate
 app.post('/tabs/:tabId/navigate', async (req, res) => {
+  const tabId = req.params.tabId;
   try {
-    await navigateCurrentPage();
-  } catch (navErr) {
-    if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
-      await rotate();
-    } else {
-      throw navErr;
+    const { userId, url } = req.body;
+    await ensureBrowser();
+    const targetUrl = url;
+    if (!targetUrl) throw new Error('url or macro required');
+    const urlErr = validateUrl(targetUrl);
+    if (urlErr) throw new Error(urlErr);
+    const navigateCurrentPage = async () => {
+      await page.goto(targetUrl);
+    };
+    try {
+      await navigateCurrentPage();
+    } catch (navErr) {
+      if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
+        await rotate();
+        await navigateCurrentPage();
+      } else {
+        throw navErr;
+      }
     }
+    // For Google SERP: skip eager ref building during navigate.
+    res.json({ ok: true, tabId, userId });
+  } catch (err) {
+    handleRouteError(err, req, res);
   }
 });
 
@@ -391,6 +419,11 @@ try {
   assert.match(once, /body\.code = err\.code/, 'global errors must include semantic codes in the response body');
   assert.match(once, /app\.get\('\/spartan\/health\/deep'/, 'deep health route must be installed');
   assert.match(once, /spartanInternalRequestAuthorized/, 'deep health must require internal authorization');
+  assert.match(
+    once,
+    /createSpartanNavigationReadiness/,
+    'navigation readiness must be imported and instantiated',
+  );
   assert.strictEqual(
     (once.match(/const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;/g) || []).length,
     1,
@@ -406,6 +439,42 @@ try {
     1,
     'generated server must contain exactly one queued-create fence revision',
   );
+  assert.strictEqual(
+    (once.match(/const SPARTAN_CAMOFOX_READINESS_REVISION = 2;/g) || []).length,
+    1,
+    'generated server must contain exactly one readiness-v2 revision',
+  );
+  assert.match(once, /let spartanBrowserGeneration = 0;/, 'browser generation must start unpublished');
+  assert.match(once, /function spartanPublishBrowser\(/, 'browser publication must own generation changes');
+  assert.match(once, /spartanBrowserGeneration\+\+;/, 'each published browser must increment generation');
+  assert.match(once, /spartanPublishBrowser\(value\)/, 'fixture browser publication must use the generation helper');
+  assert.match(once, /getGeneration: \(\) => spartanBrowserGeneration/, 'deep readiness must be generation-aware');
+  assert.match(once, /cacheMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS/, 'public readiness cache must use the bounded TTL');
+  assert.match(once, /spartanNavigationReadiness\.snapshot\(\)/, 'deep and public readiness must honor the sticky navigation latch');
+  assert.match(once, /const payload = spartanDeepHealthPayload\(result\);/, 'deep health must translate its internal result');
+  assert.match(once, /return \{ ok, code, stage, browserGeneration \};/, 'deep health must expose the supervisor generation field');
+  assert.doesNotMatch(once, /spartanDeepHealth\.probe\(\);\n  res\.status\(result\.ok \? 200 : 503\)\.json\(result\)/, 'deep probe must not expose its internal result raw');
+  assert.match(once, /browser_navigation_degraded[\s\S]*error\.stage = 'lifecycle'/, 'navigation degradation must use the supervisor hard-trigger stage');
+  assert.match(once, /const failureClass = isTimeoutError\(error\) \? 'internal_timeout' : null;/, 'only a terminal goto timeout may poison readiness');
+  assert.doesNotMatch(once, /const failureClass = isDeadContextError\(error\)/, 'dead context must remain an HTTP classification, not a readiness trigger');
+  assert.match(once, /app\.get\('\/live'/, 'browser-independent liveness must be exposed');
+  assert.match(once, /const readiness = spartanPublicReadinessSnapshot\(\);/, 'public health must consume only the cached readiness snapshot');
+  assert.match(once, /res\.status\(readiness\.ok \? 200 : 503\)/, 'public health must fail closed when readiness is false');
+  assert.doesNotMatch(once, /app\.get\('\/health', \(_req, res\) => res\.json\(\{ ok: true \}\)\)/, 'shallow public health must be replaced');
+  assert.match(once, /spartanCreateNavigation = spartanNavigationReadiness\.begin/, 'POST tabs with a URL must create one terminal navigation outcome');
+  assert.match(once, /spartanNavigateOutcome = spartanNavigationReadiness\.begin/, 'navigate must create one terminal navigation outcome');
+  assert.match(once, /spartanMarkNavigationAttemptError\(navErr\)/, 'goto failures must be tagged at their origin');
+  assert.match(once, /spartanCreateNavigation\?\.success\(\)/, 'successful create navigation must reset the pre-latch streak');
+  assert.match(once, /spartanNavigateOutcome\?\.success\(\)/, 'successful navigate must reset the pre-latch streak');
+  assert.match(once, /spartanSettleNavigationFailure\(spartanCreateNavigation, err\)/, 'create failures must settle once after route cleanup');
+  assert.match(once, /spartanSettleNavigationFailure\(spartanNavigateOutcome, err\)/, 'navigate failures must settle once after route cleanup');
+  assert.match(once, /spartanSettleNavigationFailure\(spartanCreateNavigation, err\);\n    handleRouteError/, 'create must latch before generic error handling');
+  assert.match(once, /spartanSettleNavigationFailure\(spartanNavigateOutcome, err\);\n    handleRouteError/, 'navigate must latch before generic error handling');
+  assert.match(once, /failureClass = classification\.failureClass/, 'known failures must expose a stable class');
+  assert.match(once, /failureClass: 'capacity_limit'/, 'capacity must be distinct from internal timeout and browser state');
+  assert.match(once, /failureClass: 'internal_timeout'/, 'timeouts must retain HTTP 503 classification');
+  assert.match(once, /failureClass: 'browser_state'/, 'degraded browser state must retain HTTP 503 classification');
+  assert.match(once, /FLY_MACHINE_ID && spartanIsCapacityFailure\(err\)/, 'Fly replay must remain limited to capacity failures');
   assert.match(once, /const SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS \+ 1;/, 'pre-admission fences must be bounded by queue capacity');
   assert.match(once, /function spartanPendingUserCreateSnapshot\(/, 'queued creates must expose non-sensitive health state');
   assert.match(once, /pendingCreate\.deadlineExceeded/, 'expired queued creates must make deep health fail');
@@ -493,6 +562,31 @@ try {
     .map((line, index) => `${Math.max(1, syntaxLine - 3) + index}: ${line}`)
     .join('\n');
   assert.strictEqual(syntax.status, 0, `${syntax.stderr}\n${syntaxContext}`);
+
+  const partialTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'spartan-camofox-partial-'));
+  try {
+    const partialServerPath = path.join(partialTemp, 'server.js');
+    const partial = once.replace(
+      'spartanNavigateOutcome = spartanNavigationReadiness.begin();',
+      'spartanNavigateOutcome = null; // deliberately incomplete revision fixture',
+    );
+    assert.notStrictEqual(partial, once, 'partial-revision fixture must remove a required marker');
+    fs.writeFileSync(path.join(partialTemp, 'package.json'), '{"type":"module"}\n');
+    fs.writeFileSync(partialServerPath, partial);
+    const rejected = spawnSync(process.execPath, [patch], {
+      cwd: partialTemp,
+      encoding: 'utf8',
+    });
+    assert.notStrictEqual(rejected.status, 0, 'an incomplete versioned migration must fail closed');
+    assert.match(rejected.stderr, /readiness revision 2 marker is incomplete/);
+    assert.strictEqual(
+      fs.readFileSync(partialServerPath, 'utf8'),
+      partial,
+      'a rejected partial migration must not rewrite server.js',
+    );
+  } finally {
+    fs.rmSync(partialTemp, { recursive: true, force: true });
+  }
   console.log('patch-server tests: ok');
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });

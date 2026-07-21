@@ -3,8 +3,11 @@ const fs = require('fs');
 const path = 'server.js';
 let source = fs.readFileSync(path, 'utf8');
 
-const spartanHealthImport = "import { createSpartanDeepHealthController, spartanInternalRequestAuthorized, spartanCgroupAdmissionAllowed } from './spartan-health.mjs';\n";
-if (!source.includes(spartanHealthImport)) {
+const spartanHealthImportV1 = "import { createSpartanDeepHealthController, spartanInternalRequestAuthorized, spartanCgroupAdmissionAllowed } from './spartan-health.mjs';\n";
+const spartanHealthImport = "import { createSpartanDeepHealthController, createSpartanNavigationReadiness, spartanInternalRequestAuthorized, spartanCgroupAdmissionAllowed } from './spartan-health.mjs';\n";
+if (source.includes(spartanHealthImportV1)) {
+  source = source.replace(spartanHealthImportV1, spartanHealthImport);
+} else if (!source.includes(spartanHealthImport)) {
   const importMarker = "import fs from 'fs';\n";
   if (!source.includes(importMarker)) throw new Error('expected Camofox fs import marker not found');
   source = source.replace(importMarker, importMarker + spartanHealthImport);
@@ -166,11 +169,17 @@ if (source.includes(safeErrorCodeMarker)) {
 
 const sendErrorCodeMarker = `  const body = { error: safeError(err), ...extraFields };
   if (err instanceof StaleRefsError) {`;
-const sendErrorCodeReplacement = `  const body = { error: safeError(err), ...extraFields };
+const sendErrorCodeV1 = `  const body = { error: safeError(err), ...extraFields };
   if (err.code && !body.code) body.code = err.code;
+  if (err instanceof StaleRefsError) {`;
+const sendErrorCodeReplacement = `  const body = { error: err.spartanPublicMessage || safeError(err), ...extraFields };
+  if (err.code && !body.code) body.code = err.code;
+  if (err.failureClass && !body.failureClass) body.failureClass = err.failureClass;
   if (err instanceof StaleRefsError) {`;
 if (source.includes(sendErrorCodeMarker)) {
   source = source.replace(sendErrorCodeMarker, sendErrorCodeReplacement);
+} else if (source.includes(sendErrorCodeV1)) {
+  source = source.replace(sendErrorCodeV1, sendErrorCodeReplacement);
 } else if (!source.includes('if (err.code && !body.code) body.code = err.code;')) {
   throw new Error('expected Camofox sendError body marker not found');
 }
@@ -1128,6 +1137,280 @@ if (!source.includes("app.get('/spartan/health/deep'")) {
 const spartanLifecycleVersionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;';
 const spartanLifecycleRevisionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;';
 const spartanLifecycleQueuedCreateMarker = 'const SPARTAN_QUEUED_CREATE_FENCE_REVISION = 1;';
+const spartanReadinessRevisionMarker = 'const SPARTAN_CAMOFOX_READINESS_REVISION = 2;';
+const spartanReadinessRuntimeBlock = `let spartanBrowserGeneration = 0;
+
+function spartanPublishBrowser(candidate) {
+  browser = candidate;
+  spartanBrowserGeneration++;
+  return candidate;
+}
+
+const spartanNavigationReadiness = createSpartanNavigationReadiness({
+  getGeneration: () => spartanBrowserGeneration,
+  markDegraded: code => spartanBrowserLifecycle.markDegraded(code),
+});
+const SPARTAN_NAVIGATION_ATTEMPT_FAILURE = Symbol('spartanNavigationAttemptFailure');
+
+function spartanMarkNavigationAttemptError(error) {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return error;
+  const message = String(error.message || '');
+  const excluded = isProxyError(error)
+    || error.code === 'proxy_forbidden'
+    || error.statusCode === 400
+    || message.includes('Navigation aborted')
+    || message.includes('SEC_ERROR')
+    || message.includes('SSL_ERROR')
+    || message.includes('MOZILLA_PKIX_ERROR');
+  if (excluded) return error;
+  const failureClass = isTimeoutError(error) ? 'internal_timeout' : null;
+  if (!failureClass) return error;
+  try {
+    Object.defineProperty(error, SPARTAN_NAVIGATION_ATTEMPT_FAILURE, {
+      value: failureClass,
+      configurable: true,
+    });
+  } catch {
+    // A frozen upstream error still fails the request, but cannot poison readiness.
+  }
+  return error;
+}
+
+async function spartanObserveNavigationAttempt(operation) {
+  try {
+    return await operation();
+  } catch (navErr) {
+    spartanMarkNavigationAttemptError(navErr);
+    throw navErr;
+  }
+}
+
+function spartanSettleNavigationFailure(ticket, error) {
+  ticket?.failure({ qualifying: Boolean(error?.[SPARTAN_NAVIGATION_ATTEMPT_FAILURE]) });
+}
+
+function spartanClassifyPublicFailure(error) {
+  const code = String(error?.code || '');
+  const message = String(error?.message || '');
+  const capacityCodes = new Set([
+    'admission_rejected',
+    'memory_pressure',
+    'tab_capacity_reached',
+    'tab_create_queue_full',
+    'browser_lifecycle_queue_full',
+  ]);
+  const capacityMessage = message.includes('Maximum concurrent sessions reached')
+    || message.includes('Maximum tabs')
+    || message.includes('User concurrency limit reached')
+    || message.includes('queue is full');
+  if (error?.statusCode === 429 || capacityCodes.has(code) || capacityMessage) {
+    let publicCode = 'local_capacity_reached';
+    if (code === 'tab_capacity_reached' || message.includes('Maximum tabs')) {
+      publicCode = 'tab_capacity_reached';
+    } else if (message.includes('Maximum concurrent sessions')) {
+      publicCode = 'session_capacity_reached';
+    } else if (message.includes('User concurrency')) {
+      publicCode = 'user_concurrency_reached';
+    }
+    return {
+      statusCode: 429,
+      code: publicCode,
+      failureClass: 'capacity_limit',
+      publicMessage: 'Local Camofox capacity reached; retry later.',
+    };
+  }
+
+  const browserStateCodes = new Set([
+    'browser_navigation_degraded',
+    'browser_lifecycle_degraded',
+    'browser_lifecycle_stuck',
+    'browser_lifecycle_recovering',
+    'browser_recovering',
+    'browser_recovery_failed',
+  ]);
+  if (
+    error?.[SPARTAN_NAVIGATION_ATTEMPT_FAILURE] === 'browser_state'
+    || browserStateCodes.has(code)
+    || isDeadContextError(error)
+  ) {
+    return {
+      statusCode: 503,
+      code: code === 'browser_navigation_degraded'
+        ? code
+        : 'browser_navigation_unavailable',
+      failureClass: 'browser_state',
+      publicMessage: 'Camofox browser state is unavailable; retry after recovery.',
+    };
+  }
+
+  const timeoutCodes = new Set([
+    'tab_create_timeout',
+    'tab_create_queue_timeout',
+    'browser_lifecycle_queue_timeout',
+    'deep_probe_timeout',
+  ]);
+  if (
+    error?.[SPARTAN_NAVIGATION_ATTEMPT_FAILURE] === 'internal_timeout'
+    || timeoutCodes.has(code)
+    || isTimeoutError(error)
+  ) {
+    return {
+      statusCode: 503,
+      code: error?.[SPARTAN_NAVIGATION_ATTEMPT_FAILURE] === 'internal_timeout'
+        ? 'navigation_timeout'
+        : (timeoutCodes.has(code) ? code : 'request_timeout'),
+      failureClass: 'internal_timeout',
+      publicMessage: 'Camofox operation timed out; retry after recovery.',
+    };
+  }
+  return null;
+}
+
+function spartanApplyPublicFailure(error) {
+  const classification = spartanClassifyPublicFailure(error);
+  if (!classification || !error) return false;
+  error.statusCode = classification.statusCode;
+  error.code = classification.code;
+  error.failureClass = classification.failureClass;
+  error.spartanPublicMessage = classification.publicMessage;
+  return true;
+}
+
+function spartanIsCapacityFailure(error) {
+  return spartanClassifyPublicFailure(error)?.failureClass === 'capacity_limit';
+}
+
+function spartanPublicReadinessSnapshot() {
+  const generation = spartanBrowserGeneration;
+  const navigation = spartanNavigationReadiness.snapshot();
+  if (navigation.latched) {
+    return {
+      ok: false,
+      code: 'browser_navigation_degraded',
+      stage: 'lifecycle',
+      generation,
+      ageMs: navigation.latchedAt === null ? null : Math.max(0, Date.now() - navigation.latchedAt),
+    };
+  }
+  if (healthState.isRecovering) {
+    return { ok: false, code: 'browser_recovering', stage: 'recovery', generation, ageMs: 0 };
+  }
+  const lifecycle = spartanBrowserLifecycle.snapshot();
+  if (lifecycle.recovering) {
+    return { ok: false, code: 'browser_recovering', stage: 'recovery', generation, ageMs: 0 };
+  }
+  if (lifecycle.degradedCode) {
+    return { ok: false, code: lifecycle.degradedCode, stage: 'lifecycle', generation, ageMs: null };
+  }
+  const connected = browser !== null && (browser.isConnected?.() ?? false);
+  if (!connected) {
+    return { ok: false, code: 'browser_disconnected', stage: 'browser', generation, ageMs: null };
+  }
+  return spartanDeepHealth.snapshot();
+}
+
+const SPARTAN_DEEP_PUBLIC_CODES = new Set([
+  'browser_lifecycle_degraded',
+  'browser_lifecycle_invalidated',
+  'browser_lifecycle_queue_timeout',
+  'browser_lifecycle_recovering',
+  'browser_lifecycle_stuck',
+  'browser_navigation_degraded',
+  'busy',
+  'deep_probe_busy_stale',
+  'deep_probe_cleanup_failed',
+  'deep_probe_failed',
+  'deep_probe_sentinel',
+  'deep_probe_timeout',
+  'ready',
+]);
+const SPARTAN_DEEP_PUBLIC_STAGES = new Set([
+  'cleanup', 'complete', 'ensure_browser', 'evaluate', 'goto', 'lifecycle',
+  'lifecycle_settle', 'new_context', 'new_page',
+]);
+
+function spartanDeepHealthPayload(result) {
+  let ok = result?.ok === true;
+  let code = SPARTAN_DEEP_PUBLIC_CODES.has(result?.code) ? result.code : 'deep_probe_failed';
+  let stage = SPARTAN_DEEP_PUBLIC_STAGES.has(result?.stage) ? result.stage : 'lifecycle';
+  if (code === 'ready' && stage !== 'complete') {
+    ok = false;
+    code = 'deep_probe_failed';
+    stage = 'lifecycle';
+  } else if (code === 'busy') {
+    ok = ok && stage === 'lifecycle';
+  } else if (code === 'browser_navigation_degraded') {
+    ok = false;
+    stage = 'lifecycle';
+  } else if (code !== 'ready' && code !== 'busy') {
+    ok = false;
+  }
+  const browserGeneration = Number.isSafeInteger(result?.generation)
+    && result.generation >= 0
+    ? result.generation
+    : spartanBrowserGeneration;
+  return { ok, code, stage, browserGeneration };
+}
+`;
+
+const spartanReadinessHealthRoutes = `app.get('/health', (_req, res) => {
+  const readiness = spartanPublicReadinessSnapshot();
+  const navigation = spartanNavigationReadiness.snapshot();
+  const running = browser !== null && (browser.isConnected?.() ?? false);
+  const mem = process.memoryUsage();
+  const rssMb = Math.round(mem.rss / 1048576);
+  const heapUsedMb = Math.round(mem.heapUsed / 1048576);
+  const nativeMemMb = rssMb - heapUsedMb;
+  res.status(readiness.ok ? 200 : 503).json({
+    ok: readiness.ok,
+    engine: 'camoufox',
+    browserConnected: running,
+    browserRunning: running,
+    browserGeneration: spartanBrowserGeneration,
+    activeTabs: getTotalTabCount(),
+    activeSessions: sessions.size,
+    consecutiveFailures: navigation.consecutiveFailures,
+    readiness: {
+      code: readiness.code,
+      stage: readiness.stage || null,
+      ageMs: readiness.ageMs ?? null,
+      generation: readiness.generation ?? spartanBrowserGeneration,
+    },
+    memory: { rssMb, heapUsedMb, nativeMemMb },
+    ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
+  });
+});
+
+app.get('/live', (_req, res) => {
+  res.status(200).json({ ok: true, engine: 'camoufox', live: true });
+});`;
+
+function spartanReplaceReadinessOnce(text, marker, replacement, label) {
+  const count = text.split(marker).length - 1;
+  if (count !== 1) {
+    throw new Error(`expected one Camofox readiness ${label} marker, found ${count}`);
+  }
+  return text.replace(marker, replacement);
+}
+
+function spartanReplaceReadinessVariant(text, variants, label) {
+  const matches = variants.filter(([marker]) => text.includes(marker));
+  if (matches.length !== 1) {
+    throw new Error(`expected one Camofox readiness ${label} variant, found ${matches.length}`);
+  }
+  return spartanReplaceReadinessOnce(text, matches[0][0], matches[0][1], label);
+}
+
+function spartanReadinessRoute(prefix, label) {
+  const start = source.indexOf(prefix);
+  if (start === -1 || source.indexOf(prefix, start + prefix.length) !== -1) {
+    throw new Error(`expected one Camofox readiness ${label} route`);
+  }
+  const end = spartanFindCallExpressionEnd(source, start);
+  if (end === -1) throw new Error(`expected Camofox readiness ${label} route end`);
+  return { value: source.slice(start, end) };
+}
+
 const spartanLifecycleRuntimeBlock = `const userConcurrency = new Map();
 
 const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;
@@ -2256,6 +2539,304 @@ ${spartanLifecycleQueuedCreateMarker}`,
     if (source.includes(presence) && !source.includes(guard)) {
       throw new Error(`Camofox lifecycle revision 3 marker is incomplete: ${label}`);
     }
+  }
+}
+
+const spartanReadinessRevisionCount = source.split(spartanReadinessRevisionMarker).length - 1;
+if (spartanReadinessRevisionCount > 1) {
+  throw new Error('duplicate Camofox readiness revision marker');
+}
+if (spartanReadinessRevisionCount === 0) {
+  for (const [marker, label] of [
+    [spartanLifecycleVersionMarker, 'lifecycle version prerequisite'],
+    [spartanLifecycleRevisionMarker, 'lifecycle revision prerequisite'],
+    [spartanLifecycleQueuedCreateMarker, 'queued-create prerequisite'],
+    ['const spartanGuardedBrowsers = new WeakSet();', 'runtime insertion'],
+    ["  recoverBrowser: () => restartBrowser('spartan_deep_health'),\n  runExclusive: operation => {", 'deep generation'],
+    ['  runExclusive: operation => {\n    const lifecycle = spartanBrowserLifecycle.snapshot();', 'deep navigation latch'],
+    ['  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  recoveryTimeoutMs:', 'deep cache TTL'],
+    ['  const result = await spartanDeepHealth.probe();\n  res.status(result.ok ? 200 : 503).json(result);', 'deep public payload'],
+  ]) {
+    const count = source.split(marker).length - 1;
+    if (count !== 1) {
+      throw new Error(`expected one Camofox readiness ${label} marker, found ${count}`);
+    }
+  }
+  const optionalReadinessMarkers = [
+    ['  const action = actionFromReq(req);\n  failuresTotal.labels(failureType, action).inc();', 'public failure handler'],
+    ['if (FLY_MACHINE_ID && err.statusCode === 503)', 'Fly capacity replay'],
+  ];
+  for (const [marker, label] of optionalReadinessMarkers) {
+    const count = source.split(marker).length - 1;
+    if (count > 1) {
+      throw new Error(`duplicate Camofox readiness ${label} marker`);
+    }
+  }
+  if (!source.includes(spartanHealthImport)) {
+    throw new Error('Camofox readiness requires the navigation health import');
+  }
+  if (!source.includes('if (err.failureClass && !body.failureClass) body.failureClass = err.failureClass;')) {
+    throw new Error('Camofox readiness requires classified error responses');
+  }
+
+  const publishVariants = [
+    [
+      'browser = candidateBrowser; // publish AFTER PID is captured',
+      'spartanPublishBrowser(candidateBrowser); // publish AFTER PID is captured',
+    ],
+    ['browser = value;', 'spartanPublishBrowser(value);'],
+  ];
+  const publishMatches = publishVariants.filter(([marker]) => source.includes(marker));
+  if (publishMatches.length !== 1) {
+    throw new Error(`expected one Camofox readiness browser publication variant, found ${publishMatches.length}`);
+  }
+
+  const healthRoute = spartanReadinessRoute("app.get('/health',", 'public health');
+  const createRoute = spartanReadinessRoute("app.post('/tabs',", 'create-tab');
+  const navigateRoute = spartanReadinessRoute("app.post('/tabs/:tabId/navigate',", 'navigate');
+
+  let patchedCreateRoute = spartanReplaceReadinessOnce(
+    createRoute.value,
+    `    userKey: null,
+  };
+  try {`,
+    `    userKey: null,
+  };
+  let spartanCreateNavigation = null;
+  try {`,
+    'create outcome declaration',
+  );
+  patchedCreateRoute = spartanReplaceReadinessVariant(
+    patchedCreateRoute,
+    [
+      [
+        `        tabState.lastRequestedUrl = url;
+        try {`,
+        `        tabState.lastRequestedUrl = url;
+        spartanCreateNavigation = spartanNavigationReadiness.begin();
+        try {`,
+      ],
+      [
+        `        if (urlErr) throw new Error(urlErr);
+        await page.goto(url);`,
+        `        if (urlErr) throw new Error(urlErr);
+        spartanCreateNavigation = spartanNavigationReadiness.begin();
+        await page.goto(url);`,
+      ],
+    ],
+    'create outcome begin',
+  );
+
+  const createGotoVariants = [
+    [
+      "await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));",
+      "await spartanObserveNavigationAttempt(() => withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })));",
+    ],
+    [
+      "await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));",
+      "await spartanObserveNavigationAttempt(() => withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })));",
+    ],
+    ['await page.goto(url);', 'await spartanObserveNavigationAttempt(() => page.goto(url));'],
+  ];
+  let createGotoCount = 0;
+  for (const [marker, replacement] of createGotoVariants) {
+    const count = patchedCreateRoute.split(marker).length - 1;
+    if (count > 1) throw new Error('duplicate Camofox readiness create goto marker');
+    if (count === 1) {
+      patchedCreateRoute = patchedCreateRoute.replace(marker, replacement);
+      createGotoCount++;
+    }
+  }
+  if (createGotoCount < 1) throw new Error('expected Camofox readiness create goto marker');
+
+  patchedCreateRoute = spartanReplaceReadinessVariant(
+    patchedCreateRoute,
+    [
+      [
+        '        tabState.visitedUrls.add(url);',
+        '        spartanCreateNavigation?.success();\n        tabState.visitedUrls.add(url);',
+      ],
+      [
+        '        await spartanObserveNavigationAttempt(() => page.goto(url));\n      }',
+        '        await spartanObserveNavigationAttempt(() => page.goto(url));\n        spartanCreateNavigation?.success();\n      }',
+      ],
+    ],
+    'create outcome success',
+  );
+
+  const createSslMarker = `    if (isSslError) {
+      return res.status(502).json({`;
+  if (patchedCreateRoute.includes(createSslMarker)) {
+    patchedCreateRoute = spartanReplaceReadinessOnce(
+      patchedCreateRoute,
+      createSslMarker,
+      `    if (isSslError) {
+      spartanSettleNavigationFailure(spartanCreateNavigation, err);
+      return res.status(502).json({`,
+      'create SSL settlement',
+    );
+  }
+  const createFlyMarker = "    if (FLY_MACHINE_ID && err.statusCode === 503) {\n      res.set('fly-replay',";
+  if (patchedCreateRoute.includes(createFlyMarker)) {
+    patchedCreateRoute = spartanReplaceReadinessOnce(
+      patchedCreateRoute,
+      createFlyMarker,
+      "    if (FLY_MACHINE_ID && err.statusCode === 503) {\n"
+        + "      spartanSettleNavigationFailure(spartanCreateNavigation, err);\n"
+        + "      res.set('fly-replay',",
+      'create Fly settlement',
+    );
+  }
+  patchedCreateRoute = spartanReplaceReadinessOnce(
+    patchedCreateRoute,
+    '    handleRouteError(err, req, res);',
+    `    spartanApplyPublicFailure(err);
+    spartanSettleNavigationFailure(spartanCreateNavigation, err);
+    handleRouteError(err, req, res);`,
+    'create failure settlement',
+  );
+
+  let patchedNavigateRoute = spartanReplaceReadinessOnce(
+    navigateRoute.value,
+    '  const tabId = req.params.tabId;',
+    `  const tabId = req.params.tabId;
+  let spartanNavigateOutcome = null;`,
+    'navigate outcome declaration',
+  );
+  patchedNavigateRoute = spartanReplaceReadinessOnce(
+    patchedNavigateRoute,
+    'if (urlErr) throw new Error(urlErr);',
+    `if (urlErr) throw new Error(urlErr);
+      spartanNavigateOutcome = spartanNavigationReadiness.begin();`,
+    'navigate outcome begin',
+  );
+  const navigateGotoMarker = 'await navigateCurrentPage();';
+  const navigateGotoCount = patchedNavigateRoute.split(navigateGotoMarker).length - 1;
+  if (navigateGotoCount < 1) throw new Error('expected Camofox readiness terminal navigate call');
+  patchedNavigateRoute = patchedNavigateRoute.replaceAll(
+    navigateGotoMarker,
+    'await spartanObserveNavigationAttempt(() => navigateCurrentPage());',
+  );
+  patchedNavigateRoute = spartanReplaceReadinessVariant(
+    patchedNavigateRoute,
+    [
+      [
+        '\n        // For Google SERP: skip eager ref building during navigate.',
+        '\n        spartanNavigateOutcome?.success();\n\n        // For Google SERP: skip eager ref building during navigate.',
+      ],
+      [
+        '\n    // For Google SERP: skip eager ref building during navigate.',
+        '\n    spartanNavigateOutcome?.success();\n    // For Google SERP: skip eager ref building during navigate.',
+      ],
+    ],
+    'navigate outcome success',
+  );
+  const navigate400Marker = `    if (is400) {
+      return res.status(400).json({ error: safeError(err) });`;
+  if (patchedNavigateRoute.includes(navigate400Marker)) {
+    patchedNavigateRoute = spartanReplaceReadinessOnce(
+      patchedNavigateRoute,
+      navigate400Marker,
+      `    if (is400) {
+      spartanSettleNavigationFailure(spartanNavigateOutcome, err);
+      return res.status(400).json({ error: safeError(err) });`,
+      'navigate validation settlement',
+    );
+  }
+  const navigateSslMarker = `    if (isSslError) {
+      return res.status(502).json({`;
+  if (patchedNavigateRoute.includes(navigateSslMarker)) {
+    patchedNavigateRoute = spartanReplaceReadinessOnce(
+      patchedNavigateRoute,
+      navigateSslMarker,
+      `    if (isSslError) {
+      spartanSettleNavigationFailure(spartanNavigateOutcome, err);
+      return res.status(502).json({`,
+      'navigate SSL settlement',
+    );
+  }
+  patchedNavigateRoute = spartanReplaceReadinessOnce(
+    patchedNavigateRoute,
+    '    handleRouteError(err, req, res);',
+    `    spartanApplyPublicFailure(err);
+    spartanSettleNavigationFailure(spartanNavigateOutcome, err);
+    handleRouteError(err, req, res);`,
+    'navigate failure settlement',
+  );
+
+  source = spartanReplaceReadinessOnce(source, 'const spartanGuardedBrowsers = new WeakSet();', `${spartanReadinessRuntimeBlock}
+const spartanGuardedBrowsers = new WeakSet();`, 'runtime insertion');
+  source = spartanReplaceReadinessOnce(source, publishMatches[0][0], publishMatches[0][1], 'browser publication');
+  source = spartanReplaceReadinessOnce(source, "  recoverBrowser: () => restartBrowser('spartan_deep_health'),\n  runExclusive: operation => {", "  recoverBrowser: () => restartBrowser('spartan_deep_health'),\n  getGeneration: () => spartanBrowserGeneration,\n  runExclusive: operation => {", 'deep generation');
+  source = spartanReplaceReadinessOnce(
+    source,
+    '  runExclusive: operation => {\n    const lifecycle = spartanBrowserLifecycle.snapshot();',
+    `  runExclusive: operation => {
+    const navigation = spartanNavigationReadiness.snapshot();
+    if (navigation.latched) {
+      const error = spartanBrowserLifecycleError(
+        'browser_navigation_degraded',
+        'browser navigation readiness requires recovery',
+      );
+      error.stage = 'lifecycle';
+      throw error;
+    }
+    const lifecycle = spartanBrowserLifecycle.snapshot();`,
+    'deep navigation latch',
+  );
+  source = spartanReplaceReadinessOnce(source, '  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  recoveryTimeoutMs:', '  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  cacheMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  recoveryTimeoutMs:', 'deep cache TTL');
+  const publicFailureHandlerMarker = '  const action = actionFromReq(req);\n  failuresTotal.labels(failureType, action).inc();';
+  if (source.includes(publicFailureHandlerMarker)) {
+    source = spartanReplaceReadinessOnce(
+      source,
+      publicFailureHandlerMarker,
+      '  const action = actionFromReq(req);\n  spartanApplyPublicFailure(err);\n  failuresTotal.labels(failureType, action).inc();',
+      'public failure handler',
+    );
+  }
+  source = spartanReplaceReadinessOnce(source, createRoute.value, patchedCreateRoute, 'create route');
+  source = spartanReplaceReadinessOnce(source, navigateRoute.value, patchedNavigateRoute, 'navigate route');
+  source = spartanReplaceReadinessOnce(source, '  const result = await spartanDeepHealth.probe();\n  res.status(result.ok ? 200 : 503).json(result);', '  const result = await spartanDeepHealth.probe();\n  const payload = spartanDeepHealthPayload(result);\n  res.status(payload.ok ? 200 : 503).json(payload);', 'deep public payload');
+  if (source.includes('if (FLY_MACHINE_ID && err.statusCode === 503)')) {
+    source = spartanReplaceReadinessOnce(
+      source,
+      'if (FLY_MACHINE_ID && err.statusCode === 503)',
+      'if (FLY_MACHINE_ID && spartanIsCapacityFailure(err))',
+      'Fly capacity replay',
+    );
+  }
+  source = spartanReplaceReadinessOnce(source, healthRoute.value, spartanReadinessHealthRoutes, 'public health route');
+  source = spartanReplaceReadinessOnce(source, spartanLifecycleQueuedCreateMarker, `${spartanLifecycleQueuedCreateMarker}
+${spartanReadinessRevisionMarker}`, 'revision marker');
+} else {
+  for (const [marker, label] of [
+    [spartanHealthImport, 'navigation health import'],
+    ['let spartanBrowserGeneration = 0;', 'browser generation'],
+    ['function spartanPublishBrowser(', 'browser publication helper'],
+    ['spartanBrowserGeneration++;', 'browser generation increment'],
+    ['const spartanNavigationReadiness = createSpartanNavigationReadiness({', 'navigation readiness'],
+    ['spartanCreateNavigation = spartanNavigationReadiness.begin();', 'create outcome'],
+    ['spartanNavigateOutcome = spartanNavigationReadiness.begin();', 'navigate outcome'],
+    ['spartanMarkNavigationAttemptError(navErr);', 'terminal goto tagging'],
+    ['spartanSettleNavigationFailure(spartanCreateNavigation, err);', 'create settlement'],
+    ['spartanSettleNavigationFailure(spartanNavigateOutcome, err);', 'navigate settlement'],
+    ['getGeneration: () => spartanBrowserGeneration,', 'deep generation'],
+    ['cacheMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,', 'deep cache TTL'],
+    ["app.get('/live'", 'browser-independent liveness'],
+    ['const readiness = spartanPublicReadinessSnapshot();', 'passive public readiness'],
+    ['res.status(readiness.ok ? 200 : 503)', 'fail-closed public readiness'],
+    ['const payload = spartanDeepHealthPayload(result);', 'allowlisted deep payload'],
+    ['return { ok, code, stage, browserGeneration };', 'deep browser generation'],
+    ["failureClass: 'capacity_limit'", 'capacity classification'],
+    ["failureClass: 'internal_timeout'", 'timeout classification'],
+    ["failureClass: 'browser_state'", 'browser-state classification'],
+  ]) {
+    if (!source.includes(marker)) {
+      throw new Error(`Camofox readiness revision 2 marker is incomplete: ${label}`);
+    }
+  }
+  if (source.includes('browser = candidateBrowser; // publish AFTER PID is captured') || source.includes('browser = value;') || source.includes("app.get('/health', (_req, res) => res.json({ ok: true }))")) {
+    throw new Error('Camofox readiness revision 2 marker retains a legacy implementation');
   }
 }
 
