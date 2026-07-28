@@ -232,6 +232,7 @@ sg-browser-mode-apply
 sg up -d hermes  # explicit Hermes recreate/start
 sg-status
 sg-health
+sg-memory
 sg-connectivity-check
 sg-logs-hermes
 sg-restart-caddy
@@ -276,6 +277,34 @@ sg-connectivity-check
 
 The watchdog remains the owner of host recovery. These helpers do not probe the
 Internet, restart Wi-Fi, restart Tailscale, or restart containers.
+
+### Memory and swap audit
+
+Install the per-user daily audit once:
+
+```sh
+scripts/setup-memory-audit.sh install
+```
+
+The persistent systemd timer runs at 04:20 with up to ten minutes of randomized
+delay. It summarizes the previous 24 hours from the host's existing `sysstat`
+archive, then records current RAM, swap, memory PSI, Docker cgroup limits,
+restarts, OOM signals, and the expected 2 GiB swap/`vm.swappiness=10` contract.
+It only reads state and publishes a bounded status snapshot; it never runs
+`swapoff`, drops caches, restarts containers, or prunes Docker data.
+
+Use the sourced helpers to inspect or enforce the result:
+
+```sh
+sg-memory                 # informational; equivalent to `sg-memory show`
+sg-memory check           # non-zero for stale, warning, or critical status
+sg-memory collect         # refresh now; collection itself remains read-only
+```
+
+`sg-health` appends the informational memory line without changing its existing
+exit behavior. A high swap occupancy by itself is healthy: the audit warns on
+active swap-out churn, low available RAM, PSI pressure, cgroup saturation,
+restarts/OOM events, missing history, or memory-contract drift.
 
 ### Interactive tmux sessions
 

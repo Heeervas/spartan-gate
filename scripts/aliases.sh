@@ -22,7 +22,7 @@ unset _sg_alias_source
 # command names. This makes repeated `source scripts/aliases.sh` predictable.
 for alias_name in \
     sg sg-help sg-tier sg-route sg-hermes sg-workstation sg-browser sg-meet sg-disk sg-tmux \
-    sg-priv sg-up sg-build-up sg-down sg-status sg-ps sg-health sg-connectivity-check sg-logs \
+    sg-priv sg-up sg-build-up sg-down sg-status sg-ps sg-health sg-memory sg-connectivity-check sg-logs \
     sg-exec sg-config sg-doctor sg-up-core sg-up-hermes \
     sg-up-private-hermes sg-up-full sg-restart-hermes sg-restart-caddy \
     sg-restart-proxy sg-rebuild-hermes sg-rebuild-clawroute sg-rebuild-spartan-route \
@@ -347,7 +347,9 @@ Groups:
 Common commands:
   sg-up                       start the selected tier
   sg up -d                    start private stack with Spartan Route
-  sg-status | sg-health       container, Hermes, and host connectivity health
+  sg-status | sg-health       container, Hermes, host, and memory health
+  sg-memory [show|check|collect]
+                              show or refresh the read-only memory audit
   sg-connectivity-check       strict sanitized host connectivity check
   sg-logs-hermes              follow Hermes logs
   sg-logs-spartan-route       follow Spartan Route logs
@@ -2272,7 +2274,25 @@ sg_health() {
         sg_hermes_exec sh -lc 'for p in 8642 8643 8644; do printf "%s " "$p"; wget -qO- "http://127.0.0.1:$p/health" 2>/dev/null || printf FAIL; printf "\n"; done' || result=$?
     fi
     sg_connectivity_status
+    sg_memory show
     return "$result"
+}
+
+sg_memory() {
+    local command="${1:-show}"
+    shift || true
+    case "$command" in
+        show|check|collect) ;;
+        *)
+            printf 'Usage: sg-memory [show|check|collect]\n' >&2
+            return 2
+            ;;
+    esac
+    python3 "$SPARTAN_GATE_DIR/scripts/memory-status.py" \
+        "$command" \
+        --status-file "${SPARTAN_MEMORY_STATUS_FILE:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/spartan-gate-memory-status.json}" \
+        --state-file "${SPARTAN_MEMORY_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/spartan-gate/memory-audit-state.json}" \
+        "$@"
 }
 
 sg_connectivity_status() {
@@ -2803,6 +2823,7 @@ sg-down() { sg_down "$@"; }
 sg-status() { sg_status "$@"; }
 sg-ps() { sg_ps "$@"; }
 sg-health() { sg_health "$@"; }
+sg-memory() { sg_memory "$@"; }
 sg-connectivity-check() { sg_connectivity_check "$@"; }
 sg-logs() { sg_logs "$@"; }
 sg-exec() { sg_exec "$@"; }
