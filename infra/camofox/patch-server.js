@@ -1295,6 +1295,7 @@ const spartanLifecycleVersionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_VERSI
 const spartanLifecycleRevisionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;';
 const spartanLifecycleQueuedCreateMarker = 'const SPARTAN_QUEUED_CREATE_FENCE_REVISION = 1;';
 const spartanReadinessRevisionMarker = 'const SPARTAN_CAMOFOX_READINESS_REVISION = 2;';
+const spartanRetentionRevisionMarker = 'const SPARTAN_CAMOFOX_RETENTION_REVISION = 1;';
 const spartanReadinessRuntimeBlock = `let spartanBrowserGeneration = 0;
 
 function spartanPublishBrowser(candidate) {
@@ -3014,6 +3015,189 @@ ${spartanReadinessRevisionMarker}`, 'revision marker');
   }
   if (source.includes('browser = candidateBrowser; // publish AFTER PID is captured') || source.includes('browser = value;') || source.includes("app.get('/health', (_req, res) => res.json({ ok: true }))")) {
     throw new Error('Camofox readiness revision 2 marker retains a legacy implementation');
+  }
+}
+
+// Release settled deadline timers promptly and keep upstream per-user
+// admission queues bounded and self-cleaning. This migration is deliberately
+// separate from the browser lifecycle coordinator so already-patched images
+// can converge without widening the global lifecycle lane.
+const spartanRetentionRevisionCount = source.split(spartanRetentionRevisionMarker).length - 1;
+if (spartanRetentionRevisionCount > 1) {
+  throw new Error('duplicate Camofox retention cleanup revision marker');
+}
+if (spartanRetentionRevisionCount === 0) {
+  for (const [marker, label] of [
+    [spartanLifecycleRevisionMarker, 'lifecycle revision prerequisite'],
+    [spartanReadinessRevisionMarker, 'readiness revision prerequisite'],
+  ]) {
+    if ((source.split(marker).length - 1) !== 1) {
+      throw new Error(`expected one Camofox retention ${label}`);
+    }
+  }
+
+  const oldTimeout = [
+    'function withTimeout(promise, ms, label) {',
+    '  return Promise.race([',
+    '    spartanTrackLifecyclePromise(promise),',
+    '    new Promise((_, reject) =>',
+    '      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)',
+    '    )',
+    '  ]);',
+    '}',
+  ].join('\n');
+  const retainedTimeout = [
+    'async function withTimeout(promise, ms, label) {',
+    '  let timer;',
+    '  try {',
+    '    return await Promise.race([',
+    '      spartanTrackLifecyclePromise(promise),',
+    '      new Promise((_, reject) => {',
+    '        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);',
+    '        timer.unref?.();',
+    '      }),',
+    '    ]);',
+    '  } finally {',
+    '    if (timer) clearTimeout(timer);',
+    '  }',
+    '}',
+  ].join('\n');
+
+  const oldUserLimit = `async function withUserLimit(userId, operation) {
+  const key = normalizeUserId(userId);
+  let state = userConcurrency.get(key);
+  if (!state) {
+    state = { active: 0, queue: [] };
+    userConcurrency.set(key, state);
+  }
+  if (state.active >= MAX_CONCURRENT_PER_USER) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('User concurrency limit reached, try again')), 30000);
+      state.queue.push(() => { clearTimeout(timer); resolve(); });
+    });
+  }
+  state.active++;
+  healthState.activeOps++;
+  try {
+    const result = await operation();
+    healthState.lastSuccessfulNav = Date.now();
+    return result;
+  } finally {
+    healthState.activeOps--;
+    state.active--;
+    if (state.queue.length > 0) {
+      const next = state.queue.shift();
+      next();
+    }
+    if (state.active === 0 && state.queue.length === 0) {
+      userConcurrency.delete(key);
+    }
+  }
+}`;
+  const retainedUserLimit = `async function withUserLimit(userId, operation) {
+  const key = normalizeUserId(userId);
+  let state = userConcurrency.get(key);
+  if (!state) {
+    state = { active: 0, queue: [] };
+    userConcurrency.set(key, state);
+  }
+  if (state.active < MAX_CONCURRENT_PER_USER) {
+    state.active++;
+  } else {
+    if (state.queue.length >= MAX_SESSIONS) {
+      const error = new Error('User concurrency limit reached, try again');
+      error.statusCode = 429;
+      throw error;
+    }
+    await new Promise((resolve, reject) => {
+      const waiter = {
+        queued: true,
+        timer: null,
+        activate() {
+          if (!waiter.queued) return;
+          waiter.queued = false;
+          clearTimeout(waiter.timer);
+          state.active++;
+          resolve();
+        },
+      };
+      waiter.timer = setTimeout(() => {
+        if (!waiter.queued) return;
+        waiter.queued = false;
+        const index = state.queue.indexOf(waiter);
+        if (index >= 0) state.queue.splice(index, 1);
+        if (state.active === 0 && state.queue.length === 0) {
+          if (userConcurrency.get(key) === state) userConcurrency.delete(key);
+        }
+        const error = new Error('User concurrency limit reached, try again');
+        error.statusCode = 429;
+        reject(error);
+      }, 30000);
+      waiter.timer.unref?.();
+      state.queue.push(waiter);
+    });
+  }
+  healthState.activeOps++;
+  try {
+    const result = await operation();
+    healthState.lastSuccessfulNav = Date.now();
+    return result;
+  } finally {
+    healthState.activeOps--;
+    state.active--;
+    const next = state.queue.shift();
+    if (next) next.activate();
+    if (state.active === 0 && state.queue.length === 0) {
+      if (userConcurrency.get(key) === state) userConcurrency.delete(key);
+    }
+  }
+}`;
+  const passthroughUserLimit = `async function withUserLimit(userId, operation) {
+  void userId;
+  return await operation();
+}`;
+
+  const upstreamUserLimitCount = source.split(oldUserLimit).length - 1;
+  const passthroughUserLimitCount = source.split(passthroughUserLimit).length - 1;
+  if (upstreamUserLimitCount + passthroughUserLimitCount !== 1) {
+    throw new Error('expected exactly one supported Camofox per-user concurrency variant');
+  }
+
+  spartanReplaceLifecycleOnce(oldTimeout, retainedTimeout, 'retention-safe timeout');
+  if (upstreamUserLimitCount === 1) {
+    spartanReplaceLifecycleOnce(oldUserLimit, retainedUserLimit, 'bounded per-user queue');
+  }
+  spartanReplaceLifecycleOnce(
+    spartanReadinessRevisionMarker,
+    `${spartanReadinessRevisionMarker}\n${spartanRetentionRevisionMarker}`,
+    'retention revision marker',
+  );
+} else {
+  for (const [marker, label] of [
+    ['async function withTimeout(promise, ms, label) {', 'async timeout helper'],
+    ['if (timer) clearTimeout(timer);', 'timeout cleanup'],
+  ]) {
+    if (!source.includes(marker)) {
+      throw new Error(`Camofox retention revision marker is incomplete: ${label}`);
+    }
+  }
+  const passthroughUserLimit = `async function withUserLimit(userId, operation) {
+  void userId;
+  return await operation();
+}`;
+  if (!source.includes(passthroughUserLimit)) {
+    for (const [marker, label] of [
+      ['if (state.queue.length >= MAX_SESSIONS)', 'bounded per-user queue'],
+      ['const index = state.queue.indexOf(waiter);', 'expired waiter cleanup'],
+      ['if (userConcurrency.get(key) === state) userConcurrency.delete(key);', 'generation-safe user cleanup'],
+    ]) {
+      if (!source.includes(marker)) {
+        throw new Error(`Camofox retention revision marker is incomplete: ${label}`);
+      }
+    }
+    if (source.includes('state.queue.push(() => { clearTimeout(timer); resolve(); });')) {
+      throw new Error('Camofox retention revision retains the unbounded upstream waiter');
+    }
   }
 }
 

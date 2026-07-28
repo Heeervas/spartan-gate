@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Cleared settled Camofox request deadline timers, bounded per-user operation
+  queues, and removed expired waiters without releasing lifecycle tracking for
+  underlying browser work.
+
 - Kept Camofox cookies profile-scoped while isolating Hermes tabs by durable
   session ID, forbade cross-session tab adoption, handled stale 404/410 tab
   generations explicitly, and stopped managed tab cleanup from deleting the

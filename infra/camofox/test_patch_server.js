@@ -45,6 +45,8 @@ const MAX_TABS_GLOBAL = 16;
 const proxyPool = { canRotateSessions: true };
 const HANDLER_TIMEOUT_MS = 30000;
 const TAB_LOCK_TIMEOUT_MS = 35000;
+const MAX_CONCURRENT_PER_USER = 2;
+const healthState = { activeOps: 0, lastSuccessfulNav: 0 };
 const sessions = new Map();
 
 function getTabLock() {
@@ -72,7 +74,35 @@ function requestTimeoutMs() { return HANDLER_TIMEOUT_MS; }
 const userConcurrency = new Map();
 
 async function withUserLimit(userId, operation) {
-  return await operation();
+  const key = normalizeUserId(userId);
+  let state = userConcurrency.get(key);
+  if (!state) {
+    state = { active: 0, queue: [] };
+    userConcurrency.set(key, state);
+  }
+  if (state.active >= MAX_CONCURRENT_PER_USER) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('User concurrency limit reached, try again')), 30000);
+      state.queue.push(() => { clearTimeout(timer); resolve(); });
+    });
+  }
+  state.active++;
+  healthState.activeOps++;
+  try {
+    const result = await operation();
+    healthState.lastSuccessfulNav = Date.now();
+    return result;
+  } finally {
+    healthState.activeOps--;
+    state.active--;
+    if (state.queue.length > 0) {
+      const next = state.queue.shift();
+      next();
+    }
+    if (state.active === 0 && state.queue.length === 0) {
+      userConcurrency.delete(key);
+    }
+  }
 }
 
 let browser = null;
@@ -471,6 +501,11 @@ try {
     1,
     'generated server must contain exactly one readiness-v2 revision',
   );
+  assert.strictEqual(
+    (once.match(/const SPARTAN_CAMOFOX_RETENTION_REVISION = 1;/g) || []).length,
+    1,
+    'generated server must contain exactly one retention cleanup revision',
+  );
   assert.match(once, /let spartanBrowserGeneration = 0;/, 'browser generation must start unpublished');
   assert.match(once, /function spartanPublishBrowser\(/, 'browser publication must own generation changes');
   assert.match(once, /spartanBrowserGeneration\+\+;/, 'each published browser must increment generation');
@@ -521,6 +556,23 @@ try {
   assert.doesNotMatch(once, /spartanBrowserLifecycle\.run\('tab_operation'/, 'ordinary tab operations must retain upstream concurrency');
   assert.match(once, /spartanBrowserLifecycle\.run\(\s*'viewport_relaunch'/, 'viewport relaunch must join the lifecycle lane explicitly');
   assert.match(once, /spartanTrackLifecyclePromise\(promise\)/, 'timed-out browser work must retain its lease');
+  assert.match(once, /clearTimeout\(timer\)/, 'successful timed work must release its deadline timer');
+  assert.match(once, /timer\.unref\?\.\(\)/, 'deadline timers must not keep the server alive');
+  assert.match(
+    once,
+    /const index = state\.queue\.indexOf\(waiter\);[\s\S]*state\.queue\.splice\(index, 1\);/,
+    'timed-out user waiters must remove themselves from the queue',
+  );
+  assert.match(
+    once,
+    /state\.queue\.length >= MAX_SESSIONS/,
+    'per-user concurrency queues must be bounded',
+  );
+  assert.match(
+    once,
+    /if \(userConcurrency\.get\(key\) === state\) userConcurrency\.delete\(key\);/,
+    'only the current empty per-user state may be released',
+  );
   assert.match(once, /spartanTrackLifecyclePromise\(launchBrowserInstance\(\)\)/, 'timed-out browser launch must retain its lease');
   assert.match(once, /spartanClosePromises\.delete\(target\)/, 'a settled close must remain retryable');
   assert.match(once, /SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS/, 'bounded busy health must have a finite real-probe TTL');
