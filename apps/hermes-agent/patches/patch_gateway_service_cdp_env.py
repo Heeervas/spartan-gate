@@ -69,9 +69,10 @@ def patch_source(source: str) -> str:
     if RUNTIME_OWNER_MARKER not in patched:
         runtime_owner_anchor = "_HERMES_UID = 10000\n_HERMES_GID = 10000\n"
         runtime_owner_replacement = f'''{RUNTIME_OWNER_MARKER}
-import os as _spartan_os
-_HERMES_UID = int(_spartan_os.environ.get("SPARTAN_HERMES_RUN_UID") or "10000")
-_HERMES_GID = int(_spartan_os.environ.get("SPARTAN_HERMES_RUN_GID") or "10000")
+# Supervision metadata and control FIFOs are root-owned. Application run
+# scripts perform the numeric privilege drop separately.
+_HERMES_UID = 0
+_HERMES_GID = 0
 '''
         if runtime_owner_anchor not in patched:
             raise ValueError("service manager runtime owner anchor not found")

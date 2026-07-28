@@ -342,6 +342,7 @@ exit 2
         self.assertNotIn("/absolute/path", content)
         values = self.read_env()
         self.assertEqual(values["SPARTAN_ADDONS"], "")
+        self.assertEqual(values["COMPOSE_PROFILES"], "camofox")
         self.assertIn("SPARTAN_ROUTE_DATA_PATH", values)
         calls = self.log.read_text(encoding="utf-8").splitlines()
         self.assertTrue(any("infra/compose/compose.yml" in call and str(private_compose) in call for call in calls))

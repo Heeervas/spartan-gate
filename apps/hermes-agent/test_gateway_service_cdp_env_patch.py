@@ -46,8 +46,9 @@ class GatewayServiceCdpEnvPatchTests(unittest.TestCase):
         self.assertIn('using launch CDP URL', patched)
         self.assertIn('_hermes_broker_attempt -lt 50', patched)
         self.assertIn(module.RUNTIME_OWNER_MARKER, patched)
-        self.assertIn('_HERMES_UID = int(_spartan_os.environ.get("SPARTAN_HERMES_RUN_UID") or "10000")', patched)
-        self.assertIn('_HERMES_GID = int(_spartan_os.environ.get("SPARTAN_HERMES_RUN_GID") or "10000")', patched)
+        self.assertIn('_HERMES_UID = 0', patched)
+        self.assertIn('_HERMES_GID = 0', patched)
+        self.assertNotIn('_HERMES_UID = 10000', patched)
         self.assertIn(module.RUNTIME_IDENTITY_MARKER, patched)
         self.assertIn('/command/s6-applyuidgid -u "$_spartan_run_uid" -g "$_spartan_run_gid"', patched)
         self.assertIn('SPARTAN_HERMES_RUN_UID', patched)
@@ -57,6 +58,7 @@ class GatewayServiceCdpEnvPatchTests(unittest.TestCase):
         self.assertIn('        lines.append(f"exec /command/s6-setuidgid hermes {gateway_cmd}")', patched)
         self.assertNotIn('SPARTAN_HERMES_DATA_GID', patched)
         self.assertNotIn('-G "$SPARTAN_HERMES_DATA_GID"', patched)
+        self.assertLess(patched.index('_HERMES_UID = 0'), patched.index(module.ANCHOR))
         self.assertLess(patched.index(module.ANCHOR), patched.index(module.MARKER))
 
     def test_idempotent_when_marker_present(self):

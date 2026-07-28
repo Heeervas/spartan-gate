@@ -14,15 +14,73 @@ RUNTIME_IDENTITY_MARKER = "# Spartan Gate patch: runtime Hermes identity"
 AS_HERMES_MARKER = "# Spartan Gate patch: run as Hermes runtime identity"
 RUNTIME_DIR_MARKER = "# Spartan Gate patch: runtime state directories"
 MIGRATION_ANCHOR = "# --- Sync bundled skills ---"
-MANAGED_DIR_CORE_ENTRIES = (
+OWNERSHIP_PREFLIGHT_MARKER = "# Spartan Gate patch: preflight runtime ownership targets"
+UPSTREAM_MANAGED_DIR_ENTRIES = (
     "cron",
     "sessions",
     "logs",
+    "hooks",
+    "memories",
+    "skills",
+    "skins",
+    "plans",
+    "workspace",
+    "home",
     "profiles",
     "pairing",
     "platforms/pairing",
+    "lazy-packages",
 )
-MANAGED_DIR_REQUIRED_ENTRIES = ("kanban", ".local/state/hermes")
+MANAGED_DIR_ENTRIES = (
+    "cron",
+    "sessions",
+    "logs",
+    "hooks",
+    "memories",
+    "skills",
+    "skins",
+    "plans",
+    "workspace",
+    "home",
+    "profiles",
+    "pairing",
+    "platforms/pairing",
+    "lazy-packages",
+    "kanban",
+    ".local/state/hermes",
+)
+MANAGED_FILE_ENTRIES = (
+    "auth.json",
+    "auth.lock",
+    ".env",
+    "state.db",
+    "state.db-shm",
+    "state.db-wal",
+    "hermes_state.db",
+    "response_store.db",
+    "response_store.db-shm",
+    "response_store.db-wal",
+    "gateway.pid",
+    "gateway.lock",
+    "gateway_state.json",
+    "processes.json",
+    "active_profile",
+    "config.yaml",
+)
+
+BOOTSTRAP_MKDIR_BLOCK = """# --- Bootstrap HERMES_HOME as root ---
+# Create the directory (and any missing parents) while we still have root
+# privileges so the chown checks below see real metadata and the later
+# `s6-setuidgid hermes mkdir -p` block doesn't EACCES on root-owned
+# ancestors. Without this, custom HERMES_HOME paths whose parents only
+# root can create (e.g. `HERMES_HOME=/ho""" + """me/hermes/.hermes` in a Compose
+# file, or any path under a fresh / not pre-populated by the image)
+# fail on first boot with `mkdir: cannot create directory '/...': Permission
+# denied` and the cont-init hook exits non-zero. Idempotent — `mkdir -p`
+# is a no-op if the dir already exists. (#18482, salvages #18488)
+mkdir -p "$HERMES_HOME"
+
+"""
 
 MIGRATION_BLOCK = """# Spartan Gate patch: migrate route config before profile reconciliation
 # Upstream docker_config_migrate.py has already run above. This local migrator
@@ -36,25 +94,168 @@ fi
 """
 
 RUNTIME_IDENTITY_BLOCK = """# Spartan Gate patch: runtime Hermes identity
-# Keep /etc/passwd immutable and drop every workload to the configured numeric
-# data owner instead of mutating the baked hermes account.
-SPARTAN_HERMES_RUN_UID="${SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}"
-SPARTAN_HERMES_RUN_GID="${SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}"
-if ! validate_uid_gid "$SPARTAN_HERMES_RUN_UID"; then
-    echo "[stage2] FATAL: invalid SPARTAN_HERMES_RUN_UID=$SPARTAN_HERMES_RUN_UID" >&2
-    exit 1
+# Validate every explicit UID/GID family as an atomic pair before creating or
+# changing any filesystem entry. Keep /etc/passwd immutable and drop workloads
+# directly to the selected numeric data owner.
+spartan_uid="${SPARTAN_HERMES_RUN_UID:-}"
+spartan_gid="${SPARTAN_HERMES_RUN_GID:-}"
+hermes_uid="${HERMES_UID:-}"
+hermes_gid="${HERMES_GID:-}"
+puid="${PUID:-}"
+pgid="${PGID:-}"
+
+validate_identity_pair() {
+    pair_name="$1"
+    pair_uid="$2"
+    pair_gid="$3"
+    if [ -n "$pair_uid" ] || [ -n "$pair_gid" ]; then
+        if [ -z "$pair_uid" ] || [ -z "$pair_gid" ]; then
+            echo "[stage2] FATAL: $pair_name UID/GID must be supplied together" >&2
+            exit 1
+        fi
+        if ! validate_uid_gid "$pair_uid" || ! validate_uid_gid "$pair_gid"; then
+            echo "[stage2] FATAL: invalid $pair_name UID/GID pair" >&2
+            exit 1
+        fi
+    fi
+}
+
+validate_identity_pair SPARTAN_HERMES_RUN "$spartan_uid" "$spartan_gid"
+validate_identity_pair HERMES "$hermes_uid" "$hermes_gid"
+validate_identity_pair PUID_PGID "$puid" "$pgid"
+
+if [ -n "$spartan_uid" ]; then
+    SPARTAN_HERMES_RUN_UID="$spartan_uid"
+    SPARTAN_HERMES_RUN_GID="$spartan_gid"
+elif [ -n "$hermes_uid" ]; then
+    SPARTAN_HERMES_RUN_UID="$hermes_uid"
+    SPARTAN_HERMES_RUN_GID="$hermes_gid"
+elif [ -n "$puid" ]; then
+    SPARTAN_HERMES_RUN_UID="$puid"
+    SPARTAN_HERMES_RUN_GID="$pgid"
+else
+    SPARTAN_HERMES_RUN_UID="$(id -u hermes)"
+    SPARTAN_HERMES_RUN_GID="$(id -g hermes)"
 fi
-if ! validate_uid_gid "$SPARTAN_HERMES_RUN_GID"; then
-    echo "[stage2] FATAL: invalid SPARTAN_HERMES_RUN_GID=$SPARTAN_HERMES_RUN_GID" >&2
-    exit 1
-fi
+
+for explicit_pair in \
+    "$spartan_uid:$spartan_gid" \
+    "$hermes_uid:$hermes_gid" \
+    "$puid:$pgid"; do
+    [ "$explicit_pair" = ":" ] && continue
+    if [ "$explicit_pair" != "$SPARTAN_HERMES_RUN_UID:$SPARTAN_HERMES_RUN_GID" ]; then
+        echo "[stage2] FATAL: conflicting explicit Hermes runtime UID/GID pairs" >&2
+        exit 1
+    fi
+done
+
 SPARTAN_HERMES_RUNTIME_OWNER="$SPARTAN_HERMES_RUN_UID:$SPARTAN_HERMES_RUN_GID"
 HERMES_UID=""
 HERMES_GID=""
 PUID=""
 PGID=""
+export SPARTAN_HERMES_RUN_UID SPARTAN_HERMES_RUN_GID SPARTAN_HERMES_RUNTIME_OWNER
+export HERMES_UID HERMES_GID PUID PGID
+
+# HERMES_HOME is a Compose-provided data mount. Require every lexical path
+# component to exist as a real directory before any write or ownership change;
+# this prevents a custom path from escaping through a symlinked parent.
+"$INSTALL_DIR/.venv/bin/python" - "$HERMES_HOME" <<'PY'
+import stat
+import sys
+from pathlib import Path
+
+raw = Path(sys.argv[1])
+if not raw.is_absolute() or ".." in raw.parts:
+    raise SystemExit(f"[stage2] FATAL: HERMES_HOME must be an absolute normalized path: {raw}")
+
+current = Path("/")
+for component in raw.parts[1:]:
+    current /= component
+    try:
+        metadata = current.lstat()
+    except OSError as exc:
+        raise SystemExit(f"[stage2] FATAL: HERMES_HOME must already exist: {current}: {exc}")
+    if stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"[stage2] FATAL: symlink in HERMES_HOME path: {current}")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"[stage2] FATAL: non-directory in HERMES_HOME path: {current}")
+PY
 
 """
+
+OWNERSHIP_PREFLIGHT_BLOCK = f'''{OWNERSHIP_PREFLIGHT_MARKER}
+# Refuse unsafe symlinks and nested mounts in the closed ownership allowlist
+# before the first ownership mutation. Strict in-tree links are safe because
+# recursive ownership uses physical traversal and never dereferences them.
+"$INSTALL_DIR/.venv/bin/python" - "$HERMES_HOME" <<'PY'
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+metadata = root.lstat()
+if stat.S_ISLNK(metadata.st_mode):
+    raise SystemExit(f"[stage2] FATAL: HERMES_HOME is a symlink: {{root}}")
+root = root.resolve(strict=True)
+root_device = root.lstat().st_dev
+
+def decode_mount_path(value: str) -> Path:
+    return Path(re.sub(r"\\\\([0-7]{{3}})", lambda match: chr(int(match.group(1), 8)), value))
+
+mounts = []
+try:
+    for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if len(fields) >= 5:
+            mounts.append(decode_mount_path(fields[4]))
+except OSError as exc:
+    raise SystemExit(f"[stage2] FATAL: cannot inspect mount boundaries: {{exc}}")
+
+def under(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+def inspect_target(relative: str, recursive: bool) -> None:
+    target = root / relative
+    if not target.exists() and not target.is_symlink():
+        return
+    target_metadata = target.lstat()
+    if stat.S_ISLNK(target_metadata.st_mode):
+        raise SystemExit(f"[stage2] FATAL: ownership target is a symlink: {{target}}")
+    if target_metadata.st_dev != root_device:
+        raise SystemExit(f"[stage2] FATAL: ownership target crosses a mount boundary: {{target}}")
+    for mount in mounts:
+        if mount == root:
+            continue
+        if mount == target or (recursive and under(mount, target)):
+            raise SystemExit(f"[stage2] FATAL: nested mount in ownership target: {{mount}}")
+    if recursive and target.is_dir():
+        for current, directories, files in os.walk(target, followlinks=False):
+            for name in [*directories, *files]:
+                child = Path(current) / name
+                child_metadata = child.lstat()
+                if stat.S_ISLNK(child_metadata.st_mode):
+                    # chown -hR uses physical traversal: it changes the link's
+                    # metadata and never follows its target. Working, external,
+                    # and intentionally broken dependency links are therefore
+                    # safe descendants of a real managed root.
+                    continue
+                if child_metadata.st_dev != root_device:
+                    raise SystemExit(f"[stage2] FATAL: mount boundary in ownership target: {{child}}")
+
+for entry in {MANAGED_DIR_ENTRIES!r}:
+    inspect_target(entry, True)
+for entry in {MANAGED_FILE_ENTRIES!r}:
+    inspect_target(entry, False)
+PY
+
+'''
 
 
 def patch_managed_dir_allowlist(source: str) -> str:
@@ -68,14 +269,10 @@ def patch_managed_dir_allowlist(source: str) -> str:
         if found_managed_loop:
             return original
         entries = match.group("entries").replace("\\", " ").split()
-        if not all(entry in entries for entry in MANAGED_DIR_CORE_ENTRIES):
+        if tuple(entries) not in {UPSTREAM_MANAGED_DIR_ENTRIES, MANAGED_DIR_ENTRIES}:
             return original
         found_managed_loop = True
-        updated = list(entries)
-        for entry in MANAGED_DIR_REQUIRED_ENTRIES:
-            if entry not in updated:
-                updated.append(entry)
-        return original if updated == entries else f"for sub in {' '.join(updated)}; do"
+        return f"for sub in {' '.join(MANAGED_DIR_ENTRIES)}; do"
 
     patched = re.sub(r"for sub in (?P<entries>.*?); do", replace_loop, source, flags=re.DOTALL)
     if not found_managed_loop:
@@ -83,8 +280,27 @@ def patch_managed_dir_allowlist(source: str) -> str:
     return patched
 
 
+def validate_managed_file_allowlist(source: str) -> None:
+    """Reject upstream drift in the top-level ownership file loop."""
+    for match in re.finditer(r"for f in (?P<entries>.*?); do", source, flags=re.DOTALL):
+        entries = tuple(match.group("entries").replace("\\", " ").split())
+        if entries and entries[0] == "auth.json":
+            expected = MANAGED_FILE_ENTRIES[:-1]
+            if entries != expected:
+                raise ValueError("managed top-level file allowlist changed")
+            return
+    raise ValueError("managed top-level file allowlist anchor not found")
+
+
 def patch_source(source: str) -> str:
     patched = source
+
+    validate_managed_file_allowlist(patched)
+
+    if RUNTIME_IDENTITY_MARKER not in patched:
+        if BOOTSTRAP_MKDIR_BLOCK not in patched:
+            raise ValueError("pre-identity HERMES_HOME bootstrap anchor not found")
+        patched = patched.replace(BOOTSTRAP_MKDIR_BLOCK, "", 1)
 
     as_hermes_anchor = 'as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@"; }\n'
     as_hermes_replacement = f"""as_hermes() {{
@@ -116,14 +332,33 @@ def patch_source(source: str) -> str:
         'echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_uid)"',
         'echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to $SPARTAN_HERMES_RUNTIME_OWNER"',
     )
-    patched = patched.replace("chown -R hermes:hermes", 'chown -R "$SPARTAN_HERMES_RUNTIME_OWNER"')
-    patched = patched.replace("chown hermes:hermes", 'chown "$SPARTAN_HERMES_RUNTIME_OWNER"')
+    if RUNTIME_IDENTITY_MARKER not in source:
+        if patched.count("chown -R hermes:hermes") != 1:
+            raise ValueError("unexpected recursive Hermes chown anchor count")
+        if patched.count("chown hermes:hermes") != 6:
+            raise ValueError("unexpected Hermes chown anchor count")
+        patched = patched.replace(
+            "chown -R hermes:hermes", 'chown -hR "$SPARTAN_HERMES_RUNTIME_OWNER"'
+        )
+        patched = patched.replace(
+            "chown hermes:hermes", 'chown "$SPARTAN_HERMES_RUNTIME_OWNER"'
+        )
     patched = patched.replace(
         '    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python"',
         '    as_hermes "$INSTALL_DIR/.venv/bin/python"',
     )
 
     patched = patch_managed_dir_allowlist(patched)
+
+    if OWNERSHIP_PREFLIGHT_MARKER not in patched:
+        preflight_anchor = "needs_chown=false\n"
+        if patched.count(preflight_anchor) != 1:
+            raise ValueError("runtime ownership preflight anchor changed")
+        patched = patched.replace(
+            preflight_anchor,
+            OWNERSHIP_PREFLIGHT_BLOCK + preflight_anchor,
+            1,
+        )
 
     if RUNTIME_DIR_MARKER not in patched:
         seed_anchor = "as_hermes mkdir -p "

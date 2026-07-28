@@ -238,9 +238,9 @@ def main() -> int:
         "--client",
         type=Path,
         default=Path(__file__).resolve().parents[1]
-        / "infra"
-        / "pocket-tts"
-        / "hermes_client.py",
+        / "apps"
+        / "hermes-agent"
+        / "pocket-tts-client.py",
     )
     args = parser.parse_args()
 

@@ -26,19 +26,20 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
         raw = env_file.get(key, "").strip()
-        env_val = os.environ.get(key, "").strip()
+        scoped_value = (_get_secret(key, "") or "").strip()
         # If .env contains an unresolved op:// reference, prefer the
-        # process environment which may have been populated by the
-        # 1Password resolver.  Without this, the literal
+        # already-resolved value supplied by the active secret scope (or by
+        # os.environ in legacy single-profile mode), set by
+        # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
         # "op://Vault/Item/field" string would otherwise win and every
-        # request would send it as the bearer token.  This also covers
-        # the case where resolution was configured in the top-level
-        # secrets.onepassword.env mapping rather than in the provider
+        # provider auth attempt would receive a URL instead of a key.  This
+        # happens during a partial migration, or when the user wrote op://
+        # references straight into .env rather than the secrets.onepassword
         # config block.  For every non-op:// value the original
-        # dotenv > secret-scope > process-env precedence is preserved.
-        if raw.startswith("op://") and env_val:
-            return env_val
-        return raw or _get_secret(key, "") or env_val
+        # .env-takes-precedence behaviour is preserved unchanged.
+        if raw.startswith("op://") and scoped_value:
+            return scoped_value
+        return raw or scoped_value
 
     return _get_env_prefer_dotenv(provider)
 """
@@ -84,7 +85,10 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     scope = _SECRET_SCOPE.get()
     if scope is not None:
         val = scope.get(name)
-        return val if val is not None else default
+        if val is not None:
+            return val
+        if _MULTIPLEX_ACTIVE:
+            return default
 
     val = os.environ.get(name)
     return val if val is not None else default
@@ -104,7 +108,10 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     scope = _SECRET_SCOPE.get()
     if scope is not None:
         val = scope.get(name)
-        return val if val is not None else default
+        if val is not None:
+            return val
+        if _MULTIPLEX_ACTIVE:
+            return default
 """
         patched = module.patch_secret_scope_source(source)
         namespace = {"Optional": Optional}
@@ -135,11 +142,29 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         module, patched, result = self.execute_credential_pool(
             {"OPENAI_API_KEY": "${CUSTOM_1_API_KEY}"},
             {"CUSTOM_1_API_KEY": "route-token"},
+            {"CUSTOM_1_API_KEY": "other-profile-token"},
         )
 
         self.assertEqual(result, "route-token")
         self.assertIn(module.CREDENTIAL_POOL_MARKER, patched)
         self.assertEqual(module.patch_credential_pool_source(patched), patched)
+
+    def test_credential_pool_preserves_direct_dotenv_precedence(self):
+        _module, _patched, result = self.execute_credential_pool(
+            {"OPENAI_API_KEY": "direct-token"},
+            {"OPENAI_API_KEY": "scoped-token"},
+        )
+
+        self.assertEqual(result, "direct-token")
+
+    def test_credential_pool_missing_route_alias_fails_closed(self):
+        _module, _patched, result = self.execute_credential_pool(
+            {"OPENAI_API_KEY": "${CUSTOM_1_API_KEY}"},
+            {},
+            {"CUSTOM_1_API_KEY": "unscoped-token"},
+        )
+
+        self.assertEqual(result, "")
 
     def test_credential_pool_does_not_expand_unrelated_reference(self):
         _module, _patched, result = self.execute_credential_pool(
@@ -152,7 +177,6 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     def test_credential_pool_preserves_op_reference_precedence(self):
         _module, _patched, result = self.execute_credential_pool(
             {"OPENAI_API_KEY": "op://Private/OpenAI/key"},
-            {},
             {"OPENAI_API_KEY": "resolved-op-token"},
         )
 

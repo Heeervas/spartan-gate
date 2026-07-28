@@ -7,7 +7,12 @@ from pathlib import Path
 from unittest import mock
 
 
-MODULE_PATH = Path(__file__).with_name("hermes_client.py")
+MODULE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "apps"
+    / "hermes-agent"
+    / "pocket-tts-client.py"
+)
 SPEC = importlib.util.spec_from_file_location("pocket_tts_hermes_client", MODULE_PATH)
 CLIENT = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

@@ -89,7 +89,7 @@ seed_spartan_supervise_skeleton() {
         mkfifo "$svc_dir/supervise/control" 2>/dev/null || true
     fi
     chmod 660 "$svc_dir/supervise/control" 2>/dev/null || true
-    chown -R "$SPARTAN_HERMES_RUNTIME_OWNER" "$svc_dir/event" "$svc_dir/supervise" 2>/dev/null || true
+    chown -R 0:0 "$svc_dir/event" "$svc_dir/supervise"
 
     if [ -d "$svc_dir/log" ]; then
         mkdir -p "$svc_dir/log/event" "$svc_dir/log/supervise" "$svc_dir/log/supervise/event"
@@ -100,7 +100,7 @@ seed_spartan_supervise_skeleton() {
             mkfifo "$svc_dir/log/supervise/control" 2>/dev/null || true
         fi
         chmod 660 "$svc_dir/log/supervise/control" 2>/dev/null || true
-        chown -R "$SPARTAN_HERMES_RUNTIME_OWNER" "$svc_dir/log/event" "$svc_dir/log/supervise" 2>/dev/null || true
+        chown -R 0:0 "$svc_dir/log/event" "$svc_dir/log/supervise"
     fi
 }
 

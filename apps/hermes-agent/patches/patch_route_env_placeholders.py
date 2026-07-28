@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Patch Hermes route-token .env placeholders to delegate to process env.
+'''Patch Hermes route-token .env placeholders to delegate to route secrets.
 
 Spartan Gate profile .env files may intentionally delegate route keys to the
 container environment, including the legacy-to-native alias
@@ -57,8 +57,8 @@ def patch_secret_scope_source(source: str) -> str:
         raise ValueError("get_secret anchor not found")
     patched = source.replace(helper_anchor, helper + helper_anchor, 1)
 
-    old = '''    scope = _SECRET_SCOPE.get()\n    if scope is not None:\n        val = scope.get(name)\n        return val if val is not None else default\n'''
-    new = '''    scope = _SECRET_SCOPE.get()\n    if scope is not None:\n        val = scope.get(name)\n        reference = _spartan_route_env_reference(val, name)\n        if reference:\n            val = os.environ.get(reference)\n        return val if val is not None else default\n'''
+    old = '''    scope = _SECRET_SCOPE.get()\n    if scope is not None:\n        val = scope.get(name)\n        if val is not None:\n            return val\n'''
+    new = '''    scope = _SECRET_SCOPE.get()\n    if scope is not None:\n        val = scope.get(name)\n        if val is not None:\n            reference = _spartan_route_env_reference(val, name)\n            if reference:\n                val = os.environ.get(reference)\n            return val if val is not None else default\n'''
     if old not in patched:
         raise ValueError("secret scope lookup block not found")
     return patched.replace(old, new, 1)
@@ -74,8 +74,8 @@ def patch_credential_pool_source(source: str) -> str:
         raise ValueError("_seed_from_env anchor not found")
     patched = source.replace(helper_anchor, helper + helper_anchor, 1)
 
-    old = '''    def _get_env_prefer_dotenv(key: str) -> str:\n        env_file = load_env()\n        raw = env_file.get(key, "").strip()\n        env_val = os.environ.get(key, "").strip()\n'''
-    new = '''    def _get_env_prefer_dotenv(key: str) -> str:\n        env_file = load_env()\n        raw = env_file.get(key, "").strip()\n        env_val = os.environ.get(key, "").strip()\n        reference = _spartan_route_env_reference(raw, key)\n        if reference:\n            raw = str(_get_secret(reference, "") or "").strip()\n'''
+    old = '''    def _get_env_prefer_dotenv(key: str) -> str:\n        env_file = load_env()\n        raw = env_file.get(key, "").strip()\n        scoped_value = (_get_secret(key, "") or "").strip()\n'''
+    new = '''    def _get_env_prefer_dotenv(key: str) -> str:\n        env_file = load_env()\n        raw = env_file.get(key, "").strip()\n        scoped_value = (_get_secret(key, "") or "").strip()\n        reference = _spartan_route_env_reference(raw, key)\n        if reference:\n            raw = str(_get_secret(reference, "") or "").strip()\n'''
     if old not in patched:
         raise ValueError("credential pool dotenv lookup block not found")
     return patched.replace(old, new, 1)

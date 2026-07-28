@@ -18,6 +18,14 @@ unless upstream provides the same invariant.
 | `patch_stage2_cdp_env.py` | Materializes browser/CDP env before supervised services start. |
 | `patch_gateway_service_cdp_env.py` | Imports browser/CDP env into supervised gateway services. |
 | `patch_chrome_devtools_ws_auth.py` | Migrates browser tooling to authenticated configured CDP endpoints. |
+| `patch_codex_429_fail_fast.py` | Treats only HTTP 429 with top-level `error.code=codex_429` as terminal Codex capacity exhaustion before credential rotation, fallback, or backoff. It still uses normal turn finalization and persistence. |
+
+The Hermes image uses root-owned `COPY` metadata and then runs
+`audit-install-tree.py` across `/opt/hermes`. The audit rejects non-root
+ownership, group/world writes, set-ID modes, ACLs, file capabilities, broken
+links, writable-state link targets, external links outside root-controlled
+system-library roots, and unexpected mount boundaries. This preserves the
+immutable install tree without a final recursive `chown` layer.
 
 ## Spartan Gate Adapters
 

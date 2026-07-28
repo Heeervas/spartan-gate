@@ -35,20 +35,34 @@ class PocketTTSComposeContractTests(unittest.TestCase):
         self.assertEqual(prefetch["environment"]["HTTP_PROXY"], "http://proxy:8888")
         self.assertNotIn("HF_TOKEN", prefetch.get("environment", {}))
 
-    def test_hermes_gets_client_and_private_tts_network(self):
+    def test_hermes_gets_baked_client_and_private_tts_network(self):
         hermes = self.compose["services"]["hermes"]
         self.assertIn("pocket_tts_internal", hermes["networks"])
         self.assertNotIn("pocket-tts", hermes["depends_on"])
-        self.assertTrue(
-            any(
-                "pocket-tts/hermes_client.py:/opt/hermes/bootstrap/pocket-tts-client.py:ro"
-                in volume
-                for volume in hermes["volumes"]
-            )
+        self.assertFalse(
+            any("/opt/hermes" in volume for volume in hermes.get("volumes", []))
+        )
+        dockerfile = (ROOT / "apps" / "hermes-agent" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "COPY --chown=0:0 --chmod=0644 pocket-tts-client.py "
+            "/opt/hermes/bootstrap/pocket-tts-client.py",
+            dockerfile,
         )
 
     def test_dedicated_network_is_internal(self):
         self.assertTrue(self.compose["networks"]["pocket_tts_internal"]["internal"])
+
+    def test_runtime_base_image_is_digest_pinned(self):
+        dockerfile = (ROOT / "infra" / "pocket-tts" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "FROM python:3.13-slim-bookworm@sha256:"
+            "dd86541a59b252667f4c12f8b2ee17216de37dd65ac773bf097bef996fa78860",
+            dockerfile,
+        )
 
 
 if __name__ == "__main__":

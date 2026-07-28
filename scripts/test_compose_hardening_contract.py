@@ -100,7 +100,7 @@ def render_compose(paths: tuple[pathlib.Path, ...]) -> dict:
             "SPARTAN_ROUTE_GID": "1000",
             "SPARTAN_CLAWROUTE_UID": "1000",
             "SPARTAN_CLAWROUTE_GID": "1000",
-            "COMPOSE_PROFILES": "camofox",
+            "COMPOSE_PROFILES": "camofox,pocket-tts",
         }
     )
     result = subprocess.run(
@@ -116,6 +116,30 @@ def render_compose(paths: tuple[pathlib.Path, ...]) -> dict:
             f"Compose render failed for {paths}: {result.stderr.strip()}"
         )
     return json.loads(result.stdout)
+
+
+def render_identity(path: pathlib.Path, overrides: dict[str, str] | None = None) -> dict:
+    keys = {
+        "SPARTAN_HERMES_RUN_UID",
+        "SPARTAN_HERMES_RUN_GID",
+        "HERMES_UID",
+        "HERMES_GID",
+        "PUID",
+        "PGID",
+    }
+    env = {key: value for key, value in os.environ.items() if key not in keys}
+    env.update(overrides or {})
+    result = subprocess.run(
+        ["docker", "compose", "--env-file", "/dev/null", "-f", str(path), "config", "--format", "json"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"Identity render failed for {path}: {result.stderr.strip()}")
+    return json.loads(result.stdout)["services"]["hermes"]["environment"]
 
 
 class ComposeHardeningContractTests(unittest.TestCase):
@@ -154,6 +178,58 @@ class ComposeHardeningContractTests(unittest.TestCase):
                 self.assertTrue(
                     any(item.startswith("/run") for item in service["tmpfs"])
                 )
+                self.assertFalse(
+                    any(
+                        str(volume.get("target", "")).startswith("/opt/hermes")
+                        for volume in service.get("volumes", [])
+                        if isinstance(volume, dict)
+                    )
+                )
+
+    def test_private_https_proxy_trust_is_restricted_to_the_internal_subnet(self):
+        env = self.renders["l4-private-example"]["services"]["hermes"]["environment"]
+        trusted = env.get("FORWARDED_ALLOW_IPS", "")
+        self.assertTrue(trusted)
+        self.assertNotEqual(trusted, "*")
+        self.assertEqual(trusted, "172.28.0.0/24")
+
+    def test_hermes_identity_defaults_and_legacy_values_render_without_synthetic_conflicts(self):
+        for path in (
+            TIERS / "compose.l0.yml",
+            TIERS / "compose.l1.yml",
+            TIERS / "compose.l2.yml",
+            COMPOSE / "compose.yml",
+        ):
+            with self.subTest(path=path, case="default"):
+                env = render_identity(path)
+                self.assertEqual(env["SPARTAN_HERMES_RUN_UID"], "1000")
+                self.assertEqual(env["SPARTAN_HERMES_RUN_GID"], "1000")
+                self.assertEqual(env["HERMES_UID"], "")
+                self.assertEqual(env["HERMES_GID"], "")
+            with self.subTest(path=path, case="legacy-non-1000"):
+                env = render_identity(path, {"HERMES_UID": "2000", "HERMES_GID": "2001"})
+                self.assertEqual(env["SPARTAN_HERMES_RUN_UID"], "2000")
+                self.assertEqual(env["SPARTAN_HERMES_RUN_GID"], "2001")
+                self.assertEqual(env["HERMES_UID"], "2000")
+                self.assertEqual(env["HERMES_GID"], "2001")
+            with self.subTest(path=path, case="puid-pgid-non-1000"):
+                env = render_identity(path, {"PUID": "2100", "PGID": "2101"})
+                self.assertEqual(env["SPARTAN_HERMES_RUN_UID"], "2100")
+                self.assertEqual(env["SPARTAN_HERMES_RUN_GID"], "2101")
+                self.assertEqual(env["PUID"], "2100")
+                self.assertEqual(env["PGID"], "2101")
+            with self.subTest(path=path, case="explicit-conflict-visible"):
+                env = render_identity(
+                    path,
+                    {
+                        "SPARTAN_HERMES_RUN_UID": "3000",
+                        "SPARTAN_HERMES_RUN_GID": "3001",
+                        "HERMES_UID": "2000",
+                        "HERMES_GID": "2001",
+                    },
+                )
+                self.assertEqual(env["SPARTAN_HERMES_RUN_UID"], "3000")
+                self.assertEqual(env["HERMES_UID"], "2000")
 
     def test_browser_services_keep_intended_runtime_contracts(self):
         for label, name, service in self.iter_services():

@@ -21,6 +21,42 @@ Manual profiles are not listed in `HERMES_AUTOSTART_PROFILES`. They can be used
 interactively from the main gateway, should set `API_SERVER_ENABLED=false`, and
 should not define `API_SERVER_PORT`.
 
+## Browser Extension Gateways
+
+The private HTTPS Caddy override can publish running profile API servers under
+one authenticated extension edge. Each profile mapping is a literal allowlist
+entry; never derive an upstream host or port from a request header, query value,
+or path capture.
+
+The supported private layout keeps the existing root endpoint on `default` and
+strips the selected profile prefix before proxying:
+
+| Public path | Internal API server |
+| --- | --- |
+| `/agents/default/*` | `hermes:8642` |
+| `/agents/coach/*` | `hermes:8643` |
+| `/agents/work/*` | `hermes:8644` |
+| `/agents/market/*` | `hermes:8645` |
+| `/agents/dreamer/*` | `hermes:8646` |
+
+All allowlisted paths may intentionally share one
+`HERMES_EXTENSION_EDGE_KEY`. Compromise of that key therefore grants access to
+every exposed profile and its tools. Caddy must reject unknown `/agents/*`
+paths instead of falling back to `default`, replace the exterior authorization
+with `HERMES_API_KEY`, and remove `X-Hermes-Profile` before proxying.
+
+Only publish profiles whose API server is already running. Manual specialists
+remain on demand with `API_SERVER_ENABLED=false`; do not start them as gateways
+only to make them appear in a browser selector. Keep profile API ports on the
+internal Docker network rather than publishing them on the host.
+
+Caddy targets the stable Docker DNS name `hermes` plus each literal profile
+port. Restarting one gateway therefore causes only temporary unavailability for
+that profile. Recreating the Hermes container updates the Docker DNS record;
+s6 restores the persisted running gateway set, and Caddy reconnects without a
+configuration change. Requests made during startup may receive `502`, but a
+profile route never falls back to another profile.
+
 ## Create A Profile
 
 ```sh

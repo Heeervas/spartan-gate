@@ -28,9 +28,12 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn(
             'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:add2cf403b277a3124cf37c8172c7e3bd91e1f0953d02d38d033cca5888c781a',
+            'sha256:ed51b14789be47f727dfd6e3fd1dd796c2c037891a85b24a7c550695a4e92869',
             dockerfile,
         )
+
+        self.assertNotIn('FROM node:22-bookworm-slim AS node22', dockerfile)
+        self.assertNotIn('apt-get upgrade', dockerfile)
 
     def test_dockerfile_keeps_upstream_init_as_pid_1(self):
         dockerfile = read_text(DOCKERFILE_PATH)
@@ -66,8 +69,10 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
     def test_dockerfile_keeps_install_tree_root_owned(self):
         dockerfile = read_text(DOCKERFILE_PATH)
 
-        self.assertIn('COPY runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
-        self.assertIn('RUN chown -R root:root /opt/hermes', dockerfile)
+        self.assertIn('--chmod=a+rX,go-w runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
+        self.assertNotIn('RUN chown -R root:root /opt/hermes', dockerfile)
+        self.assertIn('chmod 0644 /opt/hermes/.venv/.lock', dockerfile)
+        self.assertIn('audit-install-tree.py /opt/hermes', dockerfile)
         self.assertNotIn('/opt/hermes-plugins', dockerfile)
         self.assertNotIn('RUN chown -R 10000:10000 /opt/hermes/.venv', dockerfile)
         self.assertNotIn('RUN chown -R 1000:1000 /opt/hermes/.venv', dockerfile)
@@ -78,7 +83,6 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         for package in (
             'libcairo2-dev',
             'libpango1.0-dev',
-            'ffmpeg',
             'dvisvgm',
             'texlive-latex-base',
             'texlive-latex-extra',
@@ -236,8 +240,16 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
                 self.assertIn('HERMES_DASHBOARD_BASIC_AUTH_USERNAME:', compose)
                 self.assertIn('HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:', compose)
                 self.assertIn('HERMES_DASHBOARD_BASIC_AUTH_SECRET:', compose)
-                self.assertIn('SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-}', compose)
-                self.assertIn('SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-}', compose)
+                self.assertIn(
+                    'SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-${HERMES_UID:-${PUID:-1000}}}',
+                    compose,
+                )
+                self.assertIn(
+                    'SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-${HERMES_GID:-${PGID:-1000}}}',
+                    compose,
+                )
+                self.assertIn('HERMES_UID: ${HERMES_UID:-}', compose)
+                self.assertIn('HERMES_GID: ${HERMES_GID:-}', compose)
                 self.assertNotIn('SPARTAN_HERMES_DATA_GID:', compose)
                 self.assertNotIn('SPARTAN_HERMES_DATA_GROUP_REPAIR:', compose)
 

@@ -1,20 +1,8 @@
-FROM node:22-bookworm-slim AS node22
-
-FROM docker.io/nousresearch/hermes-agent:main@sha256:add2cf403b277a3124cf37c8172c7e3bd91e1f0953d02d38d033cca5888c781a
+FROM docker.io/nousresearch/hermes-agent:main@sha256:ed51b14789be47f727dfd6e3fd1dd796c2c037891a85b24a7c550695a4e92869
 
 USER root
 
-# Keep an explicit Node 22 overlay until the upgraded image has proven the same
-# node/npm/npx/corepack availability on Spartan Gate's expected paths.
-COPY --from=node22 /usr/local/bin/node /usr/local/bin/node
-COPY --from=node22 /usr/local/include/node /usr/local/include/node
-COPY --from=node22 /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
-    && ln -sf ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
-
-# Keep the Hermes venv first; Node 22 resolves from /usr/local/bin via the
-# existing system PATH ahead of Debian's /usr/bin/node.
+# Keep the Hermes venv first; upstream provides Node 22 under /usr/local/bin.
 ENV PATH="/opt/hermes/.venv/bin:$PATH"
 
 # Ensure venv PATH survives login shells (bash -l, su -, SSH, sh)
@@ -26,18 +14,14 @@ RUN echo 'export PATH="/opt/hermes/.venv/bin:$PATH"' > /etc/profile.d/hermes-ven
 # CLI-Toolbox: Network, System, Dev, Data Processing, Media
 # (matches Hermes's toolbox minus packages the base image already includes)
 RUN apt-get update \
-    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
     # --- Network ---
-    curl \
     wget \
-    iputils-ping \
     dnsutils \
     netcat-openbsd \
     traceroute \
     nmap \
     whois \
-    openssh-client \
     rsync \
     # --- System (procps already in base image since v0.8.0) ---
     htop \
@@ -51,8 +35,6 @@ RUN apt-get update \
     vim-tiny \
     # --- Dev (git already in base image since v0.9.0) ---
     gh \
-    make \
-    g++ \
     pkg-config \
     libcairo2-dev \
     libpango1.0-dev \
@@ -65,10 +47,8 @@ RUN apt-get update \
     pandoc \
     # --- Media ---
     imagemagick \
-    ffmpeg \
     # --- Archives ---
     p7zip-full \
-    xz-utils \
     # --- TeX / Manim ---
     dvisvgm \
     texlive-latex-base \
@@ -78,7 +58,6 @@ RUN apt-get update \
     # --- Diagnostics ---
     lsof \
     # --- TLS / Certs ---
-    ca-certificates \
     openssl \
     fontconfig \
     libpangocairo-1.0-0 \
@@ -125,15 +104,16 @@ RUN uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python \
 
 # Proxy bootstrap Python (audit + Brave→SearXNG interception)
 # Loaded via PYTHONPATH=/opt/hermes/bootstrap → sitecustomize.py
-COPY proxy-bootstrap.py /opt/hermes/bootstrap/sitecustomize.py
+COPY --chown=0:0 --chmod=0644 proxy-bootstrap.py /opt/hermes/bootstrap/sitecustomize.py
 
 # CDP patch: rewrites browserless 0.0.0.0 WebSocket URLs → Docker hostname
 # Loaded via NODE_OPTIONS=--require=/opt/hermes/bootstrap/cdp-patch.js
-COPY cdp-patch.js /opt/hermes/bootstrap/cdp-patch.js
-COPY browserless-cdp-url.js /opt/hermes/bootstrap/browserless-cdp-url.js
-COPY browserless-profile-live.js /opt/hermes/bootstrap/browserless-profile-live.js
-COPY browserless-cdp-broker.py /opt/hermes/bootstrap/browserless-cdp-broker.py
-COPY runtime-docs/ /opt/hermes/runtime-docs/
+COPY --chown=0:0 --chmod=0644 cdp-patch.js /opt/hermes/bootstrap/cdp-patch.js
+COPY --chown=0:0 --chmod=0644 browserless-cdp-url.js /opt/hermes/bootstrap/browserless-cdp-url.js
+COPY --chown=0:0 --chmod=0644 browserless-profile-live.js /opt/hermes/bootstrap/browserless-profile-live.js
+COPY --chown=0:0 --chmod=0644 browserless-cdp-broker.py /opt/hermes/bootstrap/browserless-cdp-broker.py
+COPY --chown=0:0 --chmod=0644 pocket-tts-client.py /opt/hermes/bootstrap/pocket-tts-client.py
+COPY --chown=0:0 --chmod=a+rX,go-w runtime-docs/ /opt/hermes/runtime-docs/
 
 # Install gogcli (Google CLI — Gmail, Calendar, Drive, Docs, Sheets, etc.)
 # https://github.com/openclaw/gogcli
@@ -179,12 +159,11 @@ RUN mkdir -p /opt/data/.config/pip \
 
 # Main-program wrapper: runs Spartan-specific boot hooks after upstream s6
 # cont-init setup, then delegates command routing and privilege drop to upstream.
-COPY wrangler-auth.py /opt/hermes/bootstrap/wrangler-auth.py
-COPY entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
-RUN chmod +x /opt/hermes/entrypoint-wrapper.sh
+COPY --chown=0:0 --chmod=0644 wrangler-auth.py /opt/hermes/bootstrap/wrangler-auth.py
+COPY --chown=0:0 --chmod=0755 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
 
 # Build-time patches for upstream Hermes files (survive base image updates)
-COPY patches/ /opt/hermes/patches/
+COPY --chown=0:0 --chmod=a+rX,go-w patches/ /opt/hermes/patches/
 RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py
 RUN python3 /opt/hermes/patches/patch_s6_service_permissions.py
 RUN python3 /opt/hermes/patches/patch_runtime_identity_drop.py
@@ -198,10 +177,13 @@ RUN python3 /opt/hermes/patches/patch_google_meet_cdp.py
 RUN python3 /opt/hermes/patches/patch_google_meet_transcript.py
 RUN python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py
 RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py
+RUN python3 /opt/hermes/patches/patch_codex_429_fail_fast.py
 
-# Keep installed code owned by root so the hermes workload cannot mutate future
-# Python imports, gateway source, Node dependencies, or bundled patches.
-RUN chown -R root:root /opt/hermes
+# Fail closed on upstream or patch ownership drift without rewriting the full
+# venv/node_modules tree into a slow copy-on-write chown layer.
+COPY --chown=0:0 --chmod=0644 audit-install-tree.py /opt/hermes/patches/audit-install-tree.py
+RUN chmod 0644 /opt/hermes/.venv/.lock \
+    && python3 /opt/hermes/patches/audit-install-tree.py /opt/hermes
 RUN test "$(stat -c '%u:%g' /opt/hermes/tools/browser_camofox.py)" = "0:0" \
     && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_tool.py)" = "0:0" \
     && setpriv --reuid=65534 --regid=65534 --clear-groups \

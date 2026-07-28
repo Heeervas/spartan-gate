@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Hermes command-provider client for the internal Pocket TTS sidecar."""
 from __future__ import annotations
 
 import argparse
