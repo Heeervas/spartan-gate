@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "remote": {
+    "host": "100.64.0.1",
+    "ssh_port": 22022,
+    "user": "hermes-worker",
+    "host_public_key": "ssh-ed25519 REPLACE_WITH_WSL_HOST_PUBLIC_KEY",
+    "host_key_sha256": "SHA256:REPLACE_WITH_WSL_HOST_FINGERPRINT"
+  },
+  "execution": {
+    "gateway_port": 22022,
+    "identity_file": "keys/hermes_execution_ed25519"
+  },
+  "tunnel": {
+    "identity_file": "keys/app_tunnel_ed25519"
+  },
+  "apps": [
+    {
+      "name": "blender",
+      "enabled": true,
+      "gateway_port": 9876,
+      "local_port": 19876,
+      "remote_host": "127.0.0.1",
+      "remote_port": 9876
+    }
+  ]
+}

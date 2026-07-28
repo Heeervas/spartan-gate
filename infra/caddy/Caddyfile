@@ -71,10 +71,10 @@
 }
 
 :9119 {
-	# Hermes dashboard serves its own /api and /ws same-origin requests.
-	# Keep this pass-through so browser dashboard sessions do not loop through
-	# Caddy Basic Auth on internal fetch/WebSocket calls.
-	@dashboard_internal path /api/* /ws/*
+	# Hermes dashboard serves its own application auth, /api, and /ws routes.
+	# Keep these pass-through routes outside Caddy Basic Auth so Hermes Desktop
+	# can establish its application session; Hermes remains the auth authority.
+	@dashboard_internal path /login /auth/* /api/* /ws/*
 	handle @dashboard_internal {
 		reverse_proxy http://hermes:9119
 	}

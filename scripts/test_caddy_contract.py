@@ -7,6 +7,13 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_CADDY = ROOT / "infra" / "caddy" / "Caddyfile"
 HTTPS_EXAMPLE = ROOT / "private.example" / "caddy" / "Caddyfile.https.example"
 ADD_PORT = ROOT / "scripts" / "add-port.sh"
+HERMES_EXTENSION_PROFILES = {
+    "default": 8642,
+    "coach": 8643,
+    "work": 8644,
+    "market": 8645,
+    "dreamer": 8646,
+}
 
 
 def block(source: str, address: str) -> str:
@@ -24,6 +31,79 @@ def block(source: str, address: str) -> str:
 
 
 class CaddyContractTests(unittest.TestCase):
+    def assert_hermes_extension_api_contract(self, source: str) -> None:
+        shared = block(source, "(hermes_extension_api)")
+        edge = block(source, ":8642")
+
+        self.assertIn('header Authorization "Bearer {$HERMES_EXTENSION_EDGE_KEY}"', shared)
+        self.assertIn('header_up Authorization "Bearer {$HERMES_API_KEY}"', shared)
+        self.assertIn("header_up -X-Hermes-Profile", shared)
+        self.assertIn(
+            'header_down Access-Control-Allow-Origin "{$HERMES_BROWSER_EXTENSION_ORIGIN}"',
+            shared,
+        )
+        self.assertIn(
+            'header_down Access-Control-Expose-Headers "X-Hermes-Session-Id, '
+            'X-Hermes-Session-Key"',
+            shared,
+        )
+        self.assertIn('header_down Vary "Origin"', shared)
+        self.assertIn("header_down -Access-Control-Allow-Headers", shared)
+        self.assertNotIn("header @extension_origin", shared)
+        self.assertIn(
+            'header Access-Control-Allow-Methods "GET, POST, PATCH, DELETE, OPTIONS"',
+            shared,
+        )
+        self.assertIn(
+            "Authorization, Content-Type, Idempotency-Key, X-Hermes-Profile, "
+            "X-Hermes-Session-Id, X-Hermes-Session-Key",
+            shared,
+        )
+        self.assertIn(
+            'Access-Control-Expose-Headers "X-Hermes-Session-Id, '
+            'X-Hermes-Session-Key"',
+            shared,
+        )
+        self.assertIn("respond 403", shared)
+        self.assertIn('respond "Unauthorized" 401', shared)
+        self.assertIn("reverse_proxy http://hermes:{args[0]}", shared)
+        self.assertNotIn("{header.", shared)
+        self.assertNotIn("{query.", shared)
+        self.assertNotIn("{re.", shared)
+        self.assertIn("@ambiguous_agent_path", edge)
+        self.assertIn(
+            "vars_regexp unsafe_agent_uri {http.request.uri}",
+            edge,
+        )
+        self.assertIn('respond "Invalid Hermes gateway path" 400', edge)
+        self.assertLess(
+            edge.index("handle @ambiguous_agent_path"),
+            edge.index("handle_path /agents/default/*"),
+        )
+
+
+        for profile, port in HERMES_EXTENSION_PROFILES.items():
+            with self.subTest(profile=profile):
+                self.assertIn(f"handle_path /agents/{profile}/*", edge)
+                self.assertIn(f"import hermes_extension_api {port}", edge)
+
+        self.assertIn("@unknown_agent_path path /agents /agents/*", edge)
+        self.assertIn("handle @unknown_agent_path", edge)
+        self.assertIn('respond "Unknown Hermes gateway profile" 404', edge)
+        self.assertIn(
+            "import hermes_extension_api {$HERMES_API_PORT:8642}",
+            edge,
+        )
+        self.assertLess(
+            edge.index("handle @unknown_agent_path"),
+            edge.rindex("\thandle {"),
+        )
+
+    def test_https_example_has_fail_closed_multi_profile_extension_edge(self):
+        self.assert_hermes_extension_api_contract(
+            HTTPS_EXAMPLE.read_text(encoding="utf-8")
+        )
+
     def assert_browserless_contract(self, source: str) -> None:
         browserless = block(source, ":3005")
         self.assertIn("BROWSERLESS_EDGE_TOKEN", browserless)
@@ -119,14 +199,19 @@ class CaddyContractTests(unittest.TestCase):
                 self.assertNotIn("reverse_proxy http://clawroute:18790", router)
 
     def test_hermes_dashboard_pass_through_is_explicitly_documented(self):
-        source = PUBLIC_CADDY.read_text(encoding="utf-8")
-        dashboard = block(source, ":9119")
+        for path in (PUBLIC_CADDY, HTTPS_EXAMPLE):
+            with self.subTest(path=path):
+                source = path.read_text(encoding="utf-8")
+                dashboard = block(source, ":9119")
 
-        self.assertIn("Hermes dashboard serves its own /api and /ws same-origin", dashboard)
-        self.assertIn("@dashboard_internal path /api/* /ws/*", dashboard)
-        self.assertIn("handle @dashboard_internal", dashboard)
-        self.assertIn("reverse_proxy http://hermes:9119", dashboard)
-        self.assertIn("basic_auth", dashboard)
+                self.assertIn("Hermes dashboard serves its own application auth, /api, and /ws", dashboard)
+                self.assertIn("@dashboard_internal path /login /auth/* /api/* /ws/*", dashboard)
+                self.assertIn("handle @dashboard_internal", dashboard)
+                self.assertIn("reverse_proxy http://hermes:9119", dashboard)
+                self.assertIn("basic_auth", dashboard)
+                if path == HTTPS_EXAMPLE:
+                    self.assertIn("header_up Host {host}", dashboard)
+                    self.assertIn("header_up X-Forwarded-Proto https", dashboard)
 
 
 if __name__ == "__main__":

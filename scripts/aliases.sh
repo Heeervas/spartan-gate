@@ -21,8 +21,8 @@ unset _sg_alias_source
 # Clear aliases from older versions before defining functions with the same
 # command names. This makes repeated `source scripts/aliases.sh` predictable.
 for alias_name in \
-    sg sg-help sg-tier sg-route sg-hermes sg-browser sg-meet sg-disk sg-tmux \
-    sg-priv sg-up sg-build-up sg-down sg-status sg-ps sg-health sg-logs \
+    sg sg-help sg-tier sg-route sg-hermes sg-workstation sg-browser sg-meet sg-disk sg-tmux \
+    sg-priv sg-up sg-build-up sg-down sg-status sg-ps sg-health sg-connectivity-check sg-logs \
     sg-exec sg-config sg-doctor sg-up-core sg-up-hermes \
     sg-up-private-hermes sg-up-full sg-restart-hermes sg-restart-caddy \
     sg-restart-proxy sg-rebuild-hermes sg-rebuild-clawroute sg-rebuild-spartan-route \
@@ -336,6 +336,7 @@ Usage:
 
 Groups:
   sg-hermes -h                Hermes shell, profiles, gateway, and doctor
+  sg-workstation -h           bounded SSH and app bridges to a private PC
   sg-tmux -h                  tmux sessions, Codex, and Hermes launchers
   sg route -h                 Spartan Route compose helper
   sg-tier list                show tier descriptions
@@ -346,7 +347,8 @@ Groups:
 Common commands:
   sg-up                       start the selected tier
   sg up -d                    start private stack with Spartan Route
-  sg-status | sg-health       container status and basic Hermes health
+  sg-status | sg-health       container, Hermes, and host connectivity health
+  sg-connectivity-check       strict sanitized host connectivity check
   sg-logs-hermes              follow Hermes logs
   sg-logs-spartan-route       follow Spartan Route logs
   sg-urls                     print local/remote service URLs
@@ -481,6 +483,26 @@ Flat aliases remain available:
 EOF
 }
 
+sg_workstation_help() {
+    cat <<'EOF'
+Workstation bridge helpers
+
+Usage:
+  sg-workstation validate     validate private config and key permissions
+  sg-workstation up           verify the remote host key, then start relays
+  sg-workstation status       report PID-verified relay state
+  sg-workstation test         test SSH and enabled application bridges
+  sg-workstation down         stop only PID-verified workstation relays
+
+Configuration:
+  private/workstation/bridges.json
+  Override with SPARTAN_WORKSTATION_CONFIG.
+
+Relays bind only to the Spartan internal gateway. The remote endpoint must be a
+Tailscale IPv4 address, and application targets must be remote loopback.
+EOF
+}
+
 sg_browser_help() {
     cat <<'EOF'
 Browser helpers
@@ -605,7 +627,7 @@ sg_tier_set() {
         printf 'Usage: sg-tier set L0|L1|L2|L3|L4 [--with clawroute] [--hermes free|gated|full]\n' >&2
         return 2
     fi
-    local tier profiles addons hermes_mode arg
+    local tier profiles addons hermes_mode arg configured_profiles
     tier="$(sg_normalize_tier "$1")" || {
         printf 'Invalid Spartan Gate tier: %s\n' "$1" >&2
         return 2
@@ -654,7 +676,13 @@ sg_tier_set() {
         addons="$(sg_default_addons "$tier")" || return 2
     fi
     profiles=""
-    [[ "$tier" == "L4" ]] && profiles="camofox"
+    if [[ "$tier" == "L4" ]]; then
+        profiles="camofox"
+        configured_profiles="$(sg_env_value COMPOSE_PROFILES "" | tr -d '[:space:]')"
+        case ",$configured_profiles," in
+            *,pocket-tts,*) profiles="camofox,pocket-tts" ;;
+        esac
+    fi
     sg_update_private_env \
         "SPARTAN_TIER=$tier" \
         "SPARTAN_ADDONS=$addons" \
@@ -756,6 +784,28 @@ sg_hermes() {
         *)
             printf 'Unknown sg-hermes command: %s\n\n' "$command" >&2
             sg_hermes_help >&2
+            return 2
+            ;;
+    esac
+}
+
+sg_workstation() {
+    local command="${1:-}"
+    local config="${SPARTAN_WORKSTATION_CONFIG:-$SPARTAN_GATE_DIR/private/workstation/bridges.json}"
+    local gateway
+    case "$command" in
+        ""|-h|--help|help)
+            sg_workstation_help
+            ;;
+        validate|up|status|test|down)
+            shift
+            gateway="$(sg_spartan_internal_gateway)" || return 1
+            python3 "$SPARTAN_GATE_DIR/scripts/workstation-bridge.py" \
+                "$command" --config "$config" --gateway "$gateway" "$@"
+            ;;
+        *)
+            printf 'Unknown sg-workstation command: %s\n\n' "$command" >&2
+            sg_workstation_help >&2
             return 2
             ;;
     esac
@@ -1264,30 +1314,39 @@ sg_validate_compose_profiles_for_mode() {
     local configured
     local item
     local has_selected=0
-    local has_other=0
-    configured="$(sg_env_value COMPOSE_PROFILES "")"
+    local has_pocket=0
+    local count=0
+    configured="$(sg_env_value COMPOSE_PROFILES "" | tr -d '[:space:]')"
     [[ -n "$configured" ]] || return 0
 
     IFS=',' read -ra _profiles <<< "$configured"
     for item in "${_profiles[@]}"; do
         item="$(echo "$item" | xargs)"
-        [[ -n "$item" ]] || continue
+        [[ -n "$item" ]] || {
+            printf 'Error: COMPOSE_PROFILES contains an empty profile.\n' >&2
+            return 1
+        }
+        count=$((count + 1))
         if [[ "$item" == "$mode" ]]; then
-            has_selected=1
-        elif [[ "$item" == "browserless" || "$item" == "camofox" ]]; then
-            has_other=1
+            has_selected=$((has_selected + 1))
+        elif [[ "$item" == "pocket-tts" ]]; then
+            has_pocket=$((has_pocket + 1))
+        else
+            printf 'Error: unsupported Compose profile: %s.\n' "$item" >&2
+            return 1
         fi
     done
 
-    if [[ "$has_selected" -ne 1 || "$has_other" -ne 0 ]]; then
+    if [[ "$has_selected" -ne 1 || "$has_pocket" -gt 1 || "$count" -ne $((1 + has_pocket)) ]]; then
         printf 'Error: CAMOFOX_URL selects %s mode, but COMPOSE_PROFILES=%s.\n' "$mode" "$configured" >&2
-        printf 'Fix private/env/local.env or run sg-camofox-profile-use <profile> for Camofox mode.\n' >&2
+        printf 'Expected %s with optional pocket-tts.\n' "$mode" >&2
         return 1
     fi
 }
 
 sg_browser_mode_apply() {
-    local mode active inactive
+    local mode active inactive profiles configured
+    local -a services
     mode="$(sg_browser_mode)"
     sg_validate_compose_profiles_for_mode "$mode" || return 1
 
@@ -1298,6 +1357,11 @@ sg_browser_mode_apply() {
         active="browserless"
         inactive="camofox"
     fi
+    configured="$(sg_env_value COMPOSE_PROFILES "" | tr -d '[:space:]')"
+    profiles="$mode"
+    case ",$configured," in
+        *,pocket-tts,*) profiles="$mode,pocket-tts" ;;
+    esac
 
     if [[ "$mode" == "camofox" ]]; then
         sg_camofox_profile_isolate apply || return 1
@@ -1305,8 +1369,10 @@ sg_browser_mode_apply() {
 
     printf 'Applying Spartan Gate browser mode: %s\n' "$mode"
     COMPOSE_PROFILES="$inactive" sg_compose stop "$inactive" >/dev/null 2>&1 || true
-    COMPOSE_PROFILES="$mode" sg_compose up -d proxy dns searxng reader spartan-route caddy "$active" || return 1
-    COMPOSE_PROFILES="$mode" sg_compose up -d --force-recreate hermes
+    services=(proxy dns searxng reader spartan-route caddy "$active")
+    [[ "$profiles" == *",pocket-tts" ]] && services+=(pocket-tts)
+    COMPOSE_PROFILES="$profiles" sg_compose up -d "${services[@]}" || return 1
+    COMPOSE_PROFILES="$profiles" sg_compose up -d --force-recreate hermes
 }
 
 sg_camofox_profile_isolate() {
@@ -1697,10 +1763,14 @@ sg_camofox_profile_use() {
         return 1
     fi
     local profile="$1"
+    local profiles="camofox"
+    case ",$(sg_env_value COMPOSE_PROFILES "" | tr -d '[:space:]')," in
+        *,pocket-tts,*) profiles="camofox,pocket-tts" ;;
+    esac
     sg_camofox_profile_user_id "$profile" >/dev/null || return 1
     sg_camofox_profile_isolate apply || return 1
     sg_update_private_env \
-        "COMPOSE_PROFILES=camofox" \
+        "COMPOSE_PROFILES=$profiles" \
         "CAMOFOX_URL=http://camofox:9377" \
         "CAMOFOX_USER_ID=" \
         "CAMOFOX_SESSION_KEY=" \
@@ -2196,10 +2266,21 @@ sg_urls() {
 }
 
 sg_health() {
+    local result=0
     sg_status
     if docker exec spartan_gate_hermes true >/dev/null 2>&1; then
-        sg_hermes_exec sh -lc 'for p in 8642 8643 8644; do printf "%s " "$p"; wget -qO- "http://127.0.0.1:$p/health" 2>/dev/null || printf FAIL; printf "\n"; done'
+        sg_hermes_exec sh -lc 'for p in 8642 8643 8644; do printf "%s " "$p"; wget -qO- "http://127.0.0.1:$p/health" 2>/dev/null || printf FAIL; printf "\n"; done' || result=$?
     fi
+    sg_connectivity_status
+    return "$result"
+}
+
+sg_connectivity_status() {
+    python3 "$SPARTAN_GATE_DIR/scripts/connectivity-status.py" show --status-file "${SPARTAN_CONNECTIVITY_STATUS_FILE:-/run/check-wifi-status.json}"
+}
+
+sg_connectivity_check() {
+    python3 "$SPARTAN_GATE_DIR/scripts/connectivity-status.py" check --status-file "${SPARTAN_CONNECTIVITY_STATUS_FILE:-/run/check-wifi-status.json}"
 }
 
 # -----------------------------------------------------------------------------
@@ -2710,6 +2791,7 @@ sg-help() { sg_help "$@"; }
 sg-tier() { sg_tier "$@"; }
 sg-route() { sg_route "$@"; }
 sg-hermes() { sg_hermes "$@"; }
+sg-workstation() { sg_workstation "$@"; }
 sg-browser() { sg_browser "$@"; }
 sg-meet() { sg_meet "$@"; }
 sg-disk() { sg_disk "$@"; }
@@ -2721,6 +2803,7 @@ sg-down() { sg_down "$@"; }
 sg-status() { sg_status "$@"; }
 sg-ps() { sg_ps "$@"; }
 sg-health() { sg_health "$@"; }
+sg-connectivity-check() { sg_connectivity_check "$@"; }
 sg-logs() { sg_logs "$@"; }
 sg-exec() { sg_exec "$@"; }
 sg-config() { sg_config "$@"; }

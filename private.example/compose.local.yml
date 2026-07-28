@@ -43,6 +43,9 @@ services:
 
   hermes:
     environment:
+      # Required for Secure cookies behind the private HTTPS Caddy edge.
+      # Keep this restricted to the isolated internal subnet, never `*`.
+      FORWARDED_ALLOW_IPS: ${SPARTAN_INTERNAL_SUBNET:-172.28.0.0/24}
       # private/local: optional integrations and s6 profile bootstrap.
       HERMES_AUTOSTART_PROFILES: ${HERMES_AUTOSTART_PROFILES:-}
       HERMES_DUMP_REQUESTS: ${HERMES_DUMP_REQUESTS:-false}

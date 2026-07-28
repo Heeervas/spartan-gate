@@ -2,6 +2,89 @@
 	admin off
 }
 
+(hermes_extension_api) {
+	route {
+		@extension_preflight {
+			method OPTIONS
+			header Origin "{$HERMES_BROWSER_EXTENSION_ORIGIN}"
+		}
+		handle @extension_preflight {
+			header Access-Control-Allow-Origin "{$HERMES_BROWSER_EXTENSION_ORIGIN}"
+			header Access-Control-Allow-Methods "GET, POST, PATCH, DELETE, OPTIONS"
+			header Access-Control-Allow-Headers "Authorization, Content-Type, Idempotency-Key, X-Hermes-Profile, X-Hermes-Session-Id, X-Hermes-Session-Key"
+			header Access-Control-Max-Age "600"
+			header Vary "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+			respond 204
+		}
+
+		@other_preflight method OPTIONS
+		handle @other_preflight {
+			respond 403
+		}
+
+		@extension_authorized header Authorization "Bearer {$HERMES_EXTENSION_EDGE_KEY}"
+		handle @extension_authorized {
+			reverse_proxy http://hermes:{args[0]} {
+				header_up Authorization "Bearer {$HERMES_API_KEY}"
+				header_up -X-Hermes-Profile
+				header_up X-Real-IP {remote_host}
+				header_down Access-Control-Allow-Origin "{$HERMES_BROWSER_EXTENSION_ORIGIN}"
+				header_down Access-Control-Expose-Headers "X-Hermes-Session-Id, X-Hermes-Session-Key"
+				header_down Vary "Origin"
+				header_down -Access-Control-Allow-Headers
+				header_down -Access-Control-Allow-Methods
+				header_down -Access-Control-Max-Age
+			}
+		}
+
+		handle {
+			header Access-Control-Allow-Origin "{$HERMES_BROWSER_EXTENSION_ORIGIN}"
+			header Vary "Origin"
+			respond "Unauthorized" 401
+		}
+	}
+}
+
+:8642 {
+	route {
+		@ambiguous_agent_path {
+			vars_regexp unsafe_agent_uri {http.request.uri} `(?i)^/agents/[^?]*(/\.\.?(/|$)|//|%2f|%5c|%2e|%25|\\)`
+		}
+		handle @ambiguous_agent_path {
+			respond "Invalid Hermes gateway path" 400
+		}
+
+		handle_path /agents/default/* {
+			import hermes_extension_api 8642
+		}
+
+		handle_path /agents/coach/* {
+			import hermes_extension_api 8643
+		}
+
+		handle_path /agents/work/* {
+			import hermes_extension_api 8644
+		}
+
+		handle_path /agents/market/* {
+			import hermes_extension_api 8645
+		}
+
+		handle_path /agents/dreamer/* {
+			import hermes_extension_api 8646
+		}
+
+		@unknown_agent_path path /agents /agents/*
+		handle @unknown_agent_path {
+			respond "Unknown Hermes gateway profile" 404
+		}
+
+		handle {
+			import hermes_extension_api {$HERMES_API_PORT:8642}
+		}
+	}
+}
+
 :18789 {
 	tls {$SPARTAN_CADDY_TLS_CERT_FILE:/certs/cert.pem} {$SPARTAN_CADDY_TLS_KEY_FILE:/certs/key.pem}
 
@@ -78,12 +161,15 @@
 :9119 {
 	tls {$SPARTAN_CADDY_TLS_CERT_FILE:/certs/cert.pem} {$SPARTAN_CADDY_TLS_KEY_FILE:/certs/key.pem}
 
-	# Hermes dashboard serves its own /api and /ws same-origin requests.
-	# Keep this pass-through so browser dashboard sessions do not loop through
-	# Caddy Basic Auth on internal fetch/WebSocket calls.
-	@dashboard_internal path /api/* /ws/*
+	# Hermes dashboard serves its own application auth, /api, and /ws routes.
+	# Keep these pass-through routes outside Caddy Basic Auth so Hermes Desktop
+	# can establish its application session; Hermes remains the auth authority.
+	@dashboard_internal path /login /auth/* /api/* /ws/*
 	handle @dashboard_internal {
-		reverse_proxy http://hermes:9119
+		reverse_proxy http://hermes:9119 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto https
+		}
 	}
 
 	handle {

@@ -180,8 +180,9 @@ class CamofoxContractTests(unittest.TestCase):
 
         self.assertLess(
             helper.index("sg_camofox_profile_isolate apply"),
-            helper.index('sg_compose up -d proxy dns searxng reader spartan-route caddy "$active"'),
+            helper.index('sg_compose up -d "${services[@]}"'),
         )
+        self.assertIn('services+=(pocket-tts)', helper)
         self.assertNotIn("camofox_profiles_migrated", helper)
 
     def test_profile_close_checkpoints_then_deletes_only_operator_tabs(self):
@@ -486,6 +487,7 @@ sg-browser camofox-live main https://accounts.google.com
         env_dir.mkdir(parents=True)
         env_file = env_dir / "local.env"
         env_file.write_text(
+            "COMPOSE_PROFILES=camofox, pocket-tts\n"
             "CAMOFOX_USER_ID=legacy-shared-owner\n"
             "CAMOFOX_SESSION_KEY=legacy-shared-session\n"
             "CAMOFOX_ADOPT_EXISTING_TAB=true\n",
@@ -500,13 +502,38 @@ sg-browser camofox-live main https://accounts.google.com
             for line in env_file.read_text(encoding="utf-8").splitlines()
             if "=" in line
         )
-        self.assertEqual(values["COMPOSE_PROFILES"], "camofox")
+        self.assertEqual(values["COMPOSE_PROFILES"], "camofox,pocket-tts")
         self.assertEqual(values["CAMOFOX_URL"], "http://camofox:9377")
         self.assertEqual(values["CAMOFOX_USER_ID"], "")
         self.assertEqual(values["CAMOFOX_SESSION_KEY"], "")
         self.assertEqual(values["CAMOFOX_ADOPT_EXISTING_TAB"], "false")
         self.assertIn("client-scoped", result.stdout)
         self.assertIn("migration applied", result.stdout)
+
+    def test_browser_profile_validator_requires_exact_browser_and_pocket(self):
+        env_dir = self.root / "private" / "env"
+        env_dir.mkdir(parents=True)
+        env_file = env_dir / "local.env"
+
+        for profiles, expected_ok in (
+            ("camofox,pocket-tts", True),
+            ("pocket-tts,camofox", True),
+            ("camofox", True),
+            ("camofox,pocket-tts,pocket-tts", False),
+            ("camofox,pocket-tts-bootstrap", False),
+            ("camofox,pocket-tts,unknown", False),
+            ("browserless,pocket-tts", False),
+            ("", True),
+        ):
+            with self.subTest(profiles=profiles):
+                env_file.write_text(
+                    f"CAMOFOX_URL=http://camofox:9377\nCOMPOSE_PROFILES={profiles}\n",
+                    encoding="utf-8",
+                )
+                result = self.run_sourced(
+                    "sg_validate_compose_profiles_for_mode camofox"
+                )
+                self.assertEqual(result.returncode == 0, expected_ok, result.stderr)
 
     def test_camofox_profile_user_id_matches_hermes_profile_identity(self):
         result = self.run_sourced(
@@ -599,6 +626,24 @@ sg-browser camofox-live main https://accounts.google.com
         self.assertIn(f"docker compose -f {compose_file} -f {clawroute_file} --env-file {env_file} config --quiet", calls)
         self.assertIn(f"docker compose -f {compose_file} -f {clawroute_file} --env-file {env_file} up -d --remove-orphans", calls)
         self.assertIn(f"docker compose -f {compose_file} -f {clawroute_file} --env-file {env_file} up -d --force-recreate hermes", calls)
+
+    def test_l4_tier_set_preserves_private_pocket_tts_profile(self):
+        (self.root / "private" / "env").mkdir(parents=True)
+        env_file = self.root / "private" / "env" / "local.env"
+        env_file.write_text(
+            "SPARTAN_TIER=L4\nCOMPOSE_PROFILES=camofox, pocket-tts\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_sourced("sg-tier set L4")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = dict(
+            line.split("=", 1)
+            for line in env_file.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        self.assertEqual(values["COMPOSE_PROFILES"], "camofox,pocket-tts")
 
     def test_l4_tier_uses_private_compose_override_when_present(self):
         bin_dir, log = self.write_docker_stub("1000:1000")

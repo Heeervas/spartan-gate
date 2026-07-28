@@ -7,6 +7,11 @@ All notable changes to Spartan Gate are documented here.
   queues, and removed expired waiters without releasing lifecycle tracking for
   underlying browser work.
 
+- Added fail-closed, operator-started SSH/application relays for a private
+  Tailscale workstation and sanitized host-connectivity status reporting;
+  expanded the authenticated private Hermes extension edge to literal profile
+  routes without exposing dynamic upstream selection.
+
 - Kept Camofox cookies profile-scoped while isolating Hermes tabs by durable
   session ID, forbade cross-session tab adoption, handled stale 404/410 tab
   generations explicitly, and stopped managed tab cleanup from deleting the

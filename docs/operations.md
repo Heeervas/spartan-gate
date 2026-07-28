@@ -66,14 +66,16 @@ sg-logs-hermes
 
 ## Pocket TTS
 
-Pocket TTS 2.1.0 runs as an optional local English/Spanish sidecar. Hermes
-uses its existing command-provider interface, so activation does not rebuild
-the Hermes image. The defaults are Anna for English and Eponine for Spanish;
+Pocket TTS 2.1.0 runs as an optional local English/Spanish sidecar.
+Hermes uses its existing command-provider interface. The client is baked into
+the root-owned Hermes image rather than mounted over `/opt/hermes`. The defaults
+are Anna for English and Eponine for Spanish;
 automatic detection is heuristic, so prefix short or ambiguous text with
 `[en]` or `[es]` to force the language.
 
-Set the private cache path and add `pocket-tts` to the existing browser profile
-in `private/env/local.env`. Keep at least 8 GiB free before the first prefetch:
+Enable `pocket-tts` beside the selected browser profile in
+`private/env/local.env`; browser-mode helpers preserve it once enabled. Set the
+private cache path there as well. Keep at least 8 GiB free before the first prefetch:
 
 ```env
 COMPOSE_PROFILES=camofox,pocket-tts
@@ -92,11 +94,11 @@ scripts/configure-pocket-tts.py \
   --config /absolute/private/path/hermes/config.yaml
 ```
 
-Start/recreate only the affected services from existing images:
+After the cache and provider are configured and the private profile enables it,
+normal full-stack startup includes Pocket TTS:
 
 ```sh
-sg up -d --no-build pocket-tts
-sg up -d --no-build --force-recreate hermes
+sg up -d
 sg ps pocket-tts hermes
 ```
 
@@ -109,12 +111,19 @@ rollback details.
 ## Raw Compose Start
 
 The tier helper path is preferred because it selects the expected Compose files
-and env file. If you use raw Compose for L4, make `COMPOSE_PROFILES` match
-`CAMOFOX_URL`.
+and env file. If you use raw Compose for L4, select the active browser and add
+`pocket-tts` only when configured; `pocket-tts-bootstrap` is never persistent.
 
 ```sh
 docker compose -f infra/compose/compose.yml --env-file .env up -d
 ```
+
+## Bounded Workstation Access
+
+`sg-workstation` operates manual, host-side SSH and application relays to one
+Tailscale-connected PC while Hermes remains on `spartan_internal`. Configuration,
+keys, host-key verification, profile setup, Blender risk, and teardown are
+documented in [Bounded Workstation Access](workstation.md).
 
 Private full start:
 
@@ -164,8 +173,16 @@ to a pre-existing legacy ClawRoute data root before enabling its non-root addon.
 Codex OAuth profiles mounted into Spartan Route are bootstrap-only and stay
 read-only. Refresh-token rotation is stored under the existing private data
 mount at `/app/data/codex-auth`. A dashboard state of `reauth_required` means
-the current grant was rejected terminally; log in again in that slot's original
-Codex home and retry. `refresh_rate_limited`,
+the intended account's current grant was rejected terminally. Rebuild or
+restart only Spartan Route first, then use the slot's focused **Check usage**
+action: a successful refresh repairs managed state without changing the
+read-only bootstrap file. Only if the slot still reports `reauth_required`, log
+in again in that slot's original Codex home (for example,
+`CODEX_HOME=/path/to/original-slot-home codex login --device-auth`) and retry.
+Restart only Spartan Route after a successful login so an already-adopted
+in-memory generation is discarded. Do not delete the managed store or copy
+credentials from another slot.
+`refresh_rate_limited`,
 `refresh_temporarily_unavailable`, `refresh_lock_timeout`,
 `auth_store_unavailable`, `refresh_persist_failed`, `refresh_invalid_response`,
 and `refresh_internal_error` are retryable and should
@@ -215,6 +232,7 @@ sg-browser-mode-apply
 sg up -d hermes  # explicit Hermes recreate/start
 sg-status
 sg-health
+sg-connectivity-check
 sg-logs-hermes
 sg-restart-caddy
 sg-rebuild-hermes
@@ -238,6 +256,26 @@ sg-disk top /var 2 30
 sg-disk apport
 sg-disk spartan
 ```
+
+### Host connectivity status
+
+`sg-health` appends the sanitized host snapshot published by the local Wi-Fi
+watchdog at `/run/check-wifi-status.json`. The versioned snapshot contains only
+enumerated local/WAN/DNS/Tailscale states, failure counters, and timestamps; it
+does not contain an SSID, interface, gateway, address, connection UUID, or
+Tailscale identity. Missing, malformed, future-dated, and older-than-five-minute
+snapshots are reported explicitly.
+
+The added line is informational and does not change `sg-health` exit behavior.
+For monitoring that must fail closed when the snapshot is unavailable, stale,
+or degraded, use:
+
+```sh
+sg-connectivity-check
+```
+
+The watchdog remains the owner of host recovery. These helpers do not probe the
+Internet, restart Wi-Fi, restart Tailscale, or restart containers.
 
 ### Interactive tmux sessions
 

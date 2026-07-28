@@ -19,8 +19,9 @@ Public env docs describe names and behavior only. Real values and machine-specif
 - `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`,
   `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`, and
   `HERMES_DASHBOARD_BASIC_AUTH_SECRET`: required by the upstream Hermes
-  dashboard when it binds outside loopback. Caddy Basic Auth still protects the
-  edge; these variables keep the internal dashboard process from failing closed.
+  dashboard when it binds outside loopback. Caddy Basic Auth protects ordinary dashboard pages; Hermes Desktop bootstrap,
+  application-auth, API, and WebSocket routes pass through to Hermes and are
+  protected by these upstream credentials and session controls.
 - `CADDY_AUTH_USER`: Basic Auth username.
 - `CADDY_AUTH_HASH`: Caddy password hash.
 - `SPARTAN_CADDY_PASSWORD`: optional installer-managed plaintext corresponding
@@ -41,7 +42,10 @@ Public env docs describe names and behavior only. Real values and machine-specif
   WebSocket URLs by the profile-live helper. It prevents unauthenticated
   Browserless WebSocket upgrades without relying on browser Basic Auth for the
   WebSocket handshake.
-- `SPARTAN_INTERNAL_SUBNET`: internal Docker subnet.
+- `SPARTAN_INTERNAL_SUBNET`: internal Docker subnet. The private HTTPS override
+  also uses this CIDR as `Uvicorn`'s restricted `FORWARDED_ALLOW_IPS` trust
+  boundary so `Caddy`'s `X-Forwarded-Proto: https` produces `Secure` Hermes
+  application cookies.
 - `SPARTAN_DNS_IP`: fixed DNS relay address inside that subnet.
 - `SPARTAN_ALLOW_EXISTING_STACK_PATHS`: keep `false` for fresh installs; set
   `true` only for intentional cutover to old/existing data paths with the old
@@ -78,6 +82,9 @@ the listener. Invalid values fail startup instead of silently removing bounds.
 
 - `SPARTAN_HERMES_DATA_PATH`: private host path mounted as `/opt/data`.
   Spartan Gate keeps `/opt/hermes` root-owned and immutable to Hermes workloads.
+  The mounted `HERMES_HOME` must already exist as an absolute path whose
+  components are real directories; startup fails before writes if any component
+  is missing or is a symlink.
 - `SPARTAN_HERMES_RUN_UID` and `SPARTAN_HERMES_RUN_GID`: optional runtime
   identity for Hermes workloads. Set both to the host owner of
   `SPARTAN_HERMES_DATA_PATH` when the data folder should behave like a normal
@@ -122,8 +129,9 @@ and agent configuration; Browserless profiles control Chromium login state.
 ## Pocket TTS
 
 Pocket TTS is an optional Compose profile, not a Spartan Gate layer or addon.
-Add `pocket-tts` to the existing `COMPOSE_PROFILES` value; keep the selected
-browser profile in the same comma-separated list.
+Once present in private `COMPOSE_PROFILES`, browser-mode helpers preserve it
+beside the selected browser, so plain `sg up -d` starts the sidecar. Fresh
+public L4 installs keep it disabled until its cache and provider are configured.
 
 - `POCKET_TTS_IMAGE`: local sidecar image, default
   `spartan-gate-pocket-tts:2.1.0`.
@@ -237,10 +245,10 @@ Camofox is an optional local browser backend for Hermes browser tools. It runs
 as the internal Compose service `camofox`, but Hermes keeps using Browserless
 unless `CAMOFOX_URL` is set.
 
-- `COMPOSE_PROFILES`: Compose browser service selector. Use `browserless` when
-  `CAMOFOX_URL` is empty and `camofox` when `CAMOFOX_URL=http://camofox:9377`.
-  `CAMOFOX_URL` is the canonical Hermes mode selector; helpers reject an
-  explicit `COMPOSE_PROFILES` value that disagrees with it.
+- `COMPOSE_PROFILES`: full-stack service selector. Use `browserless` when
+  `CAMOFOX_URL` is empty and `camofox` when it points to Camofox; optionally add
+  `pocket-tts` after its cache/provider setup (order is not significant).
+  Helpers reject duplicate, bootstrap, unknown, or conflicting profiles.
 - `CAMOFOX_URL`: optional Hermes Camofox endpoint. Leave empty to keep
   Browserless as the default browser/CDP backend; set to
   `http://camofox:9377` to opt in for generic Hermes browser tools and Google
@@ -463,8 +471,12 @@ and temporarily skips the affected slot/account so concurrent sessions do not
 keep selecting the same failing auth profile.
 `SPARTAN_ROUTE_RECOVERY_WAIT_MS` defaults to `180000`; Spartan Route holds a
 request for up to that long when all otherwise usable Codex slots are
-temporarily cooling after upstream 5xx or `usage_limit_reached` errors. Set it
-to `0` to return immediate `503`/`429` metadata instead.
+temporarily cooling after upstream 5xx errors. Set it to `0` to return immediate
+`503` metadata instead. Explicit quota exhaustion returns immediate `429`
+metadata after the available pool is tried. A later request performs one
+coalesced live usage refresh, throttled to once per five seconds, and resumes
+through an account only when a valid response reports every usage window below
+its limit; failed, malformed, and still-full checks remain unavailable.
 `SPARTAN_ROUTE_RECOVERY_POLL_MS` defaults to `1000` and controls the fallback
 poll interval while a request is waiting for a slot to recover.
 Prompt-cache leases default to `CODEX_CACHE_LEASE_MODE=keyed`, which keeps a

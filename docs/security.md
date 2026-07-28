@@ -48,8 +48,10 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   `CADDY_WS_EDGE_TOKEN` as one operator trust boundary. Both must be 64 lowercase
   hex, are stripped with legacy edge cookies and `Authorization` before proxying,
   and use `Secure` on HTTPS.
-- The Hermes dashboard keeps same-origin `/api/*` and `/ws/*` requests
-  pass-through behind the localhost/private edge. Protect it with local binding,
+- The Hermes dashboard keeps its native `/login`, `/auth/*`, `/api/*`, and
+  `/ws/*` application-session routes pass-through behind the localhost/private
+  edge; Hermes owns authentication on those routes while Caddy Basic Auth remains
+  on other browser-facing dashboard pages. Protect it with local binding,
   Tailscale/private exposure, and Hermes' own application controls; do not
   publish the dashboard edge broadly.
 - Tailscale exposure belongs in `private/compose.local.yml`; do not publish edge ports on `0.0.0.0` or LAN addresses in public files.
