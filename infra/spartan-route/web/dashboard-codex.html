@@ -512,7 +512,9 @@
       const cooldownText = cooldown(slot.rateLimitedUntil) !== '-' ? `rate ${cooldown(slot.rateLimitedUntil)}` : cooldown(slot.transientUntil);
       const routing = slot.routingEnabled ? 'enabled' : 'disabled';
       const auth = slot.authAvailable ? 'ready' : (slot.authUnavailableReason || 'unavailable');
-      const mismatch = slot.routingIdentityMismatch ? ' · identity mismatch, override ignored' : (slot.routingIdentityUnverified ? ' · identity unverified' : '');
+      const mismatch = slot.routingIdentityMismatch
+        ? (slot.requestedRoutingEnabled ? ' · identity mismatch' : ' · stale disable ignored')
+        : (slot.routingIdentityUnverified ? ' · identity unverified' : '');
       return `${routing} · ${auth}${cooldownText !== '-' ? ` · cooldown ${cooldownText}` : ''}${mismatch}`;
     }
     function authLifecycle(slot) {

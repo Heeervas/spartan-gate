@@ -1355,6 +1355,8 @@ class TelemetryStore:
         self,
         current_account_keys: set[str],
         refreshed_windows: dict[str, set[str]],
+        *,
+        full_pool_refresh: bool,
     ) -> None:
         tables = (
             "codex_window_model_usage",
@@ -1363,14 +1365,15 @@ class TelemetryStore:
         )
         current_keys = sorted(current_account_keys)
         for table in tables:
-            if current_keys:
-                placeholders = ",".join("?" for _ in current_keys)
-                self._conn.execute(
-                    f"DELETE FROM {table} WHERE account_key != '' AND account_key NOT IN ({placeholders})",
-                    current_keys,
-                )
-            else:
-                self._conn.execute(f"DELETE FROM {table} WHERE account_key != ''")
+            if full_pool_refresh:
+                if current_keys:
+                    placeholders = ",".join("?" for _ in current_keys)
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE account_key != '' AND account_key NOT IN ({placeholders})",
+                        current_keys,
+                    )
+                else:
+                    self._conn.execute(f"DELETE FROM {table} WHERE account_key != ''")
             for account_key, windows in refreshed_windows.items():
                 ordered_windows = sorted(windows)
                 if ordered_windows:
@@ -1390,6 +1393,7 @@ class TelemetryStore:
         records: list[dict[str, Any]],
         *,
         current_account_keys: set[str] | None = None,
+        full_pool_refresh: bool = True,
     ) -> None:
         if not records and current_account_keys is None:
             return
@@ -1441,8 +1445,13 @@ class TelemetryStore:
                         ),
                     )
                     self._replace_window_usage_unlocked(record, observed_at)
-                self._prune_window_usage_unlocked(current_keys, refreshed_windows)
-                self._replace_global_unattributed_unlocked(current_keys, observed_at)
+                self._prune_window_usage_unlocked(
+                    current_keys,
+                    refreshed_windows,
+                    full_pool_refresh=full_pool_refresh,
+                )
+                if full_pool_refresh:
+                    self._replace_global_unattributed_unlocked(current_keys, observed_at)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()

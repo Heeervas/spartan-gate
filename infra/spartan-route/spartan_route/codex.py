@@ -45,6 +45,7 @@ INLINE_REASONING_PLACEHOLDER = "<think> </think>"
 TERMINAL_CODEX_EVENTS = {"response.completed", "response.incomplete", "response.failed", "response.cancelled"}
 CODEX_USAGE_DRAIN_TIMEOUT_SECONDS = 15.0
 CODEX_USAGE_CACHE_TTL_SECONDS = 60.0
+CODEX_RECOVERY_PROBE_MIN_INTERVAL_SECONDS = 5.0
 CODEX_STREAM_TIMEOUT_CODE = "codex_stream_timeout"
 CODEX_STREAM_ERROR_CODE = "codex_stream_error"
 CODEX_TRANSIENT_UNAVAILABLE_CODE = "codex_transient_unavailable"
@@ -559,6 +560,7 @@ class CodexRouter:
         self._availability_event: asyncio.Event | None = None
         self._availability_event_loop: asyncio.AbstractEventLoop | None = None
         self._usage_cache: dict[str, Any] | None = None
+        self._last_recovery_probe_at = 0.0
         self._usage_refresh_task: asyncio.Task[dict[str, Any]] | None = None
         self._usage_progress_snapshot: dict[str, Any] | None = None
         self._usage_generation = 0
@@ -580,6 +582,7 @@ class CodexRouter:
         self.slots = [CodexSlot(index, path=path) for index, path in enumerate(resolve_auth_paths())]
 
     def reset_state(self) -> None:
+        self._last_recovery_probe_at = 0.0
         self._usage_generation = int(getattr(self, "_usage_generation", 0)) + 1
         task = getattr(self, "_usage_refresh_task", None)
         if task is not None and not task.done():
@@ -679,7 +682,7 @@ class CodexRouter:
                 "overrideUpdatedAt": None,
             }
         identity = self._slot_identity(slot)
-        keys = ("accountKey", "slotPathHash", "authFingerprintHash")
+        keys = ("accountKey", "slotPathHash")
         mismatch = any(
             bool(override.get(key) and identity.get(key) and override.get(key) != identity.get(key))
             for key in keys
@@ -860,12 +863,14 @@ class CodexRouter:
         store_errors: list[CodexAuthStoreError] | None = None,
     ) -> CodexAuthCandidate | None:
         candidates: list[CodexAuthCandidate] = []
+        bootstrap: CodexAuthCandidate | None = None
         snapshot = read_auth_file(path)
         if snapshot:
             data, fingerprint = snapshot
             tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else data
             candidate = self._candidate(tokens, fingerprint, "bootstrap")
             if candidate:
+                bootstrap = candidate
                 candidates.append(candidate)
         try:
             managed = self._read_managed_candidate(path)
@@ -879,6 +884,11 @@ class CodexRouter:
                 raise
             store_errors.append(exc)
             managed = None
+        if managed and bootstrap:
+            bootstrap_account = derive_account_id(bootstrap.tokens)
+            managed_account = derive_account_id(managed.tokens)
+            if bootstrap_account and managed_account != bootstrap_account:
+                managed = None
         if managed:
             candidates.append(managed)
         if not candidates:
@@ -1394,6 +1404,64 @@ class CodexRouter:
         self._invalidate_slot_leases(slot)
         self._notify_availability_changed()
 
+    def _quarantine_auth_failure(self, slot: CodexSlot) -> None:
+        """Keep a rejected auth candidate out of rotation until it changes."""
+        failed_fingerprint = slot.auth_fingerprint
+        slot.auth = None
+        slot.auth_error_code = "reauth_required"
+        slot.auth_unavailable_reason = "reauth_required"
+        slot.auth_retry_at = 0
+        if slot.path and failed_fingerprint:
+            slot.failed_auth_fingerprint = failed_fingerprint
+        self._invalidate_slot_leases(slot)
+        self._usage_cache = None
+        self._notify_availability_changed()
+
+    async def _probe_rate_limit_recovery(self) -> bool:
+        """Coalesce a bounded live usage check for a later incoming request."""
+        active = getattr(self, "_usage_refresh_task", None)
+        if active is not None and not active.done():
+            try:
+                await asyncio.shield(active)
+                return (await self.slot_availability()).eligible > 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(
+                    f"[spartan-route] Codex recovery usage probe failed ({type(exc).__name__})",
+                    file=sys.stderr,
+                )
+                return False
+
+        now = time.monotonic()
+        last_probe = float(getattr(self, "_last_recovery_probe_at", 0.0) or 0.0)
+        if now - last_probe < CODEX_RECOVERY_PROBE_MIN_INTERVAL_SECONDS:
+            return False
+
+        cache = getattr(self, "_usage_cache", None)
+        if isinstance(cache, dict) and cache.get("signature") == self._usage_cache_signature():
+            try:
+                completed_at = float(cache["expiresAt"]) - CODEX_USAGE_CACHE_TTL_SECONDS
+            except (KeyError, TypeError, ValueError):
+                completed_at = 0.0
+            if time.time() - completed_at < CODEX_RECOVERY_PROBE_MIN_INTERVAL_SECONDS:
+                self._last_recovery_probe_at = now
+                return False
+
+        try:
+            await asyncio.shield(self._ensure_usage_refresh())
+            return (await self.slot_availability()).eligible > 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(
+                f"[spartan-route] Codex recovery usage probe failed ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            return False
+        finally:
+            self._last_recovery_probe_at = time.monotonic()
+
     def mark_transient(self, slot: CodexSlot) -> None:
         cooldown = parse_int(os.environ.get("CODEX_TRANSIENT_5XX_COOLDOWN_MS"), 120_000, 0, 900_000) / 1000
         if cooldown > 0:
@@ -1447,17 +1515,17 @@ class CodexRouter:
         affinity_key = resolve_affinity_key(request, session_id, prompt_cache_key)
         body = build_codex_request_body(request, model_name, upstream_cache_key)
         slot_count = max(1, len(self.slots))
+        initial_state = await self.slot_availability()
+        if initial_state.eligible == 0 and initial_state.rate_limited:
+            await self._probe_rate_limit_recovery()
         excluded_slots: set[int] = set()
         excluded_accounts: set[str] = set()
-        last_error: CodexCallResult | None = None
         deadline = time.time() + (self._recovery_wait_ms() / 1000)
         while True:
-            attempted = 0
             for _attempt in range(slot_count):
                 chosen = await self.choose_slot(affinity_key, excluded_slots, excluded_accounts)
                 if not chosen:
                     break
-                attempted += 1
                 slot, auth = chosen
                 slot.in_flight += 1
                 slot.last_selected_at = time.time()
@@ -1502,27 +1570,20 @@ class CodexRouter:
                 if auth.account_key:
                     excluded_accounts.add(auth.account_key)
                 if result.status == 401:
-                    slot.auth = None
-                    slot.auth_unavailable_reason = "expired"
-                    self._invalidate_slot_leases(slot)
-                    self._notify_availability_changed()
+                    self._quarantine_auth_failure(slot)
                 elif result.status == 429:
                     self.mark_rate_limited(slot, text)
                 else:
                     self.mark_transient(slot)
-                last_error = result
 
             state = await self.slot_availability()
+            if state.eligible == 0 and state.rate_limited and not state.transient_5xx:
+                return await self._unavailable_result()
             recovery_at = state.earliest_recovery()
             if recovery_at is not None and recovery_at <= deadline and await self._wait_for_temporary_recovery(deadline):
                 excluded_slots.clear()
                 excluded_accounts.clear()
-                last_error = None
                 continue
-            if last_error:
-                return last_error
-            if attempted == 0 or state.rate_limited or state.transient_5xx:
-                return await self._unavailable_result()
             return await self._unavailable_result()
 
     async def _single_chat_call(
@@ -1753,15 +1814,17 @@ class CodexRouter:
             return [], False
         if event == "error" or parsed.get("error"):
             error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
-            result.error = self._error_code(error)
             self._mark_streaming_error(slot, error)
-            return [sse({"error": error}, event="error"), b"data: [DONE]\n\n"], True
+            client_error = self._stream_client_error(error)
+            result.error = self._error_code(client_error)
+            return [sse({"error": client_error}, event="error"), b"data: [DONE]\n\n"], True
         chunks = self._apply_codex_event_state(event, parsed, state, stream=True)
         if state.terminal_error:
             self._copy_usage_to_result(result, state)
-            result.error = self._error_code(state.terminal_error)
             self._mark_streaming_error(slot, state.terminal_error)
-            return [sse({"error": state.terminal_error}, event="error"), b"data: [DONE]\n\n"], True
+            client_error = self._stream_client_error(state.terminal_error)
+            result.error = self._error_code(client_error)
+            return [sse({"error": client_error}, event="error"), b"data: [DONE]\n\n"], True
         outputs = []
         for delta in chunks:
             if "tool_calls" in delta:
@@ -1889,12 +1952,38 @@ class CodexRouter:
             actual_tool_names=self._actual_tool_names(state),
         )
 
-    def _codex_error_status(self, error: dict[str, Any]) -> int:
+    def _is_auth_error_payload(self, error: dict[str, Any]) -> bool:
         code = str(error.get("code") or "")
         error_type = str(error.get("type") or error.get("upstream_type") or "")
-        if error_type == "auth_error" or code in {"invalid_api_key", "invalid_auth", "unauthorized"}:
+        return error_type == "auth_error" or code in {
+            "invalid_api_key",
+            "invalid_auth",
+            "token_invalidated",
+            "unauthorized",
+        }
+
+    def _is_usage_limit_payload(self, error: dict[str, Any]) -> bool:
+        code = str(error.get("code") or "")
+        error_type = str(error.get("type") or error.get("upstream_type") or "")
+        return error_type in {"usage_limit_reached", "rate_limit_error"} or code in {
+            "usage_limit_reached",
+            "rate_limit_exceeded",
+            "codex_429",
+        }
+
+    def _stream_client_error(self, error: dict[str, Any]) -> dict[str, Any]:
+        if self._is_auth_error_payload(error) or self._is_usage_limit_payload(error):
+            return {
+                "message": "The Codex account pool is temporarily unavailable. Retry on a later request.",
+                "type": "upstream_error",
+                "code": "codex_unavailable",
+            }
+        return error
+
+    def _codex_error_status(self, error: dict[str, Any]) -> int:
+        if self._is_auth_error_payload(error):
             return 401
-        if error_type in {"usage_limit_reached", "rate_limit_error"} or code in {"usage_limit_reached", "rate_limit_exceeded", "codex_429"}:
+        if self._is_usage_limit_payload(error):
             return 429
         return 502
 
@@ -2235,11 +2324,9 @@ class CodexRouter:
         text = stable_json({"error": error})
         if code in {CODEX_STREAM_TIMEOUT_CODE, CODEX_STREAM_ERROR_CODE}:
             return
-        if error_type == "auth_error" or code in {"invalid_auth", "unauthorized"}:
-            slot.auth = None
-            slot.auth_unavailable_reason = "expired"
-            self._invalidate_slot_leases(slot)
-        elif error_type in {"usage_limit_reached", "rate_limit_error"} or code in {"usage_limit_reached", "rate_limit_exceeded", "codex_429"}:
+        if self._is_auth_error_payload(error):
+            self._quarantine_auth_failure(slot)
+        elif self._is_usage_limit_payload(error):
             self.mark_rate_limited(slot, text)
         elif error_type in {"server_error", "upstream_error"} or code.startswith("codex_5") or code in {"codex_error", "server_error"}:
             self.mark_transient(slot)
@@ -2469,17 +2556,17 @@ class CodexRouter:
 
     async def execute_image(self, request: dict[str, Any]) -> CodexCallResult:
         slot_count = max(1, len(self.slots))
+        initial_state = await self.slot_availability()
+        if initial_state.eligible == 0 and initial_state.rate_limited:
+            await self._probe_rate_limit_recovery()
         excluded_slots: set[int] = set()
         excluded_accounts: set[str] = set()
-        last_error: CodexCallResult | None = None
         deadline = time.time() + (self._recovery_wait_ms() / 1000)
         while True:
-            attempted = 0
             for _attempt in range(slot_count):
                 chosen = await self.choose_slot(None, excluded_slots, excluded_accounts)
                 if not chosen:
                     break
-                attempted += 1
                 slot, auth = chosen
                 slot.in_flight += 1
                 slot.last_selected_at = time.time()
@@ -2499,27 +2586,20 @@ class CodexRouter:
                 if auth.account_key:
                     excluded_accounts.add(auth.account_key)
                 if result.status == 401:
-                    slot.auth = None
-                    slot.auth_unavailable_reason = "expired"
-                    self._invalidate_slot_leases(slot)
-                    self._notify_availability_changed()
+                    self._quarantine_auth_failure(slot)
                 elif result.status == 429:
                     self.mark_rate_limited(slot, text)
                 else:
                     self.mark_transient(slot)
-                last_error = result
 
             state = await self.slot_availability()
+            if state.eligible == 0 and state.rate_limited and not state.transient_5xx:
+                return await self._unavailable_result()
             recovery_at = state.earliest_recovery()
             if recovery_at is not None and recovery_at <= deadline and await self._wait_for_temporary_recovery(deadline):
                 excluded_slots.clear()
                 excluded_accounts.clear()
-                last_error = None
                 continue
-            if last_error:
-                return last_error
-            if attempted == 0 or state.rate_limited or state.transient_5xx:
-                return await self._unavailable_result()
             return await self._unavailable_result()
 
     def _usage_cache_signature(self) -> tuple[Any, ...]:
@@ -2539,7 +2619,70 @@ class CodexRouter:
     async def usage_snapshot(self, force: bool = False, slot_indexes: set[int] | None = None) -> dict[str, Any]:
         if slot_indexes is not None:
             payload = await self._fetch_usage_snapshot(slot_indexes)
-            payload.update({"cached": False, "source": "live", "refreshing": False, "observedAt": now_iso()})
+            discovery_semaphore = asyncio.Semaphore(4)
+
+            async def discover_identity(slot: CodexSlot) -> None:
+                async with discovery_semaphore:
+                    await self.load_auth(slot)
+
+            await asyncio.gather(*(
+                discover_identity(slot)
+                for slot in self.slots
+                if not slot.account_key()
+            ))
+            persisted = self._persisted_usage_snapshot()
+            accounts_by_key = {
+                str(account.get("accountKey")): copy.deepcopy(account)
+                for account in persisted.get("accounts", [])
+                if account.get("accountKey")
+            }
+            for live in payload.get("accounts", []):
+                account_key = str(live.get("accountKey") or "")
+                if not account_key:
+                    continue
+                previous = accounts_by_key.get(account_key, {})
+                merged = {**previous, **copy.deepcopy(live)}
+                merged["slotIndexes"] = sorted({
+                    int(index)
+                    for index in [
+                        *(previous.get("slotIndexes") or []),
+                        *(live.get("slotIndexes") or []),
+                    ]
+                })
+                merged["slotPaths"] = list(dict.fromkeys([
+                    *(previous.get("slotPaths") or []),
+                    *(live.get("slotPaths") or []),
+                ]))
+                accounts_by_key[account_key] = merged
+            payload["accounts"] = sorted(
+                accounts_by_key.values(),
+                key=lambda row: min(row.get("slotIndexes") or [9999]),
+            )
+            telemetry_errors = []
+            for error in [
+                *(persisted.get("telemetryErrors") or []),
+                *(payload.get("telemetryErrors") or []),
+            ]:
+                if error not in telemetry_errors:
+                    telemetry_errors.append(error)
+            if telemetry_errors:
+                payload["telemetryErrors"] = telemetry_errors
+            payload["partial"] = bool(
+                persisted.get("partial")
+                or payload.get("slotErrors")
+                or payload.get("resetCreditErrors")
+                or telemetry_errors
+            )
+            has_persisted = any(
+                account.get("source") == "persisted"
+                for account in payload["accounts"]
+            )
+            payload.update({
+                "cached": False,
+                "source": "mixed" if has_persisted else "live",
+                "refreshing": False,
+                "observedAt": now_iso(),
+            })
             self._usage_cache = None
             return payload
 
@@ -2703,7 +2846,7 @@ class CodexRouter:
                         group["auth"],
                         group["slots"],
                         persisted_reset.get(account_key),
-                        False,
+                        True,
                     )
                     return account_key, result
 
@@ -2969,6 +3112,7 @@ class CodexRouter:
                 lambda: self.telemetry.upsert_usage_snapshots(
                     usage_records,
                     current_account_keys=set(groups),
+                    full_pool_refresh=slot_indexes is None,
                 ),
             ),
             ("reset_credit_snapshots", lambda: self.telemetry.upsert_reset_credits(reset_records)),

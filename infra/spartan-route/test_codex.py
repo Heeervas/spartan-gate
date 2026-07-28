@@ -27,6 +27,7 @@ from spartan_route.codex import (
     build_codex_request_body,
     build_content_prompt_cache_key,
     chat_messages_to_responses_input,
+    derive_account_id,
     normalize_tool_choice,
     normalize_reset_credits,
     resolve_auth_paths,
@@ -336,6 +337,79 @@ class RecoveringRouter(CodexRouter):
         self.calls += 1
         return CodexCallResult(status=200, body={"data": [{"b64_json": "abc"}]}, completed=True)
 
+    async def _probe_rate_limit_recovery(self) -> bool:
+        return False
+
+
+class MixedPoolFailureRouter(CodexRouter):
+    def __init__(self, statuses: list[int]):
+        self.slots = [
+            CodexSlot(
+                index,
+                auth=CodexAuth(f"token-{index}", account_id=f"acct-{index}"),
+                auth_fingerprint=f"fingerprint-{index}",
+            )
+            for index in range(len(statuses))
+        ]
+        self.statuses = statuses
+        self.calls: list[int] = []
+        self.recovery_probes = 0
+        self.leases = {}
+        self.refresh_locks = {}
+        self.telemetry = None
+        self._usage_cache = None
+        self._availability_event = None
+        self._availability_event_loop = None
+
+    async def _failure(self, slot: CodexSlot) -> CodexCallResult:
+        self.calls.append(slot.index)
+        status = self.statuses[slot.index]
+        if status == 429:
+            return CodexCallResult(
+                status=429,
+                body={
+                    "error": {
+                        "message": "usage exhausted",
+                        "type": "usage_limit_reached",
+                        "code": "usage_limit_reached",
+                        "resets_in_seconds": 3600,
+                    }
+                },
+                error="usage_limit_reached",
+            )
+        return CodexCallResult(
+            status=401,
+            body={
+                "error": {
+                    "message": "token invalidated",
+                    "type": "invalid_request_error",
+                    "code": "token_invalidated",
+                }
+            },
+            error="token_invalidated",
+        )
+
+    async def _single_chat_call(self, _body, _model_id, _model_name, _wants_stream, slot, _auth):
+        return await self._failure(slot)
+
+    async def _single_image_call(self, _request, slot, _auth):
+        return await self._failure(slot)
+
+    async def _probe_rate_limit_recovery(self) -> bool:
+        self.recovery_probes += 1
+        return False
+
+
+class RequestRecoveryRouter(RecoveringRouter):
+    def __init__(self):
+        super().__init__(rate_limited_until=time.time() + 3600)
+        self.recovery_probes = 0
+
+    async def _probe_rate_limit_recovery(self) -> bool:
+        self.recovery_probes += 1
+        self.slots[0].rate_limited_until = 0
+        return True
+
 
 class CodexTests(unittest.TestCase):
     def jwt(self, expiry: float) -> str:
@@ -354,8 +428,26 @@ class CodexTests(unittest.TestCase):
         router._availability_event_loop = None
         return router
 
-    def write_auth(self, path: Path, access: str, refresh: str = "refresh-old") -> bytes:
-        raw = (json.dumps({"tokens": {"access_token": access, "refresh_token": refresh, "account_id": "acct"}}, sort_keys=True) + "\n").encode()
+    def write_auth(
+        self,
+        path: Path,
+        access: str,
+        refresh: str = "refresh-old",
+        account_id: str | None = "acct",
+    ) -> bytes:
+        tokens = {
+            "access_token": access,
+            "refresh_token": refresh,
+        }
+        if account_id is not None:
+            tokens["account_id"] = account_id
+        raw = (
+            json.dumps(
+                {"tokens": tokens},
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
         path.write_bytes(raw)
         return raw
 
@@ -463,6 +555,116 @@ class CodexTests(unittest.TestCase):
             state_file.write_text(json.dumps(document))
             with self.assertRaisesRegex(CodexAuthStoreError, "auth_state_binding_mismatch"):
                 router._read_managed_candidate(str(source))
+
+    def test_candidate_selection_rejects_newer_managed_state_for_another_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            expiry = time.time() + 3600
+            self.write_auth(
+                source,
+                self.jwt(expiry),
+                "bootstrap-refresh",
+                "bootstrap-account",
+            )
+            router._persist_refresh(str(source), {
+                "access_token": self.jwt(expiry + 7200),
+                "refresh_token": "managed-refresh",
+                "account_id": "managed-account",
+            })
+
+            selected = router._load_candidate(str(source))
+
+            self.assertEqual(selected.source, "bootstrap")
+            self.assertEqual(derive_account_id(selected.tokens), "bootstrap-account")
+
+    def test_expired_bootstrap_for_another_account_refreshes_and_replaces_managed_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            store = root / "codex-auth"
+            self.write_auth(
+                source,
+                self.jwt(time.time() - 600),
+                "bootstrap-refresh",
+                "bootstrap-account",
+            )
+            setup = self.auth_router(NoCallOAuthSession(), store)
+            setup._persist_refresh(str(source), {
+                "access_token": self.jwt(time.time() + 7200),
+                "refresh_token": "managed-refresh",
+                "account_id": "managed-account",
+            })
+            session = OAuthSession(payload={
+                "access_token": self.jwt(time.time() + 3600),
+                "refresh_token": "bootstrap-refresh-next",
+            })
+            router = self.auth_router(session, store)
+            slot = CodexSlot(0, path=str(source))
+
+            auth = asyncio.run(router.load_auth(slot))
+
+            self.assertIsNotNone(auth)
+            self.assertEqual(auth.account_id, "bootstrap-account")
+            self.assertEqual(session.data["refresh_token"], "bootstrap-refresh")
+            managed = router._read_managed_candidate(str(source))
+            self.assertEqual(derive_account_id(managed.tokens), "bootstrap-account")
+
+    def test_terminal_bootstrap_refresh_does_not_fall_back_to_other_managed_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            store = root / "codex-auth"
+            self.write_auth(
+                source,
+                self.jwt(time.time() - 600),
+                "bootstrap-refresh",
+                "bootstrap-account",
+            )
+            setup = self.auth_router(NoCallOAuthSession(), store)
+            setup._persist_refresh(str(source), {
+                "access_token": self.jwt(time.time() + 7200),
+                "refresh_token": "managed-refresh",
+                "account_id": "managed-account",
+            })
+            session = OAuthSession(status=400)
+            router = self.auth_router(session, store)
+            slot = CodexSlot(0, path=str(source))
+
+            self.assertIsNone(asyncio.run(router.load_auth(slot)))
+            self.assertEqual(slot.auth_error_code, "reauth_required")
+            self.assertEqual(session.data["refresh_token"], "bootstrap-refresh")
+            self.assertEqual(
+                derive_account_id(router._read_managed_candidate(str(source)).tokens),
+                "managed-account",
+            )
+            self.assertIsNone(asyncio.run(router.load_auth(slot)))
+            self.assertEqual(session.calls, 1)
+
+    def test_candidate_selection_uses_expiry_when_only_one_identity_is_known(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            expiry = time.time() + 3600
+
+            self.write_auth(source, self.jwt(expiry), account_id="bootstrap-account")
+            router._persist_refresh(str(source), {
+                "access_token": self.jwt(expiry + 7200),
+                "refresh_token": "managed-refresh",
+            })
+            self.assertEqual(router._load_candidate(str(source)).source, "bootstrap")
+
+            self.write_auth(source, self.jwt(expiry), account_id=None)
+            router._persist_refresh(str(source), {
+                "access_token": self.jwt(expiry + 7200),
+                "refresh_token": "managed-refresh",
+                "account_id": "managed-account",
+            })
+            selected = router._load_candidate(str(source))
+            self.assertEqual(selected.source, "managed")
+            self.assertEqual(derive_account_id(selected.tokens), "managed-account")
 
     def test_managed_store_symlinks_are_not_followed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1180,9 +1382,9 @@ class CodexTests(unittest.TestCase):
         with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "0"}):
             result = asyncio_run(router.execute_image({"prompt": "draw a gate", "size": "1024x1024"}))
 
-        self.assertEqual(result.status, 500)
-        self.assertEqual(result.body["error"]["code"], "codex_500")
-        self.assertEqual(result.body["error"]["message"], "Codex API error (500)")
+        self.assertEqual(result.status, 503)
+        self.assertEqual(result.body["error"]["code"], "codex_transient_unavailable")
+        self.assertTrue(result.body["error"]["message"])
 
     def test_chat_messages_to_responses_input_preserves_tools_and_images(self) -> None:
         output = chat_messages_to_responses_input([
@@ -1582,6 +1784,44 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.status, 429)
         self.assertIn("error", result.body)
 
+    def test_terminal_token_invalidated_event_maps_to_auth_failover(self) -> None:
+        result = asyncio_run(self.collect([
+            ("error", {"error": {
+                "type": "invalid_request_error",
+                "code": "token_invalidated",
+                "message": "token invalidated",
+            }}),
+        ]))
+
+        self.assertEqual(result.status, 401)
+        self.assertEqual(result.body["error"]["code"], "token_invalidated")
+
+    def test_started_stream_quarantines_and_sanitizes_token_invalidated(self) -> None:
+        slot = CodexSlot(
+            0,
+            path="/codex-0/auth.json",
+            auth=CodexAuth("token", account_id="acct"),
+            auth_fingerprint="rejected-fingerprint",
+        )
+        body, result, selected_slot, response = asyncio_run(self.collect_stream_response(
+            FakeResponse([
+                ("error", {"error": {
+                    "type": "invalid_request_error",
+                    "code": "token_invalidated",
+                    "message": "private upstream auth detail",
+                }}),
+            ]),
+            slot,
+        ))
+
+        self.assertTrue(response.released)
+        self.assertEqual(result.error, "codex_unavailable")
+        self.assertIn("codex_unavailable", body)
+        self.assertNotIn("token_invalidated", body)
+        self.assertNotIn("private upstream auth detail", body)
+        self.assertEqual(selected_slot.auth_error_code, "reauth_required")
+        self.assertEqual(selected_slot.failed_auth_fingerprint, "rejected-fingerprint")
+
     def test_non_streaming_read_timeout_is_retryable_transport_error(self) -> None:
         router = CodexRouter.__new__(CodexRouter)
         router.leases = {}
@@ -1736,7 +1976,7 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.body["error"]["slot_diagnostics"]["rate_limited"], 1)
         self.assertIn("Retry-After", result.headers)
 
-    def test_all_rate_limited_slots_wait_then_retry(self) -> None:
+    def test_all_rate_limited_slots_do_not_wait_for_reset(self) -> None:
         router = RecoveringRouter(rate_limited_until=time.time() + 0.02)
 
         with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "1000", "SPARTAN_ROUTE_RECOVERY_POLL_MS": "250"}):
@@ -1749,8 +1989,106 @@ class CodexTests(unittest.TestCase):
                 "request",
             ))
 
-        self.assertEqual(result.status, 200)
+        self.assertEqual(result.status, 429)
+        self.assertEqual(result.body["error"]["code"], "codex_429")
+        self.assertEqual(router.calls, 0)
+
+    def test_mixed_quota_and_auth_failures_return_pool_429_in_either_order(self) -> None:
+        for statuses in ([429, 401], [401, 429]):
+            with self.subTest(statuses=statuses):
+                router = MixedPoolFailureRouter(statuses)
+
+                with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "0"}):
+                    result = asyncio_run(router.execute_chat(
+                        {"messages": [{"role": "user", "content": "hi"}]},
+                        "codex/gpt-5.5",
+                        False,
+                        "session",
+                        None,
+                        "request",
+                    ))
+
+                self.assertEqual(router.calls, [0, 1])
+                self.assertEqual(router.recovery_probes, 0)
+                self.assertEqual(result.status, 429)
+                self.assertEqual(result.body["error"]["code"], "codex_429")
+                self.assertEqual(result.body["error"]["slot_diagnostics"]["rate_limited"], 1)
+                self.assertEqual(result.body["error"]["slot_diagnostics"]["auth_unavailable"], 1)
+                self.assertNotIn("token invalidated", data_json(result.body))
+
+    def test_mixed_quota_and_auth_failures_have_image_parity(self) -> None:
+        router = MixedPoolFailureRouter([429, 401])
+
+        with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "0"}):
+            result = asyncio_run(router.execute_image({"prompt": "draw a gate"}))
+
+        self.assertEqual(router.calls, [0, 1])
+        self.assertEqual(router.recovery_probes, 0)
+        self.assertEqual(result.status, 429)
+        self.assertEqual(result.body["error"]["code"], "codex_429")
+        self.assertNotIn("token invalidated", data_json(result.body))
+
+    def test_later_request_probes_usage_and_routes_recovered_slot(self) -> None:
+        router = RequestRecoveryRouter()
+
+        result = asyncio_run(router.execute_chat(
+            {"messages": [{"role": "user", "content": "continue"}]},
+            "codex/gpt-5.5",
+            False,
+            "session",
+            None,
+            "request",
+        ))
+
+        self.assertEqual(router.recovery_probes, 1)
         self.assertEqual(router.calls, 1)
+        self.assertEqual(result.status, 200)
+
+    def test_upstream_401_quarantines_exact_fingerprint_until_login_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            self.write_auth(source, self.jwt(time.time() + 7200), "refresh-old")
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            slot = CodexSlot(0, path=str(source))
+            self.assertIsNotNone(asyncio_run(router.load_auth(slot)))
+            rejected_fingerprint = slot.auth_fingerprint
+            router.slots = [slot]
+
+            async def reject(_body, _model_id, _model_name, _wants_stream, _slot, _auth):
+                return CodexCallResult(
+                    status=401,
+                    body={
+                        "error": {
+                            "message": "token invalidated",
+                            "type": "invalid_request_error",
+                            "code": "token_invalidated",
+                        }
+                    },
+                    error="token_invalidated",
+                )
+
+            router._single_chat_call = reject
+            with patch.dict(os.environ, {"SPARTAN_ROUTE_RECOVERY_WAIT_MS": "0"}):
+                result = asyncio_run(router.execute_chat(
+                    {"messages": [{"role": "user", "content": "hi"}]},
+                    "codex/gpt-5.5",
+                    False,
+                    "session",
+                    None,
+                    "request",
+                ))
+
+            self.assertEqual(result.status, 503)
+            self.assertEqual(result.body["error"]["code"], "codex_unavailable")
+            self.assertEqual(slot.auth_error_code, "reauth_required")
+            self.assertEqual(slot.failed_auth_fingerprint, rejected_fingerprint)
+            self.assertIsNone(asyncio_run(router.load_auth(slot)))
+
+            self.write_auth(source, self.jwt(time.time() + 7200), "fresh-login")
+            recovered = asyncio_run(router.load_auth(slot))
+            self.assertIsNotNone(recovered)
+            self.assertIsNone(slot.failed_auth_fingerprint)
 
     def test_image_generation_uses_recovery_wait(self) -> None:
         router = RecoveringRouter(transient_until=time.time() + 0.02)
@@ -1834,6 +2172,109 @@ class CodexTests(unittest.TestCase):
             chosen = asyncio_run(router.choose_slot(None, set(), set()))
             self.assertIsNotNone(chosen)
             self.assertEqual(chosen[0].index, 1)
+        finally:
+            store.close()
+
+    def test_rotated_auth_fingerprint_does_not_bypass_disabled_slot_override(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            router = CodexRouter.__new__(CodexRouter)
+            router.telemetry = store
+            slot = CodexSlot(
+                0,
+                path="/codex-a/auth.json",
+                auth=CodexAuth("token", account_id="acct-a"),
+                auth_fingerprint="old-generation",
+            )
+            identity = router._slot_identity(slot)
+            store.set_slot_routing_enabled(
+                slot.index,
+                False,
+                account_key=identity["accountKey"],
+                slot_path_hash=identity["slotPathHash"],
+                auth_fingerprint_hash=identity["authFingerprintHash"],
+            )
+            slot.auth_fingerprint = "rotated-generation"
+
+            status = router.slot_routing_status(slot)
+
+            self.assertFalse(status["routingEnabled"])
+            self.assertFalse(status["identityMismatch"])
+            self.assertFalse(status["identityUnverified"])
+        finally:
+            store.close()
+
+    def test_durable_slot_identity_change_ignores_stale_disable(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            router = CodexRouter.__new__(CodexRouter)
+            router.telemetry = store
+            original = CodexSlot(
+                0,
+                path="/codex-a/auth.json",
+                auth=CodexAuth("token", account_id="acct-a"),
+                auth_fingerprint="generation",
+            )
+            identity = router._slot_identity(original)
+            store.set_slot_routing_enabled(
+                original.index,
+                False,
+                account_key=identity["accountKey"],
+                slot_path_hash=identity["slotPathHash"],
+                auth_fingerprint_hash=identity["authFingerprintHash"],
+            )
+
+            for changed in (
+                CodexSlot(
+                    0,
+                    path=original.path,
+                    auth=CodexAuth("token", account_id="acct-b"),
+                    auth_fingerprint=original.auth_fingerprint,
+                ),
+                CodexSlot(
+                    0,
+                    path="/codex-b/auth.json",
+                    auth=original.auth,
+                    auth_fingerprint=original.auth_fingerprint,
+                ),
+            ):
+                with self.subTest(path=changed.path, account=changed.account_key()):
+                    status = router.slot_routing_status(changed)
+                    self.assertTrue(status["routingEnabled"])
+                    self.assertTrue(status["identityMismatch"])
+        finally:
+            store.close()
+
+    def test_missing_current_account_keeps_path_bound_disable_fail_closed(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            router = CodexRouter.__new__(CodexRouter)
+            router.telemetry = store
+            original = CodexSlot(
+                0,
+                path="/codex-a/auth.json",
+                auth=CodexAuth("token", account_id="acct-a"),
+            )
+            identity = router._slot_identity(original)
+            store.set_slot_routing_enabled(
+                original.index,
+                False,
+                account_key=identity["accountKey"],
+                slot_path_hash=identity["slotPathHash"],
+                auth_fingerprint_hash=identity["authFingerprintHash"],
+            )
+
+            status = router.slot_routing_status(CodexSlot(0, path=original.path))
+
+            self.assertFalse(status["routingEnabled"])
+            self.assertFalse(status["identityMismatch"])
+            self.assertTrue(status["identityUnverified"])
         finally:
             store.close()
 
@@ -2765,6 +3206,111 @@ class CodexTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_recovery_usage_probe_is_single_flight_and_throttled(self) -> None:
+        router = CodexRouter.__new__(CodexRouter)
+        slot = CodexSlot(0, auth=CodexAuth("token", account_id="acct"))
+        slot.rate_limited_until = time.time() + 3600
+        router.slots = [slot]
+        router.leases = {}
+        router.telemetry = None
+        router._usage_cache = None
+        router._usage_refresh_task = None
+        router._last_recovery_probe_at = 0.0
+        gate = asyncio.Event()
+        started = asyncio.Event()
+        refresh_calls = 0
+
+        async def refresh() -> dict[str, Any]:
+            nonlocal refresh_calls
+            refresh_calls += 1
+            started.set()
+            await gate.wait()
+            slot.rate_limited_until = 0
+            return {}
+
+        def ensure_refresh() -> asyncio.Task[dict[str, Any]]:
+            task = router._usage_refresh_task
+            if task is None or task.done():
+                task = asyncio.create_task(refresh())
+                router._usage_refresh_task = task
+            return task
+
+        router._ensure_usage_refresh = ensure_refresh
+
+        async def exercise() -> tuple[list[bool], bool]:
+            first = asyncio.create_task(router._probe_rate_limit_recovery())
+            await started.wait()
+            second = asyncio.create_task(router._probe_rate_limit_recovery())
+            await asyncio.sleep(0)
+            gate.set()
+            results = await asyncio.gather(first, second)
+            slot.rate_limited_until = time.time() + 3600
+            throttled = await router._probe_rate_limit_recovery()
+            return results, throttled
+
+        results, throttled = asyncio_run(exercise())
+
+        self.assertEqual(results, [True, True])
+        self.assertFalse(throttled)
+        self.assertEqual(refresh_calls, 1)
+
+    def test_full_single_flight_refresh_clears_recovered_rate_limit(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            router = self.usage_router(
+                FakeUsageSession(),
+                store,
+                [CodexSlot(0, path="/codex-a/auth.json", auth=CodexAuth("token", account_id="acct"))],
+            )
+            router.slots[0].rate_limited_until = time.time() + 60
+
+            payload = asyncio_run(router.usage_snapshot(force=True))
+
+            self.assertFalse(payload["partial"])
+            self.assertEqual(router.slots[0].rate_limited_until, 0)
+        finally:
+            store.close()
+
+    def test_usage_refresh_keeps_cooldown_for_full_malformed_and_failed_checks(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        class FailedUsageSession(FakeUsageSession):
+            def get(self, url: str, **kwargs):
+                if "rate-limit-reset-credits" not in url:
+                    raise RuntimeError("usage unavailable")
+                return super().get(url, **kwargs)
+
+        cases = (
+            (PayloadUsageSession({
+                "primary_window": {
+                    "limit_window_seconds": 604800,
+                    "used_percent": 100,
+                    "reset_at": "2026-07-30T10:00:00Z",
+                },
+            }), "full"),
+            (PayloadUsageSession({"unexpected": "shape"}), "malformed"),
+            (FailedUsageSession(), "failed"),
+        )
+        for session, label in cases:
+            with self.subTest(label=label):
+                store = TelemetryStore(":memory:")
+                try:
+                    router = self.usage_router(
+                        session,
+                        store,
+                        [CodexSlot(0, path="/codex-a/auth.json", auth=CodexAuth("token", account_id="acct"))],
+                    )
+                    cooldown = time.time() + 60
+                    router.slots[0].rate_limited_until = cooldown
+
+                    asyncio_run(router.usage_snapshot(force=True))
+
+                    self.assertEqual(router.slots[0].rate_limited_until, cooldown)
+                finally:
+                    store.close()
+
     def test_forced_slot_usage_refresh_clears_recovered_rate_limit(self) -> None:
         from spartan_route.telemetry import TelemetryStore
 
@@ -2786,6 +3332,191 @@ class CodexTests(unittest.TestCase):
 
             self.assertFalse(payload["partial"])
             self.assertEqual(router.slots[0].rate_limited_until, 0)
+        finally:
+            store.close()
+
+    def test_forced_slot_usage_returns_full_account_projection(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            auth_a = CodexAuth("token-a", account_id="acct-a")
+            auth_b = CodexAuth("token-b", account_id="acct-b")
+            store.upsert_usage_snapshots([
+                {
+                    "account_key": auth_a.account_key,
+                    "slot_index": 0,
+                    "window": "weekly",
+                    "used_percent": 10,
+                    "reset_at": "2026-07-28T18:00:00Z",
+                    "window_minutes": 10080,
+                },
+                {
+                    "account_key": auth_b.account_key,
+                    "slot_index": 1,
+                    "window": "weekly",
+                    "used_percent": 20,
+                    "reset_at": "2026-07-28T18:00:00Z",
+                    "window_minutes": 10080,
+                },
+            ], current_account_keys={auth_a.account_key, auth_b.account_key})
+            router = self.usage_router(
+                FakeUsageSession(),
+                store,
+                [
+                    CodexSlot(0, path="/codex-a/auth.json", auth=auth_a),
+                    CodexSlot(1, path="/codex-b/auth.json", auth=auth_b),
+                ],
+            )
+
+            payload = asyncio_run(router.usage_snapshot(force=True, slot_indexes={0}))
+
+            self.assertEqual(
+                [account["accountKey"] for account in payload["accounts"]],
+                [auth_a.account_key, auth_b.account_key],
+            )
+            self.assertEqual(
+                [account["source"] for account in payload["accounts"]],
+                ["live", "persisted"],
+            )
+            self.assertEqual(payload["source"], "mixed")
+            self.assertEqual(len(router.session.urls), 2)
+        finally:
+            store.close()
+
+    def test_forced_slot_usage_discovers_non_target_identities_before_projection(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            auth_a = CodexAuth("token-a", account_id="acct-a")
+            auth_b = CodexAuth("token-b", account_id="acct-b")
+            store.upsert_usage_snapshots([
+                {
+                    "account_key": auth_a.account_key,
+                    "slot_index": 0,
+                    "window": "weekly",
+                    "used_percent": 10,
+                    "reset_at": "2026-07-28T18:00:00Z",
+                    "window_minutes": 10080,
+                },
+                {
+                    "account_key": auth_b.account_key,
+                    "slot_index": 1,
+                    "window": "weekly",
+                    "used_percent": 20,
+                    "reset_at": "2026-07-28T18:00:00Z",
+                    "window_minutes": 10080,
+                },
+            ], current_account_keys={auth_a.account_key, auth_b.account_key})
+            slots = [
+                CodexSlot(0, path="/codex-a/auth.json", auth=auth_a),
+                CodexSlot(1, path="/codex-b/auth.json"),
+            ]
+            router = self.usage_router(FakeUsageSession(), store, slots)
+
+            async def discover(slot: CodexSlot) -> CodexAuth | None:
+                if slot.index == 1:
+                    slot.auth = auth_b
+                return slot.auth
+
+            router.load_auth = discover
+
+            payload = asyncio_run(router.usage_snapshot(force=True, slot_indexes={0}))
+
+            self.assertEqual(
+                [account["accountKey"] for account in payload["accounts"]],
+                [auth_a.account_key, auth_b.account_key],
+            )
+            self.assertEqual(payload["accounts"][1]["source"], "persisted")
+        finally:
+            store.close()
+
+    def test_forced_slot_identity_discovery_is_bounded_and_does_not_reload_target(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        store = TelemetryStore(":memory:")
+        try:
+            slots = [
+                CodexSlot(0, path="/codex-0/auth.json", auth=CodexAuth("token-0", account_id="acct-0")),
+                *(CodexSlot(index, path=f"/codex-{index}/auth.json") for index in range(1, 7)),
+            ]
+            router = self.usage_router(FakeUsageSession(), store, slots)
+            calls = {slot.index: 0 for slot in slots}
+            active = 0
+            max_active = 0
+
+            async def discover(slot: CodexSlot) -> CodexAuth | None:
+                nonlocal active, max_active
+                calls[slot.index] += 1
+                if slot.auth:
+                    return slot.auth
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0.01)
+                slot.auth = CodexAuth(f"token-{slot.index}", account_id=f"acct-{slot.index}")
+                active -= 1
+                return slot.auth
+
+            router.load_auth = discover
+
+            asyncio_run(router.usage_snapshot(force=True, slot_indexes={0}))
+
+            self.assertEqual(calls[0], 1)
+            self.assertEqual(max_active, 4)
+            self.assertTrue(all(calls[index] == 1 for index in range(1, 7)))
+        finally:
+            store.close()
+
+    def test_failed_forced_slot_usage_preserves_other_account_ring(self) -> None:
+        from spartan_route.telemetry import TelemetryStore
+
+        class FailingUsageSession(FakeUsageSession):
+            def get(self, url: str, **_kwargs):
+                self.urls.append(url)
+                if "rate-limit-reset-credits" in url:
+                    return FakeJsonContextResponse(200, {"available_count": 1, "credits": []})
+                return FakeJsonContextResponse(500, {})
+
+        store = TelemetryStore(":memory:")
+        try:
+            auth_a = CodexAuth("token-a", account_id="acct-a")
+            auth_b = CodexAuth("token-b", account_id="acct-b")
+            store.upsert_usage_snapshots([
+                {
+                    "account_key": auth_a.account_key,
+                    "slot_index": 0,
+                    "window": "weekly",
+                    "used_percent": 10,
+                    "reset_at": "2026-07-28T18:00:00Z",
+                    "window_minutes": 10080,
+                },
+                {
+                    "account_key": auth_b.account_key,
+                    "slot_index": 1,
+                    "window": "weekly",
+                    "used_percent": 20,
+                    "reset_at": "2026-07-28T18:00:00Z",
+                    "window_minutes": 10080,
+                },
+            ], current_account_keys={auth_a.account_key, auth_b.account_key})
+            router = self.usage_router(
+                FailingUsageSession(),
+                store,
+                [
+                    CodexSlot(0, path="/codex-a/auth.json", auth=auth_a),
+                    CodexSlot(1, path="/codex-b/auth.json", auth=auth_b),
+                ],
+            )
+
+            payload = asyncio_run(router.usage_snapshot(force=True, slot_indexes={0}))
+            by_key = {account["accountKey"]: account for account in payload["accounts"]}
+
+            self.assertTrue(payload["partial"])
+            self.assertEqual(payload["slotErrors"][0]["slotIndex"], 0)
+            self.assertIsNone(by_key[auth_a.account_key]["weekly"])
+            self.assertEqual(by_key[auth_b.account_key]["weekly"]["usedPercent"], 20)
+            self.assertEqual(by_key[auth_b.account_key]["source"], "persisted")
         finally:
             store.close()
 

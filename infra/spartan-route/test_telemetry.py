@@ -1491,6 +1491,83 @@ class TelemetryRetentionTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_focused_usage_update_preserves_other_accounts_and_global_coverage(self) -> None:
+        store = TelemetryStore(":memory:")
+        account_a = "a" * 16
+        account_b = "b" * 16
+        try:
+            def snapshot(account_key: str, slot_index: int, used: float) -> dict[str, object]:
+                return {
+                    "account_key": account_key,
+                    "slot_index": slot_index,
+                    "window": "weekly",
+                    "used_percent": used,
+                    "reset_at": "2026-07-28T18:00:00Z",
+                    "window_minutes": 10080,
+                }
+
+            store.upsert_usage_snapshots(
+                [snapshot(account_a, 0, 10), snapshot(account_b, 1, 20)],
+                current_account_keys={account_a, account_b},
+            )
+            before_other = {
+                table: [
+                    tuple(row)
+                    for row in store._conn.execute(
+                        f"SELECT * FROM {table} WHERE account_key = ? ORDER BY rowid",
+                        (account_b,),
+                    ).fetchall()
+                ]
+                for table in (
+                    "codex_window_model_usage",
+                    "codex_window_efficiency",
+                    "codex_window_usage_coverage",
+                )
+            }
+            before_global = [
+                tuple(row)
+                for row in store._conn.execute(
+                    """
+                    SELECT * FROM codex_window_usage_coverage
+                    WHERE account_key = ''
+                    ORDER BY rowid
+                    """
+                ).fetchall()
+            ]
+
+            store.upsert_usage_snapshots(
+                [snapshot(account_a, 0, 30)],
+                current_account_keys={account_a},
+                full_pool_refresh=False,
+            )
+
+            for table, expected in before_other.items():
+                self.assertEqual(
+                    [
+                        tuple(row)
+                        for row in store._conn.execute(
+                            f"SELECT * FROM {table} WHERE account_key = ? ORDER BY rowid",
+                            (account_b,),
+                        ).fetchall()
+                    ],
+                    expected,
+                )
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in store._conn.execute(
+                        """
+                        SELECT * FROM codex_window_usage_coverage
+                        WHERE account_key = ''
+                        ORDER BY rowid
+                        """
+                    ).fetchall()
+                ],
+                before_global,
+            )
+        finally:
+            store.close()
+
 
 
 class QueueTestStore:

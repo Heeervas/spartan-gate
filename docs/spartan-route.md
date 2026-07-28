@@ -82,7 +82,11 @@ Kept in v1:
 - Multiple Codex auth slots from `OPENAI_CODEX_AUTH_PATHS`. Configured auth
   files are read-only bootstrap inputs. Spartan Route stores rotated OAuth
   generations separately in `/app/data/codex-auth`, keyed by a SHA-256 source
-  identity, and never rewrites a Codex CLI or editor profile.
+  identity, and never rewrites a Codex CLI or editor profile. When the
+  bootstrap identifies an account, managed state is eligible only for that
+  same account; among same-account generations, the furthest valid expiry
+  wins. This prevents a newer token for another account from shadowing the
+  configured slot.
 - Prompt-cache keys based on explicit `prompt_cache_key`, `user`, or stable
   system/tool prefix shape.
 - Per-key Codex cache leases, rate-limit cooldowns, transient 5xx cooldowns,
@@ -132,9 +136,10 @@ Kept in v1:
   counters can include rows without usage.
 - Persistent Codex slot routing enable/disable controls. Disabled slots are
   skipped by chat and image routing, leases for that slot/account are
-  invalidated, and the override survives service restart. If a stored override
-  clearly belongs to a different slot identity, Spartan Route ignores that
-  stale disable and reports an identity mismatch in the dashboard/API.
+  invalidated, and the override survives service restart and normal OAuth token
+  rotation. Durable account/path identity changes cause Spartan Route to ignore
+  that stale disable and report an identity mismatch in the dashboard/API;
+  missing current identity remains fail-closed and is reported as unverified.
 - Persisted-first Codex usage polling uses one progressive,
   controller-owned single-flight refresh. Auth discovery runs with fan-out four
   and initially reports `refreshProgress.status: "discovering"` with
@@ -145,9 +150,12 @@ Kept in v1:
   `healthDataSource: "pending" | "live" | "persisted"`. Authenticated
   `POST /api/codex/usage/refresh` returns 202 immediately, `?force=true`
   remains the shielded compatibility wait path, and
-  `POST /api/codex/usage/slots/{slot}` remains a focused live check. Persisted
-  account/reset data is shown only when its exact account key belongs to a
-  currently configured slot.
+  `POST /api/codex/usage/slots/{slot}` remains a focused live check whose
+  response is merged into the complete current account projection. A focused
+  check updates or prunes only the selected account's live windows; it preserves
+  every other account's rings and derived analytics until a full-pool refresh
+  can recompute global coverage. Persisted account/reset data is shown only when
+  its exact account key belongs to a currently configured slot.
 - Authenticated Codex dashboard/API responses include the configured Codex auth
   path for each slot so local operators can identify accounts. Public health
   responses keep only hashes and never expose raw slot paths.
@@ -232,11 +240,20 @@ Reliability contract:
   metadata and `Retry-After`. The default wait is `180000` ms; set it to `0`
   to disable server-side waiting. `SPARTAN_ROUTE_RECOVERY_POLL_MS` controls the
   fallback poll interval and defaults to `1000` ms.
-- If all usable Codex slots are cooling after explicit `usage_limit_reached`
-  errors, Spartan Route applies the same bounded wait when the earliest reset
-  is inside the recovery window. If recovery is too far away, it returns
-  ClawRoute-compatible `429 codex_429` with earliest `resets_at`,
-  `resets_in_seconds`, slot diagnostics, and `Retry-After`.
+- If every usable Codex slot reaches an explicit usage limit, Spartan Route
+  returns ClawRoute-compatible `429 codex_429` immediately after trying the
+  available pool. It includes the earliest `resets_at`, `resets_in_seconds`,
+  slot diagnostics, and `Retry-After`; it does not hold or automatically replay
+  the exhausted request.
+- A later chat or image request arriving while every usable slot is quota
+  cooled triggers one coalesced live usage refresh. Successful, structurally
+  valid usage below every reported limit clears the matching account cooldown
+  and the same request continues through that slot. Concurrent requests share
+  the refresh, and new probes are throttled for five seconds. Failed, malformed,
+  or still-full checks remain unavailable and return the aggregate pool error.
+- An upstream auth rejection quarantines only the rejected credential
+  fingerprint. Raw provider auth details are not returned as the final pool
+  error; the slot becomes eligible again only after its auth source changes.
 - An incomplete Codex response that contains tool calls is treated as retryable
   `502 codex_incomplete_response`; Spartan Route must not expose incomplete
   tool-call arguments to Hermes as a successful `finish_reason="length"` turn.
@@ -314,12 +331,15 @@ Rotating Codex grants are persisted atomically before use. The managed
 `codex-auth` directory is private (`0700`) and its state/lock files are `0600`;
 foreign-owned, symlinked, or non-regular objects fail closed. Refreshes are
 coordinated across router processes so only one process consumes a generation.
-Terminal grant failures require a new login, while quota, network, lock, and
-local persistence failures remain retryable and do not imply that the user
-should reauthenticate. After a manual login, the changed bootstrap fingerprint
-automatically clears the terminal quarantine. Do not copy one refresh grant
-between slots: every slot needs an independent local login. Treat backups of
-`/app/data/codex-auth` as credentials, not ordinary telemetry.
+An expired bootstrap grant is refreshed for its intended account and replaces
+conflicting managed state only after a successful refresh. A terminal rejection
+of that intended grant never falls back to another managed account and requires
+a new login; quota, network, lock, and local persistence failures remain
+retryable and do not imply that the user should reauthenticate. A changed
+bootstrap credential generation clears only its matching terminal quarantine.
+Do not copy one refresh grant between slots: every slot needs an independent
+local login. Treat backups of `/app/data/codex-auth` as credentials, not
+ordinary telemetry.
 
 Provider credentials, Codex tokens, raw auth data, and slot paths are not
 returned by the Config API. Query-string bearer tokens remain unsupported.

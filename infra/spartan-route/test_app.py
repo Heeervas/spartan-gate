@@ -1876,6 +1876,9 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("authExpiresAt", html)
         self.assertIn("authPersistenceHealthy", html)
         self.assertIn("authErrorCode", html)
+        self.assertIn("stale disable ignored", html)
+        self.assertIn("identity mismatch", html)
+        self.assertNotIn("identity mismatch, override ignored", html)
         self.assertNotIn("<h2>Slots</h2>", html)
 
 
