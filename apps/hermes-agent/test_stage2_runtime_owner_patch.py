@@ -236,11 +236,11 @@ class Stage2RuntimeOwnerPatchTests(unittest.TestCase):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory) / "data"
-            target = root / "home" / ".claude" / "skills" / "safe"
+            target = root / "state" / ".claude" / "skills" / "safe"
             target.mkdir(parents=True)
             skills = root / "skills"
             skills.mkdir()
-            (skills / "safe").symlink_to(pathlib.Path("../home/.claude/skills/safe"))
+            (skills / "safe").symlink_to(pathlib.Path("../state/.claude/skills/safe"))
             (skills / "python").symlink_to(pathlib.Path("/usr/bin/python3"))
             (skills / "broken").symlink_to(pathlib.Path("missing-target"))
 

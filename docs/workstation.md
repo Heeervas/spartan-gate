@@ -19,8 +19,8 @@ Use Windows 11 with Tailscale on Windows only and a dedicated Ubuntu 24.04 WSL2
 distro in mirrored-networking mode. Inside WSL, run OpenSSH on port `22022` as
 the unprivileged `hermes-worker` user. Disable Windows executable interop and
 automatic Windows-drive mounts for this distro; keep its workspace at
-`/home/hermes-worker/workspace`. Windows can open it through
-`\\wsl.localhost\<distro>\home\hermes-worker\workspace`.
+`/srv/hermes-worker/workspace`. Windows can open it through
+`\\wsl.localhost\<distro>\srv\hermes-worker\workspace`.
 
 Expose only WSL SSH through a Windows relay bound to the Windows Tailscale IPv4.
 The Tailscale policy and Windows Firewall rule must both limit TCP `22022` to
@@ -93,7 +93,7 @@ TERMINAL_SSH_PORT=22022
 TERMINAL_SSH_USER=hermes-worker
 TERMINAL_SSH_KEY=/opt/data/profiles/workstation/ssh/hermes_execution_ed25519
 TERMINAL_SSH_PERSISTENT=true
-TERMINAL_CWD=/home/hermes-worker/workspace
+TERMINAL_CWD=/srv/hermes-worker/workspace
 ```
 
 Keep the profile's `config.yaml` interactive and fail closed:
