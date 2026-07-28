@@ -93,7 +93,7 @@ class MemoryAliasTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("sg-memory [show|check|collect]", result.stdout)
-        self.assertEqual(result.stdout.count("Memory audit: healthy"), 2)
+        self.assertEqual(result.stdout.count("Memory audit: HEALTHY"), 2)
 
     def test_sg_health_appends_memory_without_masking_hermes_failure(self):
         result = self.run_sourced(
@@ -106,7 +106,7 @@ sg_health
         )
 
         self.assertEqual(result.returncode, 7)
-        self.assertIn("Memory audit: healthy", result.stdout)
+        self.assertIn("Memory audit: HEALTHY", result.stdout)
 
     def test_unknown_memory_subcommand_is_rejected(self):
         result = self.run_sourced("sg-memory purge")

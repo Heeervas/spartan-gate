@@ -222,7 +222,8 @@ class MemoryStatusFileTests(unittest.TestCase):
                 max_age=129600,
             )
             self.assertFalse(healthy)
-            self.assertIn("stale", line)
+            self.assertIn("STALE", line)
+            self.assertIn("last updated 36h ago", line)
 
     def test_format_status_reports_healthy_and_warning_reasons(self):
         healthy_line, healthy = self.tool.format_status(
@@ -231,8 +232,11 @@ class MemoryStatusFileTests(unittest.TestCase):
             max_age=129600,
         )
         self.assertTrue(healthy)
-        self.assertIn("Memory audit: healthy", healthy_line)
-        self.assertIn("available=3.0GiB", healthy_line)
+        self.assertIn("Memory audit: HEALTHY", healthy_line)
+        self.assertIn("Latest sample: 3.0 GiB RAM available", healthy_line)
+        self.assertIn("swap using 1.0 GiB of 2.0 GiB", healthy_line)
+        self.assertIn("Last 24h: RAM low point 2.0 GiB", healthy_line)
+        self.assertIn("24h load: CPU 20.0% avg, 70.0% peak", healthy_line)
 
         warning = self.payload(
             state="warning",
@@ -244,8 +248,40 @@ class MemoryStatusFileTests(unittest.TestCase):
             max_age=129600,
         )
         self.assertFalse(healthy)
-        self.assertIn("warning", warning_line)
-        self.assertIn("sustained_swap_out", warning_line)
+        self.assertIn("Memory audit: WARNING", warning_line)
+        self.assertIn("Why: swap-out activity occurred in the last 24h", warning_line)
+        self.assertNotIn("sustained_swap_out", warning_line)
+
+    def test_every_internal_reason_has_a_readable_label(self):
+        self.assertEqual(set(self.tool._REASON_LABELS), self.tool.ALLOWED_REASONS)
+
+    def test_critical_reasons_are_translated_and_collapsed(self):
+        now = int(time.time())
+        status = self.payload(
+            observed_at=now - 125,
+            state="critical",
+            reasons=[
+                "critical_memory_available",
+                "critical_swap_pressure",
+                "sustained_swap_out",
+            ],
+        )
+
+        output, healthy = self.tool.format_status(
+            status,
+            now=now,
+            max_age=129600,
+        )
+
+        self.assertFalse(healthy)
+        self.assertIn("Memory audit: CRITICAL (updated 2m ago)", output)
+        self.assertIn(
+            "Why: low RAM and heavy swap-out happened together",
+            output,
+        )
+        self.assertNotIn("critical_memory_available", output)
+        self.assertNotIn("critical_swap_pressure", output)
+        self.assertNotIn("sustained_swap_out", output)
 
 
 class SysstatSummaryTests(unittest.TestCase):

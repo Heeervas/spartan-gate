@@ -5,7 +5,8 @@ All notable changes to Spartan Gate are documented here.
 ## Unreleased
 - Added a bounded, read-only host memory audit with 24-hour `sysstat`, PSI,
   Docker cgroup/OOM, and swap-contract diagnostics; exposed it through
-  `sg-memory`/`sg-health` and a persistent per-user 04:20 systemd timer.
+  `sg-memory`/`sg-health` with readable current/24-hour summaries and a
+  persistent per-user 04:20 systemd timer.
 
 - Cleared settled Camofox request deadline timers, bounded per-user operation
   queues, and removed expired waiters without releasing lifecycle tracking for

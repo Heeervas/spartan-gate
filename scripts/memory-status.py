@@ -283,7 +283,48 @@ def status_age(payload: dict[str, Any], now: int) -> int:
 
 
 def _gib(value: int | float) -> str:
-    return f"{value / GIB:.1f}GiB"
+    return f"{value / GIB:.1f} GiB"
+
+
+def _human_age(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 60 * 60:
+        return f"{seconds // 60}m"
+    if seconds < 48 * 60 * 60:
+        return f"{seconds // (60 * 60)}h"
+    return f"{seconds // (24 * 60 * 60)}d"
+
+
+_REASON_LABELS = {
+    "container_memory_critical": "a container used at least 90% of its memory limit",
+    "container_memory_warning": "a container used at least 80% of its memory limit",
+    "container_oom": "a container ran out of memory",
+    "container_restart": "a container restarted since the previous audit",
+    "container_unhealthy": "a running container is unhealthy",
+    "critical_memory_available": "available RAM fell below 0.8 GiB in the last 24h",
+    "critical_memory_psi": "memory stalls are critically high",
+    "critical_swap_pressure": "low RAM and heavy swap-out happened together",
+    "history_unavailable": "the 24-hour sysstat history is unavailable",
+    "host_oom": "the host reported an out-of-memory event in the last 24h",
+    "low_memory_available": "available RAM fell below 1.5 GiB in the last 24h",
+    "memory_contract_drift": "the 2 GiB swap / swappiness 10 setup has drifted",
+    "memory_psi_warning": "memory stalls are elevated",
+    "sustained_swap_out": "swap-out activity occurred in the last 24h",
+}
+
+
+def _readable_reasons(reasons: list[str]) -> list[str]:
+    visible = set(reasons)
+    if "critical_swap_pressure" in visible:
+        visible.difference_update(
+            {
+                "critical_memory_available",
+                "low_memory_available",
+                "sustained_swap_out",
+            }
+        )
+    return [_REASON_LABELS[reason] for reason in reasons if reason in visible]
 
 
 def format_status(
@@ -294,24 +335,45 @@ def format_status(
 ) -> tuple[str, bool]:
     age = status_age(payload, now)
     if age > max_age:
-        return f"Memory audit: stale age={age}s", False
+        return (
+            f"Memory audit: STALE (last updated {_human_age(age)} ago)\n"
+            "  Next: run sg-memory collect to refresh it",
+            False,
+        )
+
     current = payload["current"]
     history = payload["history"]
-    line = (
-        f"Memory audit: {payload['state']} "
-        f"available={_gib(current['mem_available_bytes'])} "
-        f"swap={_gib(current['swap_used_bytes'])}/{_gib(current['swap_total_bytes'])} "
-        f"psi_full={current['memory_psi_full_avg60']:.2f}%"
-    )
+    lines = [
+        f"Memory audit: {payload['state'].upper()} "
+        f"(updated {_human_age(age)} ago)",
+        "  Latest sample: "
+        f"{_gib(current['mem_available_bytes'])} RAM available | "
+        f"swap using {_gib(current['swap_used_bytes'])} of "
+        f"{_gib(current['swap_total_bytes'])} | "
+        f"memory stalls {current['memory_psi_full_avg60']:.2f}%",
+    ]
     if history["available"]:
-        line += (
-            f" history_min={_gib(history['min_mem_available_bytes'])}"
-            f" swapout_peak={history['max_swap_out_bytes_per_second'] / MIB:.1f}MiB/s"
+        lines.extend(
+            [
+                "  Last 24h: "
+                f"RAM low point {_gib(history['min_mem_available_bytes'])} | "
+                "peak swap-out "
+                f"{history['max_swap_out_bytes_per_second'] / MIB:.1f} MiB/s",
+                "  24h load: "
+                f"CPU {history['avg_host_cpu_percent']:.1f}% avg, "
+                f"{history['peak_host_cpu_percent']:.1f}% peak | "
+                f"1-minute load {history['avg_load1']:.2f} avg, "
+                f"{history['peak_load1']:.2f} peak | "
+                f"I/O wait {history['peak_iowait_percent']:.1f}% peak",
+            ]
         )
-    if payload["reasons"]:
-        line += f" reasons={','.join(payload['reasons'])}"
-    line += f" age={age}s"
-    return line, payload["state"] == "healthy"
+    else:
+        lines.append("  Last 24h: no sysstat history available")
+
+    reasons = _readable_reasons(payload["reasons"])
+    if reasons:
+        lines.append(f"  Why: {'; '.join(reasons)}")
+    return "\n".join(lines), payload["state"] == "healthy"
 
 
 def empty_history() -> dict[str, Any]:
