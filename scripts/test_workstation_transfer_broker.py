@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import importlib.util
 import json
 import pathlib
@@ -9,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("workstation-transfer-broker.py")
@@ -36,6 +38,12 @@ class FakeBroker:
     def __init__(self):
         self.active = 0
         self.operation_slots = threading.BoundedSemaphore(4)
+        self.guard_entries = 0
+
+    @contextmanager
+    def gateway_guard(self, _epoch):
+        self.guard_entries += 1
+        yield
 
     def _active_count(self):
         return self.active
@@ -111,8 +119,9 @@ class WorkstationTransferBrokerTests(unittest.TestCase):
                     json.dumps(request, sort_keys=True),
                 ]
 
+            broker = FakeBroker()
             manager = self.module.TransferManager(
-                FakeBroker(),
+                broker,
                 remote_roots={"workspace": remote_root},
                 ssh_factory=ssh_factory,
                 minimum_free_bytes=0,
@@ -140,7 +149,7 @@ class WorkstationTransferBrokerTests(unittest.TestCase):
             client, server = socket.socketpair()
             worker = threading.Thread(
                 target=manager.handle_stream,
-                args=(server,),
+                args=(server, 1),
                 daemon=True,
             )
             worker.start()
@@ -157,11 +166,43 @@ class WorkstationTransferBrokerTests(unittest.TestCase):
             finally:
                 client.close()
                 worker.join(timeout=5)
+            self.assertGreater(broker.guard_entries, 0)
             self.assertEqual(
                 (remote_root / "received.bin").read_bytes(),
                 bytes(range(256)) * 20,
             )
 
+    def test_revoke_all_waits_for_active_stream_cleanup(self):
+        manager = self.module.TransferManager(
+            FakeBroker(),
+            remote_roots={"workspace": pathlib.Path("/tmp/workspace")},
+            ssh_factory=lambda *_args: [],
+        )
+        active = self.module.ActiveTransfer(
+            transfer_id="wtx_" + "f" * 24,
+            owner=self.owner,
+            process=Mock(pid=123, poll=Mock(return_value=None)),
+            connection=Mock(),
+            cancelled=threading.Event(),
+            gateway_epoch=1,
+            done=threading.Event(),
+        )
+        manager.active[active.transfer_id] = active
+        result = {}
+
+        def revoke():
+            result.update(manager.revoke_all())
+
+        with patch.object(self.module.os, "killpg"):
+            worker = threading.Thread(target=revoke)
+            worker.start()
+            time.sleep(0.1)
+            self.assertTrue(worker.is_alive())
+            active.done.set()
+            worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result["transfers"], 1)
 
     def test_exchange_upload_requires_cached_atomic_capability_probe(self):
         modes = []

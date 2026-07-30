@@ -315,7 +315,7 @@ class WorkstationTerminalBrokerTests(unittest.TestCase):
             "spartan_gate_hermes",
             baseline,
             resolver=resolver,
-            pidfd_open=lambda pid: pid,
+            pidfd_dup=lambda pid: pid,
             pidfd_alive=lambda fd: alive[fd],
             peer_pidfd_pid=lambda fd: fd,
             peer_validator=lambda *_args: None,
@@ -340,6 +340,35 @@ class WorkstationTerminalBrokerTests(unittest.TestCase):
         self.assertEqual(rotations, ["rotated"])
         self.assertEqual(resolver.call_count, 2)
 
+    def test_gateway_authorizer_duplicates_the_received_peer_pidfd(self):
+        baseline = {
+            "version": 1,
+            "container_name": "spartan_gate_hermes",
+            "image_id": "sha256:image",
+            "compose_project": "spartan-gate",
+            "compose_service": "hermes",
+            "compose_oneoff": "False",
+            "compose_config_hash": "config-hash",
+        }
+        duplicate = Mock(return_value=9002)
+        authorizer = self.module.DockerGatewayAuthorizer(
+            "spartan_gate_hermes",
+            baseline,
+            resolver=lambda _name: self.module.GatewaySnapshot(
+                container_id="container-a",
+                provenance=baseline,
+                gateway_pid=101,
+                gateway_uid=str(os.getuid()),
+            ),
+            pidfd_dup=duplicate,
+            pidfd_alive=lambda _fd: True,
+            peer_pidfd_pid=lambda fd: {9001: 101, 9002: 101}[fd],
+            peer_validator=lambda *_args: None,
+        )
+
+        self.assertEqual(authorizer(101, os.getuid(), os.getgid(), 9001), 1)
+        duplicate.assert_called_once_with(9001)
+
     def test_gateway_authorizer_rejects_changed_container_provenance(self):
         baseline = {
             "version": 1,
@@ -360,7 +389,7 @@ class WorkstationTerminalBrokerTests(unittest.TestCase):
                 gateway_pid=202,
                 gateway_uid=str(os.getuid()),
             ),
-            pidfd_open=lambda pid: pid,
+            pidfd_dup=lambda pid: pid,
             pidfd_alive=lambda _fd: True,
             peer_pidfd_pid=lambda fd: fd,
             peer_validator=lambda *_args: None,
@@ -400,6 +429,58 @@ class WorkstationTerminalBrokerTests(unittest.TestCase):
             self.local.broker.transfer_manager.reservations.consume(
                 reservation["reservation"], self.owner, "a" * 64
             )
+
+    def test_terminal_reservation_and_spawn_share_gateway_guard(self):
+        broker = self.local.broker
+        manager = broker.transfer_manager
+        original_consume = manager.reservations.consume
+        original_spawn = broker._spawn_authorized
+        observed = []
+
+        def consume(*args, **kwargs):
+            observed.append(("consume", broker.gateway_lock._is_owned()))
+            return original_consume(*args, **kwargs)
+
+        def spawn(**kwargs):
+            observed.append(("spawn", broker.gateway_lock._is_owned()))
+            return original_spawn(**kwargs)
+
+        manager.reservations.consume = consume
+        broker._spawn_authorized = spawn
+        try:
+            result = self.execute(command="printf guarded")
+        finally:
+            manager.reservations.consume = original_consume
+            broker._spawn_authorized = original_spawn
+
+        self.assertEqual(result["output"], "guarded")
+        self.assertEqual(observed, [("consume", True), ("spawn", True)])
+
+    def test_failed_gateway_cleanup_stays_closed_and_can_be_retried(self):
+        broker = self.local.broker
+        manager = broker.transfer_manager
+        original_revoke_all = manager.revoke_all
+        manager.revoke_all = Mock(
+            side_effect=self.module.TRANSFER.TransferBrokerError("cleanup failed")
+        )
+        try:
+            with self.assertRaisesRegex(self.module.BrokerError, "cleanup failed"):
+                broker.revoke_for_gateway_rotation()
+            self.assertTrue(broker.gateway_rotating)
+            with self.assertRaisesRegex(self.module.BrokerError, "rotation"):
+                with broker.gateway_guard(None):
+                    pass
+
+            manager.revoke_all = Mock(
+                return_value={"reservations": 0, "transfers": 0}
+            )
+            result = broker.revoke_for_gateway_rotation()
+
+            self.assertEqual(result["transfers"], 0)
+            self.assertFalse(broker.gateway_rotating)
+            self.assertEqual(broker.gateway_epoch, 1)
+        finally:
+            manager.revoke_all = original_revoke_all
 
     def test_deferred_foreground_returns_process_id_before_completion(self):
         result = self.execute(

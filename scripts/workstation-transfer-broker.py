@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 import zlib
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -157,6 +157,8 @@ class ActiveTransfer:
     process: subprocess.Popen
     connection: socket.socket
     cancelled: threading.Event
+    gateway_epoch: int | None
+    done: threading.Event
 
 
 def _validate_owner(value: Any) -> str:
@@ -482,6 +484,18 @@ class TransferManager:
                 item.connection.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+        for item in active:
+            if item.done.wait(2):
+                continue
+            try:
+                os.killpg(item.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for item in active:
+            if not item.done.wait(2):
+                raise TransferBrokerError(
+                    "active transfer did not stop during gateway rotation"
+                )
         return {"reservations": reservations, "transfers": len(active)}
 
     def stop(self) -> None:
@@ -576,6 +590,7 @@ class TransferManager:
         owner: str,
         process: subprocess.Popen,
         connection: socket.socket,
+        gateway_epoch: int | None,
     ) -> ActiveTransfer:
         with self.lock:
             active = ActiveTransfer(
@@ -583,6 +598,8 @@ class TransferManager:
                 owner,
                 process,
                 connection,
+                threading.Event(),
+                gateway_epoch,
                 threading.Event(),
             )
             self.active[transfer_id] = active
@@ -615,6 +632,7 @@ class TransferManager:
         self, connection: socket.socket, gateway_epoch: int | None = None
     ) -> None:
         process: subprocess.Popen | None = None
+        active: ActiveTransfer | None = None
         transfer_id = ""
         slot_claimed = False
         operation_slot_claimed = False
@@ -643,8 +661,30 @@ class TransferManager:
                     "receive" if operation == "upload" else "send",
                     remote_request,
                 )
-                active = self._register_active(transfer_id, owner, process, connection)
+                active = self._register_active(
+                    transfer_id,
+                    owner,
+                    process,
+                    connection,
+                    gateway_epoch,
+                )
                 slot_claimed = False
+
+            @contextmanager
+            def current_epoch_guard():
+                assert active is not None
+                if active.cancelled.is_set():
+                    raise TransferBrokerError("transfer cancelled")
+                guard = (
+                    self.broker.gateway_guard(gateway_epoch)
+                    if gateway_epoch is not None
+                    else nullcontext()
+                )
+                with guard:
+                    if active.cancelled.is_set():
+                        raise TransferBrokerError("transfer cancelled")
+                    yield
+
             stderr = bytearray()
             stderr_thread = threading.Thread(
                 target=self._drain_stderr,
@@ -657,16 +697,28 @@ class TransferManager:
                 while True:
                     frame_type, payload = PROTOCOL.recv_frame(connection)
                     if frame_type == PROTOCOL.FRAME_DATA:
-                        process.stdin.write(payload)
-                        process.stdin.flush()
+                        with current_epoch_guard():
+                            process.stdin.write(payload)
+                            process.stdin.flush()
                     elif frame_type == PROTOCOL.FRAME_END:
                         break
                     else:
                         raise TransferBrokerError("unexpected upload frame")
-                process.stdin.close()
-                assert process.stdout is not None
-                output = process.stdout.read(MAX_HELPER_OUTPUT + 1)
-                code = process.wait(timeout=int(control.get("timeout") or 1800))
+                with current_epoch_guard():
+                    process.stdin.close()
+                    try:
+                        code = process.wait(
+                            timeout=int(control.get("timeout") or 1800)
+                        )
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.wait(timeout=2)
+                        raise
+                    assert process.stdout is not None
+                    output = process.stdout.read(MAX_HELPER_OUTPUT + 1)
                 stderr_thread.join(timeout=2)
                 if active.cancelled.is_set():
                     raise TransferBrokerError("transfer cancelled")
@@ -682,13 +734,15 @@ class TransferManager:
                 if frame_type != PROTOCOL.FRAME_END or payload:
                     raise TransferBrokerError("download control must end before data")
                 assert process.stdin is not None
-                process.stdin.close()
+                with current_epoch_guard():
+                    process.stdin.close()
                 assert process.stdout is not None
                 while True:
                     chunk = process.stdout.read(PROTOCOL.MAX_DATA_BYTES)
                     if not chunk:
                         break
-                    PROTOCOL.send_frame(connection, PROTOCOL.FRAME_DATA, chunk)
+                    with current_epoch_guard():
+                        PROTOCOL.send_frame(connection, PROTOCOL.FRAME_DATA, chunk)
                 code = process.wait(timeout=int(control.get("timeout") or 1800))
                 stderr_thread.join(timeout=2)
                 if active.cancelled.is_set():
@@ -710,12 +764,14 @@ class TransferManager:
                         "sensitive_samples",
                     )
                 }
-                PROTOCOL.send_frame(connection, PROTOCOL.FRAME_END)
-            PROTOCOL.send_frame(
-                connection,
-                PROTOCOL.FRAME_RESULT,
-                PROTOCOL.canonical_json({"ok": True, "result": result}),
-            )
+                with current_epoch_guard():
+                    PROTOCOL.send_frame(connection, PROTOCOL.FRAME_END)
+            with current_epoch_guard():
+                PROTOCOL.send_frame(
+                    connection,
+                    PROTOCOL.FRAME_RESULT,
+                    PROTOCOL.canonical_json({"ok": True, "result": result}),
+                )
         except Exception as exc:
             if process is not None and process.poll() is None:
                 try:
@@ -753,3 +809,5 @@ class TransferManager:
                 connection.close()
             except OSError:
                 pass
+            if active is not None:
+                active.done.set()

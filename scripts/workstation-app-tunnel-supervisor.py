@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+from functools import partial
 import importlib.util
 import os
 import signal
@@ -19,8 +21,19 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = ROOT / "scripts" / "workstation-bridge.py"
 HEALTH_FILE = "app-tunnel.health.json"
+PR_SET_PDEATHSIG = 1
 STABLE_SECONDS = 30
 MAX_BACKOFF_SECONDS = 30.0
+ATTEMPT_READY_TIMEOUT_SECONDS = 10.0
+
+
+def arm_parent_death_signal(expected_parent_pid: int) -> None:
+    """Ensure the SSH child cannot outlive an abruptly killed supervisor."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) != 0:
+        os._exit(126)
+    if os.getppid() != expected_parent_pid:
+        os.kill(os.getpid(), signal.SIGTERM)
 
 
 class SupervisorError(RuntimeError):
@@ -52,6 +65,8 @@ def publish_health(
         state_path / HEALTH_FILE,
         {
             "version": 1,
+            "supervisor_pid": os.getpid(),
+            "supervisor_start_time": bridge.process_start_time(os.getpid()),
             "state": state,
             "child_pid": child_pid,
             "child_start_time": child_start_time,
@@ -106,6 +121,7 @@ def supervise(config_path: Path, state_path: Path) -> int:
     ]
 
     stopping = threading.Event()
+    parent_death_guard = partial(arm_parent_death_signal, os.getpid())
     child_lock = threading.RLock()
     child: subprocess.Popen | None = None
 
@@ -139,17 +155,31 @@ def supervise(config_path: Path, state_path: Path) -> int:
                 command,
                 stdin=subprocess.DEVNULL,
                 close_fds=True,
+                preexec_fn=parent_death_guard,
             )
         except OSError:
             spawned = None
         with child_lock:
             child = spawned
         if spawned is not None:
+            publish_health(
+                bridge,
+                state_path,
+                "starting",
+                child_pid=spawned.pid,
+                child_start_time=bridge.process_start_time(spawned.pid),
+                restart_count=restart_count,
+            )
             try:
                 spawned.wait(timeout=0.25)
             except subprocess.TimeoutExpired:
                 ready = False
-                while not stopping.is_set() and spawned.poll() is None:
+                ready_deadline = time.monotonic() + ATTEMPT_READY_TIMEOUT_SECONDS
+                while (
+                    not stopping.is_set()
+                    and spawned.poll() is None
+                    and time.monotonic() < ready_deadline
+                ):
                     try:
                         checked = subprocess.run(
                             control_check,
@@ -165,6 +195,8 @@ def supervise(config_path: Path, state_path: Path) -> int:
                         ready = True
                         break
                     stopping.wait(0.1)
+                if not ready and spawned.poll() is None:
+                    spawned.terminate()
                 if ready:
                     publish_health(
                         bridge,

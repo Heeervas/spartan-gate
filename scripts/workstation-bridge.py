@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -18,6 +19,7 @@ import stat
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,9 @@ APP_TUNNEL_SUPERVISOR = (
 TRUST_FILE = "gateway-trust.json"
 TERMINAL_HEALTH_FILE = "workstation-terminal.health.json"
 APP_TUNNEL_HEALTH_FILE = "app-tunnel.health.json"
+WORKSTATION_STATE_IMPLEMENTATION_VERSION = 2
+MAX_PROC_SCAN_ENTRIES = 32768
+MAX_PROC_CMDLINE_BYTES = 4096
 DEFAULT_CONFIG = ROOT / "private" / "workstation" / "bridges.json"
 TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -323,6 +328,35 @@ def state_dir_exists(path: Path) -> bool:
     return True
 
 
+@contextmanager
+def operation_lock(path: Path):
+    ensure_state_dir(path)
+    target = path / "operation.lock"
+    try:
+        descriptor = os.open(
+            target,
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+    except OSError as exc:
+        fail(f"cannot open workstation operation lock {target}: {exc}")
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            fail(f"workstation operation lock is unsafe: {target}")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail("another sg-workstation operation is already running")
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def require_binary(name: str) -> str:
     path = shutil.which(name)
     if not path:
@@ -437,6 +471,16 @@ def read_app_tunnel_health(path: Path) -> dict[str, Any] | None:
         or not isinstance(payload.get("child_start_time"), str)
     ):
         fail(f"invalid ready app-tunnel health file: {target}")
+    supervisor_pid = payload.get("supervisor_pid")
+    supervisor_start_time = payload.get("supervisor_start_time")
+    if (supervisor_pid is None) != (supervisor_start_time is None) or (
+        supervisor_pid is not None
+        and (
+            not isinstance(supervisor_pid, int)
+            or not isinstance(supervisor_start_time, str)
+        )
+    ):
+        fail(f"invalid app-tunnel supervisor identity: {target}")
     return payload
 
 
@@ -510,9 +554,110 @@ def stop_entry(entry: dict[str, Any]) -> None:
             pass
 
 
-def stop_entries(entries: list[dict[str, Any]]) -> None:
+def stop_pid_identity(pid: int, start_time: str) -> None:
+    if process_start_time(pid) != start_time:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if process_start_time(pid) != start_time:
+            return
+        time.sleep(0.05)
+    if process_start_time(pid) == start_time:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def legacy_app_tunnel_supervisors(path: Path) -> list[tuple[int, str]]:
+    matches: list[tuple[int, str]] = []
+    try:
+        entries = os.scandir("/proc")
+    except OSError as exc:
+        fail(f"cannot scan process table for legacy app-tunnel: {exc}")
+    with entries:
+        scanned = 0
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            scanned += 1
+            if scanned > MAX_PROC_SCAN_ENTRIES:
+                fail("process table is too large for bounded app-tunnel recovery")
+            pid = int(entry.name)
+            try:
+                if entry.stat(follow_symlinks=False).st_uid != os.getuid():
+                    continue
+                descriptor = os.open(
+                    f"/proc/{pid}/cmdline",
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                )
+                try:
+                    raw = os.read(descriptor, MAX_PROC_CMDLINE_BYTES + 1)
+                finally:
+                    os.close(descriptor)
+            except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+                continue
+            if len(raw) > MAX_PROC_CMDLINE_BYTES:
+                continue
+            argv = [
+                part.decode("utf-8", "surrogateescape")
+                for part in raw.split(b"\0")
+                if part
+            ]
+            if (
+                len(argv) == 6
+                and argv[0] == sys.executable
+                and argv[1] == str(APP_TUNNEL_SUPERVISOR)
+                and argv[2] == "--config"
+                and argv[4] == "--state-dir"
+                and argv[5] == str(path)
+            ):
+                start_time = process_start_time(pid)
+                if start_time is not None:
+                    matches.append((pid, start_time))
+    return matches
+
+
+def stop_published_app_tunnel(
+    health: dict[str, Any] | None, path: Path | None = None
+) -> int:
+    supervisors = legacy_app_tunnel_supervisors(path) if path is not None else []
+    if health:
+        supervisor_pid = health.get("supervisor_pid")
+        supervisor_start_time = health.get("supervisor_start_time")
+        if isinstance(supervisor_pid, int) and isinstance(
+            supervisor_start_time, str
+        ):
+            supervisors.append((supervisor_pid, supervisor_start_time))
+    unique_supervisors = list(dict.fromkeys(supervisors))
+    for supervisor_pid, supervisor_start_time in unique_supervisors:
+        stop_pid_identity(supervisor_pid, supervisor_start_time)
+    child_found = False
+    if health:
+        child_pid = health.get("child_pid")
+        child_start_time = health.get("child_start_time")
+        if isinstance(child_pid, int) and isinstance(child_start_time, str):
+            child_found = True
+            stop_pid_identity(child_pid, child_start_time)
+    return len(unique_supervisors) + int(child_found)
+
+
+def stop_app_tunnel(path: Path, entry: dict[str, Any]) -> None:
+    health = read_app_tunnel_health(path)
+    stop_entry(entry)
+    stop_published_app_tunnel(health)
+
+
+def stop_entries(entries: list[dict[str, Any]], path: Path | None = None) -> None:
     for entry in reversed(entries):
-        stop_entry(entry)
+        if path is not None and entry.get("name") == "app-tunnel":
+            stop_app_tunnel(path, entry)
+        else:
+            stop_entry(entry)
 
 
 def remove_runtime_artifacts(path: Path) -> None:
@@ -593,6 +738,8 @@ def app_ssh_command(
         "-o",
         f"UserKnownHostsFile={known_hosts}",
         "-o",
+        "ConnectTimeout=5",
+        "-o",
         "ServerAliveInterval=30",
         "-o",
         "ServerAliveCountMax=3",
@@ -664,10 +811,36 @@ def wait_app_tunnel_ready(path: Path, entry: dict[str, Any]) -> None:
     fail("app-tunnel SSH child did not become ready")
 
 
+def start_app_tunnel_supervisor(
+    path: Path, config: dict[str, Any]
+) -> dict[str, Any]:
+    (path / APP_TUNNEL_HEALTH_FILE).unlink(missing_ok=True)
+    (path / "app-tunnel.control").unlink(missing_ok=True)
+    entry = start_process(
+        path,
+        "app-tunnel",
+        [
+            sys.executable,
+            str(APP_TUNNEL_SUPERVISOR),
+            "--config",
+            str(config["_path"]),
+            "--state-dir",
+            str(path),
+        ],
+    )
+    try:
+        wait_app_tunnel_ready(path, entry)
+    except Exception:
+        stop_app_tunnel(path, entry)
+        raise
+    return entry
+
+
 def command_up(config_path: Path, gateway_raw: str) -> None:
     config = load_config(config_path)
     gateway = validate_gateway(gateway_raw)
     path = state_dir()
+    enabled_apps = [app for app in config["apps"] if app["enabled"]]
     if config["terminal_broker"]["enabled"]:
         load_gateway_trust(path, config)
     if state_dir_exists(path):
@@ -675,19 +848,54 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
         existing = read_state(path)
     else:
         existing = None
+
     recovering = False
+    migrate_app_tunnel = False
     if existing:
         running = [entry for entry in existing["processes"] if entry_running(entry)]
         matches_current = (
             existing.get("config_digest") == config["_digest"]
             and existing.get("gateway") == gateway
         )
-        if len(running) == len(existing["processes"]):
+        app_entries = [
+            entry
+            for entry in existing["processes"]
+            if entry.get("name") == "app-tunnel"
+        ]
+        non_app_entries = [
+            entry
+            for entry in existing["processes"]
+            if entry.get("name") != "app-tunnel"
+        ]
+        legacy_state = (
+            existing.get("implementation_version")
+            != WORKSTATION_STATE_IMPLEMENTATION_VERSION
+        )
+        migrate_app_tunnel = (
+            matches_current
+            and bool(enabled_apps)
+            and legacy_state
+            and len(app_entries) == 1
+            and all(entry_running(entry) for entry in non_app_entries)
+        )
+        if migrate_app_tunnel:
+            pass
+        elif len(running) == len(existing["processes"]):
             if matches_current:
+                if enabled_apps and legacy_state:
+                    fail("legacy app-tunnel state is missing or ambiguous")
+                if legacy_state:
+                    existing["implementation_version"] = (
+                        WORKSTATION_STATE_IMPLEMENTATION_VERSION
+                    )
+                    write_state(path, existing)
                 print("Workstation bridges already running.")
                 return
-            fail("workstation bridges are running with different configuration; stop them first")
-        if running:
+            fail(
+                "workstation bridges are running with different configuration; "
+                "stop them first"
+            )
+        elif running:
             if not matches_current:
                 fail(
                     "workstation bridge state is partial and uses different "
@@ -698,7 +906,6 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
     require_binary("socat")
     require_binary("ssh")
     require_binary("ssh-keyscan")
-    enabled_apps = [app for app in config["apps"] if app["enabled"]]
     if enabled_apps and not APP_TUNNEL_SUPERVISOR.is_file():
         fail(
             "workstation app-tunnel supervisor is missing: "
@@ -708,9 +915,36 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
         fail(f"workstation terminal broker is missing: {TERMINAL_BROKER}")
     scan_host_key(config)
 
+    if not existing:
+        published_app_tunnel = read_app_tunnel_health(path)
+        reconciled = stop_published_app_tunnel(published_app_tunnel, path)
+        if published_app_tunnel or reconciled:
+            remove_runtime_artifacts(path)
+
+    if migrate_app_tunnel:
+        assert existing is not None
+        app_entry = next(
+            entry
+            for entry in existing["processes"]
+            if entry.get("name") == "app-tunnel"
+        )
+        stop_app_tunnel(path, app_entry)
+        remote_known_hosts, _execution_known_hosts = known_hosts_lines(config, gateway)
+        remote_hosts_path = path / "known_hosts.remote"
+        remote_hosts_path.write_text(remote_known_hosts, encoding="utf-8")
+        remote_hosts_path.chmod(0o600)
+        replacement = start_app_tunnel_supervisor(path, config)
+        existing["processes"] = [
+            replacement if entry.get("name") == "app-tunnel" else entry
+            for entry in existing["processes"]
+        ]
+        existing["implementation_version"] = WORKSTATION_STATE_IMPLEMENTATION_VERSION
+        write_state(path, existing)
+        print("Workstation app-tunnel migrated; other bridges were unchanged.")
+        return
+
     if existing:
-        if recovering:
-            stop_entries(existing["processes"])
+        stop_entries(existing["processes"], path)
         remove_runtime_artifacts(path)
 
     check_bind_available(
@@ -738,22 +972,7 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
     processes: list[dict[str, Any]] = []
     try:
         if enabled_apps:
-            (path / APP_TUNNEL_HEALTH_FILE).unlink(missing_ok=True)
-            (path / "app-tunnel.control").unlink(missing_ok=True)
-            app_tunnel = start_process(
-                path,
-                "app-tunnel",
-                [
-                    sys.executable,
-                    str(APP_TUNNEL_SUPERVISOR),
-                    "--config",
-                    str(config["_path"]),
-                    "--state-dir",
-                    str(path),
-                ],
-            )
-            processes.append(app_tunnel)
-            wait_app_tunnel_ready(path, app_tunnel)
+            processes.append(start_app_tunnel_supervisor(path, config))
 
         processes.append(
             start_process(
@@ -811,7 +1030,7 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
                 )
             )
     except Exception:
-        stop_entries(processes)
+        stop_entries(processes, path)
         remove_runtime_artifacts(path)
         raise
 
@@ -819,6 +1038,7 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
         path,
         {
             "version": 1,
+            "implementation_version": WORKSTATION_STATE_IMPLEMENTATION_VERSION,
             "config_digest": config["_digest"],
             "gateway": gateway,
             "processes": processes,
@@ -945,9 +1165,15 @@ def command_down() -> None:
     else:
         state = None
     if not state:
-        print("Workstation bridges: not running.")
+        published_app_tunnel = read_app_tunnel_health(path)
+        reconciled = stop_published_app_tunnel(published_app_tunnel, path)
+        if not published_app_tunnel and not reconciled:
+            print("Workstation bridges: not running.")
+            return
+        remove_runtime_artifacts(path)
+        print("Orphaned Workstation app-tunnel stopped.")
         return
-    stop_entries(state["processes"])
+    stop_entries(state["processes"], path)
     remove_runtime_artifacts(path)
     print("Workstation bridges stopped.")
 
@@ -1037,18 +1263,20 @@ def main() -> int:
             load_config(args.config)
             validate_gateway(args.gateway)
             print(f"Workstation configuration valid: {args.config}")
-        elif args.command == "up":
-            command_up(args.config, args.gateway)
-        elif args.command == "repin":
-            command_repin(args.config, args.gateway)
-        elif args.command == "restart-terminal":
-            command_restart_terminal(args.config, args.gateway)
         elif args.command == "status":
             command_status()
         elif args.command == "test":
             command_test(args.config, args.gateway)
-        elif args.command == "down":
-            command_down()
+        else:
+            with operation_lock(state_dir()):
+                if args.command == "up":
+                    command_up(args.config, args.gateway)
+                elif args.command == "repin":
+                    command_repin(args.config, args.gateway)
+                elif args.command == "restart-terminal":
+                    command_restart_terminal(args.config, args.gateway)
+                elif args.command == "down":
+                    command_down()
         return 0
     except WorkstationError as exc:
         print(f"Error: {exc}", file=sys.stderr)

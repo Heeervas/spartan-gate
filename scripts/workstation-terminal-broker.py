@@ -229,7 +229,7 @@ class DockerGatewayAuthorizer:
         resolver: Callable[
             [str], GatewaySnapshot
         ] = GATEWAY_TRUST.capture_gateway_snapshot,
-        pidfd_open: Callable[[int], int] = os.pidfd_open,
+        pidfd_dup: Callable[[int], int] = os.dup,
         pidfd_alive: Callable[[int], bool] = GATEWAY_TRUST.pidfd_alive,
         peer_pidfd_pid: Callable[[int], int] = GATEWAY_TRUST.pidfd_pid,
         peer_validator: Callable[
@@ -243,7 +243,7 @@ class DockerGatewayAuthorizer:
         self.container_name = container_name
         self.baseline = baseline
         self.resolver = resolver
-        self.pidfd_open = pidfd_open
+        self.pidfd_dup = pidfd_dup
         self.pidfd_alive = pidfd_alive
         self.peer_pidfd_pid = peer_pidfd_pid
         self.peer_validator = peer_validator
@@ -303,10 +303,37 @@ class DockerGatewayAuthorizer:
                 raise BrokerError("Hermes container provenance changed; repin required")
             if peer_pid != snapshot.gateway_pid:
                 raise BrokerError("broker peer is not the default Hermes gateway")
+            pinned_pidfd: int | None = None
             try:
                 self.peer_validator(peer_pid, peer_pidfd, snapshot)
-                pinned_pidfd = self.pidfd_open(peer_pid)
-            except (GATEWAY_TRUST.GatewayTrustError, OSError) as exc:
+                pinned_pidfd = self.pidfd_dup(peer_pidfd)
+                if (
+                    self.peer_pidfd_pid(pinned_pidfd) != peer_pid
+                    or not self.pidfd_alive(pinned_pidfd)
+                ):
+                    raise GATEWAY_TRUST.GatewayTrustError(
+                        "duplicated Hermes peer pidfd identity changed"
+                    )
+                if (
+                    had_pin
+                    and self.on_rotate is not None
+                    and self.revoked_epoch < old_epoch
+                ):
+                    self.on_rotate()
+                    self.revoked_epoch = old_epoch
+                if (
+                    self.peer_pidfd_pid(pinned_pidfd) != peer_pid
+                    or not self.pidfd_alive(pinned_pidfd)
+                ):
+                    raise GATEWAY_TRUST.GatewayTrustError(
+                        "Hermes peer exited during gateway rotation"
+                    )
+            except (GATEWAY_TRUST.GatewayTrustError, OSError, BrokerError) as exc:
+                if pinned_pidfd is not None:
+                    try:
+                        os.close(pinned_pidfd)
+                    except OSError:
+                        pass
                 raise BrokerError("cannot pin the supervised Hermes gateway") from exc
             if self.gateway_pidfd is not None:
                 try:
@@ -316,13 +343,6 @@ class DockerGatewayAuthorizer:
             self.gateway_pid = peer_pid
             self.gateway_pidfd = pinned_pidfd
             self.epoch += 1
-            if (
-                had_pin
-                and self.on_rotate is not None
-                and self.revoked_epoch < old_epoch
-            ):
-                self.on_rotate()
-                self.revoked_epoch = old_epoch
             self.health_publisher("ready", self.epoch, peer_pid)
             threading.Thread(
                 target=self._monitor_pin,
@@ -404,6 +424,8 @@ class ProcessBroker:
         self.operation_slots = threading.BoundedSemaphore(MAX_ACTIVE_PROCESSES)
         self.gateway_lock = threading.RLock()
         self.gateway_epoch = 0
+        self.gateway_rotating = False
+        self.gateway_rotation_cleanup_lock = threading.Lock()
 
         self.transfer_manager = TRANSFER.TransferManager(self)
 
@@ -411,6 +433,8 @@ class ProcessBroker:
     def gateway_guard(self, expected_epoch: int | None):
         self.gateway_lock.acquire()
         try:
+            if self.gateway_rotating:
+                raise BrokerError("Hermes gateway rotation is in progress")
             if expected_epoch is not None and expected_epoch != self.gateway_epoch:
                 raise BrokerError("Hermes gateway authorization epoch changed")
             yield
@@ -425,8 +449,9 @@ class ProcessBroker:
                 raise BrokerError("Hermes gateway authorization epoch changed")
 
     def revoke_for_gateway_rotation(self) -> dict[str, int]:
-        with self.gateway_lock:
-            self.gateway_epoch += 1
+        with self.gateway_rotation_cleanup_lock:
+            with self.gateway_lock:
+                self.gateway_rotating = True
             with self.lock:
                 active = [
                     item for item in self.sessions.values() if not item.done.is_set()
@@ -435,7 +460,15 @@ class ProcessBroker:
                 self._terminate(
                     item, signal.SIGTERM, "killed", "gateway_rotation"
                 )
-            transfer_revoked = self.transfer_manager.revoke_all()
+                if not item.done.wait(2):
+                    raise BrokerError("terminal process did not stop during rotation")
+            try:
+                transfer_revoked = self.transfer_manager.revoke_all()
+            except TRANSFER.TransferBrokerError as exc:
+                raise BrokerError(str(exc)) from exc
+            with self.gateway_lock:
+                self.gateway_epoch += 1
+                self.gateway_rotating = False
             return {
                 "processes": len(active),
                 "reservations": transfer_revoked["reservations"],
@@ -728,7 +761,10 @@ class ProcessBroker:
             background = request.get("background", False)
             deferred = request.get("deferred", False)
             pty_mode = request.get("pty", False)
-            if not all(isinstance(value, bool) for value in (background, deferred, pty_mode)):
+            if not all(
+                isinstance(value, bool)
+                for value in (background, deferred, pty_mode)
+            ):
                 raise BrokerError("background, deferred and pty must be booleans")
             timeout = bounded_int(
                 request.get("timeout"),
@@ -739,7 +775,9 @@ class ProcessBroker:
                 ),
                 minimum=1,
                 maximum=(
-                    BACKGROUND_MAX_TIMEOUT if background else FOREGROUND_MAX_TIMEOUT
+                    BACKGROUND_MAX_TIMEOUT
+                    if background
+                    else FOREGROUND_MAX_TIMEOUT
                 ),
                 label="timeout",
             )
@@ -755,20 +793,20 @@ class ProcessBroker:
             digest = TRANSFER.PROTOCOL.terminal_operation_hash(approved_operation)
             if request.get("operation_hash") != digest:
                 raise BrokerError("terminal approval operation hash mismatch")
-            try:
-                self.transfer_manager.reservations.consume(
-                    str(request.get("reservation") or ""), owner, digest
+            with self.gateway_guard(gateway_epoch):
+                try:
+                    self.transfer_manager.reservations.consume(
+                        str(request.get("reservation") or ""), owner, digest
+                    )
+                except TRANSFER.TransferBrokerError as exc:
+                    raise BrokerError(str(exc)) from exc
+                session = self._spawn_authorized(
+                    owner=owner,
+                    command=command,
+                    workdir=workdir,
+                    timeout=timeout,
+                    pty_mode=pty_mode,
                 )
-            except TRANSFER.TransferBrokerError as exc:
-                raise BrokerError(str(exc)) from exc
-            session = self._spawn(
-                owner=owner,
-                command=command,
-                workdir=workdir,
-                timeout=timeout,
-                pty_mode=pty_mode,
-                gateway_epoch=gateway_epoch,
-            )
             if background or deferred:
                 return session.snapshot()
             session.done.wait(timeout + 3)
@@ -784,20 +822,23 @@ class ProcessBroker:
             return {"processes": items}
 
         if action == "revoke_owner":
-            with self.lock:
-                items = [
-                    item
-                    for item in self.sessions.values()
-                    if item.owner == owner and not item.done.is_set()
-                ]
-            for item in items:
-                self._terminate(item, signal.SIGTERM, "killed", "session_reset")
-            transfer_revoked = self.transfer_manager.revoke_owner(owner)
-            return {
-                "revoked": len(items),
-                "transfer_reservations_revoked": transfer_revoked["reservations"],
-                "transfers_revoked": transfer_revoked["transfers"],
-            }
+            with self.gateway_guard(gateway_epoch):
+                with self.lock:
+                    items = [
+                        item
+                        for item in self.sessions.values()
+                        if item.owner == owner and not item.done.is_set()
+                    ]
+                for item in items:
+                    self._terminate(
+                        item, signal.SIGTERM, "killed", "session_reset"
+                    )
+                transfer_revoked = self.transfer_manager.revoke_owner(owner)
+                return {
+                    "revoked": len(items),
+                    "transfer_reservations_revoked": transfer_revoked["reservations"],
+                    "transfers_revoked": transfer_revoked["transfers"],
+                }
 
         session = self._owned(owner, request.get("process_id"))
         if action == "poll":
@@ -825,39 +866,62 @@ class ProcessBroker:
             return result
         if action in {"write", "submit"}:
             data = request.get("data", "")
-            if not isinstance(data, str) or len(data) > MAX_STDIN_CHARS or "\0" in data:
+            if (
+                not isinstance(data, str)
+                or len(data) > MAX_STDIN_CHARS
+                or "\0" in data
+            ):
                 raise BrokerError("data must be a bounded string without NUL")
-            self._write(session, data + ("\n" if action == "submit" else ""))
-            return {"process_id": session.id, "written": len(data)}
+            with self.gateway_guard(gateway_epoch):
+                self._write(
+                    session, data + ("\n" if action == "submit" else "")
+                )
+                return {"process_id": session.id, "written": len(data)}
         if action == "close":
-            if not session.stdin_closed:
-                if session.pty_mode:
-                    self._write(session, "\x04")
-                elif session.process.stdin is not None:
-                    session.process.stdin.close()
-                session.stdin_closed = True
-            return {"process_id": session.id, "stdin_closed": True}
+            with self.gateway_guard(gateway_epoch):
+                if not session.stdin_closed:
+                    if session.pty_mode:
+                        self._write(session, "\x04")
+                    elif session.process.stdin is not None:
+                        session.process.stdin.close()
+                    session.stdin_closed = True
+                return {"process_id": session.id, "stdin_closed": True}
         if action == "resize":
-            if not session.pty_mode or session.master_fd is None:
-                raise BrokerError("resize requires a PTY process")
-            rows = bounded_int(
-                request.get("rows"), default=24, minimum=5, maximum=200, label="rows"
-            )
-            cols = bounded_int(
-                request.get("cols"), default=80, minimum=20, maximum=500, label="cols"
-            )
-            fcntl.ioctl(
-                session.master_fd,
-                termios.TIOCSWINSZ,
-                struct.pack("HHHH", rows, cols, 0, 0),
-            )
-            return {"process_id": session.id, "rows": rows, "cols": cols}
+            with self.gateway_guard(gateway_epoch):
+                if not session.pty_mode or session.master_fd is None:
+                    raise BrokerError("resize requires a PTY process")
+                rows = bounded_int(
+                    request.get("rows"),
+                    default=24,
+                    minimum=5,
+                    maximum=200,
+                    label="rows",
+                )
+                cols = bounded_int(
+                    request.get("cols"),
+                    default=80,
+                    minimum=20,
+                    maximum=500,
+                    label="cols",
+                )
+                fcntl.ioctl(
+                    session.master_fd,
+                    termios.TIOCSWINSZ,
+                    struct.pack("HHHH", rows, cols, 0, 0),
+                )
+                return {"process_id": session.id, "rows": rows, "cols": cols}
         if action == "interrupt":
-            self._terminate(session, signal.SIGINT, "interrupted", "process.interrupt")
-            return session.snapshot()
+            with self.gateway_guard(gateway_epoch):
+                self._terminate(
+                    session, signal.SIGINT, "interrupted", "process.interrupt"
+                )
+                return session.snapshot()
         if action == "kill":
-            self._terminate(session, signal.SIGTERM, "killed", "process.kill")
-            return session.snapshot()
+            with self.gateway_guard(gateway_epoch):
+                self._terminate(
+                    session, signal.SIGTERM, "killed", "process.kill"
+                )
+                return session.snapshot()
         raise BrokerError("unknown action")
 
     def stop(self) -> None:

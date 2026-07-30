@@ -127,7 +127,12 @@ documented in [Bounded Workstation Access](workstation.md).
 
 `sg-workstation status` distinguishes PID liveness from terminal and app-tunnel
 readiness. Only the app-tunnel SSH child is automatically restarted; its
-execution, Blender, application-relay, and terminal peers remain untouched.
+execution, Blender, application-relay, and terminal peers remain untouched. The
+SSH child is parent-death-contained and `down` reconciles it by PID identity. A
+legacy running state is migrated on the next `up` by replacing only
+`app-tunnel`; every other managed PID remains unchanged.
+Mutating workstation commands are serialized by an owner-only operation lock;
+SSH connection and readiness attempts are bounded before backoff.
 
 Private full start:
 

@@ -1,3 +1,4 @@
+import fcntl
 import base64
 import hashlib
 import json
@@ -410,6 +411,149 @@ class WorkstationBridgeTests(unittest.TestCase):
         }
         self.assertEqual(after, pids)
         self.assertTrue(Path(f"/proc/{replacement}").exists())
+
+    def test_up_migrates_legacy_app_tunnel_without_restarting_peers(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        state_path = self.state_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        before = {entry["name"]: entry["pid"] for entry in state["processes"]}
+        state.pop("implementation_version", None)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        state_path.chmod(0o600)
+
+        migrated = self.run_tool("up", fake_tools=True)
+
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.assertIn("app-tunnel migrated", migrated.stdout)
+        after_state = json.loads(state_path.read_text(encoding="utf-8"))
+        after = {
+            entry["name"]: entry["pid"] for entry in after_state["processes"]
+        }
+        self.assertNotEqual(after["app-tunnel"], before["app-tunnel"])
+        self.assertEqual(
+            {key: value for key, value in after.items() if key != "app-tunnel"},
+            {key: value for key, value in before.items() if key != "app-tunnel"},
+        )
+        self.assertEqual(after_state["implementation_version"], 2)
+
+    def test_app_tunnel_child_dies_if_supervisor_is_sigkilled(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        state = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        supervisor = next(
+            entry for entry in state["processes"] if entry["name"] == "app-tunnel"
+        )
+        health = json.loads(
+            (self.state_dir / "app-tunnel.health.json").read_text(encoding="utf-8")
+        )
+        child_pid = health["child_pid"]
+        try:
+            os.kill(supervisor["pid"], signal.SIGKILL)
+            deadline = time.monotonic() + 3
+            while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(Path(f"/proc/{child_pid}").exists())
+        finally:
+            if Path(f"/proc/{child_pid}").exists():
+                os.kill(child_pid, signal.SIGKILL)
+
+    def test_down_reconciles_a_published_orphan_app_tunnel_child(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        state = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        supervisor = next(
+            entry for entry in state["processes"] if entry["name"] == "app-tunnel"
+        )
+        orphan = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        try:
+            orphan_start_time = (
+                Path(f"/proc/{orphan.pid}/stat")
+                .read_text(encoding="utf-8")
+                .rsplit(")", 1)[1]
+                .split()[19]
+            )
+            os.kill(supervisor["pid"], signal.SIGKILL)
+            deadline = time.monotonic() + 3
+            while (
+                Path(f"/proc/{supervisor['pid']}").exists()
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+            health_path = self.state_dir / "app-tunnel.health.json"
+            health_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "state": "starting",
+                        "child_pid": orphan.pid,
+                        "child_start_time": orphan_start_time,
+                        "restart_count": 0,
+                        "retry_seconds": 0,
+                        "updated_at": time.time(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            health_path.chmod(0o600)
+
+            stopped = self.run_tool("down", fake_tools=True)
+
+            self.assertEqual(stopped.returncode, 0, stopped.stderr)
+            orphan.wait(timeout=3)
+            self.assertIsNotNone(orphan.returncode)
+        finally:
+            if orphan.poll() is None:
+                orphan.kill()
+                orphan.wait(timeout=2)
+
+    def test_down_recovers_legacy_supervisor_without_state_file(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        state = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        health = json.loads(
+            (self.state_dir / "app-tunnel.health.json").read_text(encoding="utf-8")
+        )
+        supervisor_pid = health.pop("supervisor_pid")
+        health.pop("supervisor_start_time")
+        health_path = self.state_dir / "app-tunnel.health.json"
+        health_path.write_text(json.dumps(health), encoding="utf-8")
+        health_path.chmod(0o600)
+        for entry in state["processes"]:
+            if entry["name"] != "app-tunnel":
+                self.stop_managed_process(state, entry["name"])
+        (self.state_dir / "state.json").unlink()
+
+        stopped = self.run_tool("down", fake_tools=True)
+
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.assertIn("Orphaned", stopped.stdout)
+        self.assertFalse(Path(f"/proc/{supervisor_pid}").exists())
+        self.assertFalse(Path(f"/proc/{health['child_pid']}").exists())
+
+    def test_mutating_commands_fail_fast_while_operation_lock_is_held(self):
+        self.state_dir.mkdir(mode=0o700)
+        lock_path = self.state_dir / "operation.lock"
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            blocked = self.run_tool("down")
+
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("already running", blocked.stderr)
+        finally:
+            os.close(descriptor)
 
     def test_partial_start_rolls_back_every_process(self):
         self.install_fake_tools(fail_socat_port=9876)

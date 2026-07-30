@@ -29,6 +29,8 @@ terminal plugin does not replace or modify the Blender MCP path.
   Each connection must present `SO_PEERPIDFD` for the exact default gateway in
   the root-owned `s6-supervise gateway-default` chain. A same-provenance PID
   rollover is accepted only after the old pinned pidfd reports process death.
+  The broker duplicates the received pidfd instead of reopening by numeric PID,
+  and revalidates it after old-epoch cleanup before accepting the new epoch.
 - PTY or stdin capability requires a separate one-time approval. Session and
   permanent choices are disabled and YOLO does not bypass it. Later keystrokes
   are an ongoing channel and cannot be inspected as new shell commands; the
@@ -50,11 +52,17 @@ terminal plugin does not replace or modify the Blender MCP path.
 - Before a replacement gateway epoch is accepted, the broker terminates every
   managed terminal process and transfer and clears all pending reservations.
   Execution, Blender, and other application relays remain independent.
+  Cleanup failure keeps the broker closed on the old epoch until a later
+  authenticated rollover attempt completes cleanup. Upload EOF-to-publication
+  remains inside the epoch guard, so rotation cannot cross a remote commit.
 - Only the app-tunnel SSH control master is supervised. Its supervisor proves
   readiness with `ssh -O check`, removes a stale private control socket, and
-  restarts only that SSH child with bounded exponential backoff. Execution,
+  restarts only that SSH child with bounded connection/readiness timeouts and exponential backoff. Execution,
   Blender, the application relays, and the terminal broker are not restarted
   with it.
+  The SSH child is armed to die if its supervisor disappears abruptly; `down`
+  also publishes and reconciles supervisor and child identities by exact PID
+  and process start time, including when `state.json` was never committed.
 - Every transfer gets a separate one-time approval. The broker and plugin cap
   file data at 512 MiB, 10,000 entries, and fixed structural roots. They reject
   traversal, symlinks, hardlinks, special files, filesystem crossings, private
@@ -113,6 +121,8 @@ next one.
    sg-workstation test
    ```
 
+   Mutating commands (`up`, `down`, `repin`, and `restart-terminal`) are
+   serialized by an owner-only non-blocking operation lock.
    `repin` is an explicit trust decision and refuses to run while any bridge is
    alive. `up` is idempotent when the complete bridge set is already running.
    If a process has stopped and the saved bridge configuration and bind gateway
@@ -125,6 +135,9 @@ next one.
    The app-tunnel line separately reports `ready`, `starting`, `restarting`, or
    `stopped`. A child failure is recovered inside its supervisor without
    creating partial bridge state or changing any other managed PID.
+   On the first `up` after installing this implementation, a legacy running
+   state is migrated by replacing only `app-tunnel`; execution, Blender,
+   application-relay, and terminal PIDs remain unchanged.
 
 2. Validate Compose and enable the plugin in the current/default Hermes
    instance. The plugin directory is bind-mounted read-only, so plugin-only or
