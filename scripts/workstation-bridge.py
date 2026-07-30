@@ -29,8 +29,12 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 TERMINAL_BROKER = ROOT / "scripts" / "workstation-terminal-broker.py"
+APP_TUNNEL_SUPERVISOR = (
+    ROOT / "scripts" / "workstation-app-tunnel-supervisor.py"
+)
 TRUST_FILE = "gateway-trust.json"
 TERMINAL_HEALTH_FILE = "workstation-terminal.health.json"
+APP_TUNNEL_HEALTH_FILE = "app-tunnel.health.json"
 DEFAULT_CONFIG = ROOT / "private" / "workstation" / "bridges.json"
 TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -408,6 +412,34 @@ def read_state(path: Path) -> dict[str, Any] | None:
     return payload
 
 
+def read_app_tunnel_health(path: Path) -> dict[str, Any] | None:
+    target = path / APP_TUNNEL_HEALTH_FILE
+    try:
+        info = target.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            fail(f"app-tunnel health is not a regular file: {target}")
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            fail(f"app-tunnel health permissions are unsafe: {target}")
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError) as exc:
+        fail(f"invalid app-tunnel health file {target}: {exc}")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or payload.get("state")
+        not in {"starting", "ready", "restarting", "stopped"}
+    ):
+        fail(f"invalid app-tunnel health file: {target}")
+    if payload["state"] == "ready" and (
+        not isinstance(payload.get("child_pid"), int)
+        or not isinstance(payload.get("child_start_time"), str)
+    ):
+        fail(f"invalid ready app-tunnel health file: {target}")
+    return payload
+
+
 def read_terminal_health(path: Path) -> dict[str, Any] | None:
     target = path / TERMINAL_HEALTH_FILE
     try:
@@ -491,6 +523,7 @@ def remove_runtime_artifacts(path: Path) -> None:
         path / "app-tunnel.control",
         path / "workstation-terminal.sock",
         path / TERMINAL_HEALTH_FILE,
+        path / APP_TUNNEL_HEALTH_FILE,
     ):
         candidate.unlink(missing_ok=True)
 
@@ -619,6 +652,18 @@ def command_repin(config_path: Path, gateway_raw: str) -> None:
     print("Workstation gateway trust baseline updated.")
 
 
+def wait_app_tunnel_ready(path: Path, entry: dict[str, Any]) -> None:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not entry_running(entry):
+            fail("app-tunnel supervisor stopped during startup")
+        health = read_app_tunnel_health(path)
+        if health and health["state"] == "ready":
+            return
+        time.sleep(0.05)
+    fail("app-tunnel SSH child did not become ready")
+
+
 def command_up(config_path: Path, gateway_raw: str) -> None:
     config = load_config(config_path)
     gateway = validate_gateway(gateway_raw)
@@ -653,6 +698,12 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
     require_binary("socat")
     require_binary("ssh")
     require_binary("ssh-keyscan")
+    enabled_apps = [app for app in config["apps"] if app["enabled"]]
+    if enabled_apps and not APP_TUNNEL_SUPERVISOR.is_file():
+        fail(
+            "workstation app-tunnel supervisor is missing: "
+            f"{APP_TUNNEL_SUPERVISOR}"
+        )
     if config["terminal_broker"]["enabled"] and not TERMINAL_BROKER.is_file():
         fail(f"workstation terminal broker is missing: {TERMINAL_BROKER}")
     scan_host_key(config)
@@ -667,7 +718,6 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
         config["execution"]["gateway_port"],
         "execution relay",
     )
-    enabled_apps = [app for app in config["apps"] if app["enabled"]]
     for app in enabled_apps:
         check_bind_available(
             "127.0.0.1", app["local_port"], f"{app['name']} SSH forward"
@@ -688,17 +738,22 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
     processes: list[dict[str, Any]] = []
     try:
         if enabled_apps:
-            processes.append(
-                start_process(
-                    path,
-                    "app-tunnel",
-                    app_ssh_command(
-                        config,
-                        remote_hosts_path,
-                        path / "app-tunnel.control",
-                    ),
-                )
+            (path / APP_TUNNEL_HEALTH_FILE).unlink(missing_ok=True)
+            (path / "app-tunnel.control").unlink(missing_ok=True)
+            app_tunnel = start_process(
+                path,
+                "app-tunnel",
+                [
+                    sys.executable,
+                    str(APP_TUNNEL_SUPERVISOR),
+                    "--config",
+                    str(config["_path"]),
+                    "--state-dir",
+                    str(path),
+                ],
             )
+            processes.append(app_tunnel)
+            wait_app_tunnel_ready(path, app_tunnel)
 
         processes.append(
             start_process(
@@ -858,7 +913,19 @@ def command_status() -> None:
     for entry in state["processes"]:
         running = entry_running(entry)
         detail = "running" if running else "stopped"
-        if running and entry.get("name") == "workstation-terminal":
+        if running and entry.get("name") == "app-tunnel":
+            health = read_app_tunnel_health(path)
+            readiness = health["state"] if health else "starting"
+            if (
+                readiness == "ready"
+                and process_start_time(health["child_pid"])
+                != health["child_start_time"]
+            ):
+                readiness = "restarting"
+            detail = f"running ({readiness})"
+            if readiness != "ready":
+                result = 1
+        elif running and entry.get("name") == "workstation-terminal":
             health = read_terminal_health(path)
             readiness = health["state"] if health else "starting"
             detail = f"running ({readiness})"

@@ -125,6 +125,10 @@ Tailscale-connected PC while Hermes remains on `spartan_internal`. Configuration
 keys, host-key verification, profile setup, Blender risk, and teardown are
 documented in [Bounded Workstation Access](workstation.md).
 
+`sg-workstation status` distinguishes PID liveness from terminal and app-tunnel
+readiness. Only the app-tunnel SSH child is automatically restarted; its
+execution, Blender, application-relay, and terminal peers remain untouched.
+
 Private full start:
 
 ```sh

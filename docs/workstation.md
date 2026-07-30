@@ -50,6 +50,11 @@ terminal plugin does not replace or modify the Blender MCP path.
 - Before a replacement gateway epoch is accepted, the broker terminates every
   managed terminal process and transfer and clears all pending reservations.
   Execution, Blender, and other application relays remain independent.
+- Only the app-tunnel SSH control master is supervised. Its supervisor proves
+  readiness with `ssh -O check`, removes a stale private control socket, and
+  restarts only that SSH child with bounded exponential backoff. Execution,
+  Blender, the application relays, and the terminal broker are not restarted
+  with it.
 - Every transfer gets a separate one-time approval. The broker and plugin cap
   file data at 512 MiB, 10,000 entries, and fixed structural roots. They reject
   traversal, symlinks, hardlinks, special files, filesystem crossings, private
@@ -117,6 +122,9 @@ next one.
    `status` reports `waiting-for-hermes`, `ready`, or `repin-required`; only
    `ready` returns success for a live terminal broker. Waiting is expected until
    the first Hermes gateway connection authenticates.
+   The app-tunnel line separately reports `ready`, `starting`, `restarting`, or
+   `stopped`. A child failure is recovered inside its supervisor without
+   creating partial bridge state or changing any other managed PID.
 
 2. Validate Compose and enable the plugin in the current/default Hermes
    instance. The plugin directory is bind-mounted read-only, so plugin-only or

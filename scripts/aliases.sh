@@ -493,7 +493,7 @@ Usage:
   sg-workstation validate     validate private config and key permissions
   sg-workstation repin        trust the current supervised Hermes image/config after explicit review
   sg-workstation up           verify the remote host key, then start relays and the optional Unix broker
-  sg-workstation status       report PID-verified relay/broker state
+  sg-workstation status       report PID-verified state and broker/tunnel readiness
   sg-workstation restart-terminal  recreate only the Unix broker; keep SSH/app relays running
   sg-workstation test         test SSH and enabled application bridges
   sg-workstation down         stop only PID-verified workstation relays

@@ -367,6 +367,50 @@ class WorkstationBridgeTests(unittest.TestCase):
         self.assertEqual(repeated_stop.returncode, 0, repeated_stop.stderr)
         self.assertIn("not running", repeated_stop.stdout)
 
+    def test_app_tunnel_supervisor_restarts_only_its_ssh_child(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        state = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        pids = {entry["name"]: entry["pid"] for entry in state["processes"]}
+        health_path = self.state_dir / "app-tunnel.health.json"
+        deadline = time.monotonic() + 2
+        health = None
+        while time.monotonic() < deadline:
+            if health_path.exists():
+                health = json.loads(health_path.read_text(encoding="utf-8"))
+                if health.get("state") == "ready":
+                    break
+            time.sleep(0.05)
+        self.assertIsNotNone(health)
+        self.assertEqual(health["state"], "ready")
+        old_child = health["child_pid"]
+
+        os.kill(old_child, signal.SIGTERM)
+        deadline = time.monotonic() + 3
+        replacement = None
+        while time.monotonic() < deadline:
+            health = json.loads(health_path.read_text(encoding="utf-8"))
+            if (
+                health.get("state") == "ready"
+                and health.get("child_pid") != old_child
+            ):
+                replacement = health["child_pid"]
+                break
+            time.sleep(0.05)
+
+        self.assertIsNotNone(replacement)
+        persisted = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        after = {
+            entry["name"]: entry["pid"] for entry in persisted["processes"]
+        }
+        self.assertEqual(after, pids)
+        self.assertTrue(Path(f"/proc/{replacement}").exists())
+
     def test_partial_start_rolls_back_every_process(self):
         self.install_fake_tools(fail_socat_port=9876)
 
