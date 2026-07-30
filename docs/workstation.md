@@ -67,6 +67,9 @@ terminal plugin does not replace or modify the Blender MCP path.
   file data at 512 MiB, 10,000 entries, and fixed structural roots. They reject
   traversal, symlinks, hardlinks, special files, filesystem crossings, private
   keys, credential-store paths, and unapproved sensitive files.
+- A registered per-session gateway notification callback is the authoritative
+  proof of a live approval owner. Missing callbacks and cron contexts remain
+  fail-closed even if other session metadata is present.
 - File bytes use a versioned framed stream over the same owner-only Unix socket;
   they are never embedded in model-visible commands, JSON, Base64, or output.
 

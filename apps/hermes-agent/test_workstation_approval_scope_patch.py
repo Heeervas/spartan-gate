@@ -162,6 +162,61 @@ class WorkstationApprovalScopePatchTests(unittest.TestCase):
             )
         )
 
+    def test_registered_gateway_callback_proves_live_owner_without_platform_context(self):
+        patcher = load_patcher()
+        namespace = {}
+        exec(patcher.patch_source(upstream_fixture()), namespace)
+        namespace["_is_gateway_approval_context"] = lambda: False
+
+        result = namespace["request_one_time_tool_approval"](
+            "workstation_transfer",
+            "Transfer one bounded file.",
+            command="download exchange/demo.txt -> default:demo.txt",
+            workdir="/home/hermes-worker/workspace",
+            approval_scope="workstation_hermes",
+            display_label="Hermes Workstation",
+        )
+
+        self.assertTrue(result["approved"])
+        self.assertIn("approval_data", namespace["captured"])
+
+    def test_one_time_approval_without_gateway_callback_fails_closed(self):
+        patcher = load_patcher()
+        namespace = {}
+        exec(patcher.patch_source(upstream_fixture()), namespace)
+        namespace["_gateway_notify_cbs"].clear()
+        namespace["_is_gateway_approval_context"] = lambda: False
+
+        result = namespace["request_one_time_tool_approval"](
+            "workstation_transfer",
+            "Transfer one bounded file.",
+            command="download exchange/demo.txt -> default:demo.txt",
+            workdir="/home/hermes-worker/workspace",
+            approval_scope="workstation_hermes",
+            display_label="Hermes Workstation",
+        )
+
+        self.assertFalse(result["approved"])
+        self.assertIn("live gateway owner", result["message"])
+
+    def test_one_time_approval_from_cron_fails_closed_with_live_callback(self):
+        patcher = load_patcher()
+        namespace = {}
+        exec(patcher.patch_source(upstream_fixture()), namespace)
+        namespace["env_var_enabled"] = lambda name: name == "HERMES_CRON_SESSION"
+
+        result = namespace["request_one_time_tool_approval"](
+            "workstation_transfer",
+            "Transfer one bounded file.",
+            command="download exchange/demo.txt -> default:demo.txt",
+            workdir="/home/hermes-worker/workspace",
+            approval_scope="workstation_hermes",
+            display_label="Hermes Workstation",
+        )
+
+        self.assertFalse(result["approved"])
+        self.assertIn("live gateway owner", result["message"])
+
     def test_interactive_approval_requires_displayable_command_and_workdir(self):
         patcher = load_patcher()
         namespace = {}

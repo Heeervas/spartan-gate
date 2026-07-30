@@ -14,6 +14,8 @@ All notable changes to Spartan Gate are documented here.
 - Added an approval-gated, fixed-destination workstation terminal and bounded
   file-transfer path for Hermes, with a private Unix broker, exact SSH host-key
   pinning, scoped restart/revocation helpers, and fail-closed regression tests.
+  Live one-time approvals now use the registered per-session gateway callback
+  as the owner proof instead of depending on lossy platform context metadata.
 
 - Added a bounded, read-only host memory audit with 24-hour `sysstat`, PSI,
   Docker cgroup/OOM, and swap-contract diagnostics; exposed it through

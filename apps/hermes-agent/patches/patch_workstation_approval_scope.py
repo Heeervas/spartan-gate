@@ -201,7 +201,7 @@ def request_one_time_tool_approval(
                 "displayable command and workdir."
             ),
         }
-    if not _is_gateway_approval_context() or env_var_enabled("HERMES_CRON_SESSION"):
+    if env_var_enabled("HERMES_CRON_SESSION"):
         return {
             "approved": False,
             "message": (
@@ -211,10 +211,18 @@ def request_one_time_tool_approval(
         }
     if not approval_scope or not re.fullmatch(r"[a-z0-9_.-]{1,64}", approval_scope):
         return {"approved": False, "message": "BLOCKED: invalid approval scope."}
-    session_key = get_current_session_key()
+    session_key = get_current_session_key(default="")
     with _lock:
         notify_cb = _gateway_notify_cbs.get(session_key)
     if notify_cb is None:
+        if not _is_gateway_approval_context():
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: {display_label} interactive access requires a "
+                    "live gateway owner."
+                ),
+            }
         return {
             "approved": False,
             "message": (
