@@ -21,15 +21,22 @@ import secrets
 import shlex
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import termios
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+
+try:
+    from scripts import workstation_gateway_trust as GATEWAY_TRUST
+except ImportError:
+    import workstation_gateway_trust as GATEWAY_TRUST
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +60,9 @@ ANSI_RE = re.compile(
 )
 OWNER_RE = re.compile(r"^[a-f0-9]{32}:g[0-9]{1,12}$")
 PROCESS_ID_RE = re.compile(r"^wproc_[a-f0-9]{24}$")
+SO_PEERPIDFD = getattr(socket, "SO_PEERPIDFD", 77)
+
+GatewaySnapshot = GATEWAY_TRUST.GatewaySnapshot
 
 
 class BrokerError(RuntimeError):
@@ -170,34 +180,157 @@ def parse_default_gateway_pid(output: str) -> int:
     return candidates[0]
 
 
-class DockerGatewayAuthorizer:
-    """Pin the socket to the exact default gateway PID present at startup."""
+class HealthPublisher:
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.Lock()
 
-    def __init__(self, container_name: str):
+    def __call__(self, state: str, epoch: int, gateway_pid: int | None) -> None:
+        payload = {
+            "version": 1,
+            "state": state,
+            "epoch": epoch,
+            "gateway_pid": gateway_pid,
+            "updated_at": time.time(),
+        }
+        temporary = self.path.parent / f".{self.path.name}.{os.getpid()}.tmp"
+        with self.lock:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, sort_keys=True)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, self.path)
+                directory = os.open(
+                    self.path.parent, os.O_RDONLY | os.O_DIRECTORY
+                )
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+
+class DockerGatewayAuthorizer:
+    """Pin peers to a trusted container and rotate only after PID death."""
+
+    def __init__(
+        self,
+        container_name: str,
+        baseline: dict[str, Any],
+        *,
+        resolver: Callable[
+            [str], GatewaySnapshot
+        ] = GATEWAY_TRUST.capture_gateway_snapshot,
+        pidfd_open: Callable[[int], int] = os.pidfd_open,
+        pidfd_alive: Callable[[int], bool] = GATEWAY_TRUST.pidfd_alive,
+        peer_pidfd_pid: Callable[[int], int] = GATEWAY_TRUST.pidfd_pid,
+        peer_validator: Callable[
+            [int, int, GatewaySnapshot], None
+        ] = GATEWAY_TRUST.validate_peer_process,
+        on_rotate: Callable[[], Any] | None = None,
+        health_publisher: Callable[[str, int, int | None], None] | None = None,
+    ):
         if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", container_name):
             raise BrokerError("invalid broker container_name")
         self.container_name = container_name
-        result = subprocess.run(
-            ["docker", "top", container_name, "-eo", "pid,user,args"],
-            text=True,
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise BrokerError("configured Hermes container is not running")
-        self.gateway_pid = parse_default_gateway_pid(result.stdout)
-        self.gateway_start_time = process_start_time(self.gateway_pid)
-        if self.gateway_start_time is None:
-            raise BrokerError("cannot pin the Hermes gateway process identity")
+        self.baseline = baseline
+        self.resolver = resolver
+        self.pidfd_open = pidfd_open
+        self.pidfd_alive = pidfd_alive
+        self.peer_pidfd_pid = peer_pidfd_pid
+        self.peer_validator = peer_validator
+        self.on_rotate = on_rotate
+        self.health_publisher = health_publisher or (lambda *_args: None)
+        self.gateway_pid: int | None = None
+        self.gateway_pidfd: int | None = None
+        self.epoch = 0
+        self.revoked_epoch = 0
+        self.lock = threading.Lock()
+        self.health_publisher("waiting-for-hermes", 0, None)
 
-    def __call__(self, peer_pid: int, peer_uid: int, _peer_gid: int) -> None:
+    def _monitor_pin(self, epoch: int, pinned_pidfd: int) -> None:
+        while True:
+            try:
+                if not self.pidfd_alive(pinned_pidfd):
+                    break
+            except OSError:
+                break
+            time.sleep(0.25)
+        with self.lock:
+            if self.epoch == epoch and self.gateway_pidfd == pinned_pidfd:
+                self.health_publisher("waiting-for-hermes", epoch, None)
+                if self.on_rotate is not None and self.revoked_epoch < epoch:
+                    self.on_rotate()
+                    self.revoked_epoch = epoch
+
+    def __call__(
+        self, peer_pid: int, peer_uid: int, _peer_gid: int, peer_pidfd: int
+    ) -> int:
         if peer_uid != os.getuid():
             raise BrokerError("broker peer uid is not the broker owner")
-        if peer_pid != self.gateway_pid:
-            raise BrokerError("broker peer is not the pinned Hermes gateway process")
-        if process_start_time(peer_pid) != self.gateway_start_time:
-            raise BrokerError("pinned Hermes gateway process identity changed")
+        try:
+            if self.peer_pidfd_pid(peer_pidfd) != peer_pid:
+                raise BrokerError("Hermes peer pidfd does not match SO_PEERCRED")
+        except GATEWAY_TRUST.GatewayTrustError as exc:
+            raise BrokerError(str(exc)) from exc
+        with self.lock:
+            if self.gateway_pidfd is not None and self.pidfd_alive(self.gateway_pidfd):
+                if peer_pid != self.gateway_pid:
+                    raise BrokerError(
+                        "broker peer is not the pinned Hermes gateway process"
+                    )
+                return self.epoch
+
+            had_pin = self.gateway_pidfd is not None
+            old_epoch = self.epoch
+            try:
+                snapshot = self.resolver(self.container_name)
+            except GATEWAY_TRUST.GatewayTrustError as exc:
+                self.health_publisher("waiting-for-hermes", self.epoch, None)
+                raise BrokerError(str(exc)) from exc
+            if not GATEWAY_TRUST.provenance_matches(
+                self.baseline, snapshot.provenance
+            ):
+                self.health_publisher("repin-required", self.epoch, None)
+                raise BrokerError("Hermes container provenance changed; repin required")
+            if peer_pid != snapshot.gateway_pid:
+                raise BrokerError("broker peer is not the default Hermes gateway")
+            try:
+                self.peer_validator(peer_pid, peer_pidfd, snapshot)
+                pinned_pidfd = self.pidfd_open(peer_pid)
+            except (GATEWAY_TRUST.GatewayTrustError, OSError) as exc:
+                raise BrokerError("cannot pin the supervised Hermes gateway") from exc
+            if self.gateway_pidfd is not None:
+                try:
+                    os.close(self.gateway_pidfd)
+                except OSError:
+                    pass
+            self.gateway_pid = peer_pid
+            self.gateway_pidfd = pinned_pidfd
+            self.epoch += 1
+            if (
+                had_pin
+                and self.on_rotate is not None
+                and self.revoked_epoch < old_epoch
+            ):
+                self.on_rotate()
+                self.revoked_epoch = old_epoch
+            self.health_publisher("ready", self.epoch, peer_pid)
+            threading.Thread(
+                target=self._monitor_pin,
+                args=(self.epoch, pinned_pidfd),
+                name="workstation-gateway-pidfd-monitor",
+                daemon=True,
+            ).start()
+            return self.epoch
 
 
 @dataclass
@@ -259,7 +392,7 @@ class ProcessBroker:
         config: dict[str, Any],
         gateway: str,
         *,
-        peer_authorizer: Callable[[int, int, int], None],
+        peer_authorizer: Callable[[int, int, int, int], int],
     ):
         self.config = config
         self.gateway = gateway
@@ -269,8 +402,46 @@ class ProcessBroker:
         self.starting = 0
         self.stopping = threading.Event()
         self.operation_slots = threading.BoundedSemaphore(MAX_ACTIVE_PROCESSES)
+        self.gateway_lock = threading.RLock()
+        self.gateway_epoch = 0
 
         self.transfer_manager = TRANSFER.TransferManager(self)
+
+    @contextmanager
+    def gateway_guard(self, expected_epoch: int | None):
+        self.gateway_lock.acquire()
+        try:
+            if expected_epoch is not None and expected_epoch != self.gateway_epoch:
+                raise BrokerError("Hermes gateway authorization epoch changed")
+            yield
+        finally:
+            self.gateway_lock.release()
+
+    def activate_gateway_epoch(self, epoch: int) -> None:
+        with self.gateway_lock:
+            if self.gateway_epoch == 0 and epoch == 1:
+                self.gateway_epoch = epoch
+            elif epoch != self.gateway_epoch:
+                raise BrokerError("Hermes gateway authorization epoch changed")
+
+    def revoke_for_gateway_rotation(self) -> dict[str, int]:
+        with self.gateway_lock:
+            self.gateway_epoch += 1
+            with self.lock:
+                active = [
+                    item for item in self.sessions.values() if not item.done.is_set()
+                ]
+            for item in active:
+                self._terminate(
+                    item, signal.SIGTERM, "killed", "gateway_rotation"
+                )
+            transfer_revoked = self.transfer_manager.revoke_all()
+            return {
+                "processes": len(active),
+                "reservations": transfer_revoked["reservations"],
+                "transfers": transfer_revoked["transfers"],
+            }
+
     def ssh_command(self, command: str, workdir: str, pty_mode: bool) -> list[str]:
         known_hosts = Path(self.config["_broker_known_hosts"])
         identity = self.config["execution"]["_identity_path"]
@@ -327,6 +498,25 @@ class ProcessBroker:
                 self.sessions.pop(process_id, None)
 
     def _spawn(
+        self,
+        *,
+        owner: str,
+        command: str,
+        workdir: str,
+        timeout: int,
+        pty_mode: bool,
+        gateway_epoch: int | None = None,
+    ) -> Session:
+        with self.gateway_guard(gateway_epoch):
+            return self._spawn_authorized(
+                owner=owner,
+                command=command,
+                workdir=workdir,
+                timeout=timeout,
+                pty_mode=pty_mode,
+            )
+
+    def _spawn_authorized(
         self,
         *,
         owner: str,
@@ -485,10 +675,14 @@ class ProcessBroker:
             session.process.stdin.write(encoded)
             session.process.stdin.flush()
 
-    def handle(self, request: dict[str, Any]) -> dict[str, Any]:
+    def handle(
+        self, request: dict[str, Any], gateway_epoch: int | None = None
+    ) -> dict[str, Any]:
         self._prune()
         if not isinstance(request, dict):
             raise BrokerError("request must be an object")
+        with self.gateway_guard(gateway_epoch):
+            pass
         action = request.get("action")
         if action in {
             "reserve",
@@ -498,7 +692,8 @@ class ProcessBroker:
             "transfer_cancel",
         }:
             try:
-                return self.transfer_manager.handle_control(request)
+                with self.gateway_guard(gateway_epoch):
+                    return self.transfer_manager.handle_control(request)
             except TRANSFER.TransferBrokerError as exc:
                 raise BrokerError(str(exc)) from exc
         allowed = {
@@ -572,6 +767,7 @@ class ProcessBroker:
                 workdir=workdir,
                 timeout=timeout,
                 pty_mode=pty_mode,
+                gateway_epoch=gateway_epoch,
             )
             if background or deferred:
                 return session.snapshot()
@@ -673,22 +869,34 @@ class ProcessBroker:
             self._terminate(item, signal.SIGTERM, "killed", "broker_shutdown")
 
 
-def peer_credentials(connection: socket.socket) -> tuple[int, int, int]:
-    raw = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-    return struct.unpack("3i", raw)
+def peer_credentials(connection: socket.socket) -> tuple[int, int, int, int]:
+    try:
+        raw = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        peer_pidfd_raw = connection.getsockopt(
+            socket.SOL_SOCKET, SO_PEERPIDFD, struct.calcsize("i")
+        )
+        peer_pidfd = struct.unpack("i", peer_pidfd_raw)[0]
+        os.fstat(peer_pidfd)
+    except (OSError, struct.error) as exc:
+        raise BrokerError("cannot obtain a stable Hermes peer pidfd") from exc
+    pid, uid, gid = struct.unpack("3i", raw)
+    return pid, uid, gid, peer_pidfd
 
 
 def serve_connection(connection: socket.socket, broker: ProcessBroker) -> None:
+    peer_pidfd: int | None = None
+    result: dict[str, Any] | None = None
     try:
-        pid, uid, gid = peer_credentials(connection)
-        broker.peer_authorizer(pid, uid, gid)
+        pid, uid, gid, peer_pidfd = peer_credentials(connection)
+        gateway_epoch = broker.peer_authorizer(pid, uid, gid, peer_pidfd)
+        broker.activate_gateway_epoch(gateway_epoch)
         connection.settimeout(10)
         prefix = connection.recv(
             len(TRANSFER.PROTOCOL.MAGIC),
             socket.MSG_PEEK | socket.MSG_WAITALL,
         )
         if prefix == TRANSFER.PROTOCOL.MAGIC:
-            broker.transfer_manager.handle_stream(connection)
+            broker.transfer_manager.handle_stream(connection, gateway_epoch)
             return
         chunks = bytearray()
         while b"\n" not in chunks:
@@ -703,16 +911,26 @@ def serve_connection(connection: socket.socket, broker: ProcessBroker) -> None:
             request = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise BrokerError("request is not valid UTF-8 JSON") from exc
-        result = {"ok": True, "result": broker.handle(request)}
+        result = {
+            "ok": True,
+            "result": broker.handle(request, gateway_epoch),
+        }
     except BrokerError as exc:
         result = {"ok": False, "error": str(exc)}
     except Exception:
         result = {"ok": False, "error": "internal broker error"}
-    try:
-        encoded = (json.dumps(result, ensure_ascii=True) + "\n").encode("utf-8")
-        connection.sendall(encoded)
     finally:
-        connection.close()
+        if peer_pidfd is not None:
+            try:
+                os.close(peer_pidfd)
+            except OSError:
+                pass
+    if result is not None:
+        try:
+            encoded = (json.dumps(result, ensure_ascii=True) + "\n").encode("utf-8")
+            connection.sendall(encoded)
+        finally:
+            connection.close()
 
 
 def serve(socket_path: Path, broker: ProcessBroker) -> None:
@@ -757,6 +975,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--gateway", required=True)
     result.add_argument("--socket", type=Path, required=True)
     result.add_argument("--known-hosts", type=Path, required=True)
+    result.add_argument("--trust", type=Path, required=True)
+    result.add_argument("--health", type=Path, required=True)
     result.add_argument("--container", default="spartan_gate_hermes")
     return result
 
@@ -764,6 +984,17 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
+        state_path = args.socket.parent
+        if args.trust.parent != state_path or args.health.parent != state_path:
+            raise BrokerError("broker state files must share one private directory")
+        state_info = state_path.lstat()
+        if (
+            stat.S_ISLNK(state_info.st_mode)
+            or not stat.S_ISDIR(state_info.st_mode)
+            or state_info.st_uid != os.getuid()
+            or stat.S_IMODE(state_info.st_mode) & 0o077
+        ):
+            raise BrokerError("broker state directory permissions are unsafe")
         bridge = load_bridge_module()
         config = bridge.load_config(args.config)
         gateway = bridge.validate_gateway(args.gateway)
@@ -775,11 +1006,21 @@ def main() -> int:
         )
         if args.known_hosts.read_text(encoding="utf-8") != expected:
             raise BrokerError("broker known_hosts does not contain the exact pinned key")
+        try:
+            baseline = GATEWAY_TRUST.load_baseline(args.trust, args.container)
+        except GATEWAY_TRUST.GatewayTrustError as exc:
+            raise BrokerError(str(exc)) from exc
+        authorizer = DockerGatewayAuthorizer(
+            args.container,
+            baseline,
+            health_publisher=HealthPublisher(args.health),
+        )
         broker = ProcessBroker(
             config,
             gateway,
-            peer_authorizer=DockerGatewayAuthorizer(args.container),
+            peer_authorizer=authorizer,
         )
+        authorizer.on_rotate = broker.revoke_for_gateway_rotation
         serve(args.socket, broker)
         return 0
     except (BrokerError, OSError, subprocess.SubprocessError) as exc:

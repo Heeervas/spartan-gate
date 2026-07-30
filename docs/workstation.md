@@ -24,9 +24,11 @@ terminal plugin does not replace or modify the Blender MCP path.
   cancellation, timeouts, ANSI stripping, and output redaction remain active.
 - Approval keys are namespaced to `Hermes Workstation`. Normal-terminal
   approvals and free-form command allowlist entries do not transfer.
-- Cron and bare non-interactive calls fail closed. The broker accepts only the
-  exact default gateway PID pinned at broker startup, not a terminal child or
-  another profile.
+- Cron and bare non-interactive calls fail closed. `repin` persists only the
+  reviewed Compose project/service, image ID, config hash, and container name.
+  Each connection must present `SO_PEERPIDFD` for the exact default gateway in
+  the root-owned `s6-supervise gateway-default` chain. A same-provenance PID
+  rollover is accepted only after the old pinned pidfd reports process death.
 - PTY or stdin capability requires a separate one-time approval. Session and
   permanent choices are disabled and YOLO does not bypass it. Later keystrokes
   are an ongoing channel and cannot be inspected as new shell commands; the
@@ -45,6 +47,9 @@ terminal plugin does not replace or modify the Blender MCP path.
   single-use broker reservations. Reset revokes pending approvals and active
   processes/streams before generation advances; missing or consumed
   reservations fail closed.
+- Before a replacement gateway epoch is accepted, the broker terminates every
+  managed terminal process and transfer and clears all pending reservations.
+  Execution, Blender, and other application relays remain independent.
 - Every transfer gets a separate one-time approval. The broker and plugin cap
   file data at 512 MiB, 10,000 entries, and fixed structural roots. They reject
   traversal, symlinks, hardlinks, special files, filesystem crossings, private
@@ -97,17 +102,21 @@ next one.
 
    ```sh
    sg-workstation validate
+   sg-workstation repin
    sg-workstation up
    sg-workstation status
    sg-workstation test
    ```
 
-   `up` is idempotent when the complete bridge set is already running. If a
-   process has stopped and the saved configuration and gateway still match,
-   `up` preflights the required binaries and pinned remote host key, then
-   PID-verifies and restarts the complete managed set. This briefly interrupts
-   the surviving execution, application, and terminal bridges. Configuration
-   or gateway changes still require an explicit `sg-workstation down` first.
+   `repin` is an explicit trust decision and refuses to run while any bridge is
+   alive. `up` is idempotent when the complete bridge set is already running.
+   If a process has stopped and the saved bridge configuration and bind gateway
+   still match, `up` preflights the required binaries and pinned remote host
+   key, then PID-verifies and restarts the complete managed set. A changed
+   Hermes image or Compose config hash requires `down`, `repin`, then `up`.
+   `status` reports `waiting-for-hermes`, `ready`, or `repin-required`; only
+   `ready` returns success for a live terminal broker. Waiting is expected until
+   the first Hermes gateway connection authenticates.
 
 2. Validate Compose and enable the plugin in the current/default Hermes
    instance. The plugin directory is bind-mounted read-only, so plugin-only or
@@ -116,7 +125,6 @@ next one.
    ```sh
    sg config --quiet
    sg exec hermes hermes plugins enable spartan-workstation-terminal
-   sg-workstation restart-terminal
    sg up -d --force-recreate hermes
    sg exec hermes hermes plugins list --plain --no-bundled
    ```
@@ -139,10 +147,14 @@ next one.
    Prove the quarantined path is absent from rendered Hermes mounts. Keep the
    quarantine until rollback is no longer required.
 
-If the gateway restarts, its PID no longer matches the broker's startup pin.
-Run `sg-workstation restart-terminal` to pin the new exact default gateway
-without restarting execution or application relays. This fail-closed behavior
-is intentional.
+A normal restart of the same reviewed Hermes image/config is handled lazily:
+the broker observes the old pidfd death, validates the replacement's Docker and
+root-owned s6 provenance, revokes work from the old epoch, and accepts the new
+gateway without restarting execution, Blender, app relays, or the broker.
+`restart-terminal` remains an operator command for deploying broker changes; it
+is not required for routine Hermes gateway restarts. A provenance change stays
+fail-closed as `repin-required` until the operator runs `down`, `repin`, and
+`up`.
 
 ## Tool surface
 

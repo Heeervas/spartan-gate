@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("workstation-terminal-broker.py")
@@ -231,8 +232,8 @@ class WorkstationTerminalBrokerTests(unittest.TestCase):
             calls = []
 
             class StopAfterPeer:
-                def __call__(self, pid, uid, gid):
-                    calls.append((pid, uid, gid))
+                def __call__(self, pid, uid, gid, pidfd):
+                    calls.append((pid, uid, gid, pidfd))
                     raise self_module.BrokerError("denied peer")
 
             self_module = self.module
@@ -280,6 +281,124 @@ class WorkstationTerminalBrokerTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.BrokerError, "found 0"):
             self.module.parse_default_gateway_pid(
                 "PID USER COMMAND\n105 alberto python -c gateway\n"
+            )
+
+    def test_gateway_authorizer_rotates_only_after_the_pinned_peer_dies(self):
+        baseline = {
+            "version": 1,
+            "container_name": "spartan_gate_hermes",
+            "image_id": "sha256:image",
+            "compose_project": "spartan-gate",
+            "compose_service": "hermes",
+            "compose_oneoff": "False",
+            "compose_config_hash": "config-hash",
+        }
+        snapshots = [
+            self.module.GatewaySnapshot(
+                container_id="container-a",
+                provenance=baseline,
+                gateway_pid=101,
+                gateway_uid=str(os.getuid()),
+            ),
+            self.module.GatewaySnapshot(
+                container_id="container-b",
+                provenance=baseline,
+                gateway_pid=202,
+                gateway_uid=str(os.getuid()),
+            ),
+        ]
+        resolver = Mock(side_effect=snapshots)
+        alive = {101: True, 202: True}
+        rotations = []
+        health = []
+        authorizer = self.module.DockerGatewayAuthorizer(
+            "spartan_gate_hermes",
+            baseline,
+            resolver=resolver,
+            pidfd_open=lambda pid: pid,
+            pidfd_alive=lambda fd: alive[fd],
+            peer_pidfd_pid=lambda fd: fd,
+            peer_validator=lambda *_args: None,
+            on_rotate=lambda: rotations.append("rotated"),
+            health_publisher=lambda state, epoch, pid: health.append(
+                (state, epoch, pid)
+            ),
+        )
+
+        self.assertEqual(authorizer(101, os.getuid(), os.getgid(), 101), 1)
+        self.assertEqual(health[-1], ("ready", 1, 101))
+        with self.assertRaisesRegex(
+            self.module.BrokerError, "pinned Hermes gateway"
+        ):
+            authorizer(202, os.getuid(), os.getgid(), 202)
+        self.assertEqual(resolver.call_count, 1)
+
+        alive[101] = False
+        time.sleep(0.4)
+        self.assertEqual(health[-1], ("waiting-for-hermes", 1, None))
+        self.assertEqual(authorizer(202, os.getuid(), os.getgid(), 202), 2)
+        self.assertEqual(rotations, ["rotated"])
+        self.assertEqual(resolver.call_count, 2)
+
+    def test_gateway_authorizer_rejects_changed_container_provenance(self):
+        baseline = {
+            "version": 1,
+            "container_name": "spartan_gate_hermes",
+            "image_id": "sha256:image-a",
+            "compose_project": "spartan-gate",
+            "compose_service": "hermes",
+            "compose_oneoff": "False",
+            "compose_config_hash": "config-hash",
+        }
+        changed = dict(baseline, image_id="sha256:image-b")
+        authorizer = self.module.DockerGatewayAuthorizer(
+            "spartan_gate_hermes",
+            baseline,
+            resolver=lambda _name: self.module.GatewaySnapshot(
+                container_id="container-b",
+                provenance=changed,
+                gateway_pid=202,
+                gateway_uid=str(os.getuid()),
+            ),
+            pidfd_open=lambda pid: pid,
+            pidfd_alive=lambda _fd: True,
+            peer_pidfd_pid=lambda fd: fd,
+            peer_validator=lambda *_args: None,
+        )
+
+        with self.assertRaisesRegex(self.module.BrokerError, "repin required"):
+            authorizer(202, os.getuid(), os.getgid(), 202)
+
+    def test_gateway_rotation_revokes_all_managed_work(self):
+        started = self.execute(command="sleep 30", background=True, timeout=30)
+        reservation = self.local.broker.handle(
+            {
+                "action": "reserve",
+                "owner": self.owner,
+                "operation_hash": "a" * 64,
+            }
+        )
+
+        result = self.local.broker.revoke_for_gateway_rotation()
+
+        self.assertEqual(result["processes"], 1)
+        self.assertGreaterEqual(result["reservations"], 1)
+        waited = self.local.broker.handle(
+            {
+                "action": "wait",
+                "owner": self.owner,
+                "process_id": started["process_id"],
+                "timeout": 5,
+            }
+        )
+        self.assertFalse(waited["running"])
+        self.assertEqual(waited["termination_source"], "gateway_rotation")
+        with self.assertRaisesRegex(
+            self.module.TRANSFER.TransferBrokerError,
+            "missing or consumed",
+        ):
+            self.local.broker.transfer_manager.reservations.consume(
+                reservation["reservation"], self.owner, "a" * 64
             )
 
     def test_deferred_foreground_returns_process_id_before_completion(self):

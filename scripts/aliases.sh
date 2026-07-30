@@ -491,6 +491,7 @@ Workstation bridge helpers
 
 Usage:
   sg-workstation validate     validate private config and key permissions
+  sg-workstation repin        trust the current supervised Hermes image/config after explicit review
   sg-workstation up           verify the remote host key, then start relays and the optional Unix broker
   sg-workstation status       report PID-verified relay/broker state
   sg-workstation restart-terminal  recreate only the Unix broker; keep SSH/app relays running
@@ -800,7 +801,7 @@ sg_workstation() {
         ""|-h|--help|help)
             sg_workstation_help
             ;;
-        validate|up|restart-terminal|status|test|down)
+        validate|repin|up|restart-terminal|status|test|down)
             shift
             gateway="$(sg_spartan_internal_gateway)" || return 1
             python3 "$SPARTAN_GATE_DIR/scripts/workstation-bridge.py" \

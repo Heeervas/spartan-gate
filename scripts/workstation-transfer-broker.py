@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import zlib
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -467,6 +468,21 @@ class TransferManager:
                 pass
         return {"reservations": reservations, "transfers": len(active)}
 
+    def revoke_all(self) -> dict[str, int]:
+        reservations = self.reservations.clear()
+        with self.lock:
+            active = list(self.active.values())
+        for item in active:
+            item.cancelled.set()
+            try:
+                os.killpg(item.process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                item.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        return {"reservations": reservations, "transfers": len(active)}
 
     def stop(self) -> None:
         self.reservations.clear()
@@ -595,7 +611,9 @@ class TransferManager:
             "windows_destination": control["remote_root"] == "exchange",
         }
 
-    def handle_stream(self, connection: socket.socket) -> None:
+    def handle_stream(
+        self, connection: socket.socket, gateway_epoch: int | None = None
+    ) -> None:
         process: subprocess.Popen | None = None
         transfer_id = ""
         slot_claimed = False
@@ -608,19 +626,25 @@ class TransferManager:
             if operation == "upload" and control.get("remote_root") == "exchange":
                 self._ensure_exchange_upload()
             digest = PROTOCOL.operation_hash(control)
-            self.reservations.consume(
-                str(control.get("reservation") or ""), owner, digest
+            guard = (
+                self.broker.gateway_guard(gateway_epoch)
+                if gateway_epoch is not None
+                else nullcontext()
             )
-            remote_request = self._remote_stream_request(control)
-            self._claim_slot(transfer_id)
-            slot_claimed = True
-            operation_slot_claimed = True
-            process = self._spawn(
-                "receive" if operation == "upload" else "send",
-                remote_request,
-            )
-            active = self._register_active(transfer_id, owner, process, connection)
-            slot_claimed = False
+            with guard:
+                self.reservations.consume(
+                    str(control.get("reservation") or ""), owner, digest
+                )
+                remote_request = self._remote_stream_request(control)
+                self._claim_slot(transfer_id)
+                slot_claimed = True
+                operation_slot_claimed = True
+                process = self._spawn(
+                    "receive" if operation == "upload" else "send",
+                    remote_request,
+                )
+                active = self._register_active(transfer_id, owner, process, connection)
+                slot_claimed = False
             stderr = bytearray()
             stderr_thread = threading.Thread(
                 target=self._drain_stderr,

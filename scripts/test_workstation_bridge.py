@@ -138,9 +138,16 @@ class WorkstationBridgeTests(unittest.TestCase):
         docker.write_text(
             "#!/bin/sh\n"
             "case \"$1\" in\n"
+            "  inspect)\n"
+            "    printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "
+            "'container-test' 'sha256:image-test' 'true' "
+            "'spartan-gate' 'hermes' 'False' 'config-hash'\n"
+            "    ;;\n"
             "  top)\n"
-            "    printf 'PID USER COMMAND\\n'\n"
-            "    printf '%s alberto %s\\n' \"$PPID\" "
+            "    printf 'PID PPID USER COMMAND\\n'\n"
+            "    printf '10 1 root /package/admin/s6/command/s6-svscan -d4 -- /run/service\\n'\n"
+            "    printf '11 10 root s6-supervise gateway-default\\n'\n"
+            "    printf '12 11 alberto %s\\n' "
             "'/opt/hermes/.venv/bin/python3 /opt/hermes/.venv/bin/hermes gateway run --replace'\n"
             "    ;;\n"
             "  *) exit 9 ;;\n"
@@ -268,6 +275,10 @@ class WorkstationBridgeTests(unittest.TestCase):
         )
         self.install_fake_tools()
 
+        repinned = self.run_tool("repin", fake_tools=True)
+        self.assertEqual(repinned.returncode, 0, repinned.stderr)
+        self.assertIn("trust baseline updated", repinned.stdout)
+
         started = self.run_tool("up", fake_tools=True)
         self.assertEqual(started.returncode, 0, started.stderr)
         self.assertIn("started", started.stdout)
@@ -277,11 +288,23 @@ class WorkstationBridgeTests(unittest.TestCase):
         self.assertIn("already running", repeated.stdout)
 
         status = self.run_tool("status")
-        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertEqual(status.returncode, 1, status.stderr)
         self.assertIn("app-tunnel: running", status.stdout)
         self.assertIn("execution: running", status.stdout)
         self.assertIn("blender: running", status.stdout)
-        self.assertIn("workstation-terminal: running", status.stdout)
+        self.assertIn(
+            "workstation-terminal: running (waiting-for-hermes)", status.stdout
+        )
+        health_path = self.state_dir / "workstation-terminal.health.json"
+        health = json.loads(health_path.read_text(encoding="utf-8"))
+        health["state"] = "ready"
+        health_path.write_text(json.dumps(health), encoding="utf-8")
+        health_path.chmod(0o600)
+        ready_status = self.run_tool("status")
+        self.assertEqual(ready_status.returncode, 0, ready_status.stderr)
+        self.assertIn(
+            "workstation-terminal: running (ready)", ready_status.stdout
+        )
 
         before_restart = json.loads(
             (self.state_dir / "state.json").read_text(encoding="utf-8")
@@ -325,6 +348,14 @@ class WorkstationBridgeTests(unittest.TestCase):
         self.assertEqual(known_hosts_mode, 0o600)
         self.assertEqual(
             (self.state_dir / "workstation-terminal.sock").stat().st_mode & 0o777,
+            0o600,
+        )
+        trust = json.loads(
+            (self.state_dir / "gateway-trust.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(trust["image_id"], "sha256:image-test")
+        self.assertEqual(
+            (self.state_dir / "gateway-trust.json").stat().st_mode & 0o777,
             0o600,
         )
 
@@ -461,6 +492,25 @@ class WorkstationBridgeTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("accessible by group or other", result.stderr)
+
+    def test_up_requires_explicit_gateway_trust_baseline(self):
+        self.write_config(
+            lambda payload: payload.update(
+                {
+                    "terminal_broker": {
+                        "enabled": True,
+                        "container_name": "spartan_gate_hermes",
+                    }
+                }
+            )
+        )
+        self.install_fake_tools()
+
+        result = self.run_tool("up", fake_tools=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sg-workstation repin", result.stderr)
+        self.assertFalse((self.state_dir / "state.json").exists())
 
 
 class WorkstationAliasTests(unittest.TestCase):

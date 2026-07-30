@@ -21,9 +21,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts import workstation_gateway_trust as GATEWAY_TRUST
+except ImportError:
+    import workstation_gateway_trust as GATEWAY_TRUST
+
 
 ROOT = Path(__file__).resolve().parents[1]
 TERMINAL_BROKER = ROOT / "scripts" / "workstation-terminal-broker.py"
+TRUST_FILE = "gateway-trust.json"
+TERMINAL_HEALTH_FILE = "workstation-terminal.health.json"
 DEFAULT_CONFIG = ROOT / "private" / "workstation" / "bridges.json"
 TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -401,19 +408,54 @@ def read_state(path: Path) -> dict[str, Any] | None:
     return payload
 
 
-def write_state(path: Path, payload: dict[str, Any]) -> None:
-    target = path / "state.json"
-    temporary = path / f".state.json.{os.getpid()}.tmp"
+def read_terminal_health(path: Path) -> dict[str, Any] | None:
+    target = path / TERMINAL_HEALTH_FILE
+    try:
+        info = target.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            fail(f"terminal health is not a regular file: {target}")
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            fail(f"terminal health permissions are unsafe: {target}")
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError) as exc:
+        fail(f"invalid terminal health file {target}: {exc}")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or payload.get("state")
+        not in {"waiting-for-hermes", "ready", "repin-required"}
+    ):
+        fail(f"invalid terminal health file: {target}")
+    return payload
+
+
+def write_private_json(target: Path, payload: dict[str, Any]) -> None:
+    temporary = target.parent / f".{target.name}.{os.getpid()}.tmp"
     data = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target)
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def write_state(path: Path, payload: dict[str, Any]) -> None:
+    write_private_json(path / "state.json", payload)
 
 
 def stop_entry(entry: dict[str, Any]) -> None:
@@ -448,6 +490,7 @@ def remove_runtime_artifacts(path: Path) -> None:
         path / "known_hosts.execution",
         path / "app-tunnel.control",
         path / "workstation-terminal.sock",
+        path / TERMINAL_HEALTH_FILE,
     ):
         candidate.unlink(missing_ok=True)
 
@@ -542,10 +585,46 @@ def app_ssh_command(
     return command
 
 
+def load_gateway_trust(path: Path, config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return GATEWAY_TRUST.load_baseline(
+            path / TRUST_FILE,
+            config["terminal_broker"]["container_name"],
+        )
+    except GATEWAY_TRUST.GatewayTrustError as exc:
+        fail(str(exc))
+
+
+def command_repin(config_path: Path, gateway_raw: str) -> None:
+    config = load_config(config_path)
+    validate_gateway(gateway_raw)
+    if not config["terminal_broker"]["enabled"]:
+        fail("workstation terminal broker is disabled in configuration")
+    path = state_dir()
+    if state_dir_exists(path):
+        validate_state_dir(path)
+        state = read_state(path)
+        if state and any(entry_running(entry) for entry in state["processes"]):
+            fail("workstation bridges are running; run `sg-workstation down` first")
+    container = config["terminal_broker"]["container_name"]
+    try:
+        first = GATEWAY_TRUST.capture_gateway_snapshot(container)
+        second = GATEWAY_TRUST.capture_gateway_snapshot(container)
+    except GATEWAY_TRUST.GatewayTrustError as exc:
+        fail(str(exc))
+    if first != second:
+        fail("Hermes gateway changed while capturing trust; retry repin")
+    ensure_state_dir(path)
+    write_private_json(path / TRUST_FILE, first.provenance)
+    print("Workstation gateway trust baseline updated.")
+
+
 def command_up(config_path: Path, gateway_raw: str) -> None:
     config = load_config(config_path)
     gateway = validate_gateway(gateway_raw)
     path = state_dir()
+    if config["terminal_broker"]["enabled"]:
+        load_gateway_trust(path, config)
     if state_dir_exists(path):
         validate_state_dir(path)
         existing = read_state(path)
@@ -667,6 +746,10 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
                         str(path / "workstation-terminal.sock"),
                         "--known-hosts",
                         str(execution_hosts_path),
+                        "--trust",
+                        str(path / TRUST_FILE),
+                        "--health",
+                        str(path / TERMINAL_HEALTH_FILE),
                         "--container",
                         config["terminal_broker"]["container_name"],
                     ],
@@ -706,6 +789,7 @@ def command_restart_terminal(config_path: Path, gateway_raw: str) -> None:
     if not state_dir_exists(path):
         fail("workstation bridges are not running")
     validate_state_dir(path)
+    load_gateway_trust(path, config)
     state = read_state(path)
     if not state:
         fail("workstation bridges are not running")
@@ -744,6 +828,10 @@ def command_restart_terminal(config_path: Path, gateway_raw: str) -> None:
             str(socket_path),
             "--known-hosts",
             str(path / "known_hosts.execution"),
+            "--trust",
+            str(path / TRUST_FILE),
+            "--health",
+            str(path / TERMINAL_HEALTH_FILE),
             "--container",
             config["terminal_broker"]["container_name"],
         ],
@@ -769,7 +857,14 @@ def command_status() -> None:
     result = 0
     for entry in state["processes"]:
         running = entry_running(entry)
-        print(f"{entry['name']}: {'running' if running else 'stopped'}")
+        detail = "running" if running else "stopped"
+        if running and entry.get("name") == "workstation-terminal":
+            health = read_terminal_health(path)
+            readiness = health["state"] if health else "starting"
+            detail = f"running ({readiness})"
+            if readiness != "ready":
+                result = 1
+        print(f"{entry['name']}: {detail}")
         if not running:
             result = 1
     raise SystemExit(result)
@@ -852,7 +947,16 @@ def parser() -> argparse.ArgumentParser:
         description="Operate fail-closed Hermes-to-workstation relays."
     )
     subparsers = result.add_subparsers(dest="command", required=True)
-    for name in ("validate", "up", "restart-terminal", "status", "test", "down"):
+    commands = (
+        "validate",
+        "up",
+        "repin",
+        "restart-terminal",
+        "status",
+        "test",
+        "down",
+    )
+    for name in commands:
         subparser = subparsers.add_parser(name)
         subparser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
         subparser.add_argument("--gateway", default="127.0.0.1")
@@ -868,6 +972,8 @@ def main() -> int:
             print(f"Workstation configuration valid: {args.config}")
         elif args.command == "up":
             command_up(args.config, args.gateway)
+        elif args.command == "repin":
+            command_repin(args.config, args.gateway)
         elif args.command == "restart-terminal":
             command_restart_terminal(args.config, args.gateway)
         elif args.command == "status":
