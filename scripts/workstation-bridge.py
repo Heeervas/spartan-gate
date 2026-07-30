@@ -441,6 +441,17 @@ def stop_entries(entries: list[dict[str, Any]]) -> None:
         stop_entry(entry)
 
 
+def remove_runtime_artifacts(path: Path) -> None:
+    for candidate in (
+        path / "state.json",
+        path / "known_hosts.remote",
+        path / "known_hosts.execution",
+        path / "app-tunnel.control",
+        path / "workstation-terminal.sock",
+    ):
+        candidate.unlink(missing_ok=True)
+
+
 def start_process(
     state_path: Path, name: str, command: list[str]
 ) -> dict[str, Any]:
@@ -540,19 +551,25 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
         existing = read_state(path)
     else:
         existing = None
+    recovering = False
     if existing:
         running = [entry for entry in existing["processes"] if entry_running(entry)]
+        matches_current = (
+            existing.get("config_digest") == config["_digest"]
+            and existing.get("gateway") == gateway
+        )
         if len(running) == len(existing["processes"]):
-            if (
-                existing.get("config_digest") == config["_digest"]
-                and existing.get("gateway") == gateway
-            ):
+            if matches_current:
                 print("Workstation bridges already running.")
                 return
             fail("workstation bridges are running with different configuration; stop them first")
         if running:
-            fail("workstation bridge state is partial; run `sg-workstation down` first")
-        (path / "state.json").unlink(missing_ok=True)
+            if not matches_current:
+                fail(
+                    "workstation bridge state is partial and uses different "
+                    "configuration or gateway; stop it first"
+                )
+            recovering = True
 
     require_binary("socat")
     require_binary("ssh")
@@ -560,6 +577,11 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
     if config["terminal_broker"]["enabled"] and not TERMINAL_BROKER.is_file():
         fail(f"workstation terminal broker is missing: {TERMINAL_BROKER}")
     scan_host_key(config)
+
+    if existing:
+        if recovering:
+            stop_entries(existing["processes"])
+        remove_runtime_artifacts(path)
 
     check_bind_available(
         gateway,
@@ -652,13 +674,7 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
             )
     except Exception:
         stop_entries(processes)
-        for candidate in (
-            remote_hosts_path,
-            execution_hosts_path,
-            path / "app-tunnel.control",
-            path / "workstation-terminal.sock",
-        ):
-            candidate.unlink(missing_ok=True)
+        remove_runtime_artifacts(path)
         raise
 
     write_state(
@@ -670,8 +686,13 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
             "processes": processes,
         },
     )
-    names = [entry["name"] for entry in processes if entry["name"] != "app-tunnel"]
-    print(f"Workstation bridges started: {', '.join(names)}.")
+    names = [
+        entry["name"] for entry in processes if entry["name"] != "app-tunnel"
+    ]
+    if recovering:
+        print(f"Workstation bridges recovered from partial state: {', '.join(names)}.")
+    else:
+        print(f"Workstation bridges started: {', '.join(names)}.")
 
 
 def command_restart_terminal(config_path: Path, gateway_raw: str) -> None:
@@ -765,14 +786,7 @@ def command_down() -> None:
         print("Workstation bridges: not running.")
         return
     stop_entries(state["processes"])
-    for candidate in (
-        path / "state.json",
-        path / "known_hosts.remote",
-        path / "known_hosts.execution",
-        path / "app-tunnel.control",
-        path / "workstation-terminal.sock",
-    ):
-        candidate.unlink(missing_ok=True)
+    remove_runtime_artifacts(path)
     print("Workstation bridges stopped.")
 
 

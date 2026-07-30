@@ -97,11 +97,17 @@ next one.
 
    ```sh
    sg-workstation validate
-   sg-workstation down
    sg-workstation up
    sg-workstation status
    sg-workstation test
    ```
+
+   `up` is idempotent when the complete bridge set is already running. If a
+   process has stopped and the saved configuration and gateway still match,
+   `up` preflights the required binaries and pinned remote host key, then
+   PID-verifies and restarts the complete managed set. This briefly interrupts
+   the surviving execution, application, and terminal bridges. Configuration
+   or gateway changes still require an explicit `sg-workstation down` first.
 
 2. Validate Compose and enable the plugin in the current/default Hermes
    instance. The plugin directory is bind-mounted read-only, so plugin-only or

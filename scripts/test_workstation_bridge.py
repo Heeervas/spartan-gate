@@ -3,9 +3,11 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -171,6 +173,14 @@ class WorkstationBridgeTests(unittest.TestCase):
             check=False,
         )
 
+    def stop_managed_process(self, state, name):
+        entry = next(item for item in state["processes"] if item["name"] == name)
+        os.killpg(entry["pid"], signal.SIGTERM)
+        deadline = time.monotonic() + 2
+        while Path(f"/proc/{entry['pid']}").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(Path(f"/proc/{entry['pid']}").exists())
+
     def test_validate_accepts_strict_private_schema(self):
         result = self.run_tool("validate")
 
@@ -334,6 +344,111 @@ class WorkstationBridgeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed to start", result.stderr)
         self.assertFalse((self.state_dir / "state.json").exists())
+
+    def test_up_reconciles_matching_partial_state_as_one_managed_set(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        before = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        before_pids = {entry["name"]: entry["pid"] for entry in before["processes"]}
+        self.stop_managed_process(before, "app-tunnel")
+        marker = "preserve prior diagnostics\n"
+        with (self.state_dir / "app-tunnel.log").open("a", encoding="utf-8") as handle:
+            handle.write(marker)
+
+        recovered = self.run_tool("up", fake_tools=True)
+
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertIn("recovered from partial state", recovered.stdout)
+        after = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        after_pids = {entry["name"]: entry["pid"] for entry in after["processes"]}
+        self.assertEqual(set(before_pids), set(after_pids))
+        self.assertTrue(
+            all(after_pids[name] != before_pids[name] for name in before_pids)
+        )
+        self.assertIn(
+            marker.strip(),
+            (self.state_dir / "app-tunnel.log").read_text(encoding="utf-8"),
+        )
+        status = self.run_tool("status")
+        self.assertEqual(status.returncode, 0, status.stderr)
+
+    def test_partial_recovery_preflight_failure_preserves_survivors(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        state = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        self.stop_managed_process(state, "app-tunnel")
+        survivor_pids = {
+            entry["name"]: entry["pid"]
+            for entry in state["processes"]
+            if entry["name"] != "app-tunnel"
+        }
+        other_blob = base64.b64encode(b"different-host-key").decode()
+        self.install_fake_tools(scanned_key=f"ssh-ed25519 {other_blob}")
+
+        recovered = self.run_tool("up", fake_tools=True)
+
+        self.assertNotEqual(recovered.returncode, 0)
+        self.assertIn("host key mismatch", recovered.stderr)
+        self.assertTrue(
+            all(Path(f"/proc/{pid}").exists() for pid in survivor_pids.values())
+        )
+        persisted = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted, state)
+
+    def test_partial_recovery_rejects_changed_configuration_without_stopping(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        state = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        self.stop_managed_process(state, "app-tunnel")
+        survivor_pids = {
+            entry["name"]: entry["pid"]
+            for entry in state["processes"]
+            if entry["name"] != "app-tunnel"
+        }
+        self.write_config(
+            lambda payload: payload["apps"][0].update(
+                {"local_port": free_loopback_port()}
+            )
+        )
+
+        recovered = self.run_tool("up", fake_tools=True)
+
+        self.assertNotEqual(recovered.returncode, 0)
+        self.assertIn("different configuration", recovered.stderr)
+        self.assertTrue(
+            all(Path(f"/proc/{pid}").exists() for pid in survivor_pids.values())
+        )
+
+    def test_partial_recovery_failure_rolls_back_and_clears_runtime_state(self):
+        self.install_fake_tools()
+        started = self.run_tool("up", fake_tools=True)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        state = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        self.stop_managed_process(state, "app-tunnel")
+        self.install_fake_tools(fail_socat_port=9876)
+
+        recovered = self.run_tool("up", fake_tools=True)
+
+        self.assertNotEqual(recovered.returncode, 0)
+        self.assertIn("failed to start", recovered.stderr)
+        self.assertFalse((self.state_dir / "state.json").exists())
+        self.assertFalse((self.state_dir / "app-tunnel.control").exists())
+        self.assertFalse((self.state_dir / "workstation-terminal.sock").exists())
 
     def test_status_rejects_group_accessible_state_directory(self):
         self.state_dir.mkdir()
