@@ -23,6 +23,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TERMINAL_BROKER = ROOT / "scripts" / "workstation-terminal-broker.py"
 DEFAULT_CONFIG = ROOT / "private" / "workstation" / "bridges.json"
 TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -131,6 +132,7 @@ def load_config(path: Path) -> dict[str, Any]:
         root,
         "configuration",
         required={"version", "remote", "execution", "tunnel", "apps"},
+        optional={"terminal_broker"},
     )
     if root["version"] != 1:
         fail("configuration.version must be 1")
@@ -182,6 +184,23 @@ def load_config(path: Path) -> dict[str, Any]:
     execution["_identity_path"] = resolve_identity(
         config_dir, execution["identity_file"], "execution.identity_file"
     )
+
+    terminal_broker = require_object(
+        root.get("terminal_broker", {"enabled": False}), "terminal_broker"
+    )
+    require_fields(
+        terminal_broker,
+        "terminal_broker",
+        required={"enabled"},
+        optional={"container_name"},
+    )
+    if not isinstance(terminal_broker["enabled"], bool):
+        fail("terminal_broker.enabled must be true or false")
+    terminal_broker.setdefault("container_name", "spartan_gate_hermes")
+    if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", terminal_broker["container_name"]):
+        fail("terminal_broker.container_name is invalid")
+    root["terminal_broker"] = terminal_broker
+
 
     tunnel = require_object(root["tunnel"], "tunnel")
     require_fields(tunnel, "tunnel", required={"identity_file"})
@@ -307,6 +326,8 @@ def scan_host_key(config: dict[str, Any]) -> None:
             require_binary("ssh-keyscan"),
             "-T",
             "5",
+            "-t",
+            "ed25519",
             "-p",
             str(remote["ssh_port"]),
             remote["host"],
@@ -322,7 +343,7 @@ def scan_host_key(config: dict[str, Any]) -> None:
         fields = line.split()
         if len(fields) >= 3:
             presented.add((fields[1], fields[2]))
-    if result.returncode != 0 or expected not in presented:
+    if result.returncode != 0 or presented != {expected}:
         fail(
             "remote SSH host key mismatch; no relay was started "
             f"(expected {remote['host_key_sha256']})"
@@ -536,6 +557,8 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
     require_binary("socat")
     require_binary("ssh")
     require_binary("ssh-keyscan")
+    if config["terminal_broker"]["enabled"] and not TERMINAL_BROKER.is_file():
+        fail(f"workstation terminal broker is missing: {TERMINAL_BROKER}")
     scan_host_key(config)
 
     check_bind_available(
@@ -605,12 +628,35 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
                     ],
                 )
             )
+
+        if config["terminal_broker"]["enabled"]:
+            processes.append(
+                start_process(
+                    path,
+                    "workstation-terminal",
+                    [
+                        sys.executable,
+                        str(TERMINAL_BROKER),
+                        "--config",
+                        str(config["_path"]),
+                        "--gateway",
+                        gateway,
+                        "--socket",
+                        str(path / "workstation-terminal.sock"),
+                        "--known-hosts",
+                        str(execution_hosts_path),
+                        "--container",
+                        config["terminal_broker"]["container_name"],
+                    ],
+                )
+            )
     except Exception:
         stop_entries(processes)
         for candidate in (
             remote_hosts_path,
             execution_hosts_path,
             path / "app-tunnel.control",
+            path / "workstation-terminal.sock",
         ):
             candidate.unlink(missing_ok=True)
         raise
@@ -626,6 +672,67 @@ def command_up(config_path: Path, gateway_raw: str) -> None:
     )
     names = [entry["name"] for entry in processes if entry["name"] != "app-tunnel"]
     print(f"Workstation bridges started: {', '.join(names)}.")
+
+
+def command_restart_terminal(config_path: Path, gateway_raw: str) -> None:
+    config = load_config(config_path)
+    gateway = validate_gateway(gateway_raw)
+    if not config["terminal_broker"]["enabled"]:
+        fail("workstation terminal broker is disabled in configuration")
+    if not TERMINAL_BROKER.is_file():
+        fail(f"workstation terminal broker is missing: {TERMINAL_BROKER}")
+    path = state_dir()
+    if not state_dir_exists(path):
+        fail("workstation bridges are not running")
+    validate_state_dir(path)
+    state = read_state(path)
+    if not state:
+        fail("workstation bridges are not running")
+    if (
+        state.get("config_digest") != config["_digest"]
+        or state.get("gateway") != gateway
+    ):
+        fail("running workstation bridges use different configuration")
+    terminal = [
+        entry
+        for entry in state["processes"]
+        if entry.get("name") == "workstation-terminal"
+    ]
+    if len(terminal) != 1:
+        fail("workstation terminal broker state is missing or ambiguous")
+    if any(
+        not entry_running(entry)
+        for entry in state["processes"]
+        if entry.get("name") != "workstation-terminal"
+    ):
+        fail("another workstation bridge is stopped; use `sg-workstation down` then `up`")
+    stop_entry(terminal[0])
+    socket_path = path / "workstation-terminal.sock"
+    socket_path.unlink(missing_ok=True)
+    replacement = start_process(
+        path,
+        "workstation-terminal",
+        [
+            sys.executable,
+            str(TERMINAL_BROKER),
+            "--config",
+            str(config["_path"]),
+            "--gateway",
+            gateway,
+            "--socket",
+            str(socket_path),
+            "--known-hosts",
+            str(path / "known_hosts.execution"),
+            "--container",
+            config["terminal_broker"]["container_name"],
+        ],
+    )
+    state["processes"] = [
+        replacement if entry.get("name") == "workstation-terminal" else entry
+        for entry in state["processes"]
+    ]
+    write_state(path, state)
+    print("Workstation terminal broker restarted; other bridges were unchanged.")
 
 
 def command_status() -> None:
@@ -663,6 +770,7 @@ def command_down() -> None:
         path / "known_hosts.remote",
         path / "known_hosts.execution",
         path / "app-tunnel.control",
+        path / "workstation-terminal.sock",
     ):
         candidate.unlink(missing_ok=True)
     print("Workstation bridges stopped.")
@@ -730,7 +838,7 @@ def parser() -> argparse.ArgumentParser:
         description="Operate fail-closed Hermes-to-workstation relays."
     )
     subparsers = result.add_subparsers(dest="command", required=True)
-    for name in ("validate", "up", "status", "test", "down"):
+    for name in ("validate", "up", "restart-terminal", "status", "test", "down"):
         subparser = subparsers.add_parser(name)
         subparser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
         subparser.add_argument("--gateway", default="127.0.0.1")
@@ -746,6 +854,8 @@ def main() -> int:
             print(f"Workstation configuration valid: {args.config}")
         elif args.command == "up":
             command_up(args.config, args.gateway)
+        elif args.command == "restart-terminal":
+            command_restart_terminal(args.config, args.gateway)
         elif args.command == "status":
             command_status()
         elif args.command == "test":

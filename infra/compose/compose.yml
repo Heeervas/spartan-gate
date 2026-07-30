@@ -632,6 +632,8 @@ services:
       - ../outbound-proxy/whitelist.txt:/etc/proxy-whitelist.public.txt:ro
       # optional: Spartan Route cache-lineage plugin, enabled by user-owned Hermes config.
       - ../hermes-plugins/spartan-cache-lineage:/opt/data/plugins/spartan-cache-lineage:ro
+      # optional: approval-gated fixed-workstation terminal plugin; remains disabled until explicitly enabled.
+      - ../hermes-plugins/spartan-workstation-terminal:/opt/data/plugins/spartan-workstation-terminal:ro
     networks:
       - spartan_internal
       - pocket_tts_internal

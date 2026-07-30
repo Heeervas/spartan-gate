@@ -491,8 +491,9 @@ Workstation bridge helpers
 
 Usage:
   sg-workstation validate     validate private config and key permissions
-  sg-workstation up           verify the remote host key, then start relays
-  sg-workstation status       report PID-verified relay state
+  sg-workstation up           verify the remote host key, then start relays and the optional Unix broker
+  sg-workstation status       report PID-verified relay/broker state
+  sg-workstation restart-terminal  recreate only the Unix broker; keep SSH/app relays running
   sg-workstation test         test SSH and enabled application bridges
   sg-workstation down         stop only PID-verified workstation relays
 
@@ -799,7 +800,7 @@ sg_workstation() {
         ""|-h|--help|help)
             sg_workstation_help
             ;;
-        validate|up|status|test|down)
+        validate|up|restart-terminal|status|test|down)
             shift
             gateway="$(sg_spartan_internal_gateway)" || return 1
             python3 "$SPARTAN_GATE_DIR/scripts/workstation-bridge.py" \

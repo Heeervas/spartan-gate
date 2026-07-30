@@ -11,6 +11,10 @@
     "gateway_port": 22022,
     "identity_file": "keys/hermes_execution_ed25519"
   },
+  "terminal_broker": {
+    "enabled": false,
+    "container_name": "spartan_gate_hermes"
+  },
   "tunnel": {
     "identity_file": "keys/app_tunnel_ed25519"
   },

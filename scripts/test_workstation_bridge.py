@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -23,6 +24,15 @@ HOST_FINGERPRINT = (
 )
 
 
+
+def free_loopback_port():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+    finally:
+        probe.close()
+
 class WorkstationBridgeTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -41,6 +51,7 @@ class WorkstationBridgeTests(unittest.TestCase):
         self.execution_key.chmod(0o600)
         self.tunnel_key.chmod(0o600)
         self.command_log = self.root / "commands.log"
+        self.app_local_port = free_loopback_port()
         self.config = self.config_dir / "bridges.json"
         self.write_config()
 
@@ -71,7 +82,7 @@ class WorkstationBridgeTests(unittest.TestCase):
                     "name": "blender",
                     "enabled": True,
                     "gateway_port": 9876,
-                    "local_port": 19876,
+                    "local_port": self.app_local_port,
                     "remote_host": "127.0.0.1",
                     "remote_port": 9876,
                 }
@@ -120,6 +131,21 @@ class WorkstationBridgeTests(unittest.TestCase):
             encoding="utf-8",
         )
         socat.chmod(0o755)
+
+        docker = self.bin_dir / "docker"
+        docker.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  top)\n"
+            "    printf 'PID USER COMMAND\\n'\n"
+            "    printf '%s alberto %s\\n' \"$PPID\" "
+            "'/opt/hermes/.venv/bin/python3 /opt/hermes/.venv/bin/hermes gateway run --replace'\n"
+            "    ;;\n"
+            "  *) exit 9 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
 
     def run_tool(self, command, *extra, fake_tools=False):
         env = os.environ.copy()
@@ -220,6 +246,16 @@ class WorkstationBridgeTests(unittest.TestCase):
         self.assertNotIn("TCP-LISTEN", logged)
 
     def test_up_status_down_use_scoped_relays_and_are_idempotent(self):
+        self.write_config(
+            lambda payload: payload.update(
+                {
+                    "terminal_broker": {
+                        "enabled": True,
+                        "container_name": "spartan_gate_hermes",
+                    }
+                }
+            )
+        )
         self.install_fake_tools()
 
         started = self.run_tool("up", fake_tools=True)
@@ -235,11 +271,36 @@ class WorkstationBridgeTests(unittest.TestCase):
         self.assertIn("app-tunnel: running", status.stdout)
         self.assertIn("execution: running", status.stdout)
         self.assertIn("blender: running", status.stdout)
+        self.assertIn("workstation-terminal: running", status.stdout)
+
+        before_restart = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        before_pids = {
+            entry["name"]: entry["pid"] for entry in before_restart["processes"]
+        }
+        restarted = self.run_tool("restart-terminal", fake_tools=True)
+        self.assertEqual(restarted.returncode, 0, restarted.stderr)
+        self.assertIn("other bridges were unchanged", restarted.stdout)
+        after_restart = json.loads(
+            (self.state_dir / "state.json").read_text(encoding="utf-8")
+        )
+        after_pids = {
+            entry["name"]: entry["pid"] for entry in after_restart["processes"]
+        }
+        self.assertNotEqual(
+            before_pids["workstation-terminal"],
+            after_pids["workstation-terminal"],
+        )
+        self.assertEqual(
+            {key: value for key, value in before_pids.items() if key != "workstation-terminal"},
+            {key: value for key, value in after_pids.items() if key != "workstation-terminal"},
+        )
 
         commands = self.command_log.read_text(encoding="utf-8")
         self.assertIn("bind=127.0.0.2", commands)
         self.assertIn("TCP:100.100.100.100:22022", commands)
-        self.assertIn("127.0.0.1:19876:127.0.0.1:9876", commands)
+        self.assertIn(f"127.0.0.1:{self.app_local_port}:127.0.0.1:9876", commands)
         self.assertIn(" -M ", f" {commands} ")
         self.assertIn("-F /dev/null", commands)
         self.assertNotIn("ClearAllForwardings=yes", commands)
@@ -252,6 +313,10 @@ class WorkstationBridgeTests(unittest.TestCase):
         ).stat().st_mode & 0o777
         self.assertEqual(state_mode, 0o600)
         self.assertEqual(known_hosts_mode, 0o600)
+        self.assertEqual(
+            (self.state_dir / "workstation-terminal.sock").stat().st_mode & 0o777,
+            0o600,
+        )
 
         stopped = self.run_tool("down")
         self.assertEqual(stopped.returncode, 0, stopped.stderr)

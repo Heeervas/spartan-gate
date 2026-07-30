@@ -178,6 +178,7 @@ RUN python3 /opt/hermes/patches/patch_google_meet_transcript.py
 RUN python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py
 RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py
 RUN python3 /opt/hermes/patches/patch_codex_429_fail_fast.py
+RUN python3 /opt/hermes/patches/patch_workstation_approval_scope.py
 
 # Fail closed on upstream or patch ownership drift without rewriting the full
 # venv/node_modules tree into a slow copy-on-write chown layer.
