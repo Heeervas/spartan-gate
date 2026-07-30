@@ -66,3 +66,22 @@
 - A caddy-security/OIDC gateway is intentionally not added for this narrow fix:
   the referenced 2026 loops concern cookie/redirect or incompatible OIDC flows,
   adding another failure surface unrelated to noVNC Basic Auth.
+
+
+## 2026-07-30
+
+- Codex Subscription is the primary Responses realm. Spartan Route forwards
+  `/v1/responses` natively with `store=false`, encrypted reasoning replay, and
+  `reasoning.context=all_turns`; Chat Completions conversion is not a fallback.
+- Reasoning identity is HMAC-bound to canonical `HERMES_HOME + session_id` and
+  one provider realm. Sol/Terra switches remain inside the subscription realm;
+  subscription/API-key switches require a new session or branch.
+- A profile switch with the same textual session ID keeps visible history but
+  drops foreign opaque reasoning and server message IDs. Background review
+  `provider: auto` inherits the parent runtime and realm.
+- Hermes 0.19 cannot replay native Responses compaction or stateful response
+  IDs, so those capabilities fail closed. hermes-lcm must preserve the two
+  Codex replay fields; this remains an upstream plugin concern and is not added
+  to the Hermes image.
+- Automatic private migration sets `api_mode: codex_responses` only for
+  explicit `codex/*` models. Auto aliases do not prove a subscription realm.

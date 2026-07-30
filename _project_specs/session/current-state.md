@@ -1,5 +1,26 @@
 # Current State
 
+## Native Responses Update (2026-07-30)
+
+Spartan Route now transports `/v1/responses` natively for Codex Subscription
+and the explicit OpenAI API-key realm. Subscription replay uses `store=false`,
+encrypted reasoning items, signed `HERMES_HOME + session_id` affinity,
+pre-commit-only slot retry, and nullable reasoning-token telemetry. Hermes
+profiles with explicit `codex/*` Responses models discover and enable the
+`spartan-cache-lineage` 0.2.1 plugin; cross-profile reasoning is reset while
+visible history remains. The active private vault path completed a real Terra
+turn and LCM persisted one reasoning item with chain, realm, and MAC fields.
+Unsigned replay returns 400 and a signed Subscription-to-API crossing returns
+409 before provider egress.
+
+`hermes-lcm` upstream main was inspected and lacks provider replay persistence.
+The active/private clones are clean on local commit
+`49aeda9990d05dde25a99beb388c7bca0bc0bd7f`, with an upstream-ready patch and
+bundle stored in the private Responses backup. Publishing upstream remains
+pending because this host has no GitHub CLI/SSH authentication or fork. Sol
+also returned genuine `server_is_overloaded` responses during live checks;
+Terra native and replay checks succeeded.
+
 Date: 2026-07-19
 
 ## Latest Update
@@ -69,10 +90,13 @@ requested.
 
 ## Active Task
 
-Complete the privileged Tailscale hostname/certificate cutover.
+No active implementation task after the native Responses commit.
 
-## Blockers
+## Residual Risks
 
-`tailscale cert` requires interactive `sudo`; the current agent session cannot
-provide the host password. The candidate certificate was not issued and the
-old hostname/certificate remain active.
+- Publish the local hermes-lcm provider-replay commit upstream when GitHub
+  authentication and a writable fork are available.
+- Codex Sol capacity can currently return `server_is_overloaded`; the bounded
+  pre-commit retry does not replay committed streams.
+- The OpenAI API-key Responses branch is regression-tested but was not charged
+  against a live direct API key in this subscription-first private runtime.

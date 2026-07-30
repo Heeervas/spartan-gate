@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import threading
+from pathlib import Path
 from collections import OrderedDict
 from typing import Any
 
@@ -15,6 +17,13 @@ LINEAGE_FIELD = "spartan_cache_lineage"
 LINEAGE_REASON_FIELD = "spartan_cache_lineage_reason"
 DEFAULT_MAX_TRACKED_KEYS = 512
 ROUTE_HOST_MARKERS = ("spartan-route:", "clawroute:")
+REASONING_CHAIN_FIELD = "spartan_chain_id"
+REASONING_REALM_FIELD = "spartan_expected_realm"
+REASONING_MAC_FIELD = "spartan_binding_mac"
+REASONING_ITEM_CHAIN_FIELD = "_spartan_chain_id"
+REASONING_ITEM_REALM_FIELD = "_spartan_reasoning_realm"
+REASONING_ITEM_MAC_FIELD = "_spartan_binding_mac"
+REASONING_REALMS = {"codex_subscription", "openai_api"}
 
 _lock = threading.Lock()
 _state: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
@@ -22,6 +31,7 @@ _state: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 
 def register(ctx: Any) -> None:
     ctx.register_middleware("llm_request", _llm_request_middleware)
+    ctx.register_hook("post_api_request", _post_api_request)
 
 
 def _llm_request_middleware(
@@ -33,13 +43,32 @@ def _llm_request_middleware(
 ) -> dict[str, Any] | None:
     if not isinstance(request, dict):
         return None
-    if api_mode and api_mode != "chat_completions":
+    if api_mode and api_mode not in {"chat_completions", "codex_responses"}:
         return None
     if not _is_spartan_route_request(request, base_url):
         return None
 
     updated = dict(request)
     extra_body = dict(updated.get("extra_body") or {})
+    reasoning_reset = False
+    if api_mode == "codex_responses":
+        legacy_effort = updated.pop("reasoning_effort", None)
+        if isinstance(legacy_effort, str) and legacy_effort.strip():
+            reasoning = dict(updated.get("reasoning") or {})
+            reasoning.setdefault("effort", legacy_effort.strip().lower())
+            updated["reasoning"] = reasoning
+        binding = _reasoning_binding(session_id)
+        if binding is None:
+            binding = {
+                REASONING_CHAIN_FIELD: "invalid",
+                REASONING_REALM_FIELD: "invalid",
+                REASONING_MAC_FIELD: "invalid",
+            }
+        input_items = updated.get("input")
+        if isinstance(input_items, list):
+            updated["input"], reasoning_reset = _sanitize_responses_input(input_items, binding)
+        extra_body.update(binding)
+
     logical_cache_key = _clean_string(extra_body.get("prompt_cache_key"))
     if not logical_cache_key:
         logical_cache_key = _clean_string(updated.get("prompt_cache_key"))
@@ -60,7 +89,7 @@ def _llm_request_middleware(
         extra_body[LINEAGE_REASON_FIELD] = reason
 
     reasoning_effort = _infer_reasoning_effort(updated, extra_body)
-    if reasoning_effort and "reasoning_effort" not in updated:
+    if api_mode != "codex_responses" and reasoning_effort and "reasoning_effort" not in updated:
         updated["reasoning_effort"] = reasoning_effort
 
     if extra_body:
@@ -70,8 +99,104 @@ def _llm_request_middleware(
     return {
         "request": updated,
         "source": PLUGIN_NAME,
-        "reason": extra_body.get(LINEAGE_REASON_FIELD) or "cache_identity",
+        "reason": "reasoning_chain_reset" if reasoning_reset else (extra_body.get(LINEAGE_REASON_FIELD) or "cache_identity"),
     }
+
+
+def _active_hermes_home() -> str:
+    try:
+        from hermes_constants import get_hermes_home
+
+        value = get_hermes_home()
+    except Exception:
+        value = os.environ.get("HERMES_HOME") or "/opt/data"
+    return str(Path(value).expanduser().resolve())
+
+
+def _reasoning_binding(session_id: str) -> dict[str, str] | None:
+    secret_hex = _clean_string(os.environ.get("SPARTAN_REASONING_BINDING_SECRET")).lower()
+    realm = _clean_string(os.environ.get("SPARTAN_REASONING_REALM")).lower()
+    if len(secret_hex) != 64 or any(char not in "0123456789abcdef" for char in secret_hex):
+        return None
+    if realm not in REASONING_REALMS or not session_id:
+        return None
+    secret = bytes.fromhex(secret_hex)
+    raw_chain = f"{_active_hermes_home()}\0{session_id}".encode()
+    chain_id = hmac.new(secret, raw_chain, hashlib.sha256).hexdigest()
+    binding_mac = hmac.new(secret, f"{chain_id}\0{realm}".encode(), hashlib.sha256).hexdigest()
+    return {
+        REASONING_CHAIN_FIELD: chain_id,
+        REASONING_REALM_FIELD: realm,
+        REASONING_MAC_FIELD: binding_mac,
+    }
+
+
+def _reasoning_item_matches(item: dict[str, Any], binding: dict[str, str]) -> bool:
+    return (
+        hmac.compare_digest(str(item.get(REASONING_ITEM_CHAIN_FIELD) or ""), binding[REASONING_CHAIN_FIELD])
+        and hmac.compare_digest(str(item.get(REASONING_ITEM_REALM_FIELD) or ""), binding[REASONING_REALM_FIELD])
+        and hmac.compare_digest(str(item.get(REASONING_ITEM_MAC_FIELD) or ""), binding[REASONING_MAC_FIELD])
+    )
+
+
+def _strip_reasoning_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in item.items() if not key.startswith("_spartan_")}
+
+
+def _sanitize_responses_input(
+    input_items: list[Any],
+    binding: dict[str, str],
+) -> tuple[list[Any], bool]:
+    reset = any(
+        isinstance(item, dict)
+        and item.get("type") == "reasoning"
+        and item.get("encrypted_content")
+        and not _reasoning_item_matches(item, binding)
+        for item in input_items
+    )
+    cleaned: list[Any] = []
+    for item in input_items:
+        if not isinstance(item, dict):
+            cleaned.append(item)
+            continue
+        if item.get("type") == "reasoning" and item.get("encrypted_content"):
+            if reset or not _reasoning_item_matches(item, binding):
+                continue
+            cleaned.append(_strip_reasoning_metadata(item))
+            continue
+        updated = _strip_reasoning_metadata(item)
+        if reset and updated.get("type") == "message" and updated.get("role") == "assistant":
+            updated.pop("id", None)
+        cleaned.append(updated)
+    return cleaned, reset
+
+
+def _post_api_request(
+    assistant_message: Any = None,
+    session_id: str = "",
+    base_url: str = "",
+    api_mode: str = "",
+    **_context: Any,
+) -> None:
+    if api_mode != "codex_responses" or assistant_message is None:
+        return
+    if not _is_spartan_route_request({}, base_url):
+        return
+    binding = _reasoning_binding(session_id)
+    if binding is None:
+        return
+    raw_items = getattr(assistant_message, "codex_reasoning_items", None)
+    if not isinstance(raw_items, list):
+        return
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        for key in tuple(item):
+            if key.startswith("_spartan_"):
+                item.pop(key, None)
+        item[REASONING_ITEM_CHAIN_FIELD] = binding[REASONING_CHAIN_FIELD]
+        item[REASONING_ITEM_REALM_FIELD] = binding[REASONING_REALM_FIELD]
+        item[REASONING_ITEM_MAC_FIELD] = binding[REASONING_MAC_FIELD]
 
 
 def _is_spartan_route_request(request: dict[str, Any], context_base_url: str) -> bool:

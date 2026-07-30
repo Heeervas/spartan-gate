@@ -21,6 +21,7 @@ from aiohttp.web_request import FileField
 
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
+from .native_responses import annotate_realm, execute_codex_responses, response_event_name, usage_values
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import (
     json_error,
@@ -59,6 +60,7 @@ class ExecutionResult:
     input_tokens: int = 0
     cached_input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int | None = None
     error: str | None = None
     actual_tool_call_count: int | None = None
     actual_tool_names: list[str] | None = None
@@ -104,7 +106,17 @@ CACHE_STALL_DIAGNOSTIC_LOW_RATIO = 0.20
 CACHE_STALL_ERROR_CODES = {"codex_stream_timeout", "codex_stream_error", "codex_empty_response"}
 SPARTAN_CACHE_LINEAGE_FIELD = "spartan_cache_lineage"
 SPARTAN_CACHE_LINEAGE_REASON_FIELD = "spartan_cache_lineage_reason"
-SPARTAN_PRIVATE_REQUEST_FIELDS = {SPARTAN_CACHE_LINEAGE_FIELD, SPARTAN_CACHE_LINEAGE_REASON_FIELD}
+SPARTAN_CHAIN_ID_FIELD = "spartan_chain_id"
+SPARTAN_EXPECTED_REALM_FIELD = "spartan_expected_realm"
+SPARTAN_BINDING_MAC_FIELD = "spartan_binding_mac"
+SPARTAN_REASONING_REALMS = {"codex_subscription", "openai_api"}
+SPARTAN_PRIVATE_REQUEST_FIELDS = {
+    SPARTAN_CACHE_LINEAGE_FIELD,
+    SPARTAN_CACHE_LINEAGE_REASON_FIELD,
+    SPARTAN_CHAIN_ID_FIELD,
+    SPARTAN_EXPECTED_REALM_FIELD,
+    SPARTAN_BINDING_MAC_FIELD,
+}
 CODEX_ULTRA_REQUIRES_APP_SERVER_CODE = "codex_ultra_requires_app_server"
 CODEX_MAX_REQUIRES_GPT56_CODE = "codex_max_requires_gpt_5_6"
 
@@ -315,10 +327,15 @@ def extract_usage(payload: Any) -> tuple[int, int, int]:
 
 
 def apply_usage(result: ExecutionResult, payload: Any) -> None:
-    prompt, cached, output = extract_usage(payload)
+    source = payload.get("response") if isinstance(payload, dict) and isinstance(payload.get("response"), dict) else payload
+    prompt, cached, output = extract_usage(source)
     result.input_tokens = prompt or result.input_tokens
     result.cached_input_tokens = cached or result.cached_input_tokens
     result.output_tokens = output or result.output_tokens
+    if isinstance(source, dict):
+        _prompt, _cached, _output, reasoning = usage_values(source.get("usage"))
+        if reasoning is not None:
+            result.reasoning_tokens = reasoning
 
 
 def apply_tool_call_telemetry(result: ExecutionResult, payload: Any) -> None:
@@ -479,8 +496,191 @@ async def execute_provider_chat(
     return result
 
 
+async def provider_responses_stream(
+    response: Any,
+    result: ExecutionResult,
+    realm: str,
+) -> AsyncIterator[bytes]:
+    try:
+        async for event, data, _raw in iter_sse_payloads(response.content.iter_chunked(8192)):
+            if not data or data == "[DONE]":
+                continue
+            parsed = parse_json_bytes(data.encode("utf-8"))
+            if not isinstance(parsed, dict):
+                continue
+            event_name = response_event_name(event, parsed)
+            updated = annotate_realm(parsed, realm)
+            apply_usage(result, updated)
+            if updated.get("error") and not result.error:
+                result.error = stable_json(updated.get("error"))
+            yield sse(updated, event_name)
+    finally:
+        response.release()
+
+
+async def execute_provider_responses(
+    state: SpartanRouteState,
+    body: dict[str, Any],
+    route: RoutedRequest,
+    wants_stream: bool,
+    prompt_cache_key: str | None,
+) -> ExecutionResult:
+    provider = route.provider
+    if provider != "openai":
+        message = f"Provider '{provider}' does not support native Responses in Spartan Route."
+        return ExecutionResult(503, body=json_error(message, 503, "responses_provider_not_supported", "invalid_request_error")[0], error="responses_provider_not_supported")
+    base_url = provider_base_url(provider)
+    api_key = state.config.api_key(provider)
+    if not base_url or not api_key:
+        return ExecutionResult(503, body=json_error("Missing OPENAI_API_KEY", 503, "provider_key_missing", "authentication_error")[0], error="provider_key_missing")
+    if state.session is None:
+        return ExecutionResult(503, body=json_error("HTTP session is not ready", 503, "session_unavailable")[0], error="session_unavailable")
+
+    upstream_body = strip_private_spartan_fields(body)
+    upstream_body["model"] = upstream_model_id(route.actual_model, provider)
+    upstream_body["store"] = False
+    if prompt_cache_key:
+        upstream_body["prompt_cache_key"] = prompt_cache_key
+    include = upstream_body.get("include")
+    if not isinstance(include, list):
+        include = []
+    if "reasoning.encrypted_content" not in include:
+        include = [*include, "reasoning.encrypted_content"]
+    upstream_body["include"] = include
+    timeout_ms = int(os.environ.get("SPARTAN_ROUTE_PROVIDER_TIMEOUT_MS") or "180000")
+    started = time.monotonic()
+    try:
+        response = await state.session.post(
+            f"{base_url}/responses",
+            json=upstream_body,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            timeout=ClientTimeout(total=timeout_ms / 1000),
+        )
+    except Exception:
+        return ExecutionResult(502, body=json_error("Provider Responses request failed", 502, "provider_request_failed", "upstream_error")[0], error="provider_request_failed")
+    elapsed = max(0, int((time.monotonic() - started) * 1000))
+    if wants_stream and 200 <= response.status < 300:
+        result = ExecutionResult(response.status, headers={"Content-Type": "text/event-stream"}, upstream_response_time_ms=elapsed)
+        result.stream = provider_responses_stream(response, result, "openai_api")
+        return result
+    data = await response.read()
+    response.release()
+    parsed = parse_json_bytes(data)
+    if isinstance(parsed, dict) and response.status < 300:
+        parsed = annotate_realm(parsed, "openai_api")
+        data = stable_json(parsed).encode("utf-8")
+    result = ExecutionResult(response.status, body=data, headers={"Content-Type": response.headers.get("Content-Type", "application/json")}, upstream_response_time_ms=elapsed)
+    apply_usage(result, parsed)
+    if response.status >= 400:
+        result.error = sanitize_preview(data.decode("utf-8", errors="replace"))
+    return result
+
+
+def requested_reasoning_effort(body: Mapping[str, Any]) -> str | None:
+    explicit = body.get("reasoning_effort")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip().lower()
+    reasoning = body.get("reasoning")
+    nested = reasoning.get("effort") if isinstance(reasoning, Mapping) else None
+    return nested.strip().lower() if isinstance(nested, str) and nested.strip() else None
+
+
+def reasoning_realm_for_route(route: RoutedRequest) -> str:
+    return "codex_subscription" if route.provider == "codex" else "openai_api"
+
+
+def reasoning_binding_error(
+    state: SpartanRouteState,
+    body: Mapping[str, Any],
+    realm: str,
+) -> ExecutionResult | None:
+    values = {
+        SPARTAN_CHAIN_ID_FIELD: body.get(SPARTAN_CHAIN_ID_FIELD),
+        SPARTAN_EXPECTED_REALM_FIELD: body.get(SPARTAN_EXPECTED_REALM_FIELD),
+        SPARTAN_BINDING_MAC_FIELD: body.get(SPARTAN_BINDING_MAC_FIELD),
+    }
+    if all(value is None for value in values.values()):
+        input_items = body.get("input")
+        has_encrypted_replay = isinstance(input_items, list) and any(
+            isinstance(item, Mapping)
+            and item.get("type") == "reasoning"
+            and bool(item.get("encrypted_content"))
+            for item in input_items
+        )
+        if realm == "codex_subscription" and has_encrypted_replay:
+            return ExecutionResult(
+                400,
+                body=json_error(
+                    "Signed reasoning binding is required for Codex subscription replay",
+                    400,
+                    "reasoning_binding_required",
+                    "invalid_request_error",
+                )[0],
+                error="reasoning_binding_required",
+            )
+        return None
+    if not all(isinstance(value, str) and value.strip() for value in values.values()):
+        return ExecutionResult(400, body=json_error("Incomplete reasoning binding", 400, "reasoning_binding_invalid", "invalid_request_error")[0], error="reasoning_binding_invalid")
+    chain_id = str(values[SPARTAN_CHAIN_ID_FIELD]).strip().lower()
+    expected = str(values[SPARTAN_EXPECTED_REALM_FIELD]).strip().lower()
+    supplied_mac = str(values[SPARTAN_BINDING_MAC_FIELD]).strip().lower()
+    secret_hex = str(os.environ.get("SPARTAN_REASONING_BINDING_SECRET") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", secret_hex):
+        return ExecutionResult(503, body=json_error("Reasoning binding is unavailable", 503, "reasoning_binding_unavailable")[0], error="reasoning_binding_unavailable")
+    if not re.fullmatch(r"[0-9a-f]{64}", chain_id) or not re.fullmatch(r"[0-9a-f]{64}", supplied_mac) or expected not in SPARTAN_REASONING_REALMS:
+        return ExecutionResult(400, body=json_error("Invalid reasoning binding", 400, "reasoning_binding_invalid", "invalid_request_error")[0], error="reasoning_binding_invalid")
+    calculated = hmac.new(bytes.fromhex(secret_hex), f"{chain_id}\0{expected}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calculated, supplied_mac):
+        return ExecutionResult(400, body=json_error("Invalid reasoning binding", 400, "reasoning_binding_invalid", "invalid_request_error")[0], error="reasoning_binding_invalid")
+    if expected != realm:
+        return ExecutionResult(409, body=json_error("Reasoning chain belongs to a different provider realm; start a new session or branch", 409, "reasoning_realm_mismatch", "invalid_request_error")[0], error="reasoning_realm_mismatch")
+    try:
+        if not state.telemetry.bind_reasoning_chain(chain_id, realm):
+            return ExecutionResult(409, body=json_error("Reasoning chain belongs to a different provider realm; start a new session or branch", 409, "reasoning_realm_mismatch", "invalid_request_error")[0], error="reasoning_realm_mismatch")
+    except Exception:
+        return ExecutionResult(503, body=json_error("Reasoning binding store is unavailable", 503, "reasoning_binding_unavailable")[0], error="reasoning_binding_unavailable")
+    return None
+
+
+def codex_responses_capability_error(body: Mapping[str, Any]) -> ExecutionResult | None:
+    code = ""
+    message = ""
+    if body.get("store") is True:
+        code = "codex_responses_store_not_supported"
+        message = "Codex subscription Responses requires store=false and manual encrypted reasoning replay."
+    elif body.get("previous_response_id") is not None:
+        code = "codex_previous_response_not_supported"
+        message = "previous_response_id is not supported for Codex subscription; replay response items explicitly."
+    elif body.get("context_management") is not None:
+        code = "codex_compaction_not_supported"
+        message = "Native Responses compaction is not supported by the current Hermes client."
+    elif isinstance(body.get("input"), list) and any(
+        isinstance(item, Mapping) and item.get("type") == "compaction" for item in body["input"]
+    ):
+        code = "codex_compaction_not_supported"
+        message = "Compaction items are not replayable by the current Hermes client."
+    else:
+        reasoning = body.get("reasoning")
+        if isinstance(reasoning, Mapping) and reasoning.get("mode") is not None:
+            code = "codex_reasoning_mode_not_supported"
+            message = "reasoning.mode is not enabled for Codex subscription Responses."
+        tools = body.get("tools")
+        if not code and isinstance(tools, list) and any(
+            not isinstance(tool, Mapping) or tool.get("type") != "function" for tool in tools
+        ):
+            code = "codex_tool_type_not_supported"
+            message = "Codex subscription Responses currently supports function tools only."
+    if not code:
+        return None
+    return ExecutionResult(
+        status=400,
+        body={"error": {"message": message, "type": "invalid_request_error", "code": code}},
+        error=code,
+    )
+
+
 def codex_reasoning_validation_error(body: Mapping[str, Any], model_id: str) -> ExecutionResult | None:
-    effort = str(body.get("reasoning_effort") or "").strip().lower()
+    effort = requested_reasoning_effort(body) or ""
     if effort == "ultra":
         code = CODEX_ULTRA_REQUIRES_APP_SERVER_CODE
         message = (
@@ -546,6 +746,50 @@ async def execute_chat(
     return await execute_provider_chat(state, upstream_body, route, wants_stream, prompt_cache_key)
 
 
+async def execute_responses(
+    state: SpartanRouteState,
+    body: dict[str, Any],
+    route: RoutedRequest,
+    wants_stream: bool,
+    session_id: str | None,
+    prompt_cache_key: str | None,
+) -> ExecutionResult:
+    if route.provider == "codex":
+        capability_error = codex_responses_capability_error(body)
+        if capability_error is not None:
+            return capability_error
+        reasoning_error = codex_reasoning_validation_error(body, route.actual_model)
+        if reasoning_error is not None:
+            return reasoning_error
+        if state.codex is None:
+            return ExecutionResult(503, body=json_error("Codex router is not ready", 503, "codex_unavailable")[0], error="codex_unavailable")
+        codex_result = await execute_codex_responses(
+            state.codex, body, route.actual_model, wants_stream, session_id, prompt_cache_key
+        )
+        execution = ExecutionResult(
+            status=codex_result.status,
+            body=codex_result.body,
+            headers=codex_result.headers,
+            slot_index=codex_result.slot_index,
+            account_key=codex_result.account_key,
+            input_tokens=codex_result.input_tokens,
+            cached_input_tokens=codex_result.cached_input_tokens,
+            output_tokens=codex_result.output_tokens,
+            reasoning_tokens=codex_result.reasoning_tokens,
+            error=codex_result.error,
+            actual_tool_call_count=codex_result.actual_tool_call_count,
+            actual_tool_names=codex_result.actual_tool_names,
+            usage_seen=codex_result.usage_seen,
+            usage_event_type=codex_result.usage_event_type,
+            upstream_response_time_ms=codex_result.upstream_response_time_ms,
+            total_response_time_ms=codex_result.total_response_time_ms,
+        )
+        if codex_result.stream is not None:
+            execution.stream = sync_codex_stream_result(codex_result, execution)
+        return execution
+    return await execute_provider_responses(state, body, route, wants_stream, prompt_cache_key)
+
+
 async def sync_codex_stream_result(source_result: CodexCallResult, target: ExecutionResult) -> AsyncIterator[bytes]:
     source = source_result.stream
     try:
@@ -563,6 +807,7 @@ async def sync_codex_stream_result(source_result: CodexCallResult, target: Execu
         target.input_tokens = source_result.input_tokens
         target.cached_input_tokens = source_result.cached_input_tokens
         target.output_tokens = source_result.output_tokens
+        target.reasoning_tokens = source_result.reasoning_tokens
         target.error = source_result.error
         target.actual_tool_call_count = source_result.actual_tool_call_count
         target.actual_tool_names = source_result.actual_tool_names
@@ -1090,7 +1335,8 @@ def log_request(
         "cache_low": cache_low,
         "cache_stall_diagnostic": cache_guard_diagnostic_context(guard_entry),
         "request_api_kind": api_kind,
-        "requested_reasoning_effort": body.get("reasoning_effort") if isinstance(body.get("reasoning_effort"), str) else None,
+        "requested_reasoning_effort": requested_reasoning_effort(body),
+        "reasoning_tokens": result.reasoning_tokens,
         "message_chars": message_chars,
         "tool_schema_chars": tool_schema_chars,
         "tool_schema_rough_tokens": tool_schema_rough_tokens,
@@ -1131,7 +1377,8 @@ def log_request(
             prompt_preview=prompt_preview_from_request(body, state.config.log_content),
             context_info=stable_json(context),
             request_api_kind=api_kind,
-            requested_reasoning_effort=body.get("reasoning_effort") if isinstance(body.get("reasoning_effort"), str) else None,
+            requested_reasoning_effort=requested_reasoning_effort(body),
+            reasoning_tokens=result.reasoning_tokens,
             selected_codex_slot_index=result.slot_index,
             selected_codex_account_key=result.account_key,
             request_id=request_id,
@@ -1220,9 +1467,13 @@ def responses_body_to_chat(body: dict[str, Any]) -> dict[str, Any]:
         ("tool_choice", "tool_choice"),
         ("top_p", "top_p"),
         ("reasoning_effort", "reasoning_effort"),
+        ("reasoning", "reasoning"),
         ("prompt_cache_key", "prompt_cache_key"),
         (SPARTAN_CACHE_LINEAGE_FIELD, SPARTAN_CACHE_LINEAGE_FIELD),
         (SPARTAN_CACHE_LINEAGE_REASON_FIELD, SPARTAN_CACHE_LINEAGE_REASON_FIELD),
+        ("spartan_chain_id", "spartan_chain_id"),
+        ("spartan_expected_realm", "spartan_expected_realm"),
+        ("spartan_binding_mac", "spartan_binding_mac"),
         ("user", "user"),
         ("metadata", "metadata"),
     ):
@@ -1361,22 +1612,18 @@ async def responses(request: web.Request) -> web.StreamResponse:
     policy = state.routing_policy
     route = route_request(state.config, chat_body, policy.tier_models if policy else None)
     wants_stream = bool(body.get("stream"))
-    result = await execute_chat(state, chat_body, route, wants_stream, session_id, effective_prompt_cache_key, request_id)
+    preflight_error = codex_responses_capability_error(body) if route.provider == "codex" else None
+    binding_error = None if preflight_error is not None else reasoning_binding_error(
+        state, body, reasoning_realm_for_route(route)
+    )
+    result = preflight_error or binding_error or await execute_responses(
+        state, body, route, wants_stream, session_id, effective_prompt_cache_key
+    )
 
     def done() -> None:
         log_request(state, chat_body, route, result, started, request_id, session_id, turn_id, "responses")
 
-    if wants_stream and result.stream is not None:
-        transformed = chat_sse_to_responses_sse(result.stream, f"resp_{request_id}", route.actual_model)
-        return await write_execution_response(request, result, on_done=done, stream=transformed, content_type="text/event-stream")
-
-    if isinstance(result.body, (bytes, bytearray)):
-        parsed = parse_json_bytes(bytes(result.body))
-    else:
-        parsed = result.body
-    if isinstance(parsed, dict) and result.status < 400:
-        result.body = chat_to_responses_body(parsed, body)
-    return await write_execution_response(request, result, on_done=done)
+    return await write_execution_response(request, result, on_done=done, content_type="text/event-stream" if wants_stream else None)
 
 
 async def proxy_openai_json(state: SpartanRouteState, endpoint: str, body: dict[str, Any]) -> ExecutionResult:

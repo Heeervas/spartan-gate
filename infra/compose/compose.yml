@@ -179,6 +179,7 @@ services:
       SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY: ${SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY:-1024}
       SPARTAN_ROUTE_TELEMETRY_RETENTION_BATCH_SIZE: ${SPARTAN_ROUTE_TELEMETRY_RETENTION_BATCH_SIZE:-256}
       SPARTAN_ROUTE_TELEMETRY_SHUTDOWN_TIMEOUT_MS: ${SPARTAN_ROUTE_TELEMETRY_SHUTDOWN_TIMEOUT_MS:-5000}
+      SPARTAN_REASONING_BINDING_SECRET: ${SPARTAN_REASONING_BINDING_SECRET:-}
 
       # private/local: real provider keys are supplied by private/env/*.env.
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
@@ -570,6 +571,10 @@ services:
       OPENAI_BASE_URL: http://spartan-route:18790/v1
       OPENAI_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       CUSTOM_1_API_KEY: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
+      SPARTAN_REASONING_BINDING_SECRET: ${SPARTAN_REASONING_BINDING_SECRET:-}
+      # This Hermes runtime is subscription-first. API-key Responses requires a
+      # separate runtime/profile with an explicit openai_api realm.
+      SPARTAN_REASONING_REALM: ${SPARTAN_REASONING_REALM:-codex_subscription}
 
       # required: controlled browser/search/reader integrations.
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}

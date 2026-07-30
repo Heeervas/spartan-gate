@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -123,6 +124,119 @@ class HermesSpartanRouteHotMigrateTests(unittest.TestCase):
 
         second = module.migrate_root(self.root, backup=False)
         self.assertFalse(any(result.changed for result in second))
+
+    def test_existing_route_provider_gets_responses_mode_idempotently(self):
+        module = load_module()
+        config = self.write(
+            "config.yaml",
+            "model:\n  default: codex/gpt-5.6-sol\n  provider: openai-api\n  api_mode: chat_completions\n",
+        )
+
+        first = module.migrate_root(self.root, backup=False)
+        self.assertTrue(any(result.changed for result in first))
+        self.assertIn("api_mode: codex_responses", config.read_text(encoding="utf-8"))
+        self.assertIn("- spartan-cache-lineage", config.read_text(encoding="utf-8"))
+        second = module.migrate_root(self.root, backup=False)
+        self.assertFalse(any(result.changed for result in second))
+
+    def test_responses_profile_enables_reasoning_plugin_without_reformatting(self):
+        module = load_module()
+        (self.root / "profiles/vault/plugins").mkdir(parents=True)
+        config = self.write(
+            "profiles/vault/config.yaml",
+            "\n".join([
+                "model:",
+                "  default: codex/gpt-5.6-terra",
+                "  provider: openai-api",
+                "  api_mode: codex_responses",
+                "plugins:",
+                "  enabled:",
+                "    - hermes-lcm",
+                "  disabled: []",
+                "",
+            ]),
+        )
+
+        first = module.migrate_root(self.root, backup=False)
+
+        self.assertTrue(any(result.path == config and result.changed for result in first))
+        migrated = config.read_text(encoding="utf-8")
+        self.assertIn("    - hermes-lcm\n    - spartan-cache-lineage\n", migrated)
+        self.assertEqual(module.yaml.safe_load(migrated)["plugins"]["disabled"], [])
+        plugin_link = self.root / "profiles/vault/plugins/spartan-cache-lineage"
+        self.assertTrue(plugin_link.is_symlink())
+        self.assertEqual(os.readlink(plugin_link), "../../../plugins/spartan-cache-lineage")
+        second = module.migrate_root(self.root, backup=False)
+        self.assertFalse(any(result.changed for result in second))
+
+    def test_reasoning_plugin_collision_blocks_all_writes(self):
+        module = load_module()
+        env = self.write(".env", "CUSTOM_1_API_KEY=route-token\n")
+        config = self.write(
+            "profiles/vault/config.yaml",
+            "model:\n  default: codex/gpt-5.6-terra\n  provider: openai-api\n  api_mode: codex_responses\nplugins:\n  enabled: []\n",
+        )
+        collision = self.root / "profiles/vault/plugins/spartan-cache-lineage"
+        collision.mkdir(parents=True)
+        original_env = env.read_text(encoding="utf-8")
+        original_config = config.read_text(encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "not a managed link"):
+            module.migrate_root(self.root)
+
+        self.assertEqual(env.read_text(encoding="utf-8"), original_env)
+        self.assertEqual(config.read_text(encoding="utf-8"), original_config)
+        self.assertFalse((self.root / "backups").exists())
+
+    def test_auto_route_does_not_enable_reasoning_plugin(self):
+        module = load_module()
+        config = self.write(
+            "config.yaml",
+            "model:\n  default: clawroute/auto\n  provider: openai-api\n  api_mode: chat_completions\nplugins:\n  enabled: []\n",
+        )
+
+        module.migrate_root(self.root, backup=False)
+
+        self.assertNotIn("spartan-cache-lineage", config.read_text(encoding="utf-8"))
+
+    def test_auto_route_does_not_assume_subscription_realm(self):
+        module = load_module()
+        config = self.write(
+            "config.yaml",
+            "model:\n  default: clawroute/auto\n  provider: openai-api\n  api_mode: chat_completions\n",
+        )
+
+        module.migrate_root(self.root, backup=False)
+
+        self.assertIn("api_mode: chat_completions", config.read_text(encoding="utf-8"))
+
+    def test_cross_realm_background_review_blocks_all_writes(self):
+        module = load_module()
+        env = self.write(".env", "CUSTOM_1_API_KEY=route-token\n")
+        config = self.write(
+            "config.yaml",
+            "\n".join([
+                "model:",
+                "  default: codex/gpt-5.6-sol",
+                "  provider: openai-api",
+                "auxiliary:",
+                "  background_review:",
+                "    provider: openai-api",
+                "    model: gpt-5.6",
+                "    api_mode: codex_responses",
+                "    base_url: https://api.openai.com/v1",
+                "",
+            ]),
+        )
+        original_env = env.read_text(encoding="utf-8")
+        original_config = config.read_text(encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "background_review crosses"):
+            module.migrate_root(self.root)
+
+        self.assertEqual(env.read_text(encoding="utf-8"), original_env)
+        self.assertEqual(config.read_text(encoding="utf-8"), original_config)
+        self.assertFalse((self.root / "backups").exists())
 
     def test_dry_run_does_not_write_or_create_backups(self):
         module = load_module()

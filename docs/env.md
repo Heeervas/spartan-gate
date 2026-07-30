@@ -388,6 +388,14 @@ non-root identities for Spartan Route and legacy ClawRoute. They inherit
 `1000:1000`; the installer writes the invoking user's values so writable data
 and read-only auth mounts retain host ownership. Both routers use a read-only
 root filesystem with only `/app/data` and a bounded `/tmp` writable.
+`SPARTAN_REASONING_BINDING_SECRET` is a shared 32-byte hex secret used only by
+Hermes and Spartan Route to bind opaque Responses reasoning to the active
+`HERMES_HOME`, session, and provider realm. Generate it with
+`openssl rand -hex 32`; never reuse the public placeholder. The baseline Hermes
+runtime sets `SPARTAN_REASONING_REALM=codex_subscription`. A Hermes runtime that
+uses OpenAI API-key Responses must be separate and explicitly set
+`SPARTAN_REASONING_REALM=openai_api`; a session cannot cross those realms.
+
 Spartan Route creates SQLite files with a private process umask. `sg up`, the
 L4 installer, and doctor validate the fixed SQLite family against that runtime
 identity; use `sg-spartan-route-data-migrate` while the service is stopped for

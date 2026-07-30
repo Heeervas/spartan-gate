@@ -34,6 +34,24 @@ def routing_entry(timestamp: str, request_id: str | None = None) -> RoutingLogEn
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_reasoning_tokens_and_chain_realm_are_persisted_without_double_counting(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            entry = routing_entry("2026-07-30T10:00:00Z", "reasoning")
+            entry = RoutingLogEntry(**{**entry.__dict__, "output_tokens": 20, "reasoning_tokens": 12})
+            store.log_routing(entry)
+            row = store._conn.execute(
+                "SELECT output_tokens, reasoning_tokens FROM routing_log WHERE request_id = ?",
+                ("reasoning",),
+            ).fetchone()
+            self.assertEqual((row["output_tokens"], row["reasoning_tokens"]), (20, 12))
+            self.assertTrue(store.bind_reasoning_chain("a" * 64, "codex_subscription"))
+            self.assertTrue(store.bind_reasoning_chain("a" * 64, "codex_subscription"))
+            self.assertFalse(store.bind_reasoning_chain("a" * 64, "openai_api"))
+            self.assertEqual(store.reasoning_realm_for_chain("a" * 64), "codex_subscription")
+        finally:
+            store.close()
+
     def test_routing_log_updates_daily_cache_and_live_sessions(self) -> None:
         store = TelemetryStore(":memory:")
         try:

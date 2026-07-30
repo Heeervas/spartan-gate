@@ -58,6 +58,22 @@ Relevant files:
   overlay.
 - `infra/spartan-route/test_*.py`: focused regression suite.
 
+## Native Responses update surface
+
+- Spartan Route owns native `/v1/responses` transport, subscription slot retry,
+  SSE commit semantics, realm binding, and reasoning-token telemetry.
+- The `spartan-cache-lineage` Hermes plugin owns profile/session chain identity,
+  signed replay metadata, and safe reset when history comes from another
+  profile or provider realm.
+- Hermes configs own `api_mode: codex_responses`; automatic migration changes
+  only explicit `codex/*` models because `clawroute/auto` may resolve outside
+  the subscription realm.
+- The shared private env owns `SPARTAN_REASONING_BINDING_SECRET`; Compose passes
+  it only to Hermes and Spartan Route.
+- The selected hermes-lcm revision must round-trip `codex_reasoning_items` and
+  `codex_message_items`. This is an upstream plugin contract, not a Hermes image
+  patch.
+
 Kept in v1:
 
 - OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, `/v1/models`,
@@ -79,6 +95,24 @@ Kept in v1:
   Completions and Responses, streaming or non-streaming, return
   `400 codex_ultra_requires_app_server`, log the attempt, and do not select a
   Codex slot.
+- `/v1/responses` is transported natively for Codex subscription and OpenAI
+  API-key providers; it is never converted through Chat Completions. Requests
+  use `store=false` and include `reasoning.encrypted_content` for manual opaque
+  reasoning replay. Subscription traffic goes to the ChatGPT Codex Responses
+  backend; API-key traffic goes to the configured `/v1/responses` endpoint.
+- Signed reasoning affinity binds `HERMES_HOME + session_id` to exactly one
+  provider realm. Sol/Terra model changes remain valid inside the subscription
+  realm. Switching between subscription and API-key realms returns
+  `409 reasoning_realm_mismatch`; start a new session or branch. Copying a
+  session between profiles strips foreign opaque reasoning and server item IDs
+  while preserving visible history. The same textual session ID in two profiles
+  is safe because canonical `HERMES_HOME` is part of the signed chain identity.
+  Background review with `provider: auto` inherits that runtime and realm.
+- Codex subscription replay rejects unsigned encrypted reasoning. It also
++  rejects `store=true`, `previous_response_id`, native compaction items,
++  `context_management`, `reasoning.mode`, and non-function tools until Hermes
++  can preserve those contracts end to end. OpenAI API-key Responses remains a
++  separate explicit realm and native transport.
 - Multiple Codex auth slots from `OPENAI_CODEX_AUTH_PATHS`. Configured auth
   files are read-only bootstrap inputs. Spartan Route stores rotated OAuth
   generations separately in `/app/data/codex-auth`, keyed by a SHA-256 source
@@ -382,14 +416,16 @@ docker compose \
   config --quiet
 ```
 
-The full-stack baseline mounts the local Hermes `spartan-cache-lineage` plugin
-at `/opt/data/plugins/spartan-cache-lineage`. Hermes user plugins are opt-in,
-so enable it once in the active Hermes data profile:
+The full-stack baseline mounts the local `spartan-cache-lineage` source read-only
+at `/opt/data/plugins/spartan-cache-lineage`. The plugin remains opt-in in every
+Hermes profile. For each explicit `codex/*` Responses profile, the hot migrator
+enables it and transactionally creates a relative link from that profile plugin
+directory to the single mounted source. `clawroute/auto` profiles are left
+unchanged, and an existing non-managed plugin path fails before any config write.
+Verify a migrated profile with:
 
 ```sh
-sg exec hermes hermes plugins enable spartan-cache-lineage
-sg up -d --force-recreate hermes
-sg exec hermes hermes plugins list --plain --no-bundled | rg spartan-cache-lineage
+sg exec hermes hermes -p vault plugins list --plain | rg spartan-cache-lineage
 ```
 
 The plugin owns Spartan Route cache lineage metadata. It can preserve visible

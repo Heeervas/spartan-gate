@@ -36,6 +36,7 @@ ROUTE_PROVIDER_NAMES = {"custom-1", "Spartan Route"}
 ROUTE_BASE_URLS = {"${OPENAI_BASE_URL}", "http://spartan-route:18790/v1", "http://clawroute:18790/v1"}
 ROUTE_KEY_MARKERS = {"CUSTOM_1_API_KEY"}
 ROUTE_AUTO_ALIASES = {"clawroute/auto", "custom-1/clawroute/auto", "spartan-route/clawroute/auto"}
+REASONING_PLUGIN = "spartan-cache-lineage"
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,146 @@ def _migrate_openai_model_key_env(lines: list[str]) -> list[str]:
     return updated
 
 
+def _ensure_route_responses_api_mode(lines: list[str]) -> list[str]:
+    updated = list(lines)
+    index = 0
+    while index < len(updated):
+        if updated[index].strip() != "model:" or updated[index].startswith((" ", "\t")):
+            index += 1
+            continue
+        start = index
+        end = len(updated)
+        for cursor in range(start + 1, len(updated)):
+            if updated[cursor].strip() and not updated[cursor].startswith((" ", "\t")):
+                end = cursor
+                break
+        block = updated[start:end]
+        values = {
+            line.split(":", 1)[0].strip(): _line_value(line)
+            for line in block
+            if ":" in line and not line.lstrip().startswith("#")
+        }
+        # Only an explicit Codex model proves the subscription realm. Auto
+        # aliases can currently resolve to OpenRouter/OpenAI profiles and must
+        # stay on Chat Completions unless an operator changes them explicitly.
+        route_model = values.get("default", "").startswith("codex/")
+        route_model = route_model or values.get("model", "").startswith("codex/")
+        if values.get("provider") != ROUTE_PROVIDER or not route_model:
+            index = end
+            continue
+        api_mode_index = next(
+            (cursor for cursor in range(start + 1, end) if updated[cursor].lstrip().startswith("api_mode:")),
+            None,
+        )
+        if api_mode_index is not None:
+            raw = updated[api_mode_index]
+            indent = raw[: len(raw) - len(raw.lstrip())]
+            newline = "\n" if raw.endswith("\n") else ""
+            updated[api_mode_index] = f"{indent}api_mode: codex_responses{newline}"
+        else:
+            provider_index = next(
+                cursor for cursor in range(start + 1, end) if updated[cursor].lstrip().startswith("provider:")
+            )
+            indent = updated[provider_index][: len(updated[provider_index]) - len(updated[provider_index].lstrip())]
+            updated.insert(provider_index + 1, f"{indent}api_mode: codex_responses\n")
+            end += 1
+        index = end
+    return updated
+
+
+def _uses_route_responses(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    model = data.get("model") if isinstance(data.get("model"), dict) else {}
+    selected = str(model.get("default") or model.get("model") or "").strip()
+    return (
+        model.get("provider") == ROUTE_PROVIDER
+        and model.get("api_mode") == "codex_responses"
+        and selected.startswith("codex/")
+    )
+
+
+def _ensure_reasoning_plugin(source: str) -> str:
+    data = yaml.safe_load(source)
+    if not _uses_route_responses(data):
+        return source
+    plugins = data.get("plugins") if isinstance(data.get("plugins"), dict) else {}
+    enabled = plugins.get("enabled") if isinstance(plugins.get("enabled"), list) else []
+    if REASONING_PLUGIN in enabled:
+        return source
+
+    lines = source.splitlines(keepends=True)
+    plugin_index = next(
+        (index for index, line in enumerate(lines) if re.match(r"^plugins:\s*(?:#.*)?$", line.rstrip("\n"))),
+        None,
+    )
+    if plugin_index is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        if lines and lines[-1].strip():
+            lines.append("\n")
+        lines.extend(["plugins:\n", "  enabled:\n", f"    - {REASONING_PLUGIN}\n", "  disabled: []\n"])
+        return "".join(lines)
+
+    block_end = len(lines)
+    for index in range(plugin_index + 1, len(lines)):
+        if lines[index].strip() and not lines[index].startswith((" ", "\t", "#")):
+            block_end = index
+            break
+    enabled_index = next(
+        (index for index in range(plugin_index + 1, block_end) if re.match(r"^\s+enabled:\s*", lines[index])),
+        None,
+    )
+    if enabled_index is None:
+        lines.insert(plugin_index + 1, f"  enabled:\n    - {REASONING_PLUGIN}\n")
+        return "".join(lines)
+
+    enabled_line = lines[enabled_index]
+    indent = enabled_line[: len(enabled_line) - len(enabled_line.lstrip())]
+    inline_value = enabled_line.split(":", 1)[1].strip().split("#", 1)[0].strip()
+    if inline_value:
+        existing = plugins.get("enabled") if isinstance(plugins.get("enabled"), list) else []
+        replacement = [f"{indent}enabled:\n"]
+        replacement.extend(f"{indent}  - {item}\n" for item in existing)
+        replacement.append(f"{indent}  - {REASONING_PLUGIN}\n")
+        lines[enabled_index : enabled_index + 1] = replacement
+        return "".join(lines)
+
+    insert_at = enabled_index + 1
+    while insert_at < block_end:
+        line = lines[insert_at]
+        if line.strip() and len(line) - len(line.lstrip()) <= len(indent):
+            break
+        insert_at += 1
+    lines.insert(insert_at, f"{indent}  - {REASONING_PLUGIN}\n")
+    return "".join(lines)
+
+
+def _validate_background_review_realm(data: Any, path: Path) -> None:
+    if not isinstance(data, dict):
+        return
+    model = data.get("model") if isinstance(data.get("model"), dict) else {}
+    if model.get("api_mode") != "codex_responses":
+        return
+    auxiliary = data.get("auxiliary") if isinstance(data.get("auxiliary"), dict) else {}
+    review = auxiliary.get("background_review") if isinstance(auxiliary.get("background_review"), dict) else {}
+    provider = str(review.get("provider") or "auto").strip()
+    if provider in {"", "auto"}:
+        return
+    api_mode = str(review.get("api_mode") or "").strip()
+    base_url = str(review.get("base_url") or "").strip()
+    review_model = str(review.get("model") or "").strip()
+    same_route = (
+        api_mode == "codex_responses"
+        and (base_url in ROUTE_BASE_URLS or review_model.startswith(("clawroute/", "codex/")))
+    )
+    if not same_route:
+        raise ValueError(
+            f"{path}: auxiliary.background_review crosses the codex_subscription realm; "
+            "use provider: auto or an explicit codex_responses Spartan Route runtime"
+        )
+
+
 def migrate_config_text(source: str) -> str:
     lines = source.splitlines(keepends=True)
     lines = _remove_route_custom_provider_blocks(lines)
@@ -208,7 +349,8 @@ def migrate_config_text(source: str) -> str:
         updated = _replace_yaml_value(updated, ("default", "model", "summary_model"), LEGACY_MODEL_VALUES, ROUTE_AUTO_MODEL)
         updated = _strip_yaml_route_model_prefix(updated, ("default", "model", "summary_model"))
         migrated.append(updated + newline)
-    return "".join(_migrate_openai_model_key_env(migrated))
+    updated = "".join(_ensure_route_responses_api_mode(_migrate_openai_model_key_env(migrated)))
+    return _ensure_reasoning_plugin(updated)
 
 
 def _dict_has_route_model(value: dict[str, Any]) -> bool:
@@ -336,6 +478,22 @@ def _stage_text(path: Path, content: str, mode: int) -> Path:
         raise
 
 
+def _stage_symlink(path: Path, target: str) -> Path:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.route-link.",
+        dir=path.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    temporary.unlink()
+    try:
+        os.symlink(target, temporary)
+        return temporary
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _restore_bytes(path: Path, payload: bytes, mode: int) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.route-rollback.",
@@ -364,6 +522,7 @@ def migrate_root(
     root = root.expanduser().resolve()
     targets = discover_targets(root)
     planned: list[tuple[str, Path, str, str]] = []
+    plugin_links: list[tuple[Path, str, bool]] = []
 
     for kind, path in targets:
         source = path.read_text(encoding="utf-8")
@@ -374,9 +533,24 @@ def migrate_root(
                 raise ValueError(f"{path}: invalid YAML before migration: {exc}") from exc
             updated = migrate_config_text(source)
             try:
-                yaml.safe_load(updated)
+                migrated_data = yaml.safe_load(updated)
             except yaml.YAMLError as exc:
                 raise ValueError(f"{path}: migration produced invalid YAML: {exc}") from exc
+            _validate_background_review_realm(migrated_data, path)
+            if _uses_route_responses(migrated_data) and path.parent.parent == root / "profiles":
+                link_path = path.parent / "plugins" / REASONING_PLUGIN
+                if not link_path.parent.is_dir():
+                    raise ValueError(f"{path}: profile plugin directory is missing: {link_path.parent}")
+                link_target = os.path.relpath(root / "plugins" / REASONING_PLUGIN, link_path.parent)
+                if link_path.is_symlink():
+                    if os.readlink(link_path) != link_target:
+                        raise ValueError(f"{path}: reasoning plugin link has an unexpected target: {link_path}")
+                    link_changed = False
+                elif link_path.exists():
+                    raise ValueError(f"{path}: reasoning plugin path already exists and is not a managed link: {link_path}")
+                else:
+                    link_changed = True
+                plugin_links.append((link_path, link_target, link_changed))
         elif kind == "jobs":
             updated = migrate_jobs_text(source, path)
         elif kind == "env":
@@ -390,26 +564,36 @@ def migrate_root(
     results: list[MigrationResult] = []
 
     changed_entries = [entry for entry in planned if entry[2] != entry[3]]
-    if dry_run or not changed_entries:
-        return [
+    changed_links = [entry for entry in plugin_links if entry[2]]
+    if dry_run or (not changed_entries and not changed_links):
+        results = [
             MigrationResult(path=path, kind=kind, changed=source != updated)
             for kind, path, source, updated in planned
         ]
+        results.extend(
+            MigrationResult(path=path, kind="plugin_link", changed=changed)
+            for path, _target, changed in plugin_links
+        )
+        return results
 
     originals = {
         path: (path.read_bytes(), path.stat().st_mode)
         for _kind, path, _source, _updated in changed_entries
     }
     staged: dict[Path, Path] = {}
+    staged_links: dict[Path, Path] = {}
     installed: list[Path] = []
+    installed_links: list[Path] = []
     backup_paths: dict[Path, Path] = {}
     try:
         # Finish every parse, serialization, backup, and staged-file preflight
         # before replacing the first live Hermes file.
         for _kind, path, _source, updated in changed_entries:
             staged[path] = _stage_text(path, updated, originals[path][1])
+        for path, target, _changed in changed_links:
+            staged_links[path] = _stage_symlink(path, target)
 
-        if backup:
+        if backup and changed_entries:
             backup_root.mkdir(parents=True, exist_ok=False)
             for _kind, path, _source, _updated in changed_entries:
                 destination = _backup_path(root, path, backup_root)
@@ -420,7 +604,12 @@ def migrate_root(
         for _kind, path, _source, _updated in changed_entries:
             os.replace(staged[path], path)
             installed.append(path)
+        for path, _target, _changed in changed_links:
+            os.replace(staged_links[path], path)
+            installed_links.append(path)
     except Exception as error:
+        for path in reversed(installed_links):
+            path.unlink(missing_ok=True)
         rollback_error: Exception | None = None
         for path in reversed(installed):
             payload, mode = originals[path]
@@ -436,7 +625,7 @@ def migrate_root(
             ) from error
         raise
     finally:
-        for temporary in staged.values():
+        for temporary in (*staged.values(), *staged_links.values()):
             temporary.unlink(missing_ok=True)
 
     for kind, path, source, updated in planned:
@@ -449,6 +638,10 @@ def migrate_root(
                 backup_path=backup_paths.get(path),
             )
         )
+    results.extend(
+        MigrationResult(path=path, kind="plugin_link", changed=changed)
+        for path, _target, changed in plugin_links
+    )
     return results
 
 

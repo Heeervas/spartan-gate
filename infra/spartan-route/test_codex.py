@@ -25,6 +25,7 @@ from spartan_route.codex import (
     CodexRouter,
     CodexSlot,
     build_codex_request_body,
+    build_codex_responses_body,
     build_content_prompt_cache_key,
     chat_messages_to_responses_input,
     derive_account_id,
@@ -3519,6 +3520,190 @@ class CodexTests(unittest.TestCase):
             self.assertEqual(by_key[auth_b.account_key]["source"], "persisted")
         finally:
             store.close()
+
+
+class NativeResponsesTests(unittest.TestCase):
+    class SequenceSession:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = []
+
+        async def post(self, url, **kwargs):
+            self.calls.append({"url": url, **kwargs})
+            return self.responses.pop(0)
+
+    @staticmethod
+    def router(responses):
+        router = RetryRouter()
+        router.session = NativeResponsesTests.SequenceSession(responses)
+        router.telemetry = None
+        router.refresh_locks = {}
+        router._availability_event = None
+        router._availability_event_loop = None
+        return router
+
+    def test_builder_preserves_reasoning_items_and_requests_encrypted_content(self) -> None:
+        reasoning_item = {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"}
+        body = build_codex_responses_body(
+            {
+                "model": "codex/gpt-5.6-sol",
+                "input": [reasoning_item, {"role": "user", "content": "continue"}],
+                "reasoning": {"effort": "high"},
+                "spartan_chain_id": "private-routing-field",
+                "spartan_cache_lineage": 2,
+                "spartan_cache_lineage_reason": "history_rewrite",
+            },
+            "gpt-5.6-sol",
+            "cache-key",
+        )
+        self.assertEqual(body["input"][0], reasoning_item)
+        self.assertEqual(body["reasoning"], {"effort": "high", "context": "all_turns"})
+        self.assertEqual(body["include"], ["reasoning.encrypted_content"])
+        self.assertFalse(body["store"])
+        self.assertTrue(body["stream"])
+        self.assertNotIn("spartan_chain_id", body)
+        self.assertNotIn("spartan_cache_lineage", body)
+        self.assertNotIn("spartan_cache_lineage_reason", body)
+
+        string_body = build_codex_responses_body(
+            {
+                "model": "codex/gpt-5.6-sol",
+                "input": "hello",
+                "reasoning_effort": "max",
+                "max_output_tokens": 100,
+            },
+            "gpt-5.6-sol",
+            None,
+        )
+        self.assertEqual(string_body["input"], [{
+            "type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}],
+        }])
+        self.assertEqual(string_body["reasoning"], {"effort": "max", "context": "all_turns"})
+        self.assertNotIn("max_output_tokens", string_body)
+
+    def test_nonstream_preserves_opaque_output_and_reasoning_usage_is_subset(self) -> None:
+        from spartan_route.native_responses import execute_codex_responses
+
+        terminal = {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_1",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning", "id": "rs_2", "encrypted_content": "ciphertext"},
+                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]},
+                ],
+                "usage": {
+                    "input_tokens": 100,
+                    "input_tokens_details": {"cached_tokens": 60},
+                    "output_tokens": 20,
+                    "output_tokens_details": {"reasoning_tokens": 50},
+                },
+            },
+        }
+        router = self.router([FakeResponse(events=[("response.completed", terminal)])])
+        result = asyncio_run(execute_codex_responses(
+            router,
+            {"model": "codex/gpt-5.6-sol", "input": "hello", "spartan_chain_id": "chain-a"},
+            "codex/gpt-5.6-sol",
+            False,
+            "session-a",
+            None,
+        ))
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.body["output"][0]["encrypted_content"], "ciphertext")
+        self.assertEqual(result.body["metadata"]["spartan_reasoning_realm"], "codex_subscription")
+        self.assertEqual(result.output_tokens, 20)
+        self.assertEqual(result.reasoning_tokens, 20)
+        self.assertEqual(router.session.calls[0]["json"]["input"][0]["content"][0]["text"], "hello")
+
+    def test_nonstream_reconstructs_output_from_completed_items(self) -> None:
+        from spartan_route.native_responses import execute_codex_responses
+
+        item = {"type": "reasoning", "id": "rs_done", "encrypted_content": "opaque"}
+        router = self.router([FakeResponse(events=[
+            ("response.output_item.done", {"type": "response.output_item.done", "item": item}),
+            ("response.completed", {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_done",
+                    "object": "response",
+                    "status": "completed",
+                    "output": None,
+                },
+            }),
+        ])])
+        result = asyncio_run(execute_codex_responses(
+            router,
+            {"model": "codex/gpt-5.6-sol", "input": "hello"},
+            "codex/gpt-5.6-sol",
+            False,
+            "session-output",
+            None,
+        ))
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.body["output"], [item])
+
+    def test_stream_retries_only_before_first_material_event(self) -> None:
+        from spartan_route.native_responses import execute_codex_responses
+
+        created = sse_event("response.created", {"type": "response.created", "response": {"id": "resp_a", "object": "response", "status": "in_progress"}})
+        failed = FailingResponse(ConnectionError("precommit"), chunks=[created])
+        success = FakeResponse(events=[
+            ("response.output_text.delta", {"type": "response.output_text.delta", "delta": "ok"}),
+            ("response.completed", {"type": "response.completed", "response": {"id": "resp_b", "object": "response", "status": "completed", "usage": {"input_tokens": 4, "output_tokens": 2}}}),
+        ])
+        router = self.router([failed, success])
+        async def execute_and_collect():
+            result = await execute_codex_responses(
+                router,
+                {"model": "codex/gpt-5.6-sol", "input": "hello", "spartan_chain_id": "chain-b"},
+                "codex/gpt-5.6-sol",
+                True,
+                "session-b",
+                None,
+            )
+            chunks = []
+            async for chunk in result.stream:
+                chunks.append(chunk)
+            return result, b"".join(chunks)
+
+        result, raw = asyncio_run(execute_and_collect())
+        payload = raw.decode()
+        self.assertEqual(len(router.session.calls), 2)
+        self.assertEqual(result.slot_index, 1)
+        self.assertIn("response.output_text.delta", payload)
+        self.assertIn("spartan_reasoning_realm", payload)
+        self.assertTrue(result.completed)
+
+    def test_stream_does_not_retry_after_material_commit(self) -> None:
+        from spartan_route.native_responses import execute_codex_responses
+
+        material = sse_event("response.output_text.delta", {"type": "response.output_text.delta", "delta": "partial"})
+        response = FailingResponse(ConnectionError("postcommit"), chunks=[material])
+        router = self.router([response])
+        async def execute_and_collect():
+            result = await execute_codex_responses(
+                router,
+                {"model": "codex/gpt-5.6-sol", "input": "hello"},
+                "codex/gpt-5.6-sol",
+                True,
+                "session-c",
+                None,
+            )
+            chunks = []
+            async for chunk in result.stream:
+                chunks.append(chunk)
+            return result, b"".join(chunks)
+
+        result, raw = asyncio_run(execute_and_collect())
+        payload = raw.decode()
+        self.assertEqual(len(router.session.calls), 1)
+        self.assertIn("partial", payload)
+        self.assertIn("codex_stream_error", payload)
+
 
 
 def asyncio_run(coro):

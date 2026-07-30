@@ -55,6 +55,7 @@ class RoutingLogEntry:
     input_tokens: int = 0
     cached_input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int | None = None
     original_cost_usd: float = 0.0
     actual_cost_usd: float = 0.0
     savings_usd: float = 0.0
@@ -140,6 +141,7 @@ class TelemetryStore:
                     confidence REAL NOT NULL DEFAULT 0,
                     input_tokens INTEGER NOT NULL DEFAULT 0,
                     output_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER,
                     original_cost_usd REAL NOT NULL DEFAULT 0,
                     actual_cost_usd REAL NOT NULL DEFAULT 0,
                     savings_usd REAL NOT NULL DEFAULT 0,
@@ -278,6 +280,12 @@ class TelemetryStore:
                     model_id TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS reasoning_chain_bindings (
+                    chain_id TEXT PRIMARY KEY,
+                    realm TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_routing_log_session ON routing_log(session_id, id);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_turn ON routing_log(turn_id, id);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_time ON routing_log(timestamp);
@@ -296,6 +304,7 @@ class TelemetryStore:
                     "total_response_time_ms": "INTEGER",
                     "actual_tool_call_count": "INTEGER",
                     "actual_tool_names": "TEXT",
+                    "reasoning_tokens": "INTEGER",
                 },
             )
             self._conn.commit()
@@ -325,19 +334,19 @@ class TelemetryStore:
                 INSERT INTO routing_log (
                     timestamp, original_model, routed_model, actual_model, tier,
                     classification_reason, confidence, input_tokens, cached_input_tokens,
-                    output_tokens, original_cost_usd, actual_cost_usd, savings_usd,
+                    output_tokens, reasoning_tokens, original_cost_usd, actual_cost_usd, savings_usd,
                     escalated, escalation_chain, response_time_ms, upstream_response_time_ms,
                     total_response_time_ms, had_tool_calls, actual_tool_call_count,
                     actual_tool_names,
                     is_dry_run, is_override, session_id, error, prompt_preview,
                     context_info, request_api_kind, requested_reasoning_effort,
                     selected_codex_slot_index, selected_codex_account_key, request_id, turn_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.timestamp, entry.original_model, entry.routed_model, entry.actual_model, entry.tier,
                     entry.classification_reason, entry.confidence, entry.input_tokens, entry.cached_input_tokens,
-                    entry.output_tokens, entry.original_cost_usd, entry.actual_cost_usd, entry.savings_usd,
+                    entry.output_tokens, entry.reasoning_tokens, entry.original_cost_usd, entry.actual_cost_usd, entry.savings_usd,
                     int(entry.escalated), entry.escalation_chain, entry.response_time_ms,
                     entry.upstream_response_time_ms, entry.total_response_time_ms, int(entry.had_tool_calls),
                     entry.actual_tool_call_count,
@@ -412,6 +421,33 @@ class TelemetryStore:
                 ),
             )
             self._conn.commit()
+
+    def reasoning_realm_for_chain(self, chain_id: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT realm FROM reasoning_chain_bindings WHERE chain_id = ?",
+                (chain_id,),
+            ).fetchone()
+        return str(row["realm"]) if row is not None else None
+
+    def bind_reasoning_chain(self, chain_id: str, realm: str) -> bool:
+        timestamp = now_iso()
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO reasoning_chain_bindings (chain_id, realm, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (chain_id, realm, timestamp, timestamp),
+            )
+            row = self._conn.execute(
+                "SELECT realm FROM reasoning_chain_bindings WHERE chain_id = ?",
+                (chain_id,),
+            ).fetchone()
+            if row is None or str(row["realm"]) != realm:
+                return False
+            self._conn.execute(
+                "UPDATE reasoning_chain_bindings SET updated_at = ? WHERE chain_id = ?",
+                (timestamp, chain_id),
+            )
+        return True
 
     def enforce_routing_retention(
         self,

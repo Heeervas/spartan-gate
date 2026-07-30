@@ -167,6 +167,7 @@ class CodexCallResult:
     input_tokens: int = 0
     cached_input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int | None = None
     error: str | None = None
     actual_tool_call_count: int | None = None
     actual_tool_names: list[str] | None = None
@@ -448,6 +449,50 @@ def build_codex_request_body(request: dict[str, Any], model_name: str, prompt_ca
         effort = request["reasoning_effort"].strip().lower()
         if effort:
             body["reasoning"] = {"effort": effort}
+    return body
+
+
+def build_codex_responses_body(
+    request: dict[str, Any],
+    model_name: str,
+    prompt_cache_key: str | None,
+) -> dict[str, Any]:
+    """Build a native Codex Responses request without a Chat conversion."""
+    body = copy.deepcopy(request)
+    body["model"] = model_name
+    body["stream"] = True
+    body["store"] = False
+    if isinstance(body.get("input"), str):
+        body["input"] = [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": body["input"]}],
+        }]
+    body.pop("max_output_tokens", None)
+    for key in (
+        "spartan_chain_id",
+        "spartan_expected_realm",
+        "spartan_binding_mac",
+        "spartan_cache_lineage",
+        "spartan_cache_lineage_reason",
+    ):
+        body.pop(key, None)
+    if prompt_cache_key:
+        body["prompt_cache_key"] = prompt_cache_key
+    include = body.get("include")
+    if not isinstance(include, list):
+        include = []
+    if "reasoning.encrypted_content" not in include:
+        include = [*include, "reasoning.encrypted_content"]
+    body["include"] = include
+    reasoning = body.get("reasoning")
+    if not isinstance(reasoning, dict):
+        reasoning = {}
+    effort = body.pop("reasoning_effort", None)
+    if isinstance(effort, str) and effort.strip():
+        reasoning.setdefault("effort", effort.strip().lower())
+    reasoning.setdefault("context", "all_turns")
+    body["reasoning"] = reasoning
     return body
 
 

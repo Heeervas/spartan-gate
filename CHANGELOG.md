@@ -3,6 +3,14 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Added native Responses transport for Codex Subscription and OpenAI API-key
+  providers, including encrypted reasoning replay, signed profile/session realm
+  affinity, pre-commit-only slot retry, nullable reasoning-token telemetry,
+  Hermes/LCM replay preservation, and transactional private config migration.
+  Profile-local plugin discovery uses managed relative links to the single
+  read-only user-plugin mount; migration enables it only for explicit Codex
+  Responses profiles and rejects path collisions before writing config.
+
 - Added an approval-gated, fixed-destination workstation terminal and bounded
   file-transfer path for Hermes, with a private Unix broker, exact SSH host-key
   pinning, scoped restart/revocation helpers, and fail-closed regression tests.

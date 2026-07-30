@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -76,12 +78,13 @@ class FakeUpstreamResponse:
 
 
 class FakeOpenAISession:
-    def __init__(self) -> None:
+    def __init__(self, body: dict[str, Any] | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.body = body
 
     def post(self, url: str, **kwargs):
         self.calls.append({"url": url, **kwargs})
-        return FakeUpstreamResponse()
+        return FakeUpstreamResponse(body=self.body)
 
     async def close(self) -> None:
         pass
@@ -1002,6 +1005,162 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 503)
         payload = await response.json()
         self.assertEqual(payload["error"]["code"], "provider_not_supported")
+
+    async def test_responses_endpoint_preserves_native_reasoning_items(self) -> None:
+        captured: list[dict[str, Any]] = []
+        reasoning_item = {"type": "reasoning", "encrypted_content": "opaque-input"}
+        secret_hex = "55" * 32
+        chain_id = "66" * 32
+        realm = "codex_subscription"
+        binding_mac = hmac.new(bytes.fromhex(secret_hex), f"{chain_id}\0{realm}".encode(), hashlib.sha256).hexdigest()
+
+        async def fake_execute(_router, request, model_id, wants_stream, session_id, prompt_cache_key):
+            captured.append({
+                "request": request,
+                "model_id": model_id,
+                "wants_stream": wants_stream,
+                "session_id": session_id,
+                "prompt_cache_key": prompt_cache_key,
+            })
+            return CodexCallResult(
+                status=200,
+                body={
+                    "id": "resp_native",
+                    "object": "response",
+                    "status": "completed",
+                    "output": [{"type": "reasoning", "encrypted_content": "opaque-output"}],
+                    "usage": {"input_tokens": 10, "output_tokens": 4},
+                },
+                input_tokens=10,
+                output_tokens=4,
+                reasoning_tokens=3,
+                completed=True,
+                usage_seen=True,
+            )
+
+        with patch.dict(os.environ, {"SPARTAN_REASONING_BINDING_SECRET": secret_hex}, clear=False), patch("spartan_route.app.execute_codex_responses", side_effect=fake_execute):
+            response = await self.client.post(
+                "/v1/responses",
+                headers={"Authorization": "Bearer secret"},
+                json={
+                    "model": "codex/gpt-5.6-sol",
+                    "input": [reasoning_item, {"role": "user", "content": "continue"}],
+                    "reasoning": {"effort": "high"},
+                    "spartan_chain_id": chain_id,
+                    "spartan_expected_realm": realm,
+                    "spartan_binding_mac": binding_mac,
+                },
+            )
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["output"][0]["encrypted_content"], "opaque-output")
+        self.assertEqual(captured[0]["request"]["input"][0], reasoning_item)
+        self.assertEqual(captured[0]["request"]["reasoning"], {"effort": "high"})
+
+    async def test_codex_encrypted_replay_requires_signed_binding(self) -> None:
+        with patch("spartan_route.app.execute_codex_responses") as execute:
+            response = await self.client.post(
+                "/v1/responses",
+                headers={"Authorization": "Bearer secret"},
+                json={
+                    "model": "codex/gpt-5.6-sol",
+                    "input": [{"type": "reasoning", "encrypted_content": "opaque"}],
+                },
+            )
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual((await response.json())["error"]["code"], "reasoning_binding_required")
+        execute.assert_not_called()
+
+    async def test_codex_responses_rejects_unreplayable_capabilities_before_egress(self) -> None:
+        cases = (
+            ({"store": True}, "codex_responses_store_not_supported"),
+            ({"previous_response_id": "resp_previous"}, "codex_previous_response_not_supported"),
+            ({"context_management": [{"type": "compaction"}]}, "codex_compaction_not_supported"),
+            ({"input": [{"type": "compaction", "encrypted_content": "opaque"}]}, "codex_compaction_not_supported"),
+            ({"reasoning": {"mode": "summary"}}, "codex_reasoning_mode_not_supported"),
+            ({"tools": [{"type": "web_search_preview"}]}, "codex_tool_type_not_supported"),
+        )
+
+        with patch("spartan_route.app.execute_codex_responses") as execute:
+            for extra, expected_code in cases:
+                with self.subTest(expected_code=expected_code):
+                    request_body = {
+                        "model": "codex/gpt-5.6-sol",
+                        "input": "hello",
+                        **extra,
+                    }
+                    response = await self.client.post(
+                        "/v1/responses",
+                        headers={"Authorization": "Bearer secret"},
+                        json=request_body,
+                    )
+                    self.assertEqual(response.status, 400)
+                    self.assertEqual((await response.json())["error"]["code"], expected_code)
+
+        execute.assert_not_called()
+
+    async def test_openai_api_responses_uses_responses_endpoint_without_chat_conversion(self) -> None:
+        state = self.app[STATE_KEY]
+        if state.session is not None:
+            await state.session.close()
+        fake_session = FakeOpenAISession({
+            "id": "resp_api",
+            "object": "response",
+            "status": "completed",
+            "output": [{"type": "reasoning", "encrypted_content": "api-cipher"}],
+            "usage": {"input_tokens": 8, "output_tokens": 5, "output_tokens_details": {"reasoning_tokens": 2}},
+        })
+        state.session = fake_session
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=False):
+            response = await self.client.post(
+                "/v1/responses",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "openai/gpt-test", "input": "hello", "reasoning": {"effort": "medium"}},
+            )
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["output"][0]["encrypted_content"], "api-cipher")
+        self.assertEqual(payload["metadata"]["spartan_reasoning_realm"], "openai_api")
+        self.assertTrue(fake_session.calls[0]["url"].endswith("/responses"))
+        self.assertEqual(fake_session.calls[0]["json"]["input"], "hello")
+        self.assertNotIn("messages", fake_session.calls[0]["json"] )
+        self.assertFalse(fake_session.calls[0]["json"]["store"] )
+
+    async def test_reasoning_chain_allows_subscription_model_switch_and_rejects_api_realm(self) -> None:
+        secret_hex = "44" * 32
+        chain_id = hmac.new(bytes.fromhex(secret_hex), b"/opt/data/profiles/work\0shared", hashlib.sha256).hexdigest()
+        realm = "codex_subscription"
+        binding_mac = hmac.new(bytes.fromhex(secret_hex), f"{chain_id}\0{realm}".encode(), hashlib.sha256).hexdigest()
+        binding = {
+            "spartan_chain_id": chain_id,
+            "spartan_expected_realm": realm,
+            "spartan_binding_mac": binding_mac,
+        }
+
+        async def fake_execute(*_args, **_kwargs):
+            return CodexCallResult(status=200, body={"id": "resp", "object": "response", "status": "completed", "output": []}, completed=True)
+
+        with patch.dict(os.environ, {"SPARTAN_REASONING_BINDING_SECRET": secret_hex}, clear=False), patch("spartan_route.app.execute_codex_responses", side_effect=fake_execute):
+            for model in ("codex/gpt-5.6-sol", "codex/gpt-5.6-terra"):
+                accepted = await self.client.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer secret"},
+                    json={"model": model, "input": "continue", **binding},
+                )
+                self.assertEqual(accepted.status, 200)
+            rejected = await self.client.post(
+                "/v1/responses",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "openai/gpt-test", "input": "continue", **binding},
+            )
+
+        self.assertEqual(rejected.status, 409)
+        self.assertEqual((await rejected.json())["error"]["code"], "reasoning_realm_mismatch")
+        self.assertEqual(self.store.reasoning_realm_for_chain(chain_id), "codex_subscription")
 
     async def test_ultra_is_logged_and_rejected_before_codex_for_both_apis_and_stream_modes(self) -> None:
         state = self.app[STATE_KEY]
