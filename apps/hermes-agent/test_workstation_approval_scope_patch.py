@@ -199,11 +199,31 @@ class WorkstationApprovalScopePatchTests(unittest.TestCase):
         self.assertFalse(result["approved"])
         self.assertIn("live gateway owner", result["message"])
 
-    def test_one_time_approval_from_cron_fails_closed_with_live_callback(self):
+    def test_leaked_cron_env_does_not_mask_registered_gateway_owner(self):
         patcher = load_patcher()
         namespace = {}
         exec(patcher.patch_source(upstream_fixture()), namespace)
         namespace["env_var_enabled"] = lambda name: name == "HERMES_CRON_SESSION"
+
+        result = namespace["request_one_time_tool_approval"](
+            "workstation_transfer",
+            "Transfer one bounded file.",
+            command="download exchange/demo.txt -> default:demo.txt",
+            workdir="/home/hermes-worker/workspace",
+            approval_scope="workstation_hermes",
+            display_label="Hermes Workstation",
+        )
+
+        self.assertTrue(result["approved"])
+        self.assertIn("approval_data", namespace["captured"])
+
+    def test_cron_without_session_key_fails_closed_even_if_empty_callback_exists(self):
+        patcher = load_patcher()
+        namespace = {}
+        exec(patcher.patch_source(upstream_fixture()), namespace)
+        namespace["env_var_enabled"] = lambda name: name == "HERMES_CRON_SESSION"
+        namespace["get_current_session_key"] = lambda default="": ""
+        namespace["_gateway_notify_cbs"][""] = object()
 
         result = namespace["request_one_time_tool_approval"](
             "workstation_transfer",

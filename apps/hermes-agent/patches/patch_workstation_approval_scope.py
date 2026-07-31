@@ -201,7 +201,13 @@ def request_one_time_tool_approval(
                 "displayable command and workdir."
             ),
         }
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if not approval_scope or not re.fullmatch(r"[a-z0-9_.-]{1,64}", approval_scope):
+        return {"approved": False, "message": "BLOCKED: invalid approval scope."}
+    # HERMES_CRON_SESSION is process-global and the in-process scheduler leaves
+    # it enabled after its first job.  Authority comes from the context-local
+    # non-empty session key plus its currently registered gateway callback.
+    session_key = get_current_session_key(default="")
+    if not session_key:
         return {
             "approved": False,
             "message": (
@@ -209,9 +215,6 @@ def request_one_time_tool_approval(
                 "live gateway owner."
             ),
         }
-    if not approval_scope or not re.fullmatch(r"[a-z0-9_.-]{1,64}", approval_scope):
-        return {"approved": False, "message": "BLOCKED: invalid approval scope."}
-    session_key = get_current_session_key(default="")
     with _lock:
         notify_cb = _gateway_notify_cbs.get(session_key)
     if notify_cb is None:

@@ -67,9 +67,12 @@ terminal plugin does not replace or modify the Blender MCP path.
   file data at 512 MiB, 10,000 entries, and fixed structural roots. They reject
   traversal, symlinks, hardlinks, special files, filesystem crossings, private
   keys, credential-store paths, and unapproved sensitive files.
-- A registered per-session gateway notification callback is the authoritative
-  proof of a live approval owner. Missing callbacks and cron contexts remain
-  fail-closed even if other session metadata is present.
+- A non-empty context-local session key plus its registered gateway notification
+  callback is the authoritative proof of a live approval owner. The scheduler's
+  process-global `HERMES_CRON_SESSION` flag is not an ownership signal because
+  it remains enabled after the first in-process job. Cron binds an empty session
+  key, so cron and missing-callback contexts remain fail-closed even if other
+  metadata is present.
 - File bytes use a versioned framed stream over the same owner-only Unix socket;
   they are never embedded in model-visible commands, JSON, Base64, or output.
 
