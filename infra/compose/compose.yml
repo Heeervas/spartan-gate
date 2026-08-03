@@ -631,6 +631,8 @@ services:
     volumes:
       # required: isolated public runtime data. Change this line for a different Hermes data path.
       - ../../runtime/hermes:/opt/data
+      # required: versioned runtime guidance, exposed directly to Hermes as read-only data.
+      - ../../apps/hermes-agent/runtime-docs:/opt/data/brain/runtime_docs:ro
       # required: broker can clear stale Chromium Singleton locks after confirming Browserless is idle.
       - ../../runtime/browserless/profiles:/profiles
       # required: agent can inspect but not modify the public proxy whitelist fragment.

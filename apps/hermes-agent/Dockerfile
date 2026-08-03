@@ -113,7 +113,6 @@ COPY --chown=0:0 --chmod=0644 browserless-cdp-url.js /opt/hermes/bootstrap/brows
 COPY --chown=0:0 --chmod=0644 browserless-profile-live.js /opt/hermes/bootstrap/browserless-profile-live.js
 COPY --chown=0:0 --chmod=0644 browserless-cdp-broker.py /opt/hermes/bootstrap/browserless-cdp-broker.py
 COPY --chown=0:0 --chmod=0644 pocket-tts-client.py /opt/hermes/bootstrap/pocket-tts-client.py
-COPY --chown=0:0 --chmod=a+rX,go-w runtime-docs/ /opt/hermes/runtime-docs/
 
 # Install gogcli (Google CLI — Gmail, Calendar, Drive, Docs, Sheets, etc.)
 # https://github.com/openclaw/gogcli

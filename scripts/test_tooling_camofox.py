@@ -848,6 +848,27 @@ esac
         self.assertIn("tmux <attach-session> <-t> <=codex-work>", reuse_calls)
         self.assertNotIn("<new-session>", reuse_calls)
 
+    def test_tmux_codex_accepts_existing_codex_home_profile(self):
+        bin_dir, log = self.write_tmux_stub()
+        test_home = self.root / "home"
+        profile_home = test_home / ".codex_piti"
+        profile_home.mkdir(parents=True)
+
+        result = self.run_sourced_with_path(
+            "sg-tmux codex piti gate-work --search",
+            bin_dir,
+            {"HOME": str(test_home)},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = log.read_text(encoding="utf-8")
+        self.assertIn(f"<new-session> <-s> <gate-work> <-c> <{self.root}>", calls)
+        self.assertIn("host\\ env\\ CODEX_HOME=", calls)
+        self.assertIn(f"CODEX_HOME={profile_home}", calls)
+        self.assertIn(str(bin_dir / "codex"), calls)
+        self.assertIn("--search", calls)
+        self.assertNotIn("<-s> <piti>", calls)
+
     def test_tmux_hermes_entry_forwards_exact_cli_shape(self):
         for arguments, expected in (
             ("", "<hermes>"),

@@ -6,8 +6,11 @@ HERMES_DIR = pathlib.Path(__file__).parent
 REPO_ROOT = HERMES_DIR.parents[1]
 DOCKERFILE_PATH = HERMES_DIR / 'Dockerfile'
 ENTRYPOINT_PATH = HERMES_DIR / 'entrypoint-wrapper.sh'
-PACKAGE_INSTALLS_DOC_PATH = HERMES_DIR / 'runtime-docs' / 'package-installs.md'
+RUNTIME_DOCS_DIR = HERMES_DIR / 'runtime-docs'
+PACKAGE_INSTALLS_DOC_PATH = RUNTIME_DOCS_DIR / 'local' / 'package-installs.md'
+CAMOFOX_DOC_PATH = RUNTIME_DOCS_DIR / 'local' / 'camofox.md'
 COMPOSE_PATH = REPO_ROOT / 'infra' / 'compose' / 'compose.yml'
+PRIVATE_COMPOSE_PATH = REPO_ROOT / 'private.example' / 'compose.local.yml'
 TIER_COMPOSE_DIR = REPO_ROOT / 'infra' / 'compose' / 'tiers'
 REMOVED_PATCH_PATH = HERMES_DIR / 'patches' / 'patch_post_tool_empty_retry.py'
 ARCHIVED_CAMOFOX_PATCH_PATH = (
@@ -69,7 +72,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
     def test_dockerfile_keeps_install_tree_root_owned(self):
         dockerfile = read_text(DOCKERFILE_PATH)
 
-        self.assertIn('--chmod=a+rX,go-w runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
+        self.assertNotIn('runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
         self.assertNotIn('RUN chown -R root:root /opt/hermes', dockerfile)
         self.assertIn('chmod 0644 /opt/hermes/.venv/.lock', dockerfile)
         self.assertIn('audit-install-tree.py /opt/hermes', dockerfile)
@@ -123,22 +126,51 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('SEARXNG_URL: http://searxng:8080', compose)
         self.assertIn('SEARXNG_INSTANCE_URL: http://searxng:8080', compose)
 
-    def test_entrypoint_seeds_package_install_runtime_doc_once(self):
+    def test_runtime_docs_are_read_only_compose_mounts(self):
+        dockerfile = read_text(DOCKERFILE_PATH)
         entrypoint = read_text(ENTRYPOINT_PATH)
+        compose = read_text(COMPOSE_PATH)
+        private_compose = read_text(PRIVATE_COMPOSE_PATH)
         package_doc = read_text(PACKAGE_INSTALLS_DOC_PATH)
+        camofox_doc = read_text(CAMOFOX_DOC_PATH)
 
-        self.assertIn('runtime_doc_src="$INSTALL_DIR/runtime-docs/package-installs.md"', entrypoint)
-        self.assertIn('runtime_docs_dir="$HERMES_HOME/brain/runtime_docs"', entrypoint)
-        self.assertIn('runtime_doc_dst="$runtime_docs_dir/package-installs.md"', entrypoint)
-        self.assertIn('if [ -f "$runtime_doc_src" ] && [ ! -f "$runtime_doc_dst" ]; then', entrypoint)
-        self.assertIn('if mkdir -p "$runtime_docs_dir"; then', entrypoint)
-        self.assertIn('chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$runtime_docs_dir"', entrypoint)
-        self.assertIn('if run_as_hermes test -w "$runtime_docs_dir" && run_as_hermes cp "$runtime_doc_src" "$runtime_doc_dst"; then', entrypoint)
-        self.assertIn('Runtime package install doc not copied to ${runtime_doc_dst}; continuing', entrypoint)
-        self.assertNotIn('cp -f "$runtime_doc_src" "$runtime_doc_dst"', entrypoint)
+        self.assertIn(
+            '../../apps/hermes-agent/runtime-docs:/opt/data/brain/runtime_docs:ro',
+            compose,
+        )
+        self.assertIn(
+            '../../private/docs/hermes-shared:/opt/data/brain/runtime_docs/local/private:ro',
+            private_compose,
+        )
+        self.assertTrue((RUNTIME_DOCS_DIR / 'local' / 'private').is_dir())
+        self.assertNotIn('runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
+        self.assertNotIn('runtime_docs_dir=', entrypoint)
+        self.assertNotIn('runtime_doc_src=', entrypoint)
+        self.assertNotIn('Runtime doc copied', entrypoint)
         self.assertIn('uv pip install --python .venv/bin/python package==version', package_doc)
         self.assertIn('npm install package@version', package_doc)
         self.assertIn('sg-whitelist-domain 15d api.nuget.org', package_doc)
+        for tool in (
+            'browser_navigate',
+            'browser_snapshot',
+            'browser_click',
+            'browser_type',
+            'browser_scroll',
+            'browser_back',
+            'browser_press',
+            'browser_get_images',
+            'browser_vision',
+            'browser_console',
+        ):
+            with self.subTest(tool=tool):
+                self.assertIn(f'`{tool}`', camofox_doc)
+        self.assertIn('POST /tabs/{tabId}/spartan/viewport', camofox_doc)
+        self.assertIn('Contexts / `userId` sessions | 8', camofox_doc)
+        self.assertIn('Tabs per context | 4', camofox_doc)
+        self.assertIn('Tabs across Camofox | 12', camofox_doc)
+        self.assertIn('Recycle backoff | 0 s, 30 s, 2 min, 10 min, 30 min', camofox_doc)
+        self.assertIn('`POST /tabs/open` is intentionally disabled with HTTP 410', camofox_doc)
+        self.assertIn('invalidate every active Hermes and operator', camofox_doc)
 
     def test_config_migration_is_not_deferred_to_main_wrapper(self):
         entrypoint = read_text(ENTRYPOINT_PATH)

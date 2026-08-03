@@ -41,13 +41,15 @@ Hermes is the default public agent. If you want to use another agent, keep that 
 Hermes includes native Pango/Cairo, ffmpeg, and a curated TeX subset for
 creative tools such as Manim, but Python and Node packages should still be
 installed into project-local sandboxes under `/opt/data` or the workspace.
-Hermes seeds `/opt/data/brain/runtime_docs/package-installs.md` on first boot
-with the supported `uv` and npm flows when the brain path is writable. Mount
-private runtime guidance under a child directory such as
-`/opt/data/brain/runtime_docs/local:ro`, not over `runtime_docs` itself, so the
-packaged doc and local docs can coexist. Extra postinstall domains remain
-private policy; add them with `sg-whitelist-domain 15d <domain>` after
-inspecting the failed request.
+Compose mounts the versioned runtime guides read-only under
+`/opt/data/brain/runtime_docs/local/`; no Hermes image rebuild or startup copy
+is required. The package-install guide covers the supported `uv` and npm flows;
+the Camofox guide covers Hermes browser capabilities, API endpoints, tab
+limits, recovery timing, and runtime viewports. Installation-specific guidance
+can be mounted read-only under `/opt/data/brain/runtime_docs/local/private/` so
+both sources remain distinct. Extra postinstall domains remain private policy;
+add them with `sg-whitelist-domain 15d <domain>` after inspecting the failed
+request.
 
 L4 uses Hermes native SearXNG support for `web_search` through
 `SEARXNG_URL=http://searxng:8080`. Spartan Gate no longer bundles
@@ -322,7 +324,8 @@ The public `sg-tmux` group and the personal shortcuts in
 
 ```sh
 tnew scratch                         # named interactive shell
-tcodex gate-work -p deep             # Codex in the current directory
+tcodex gate-work                     # Codex with the normal ~/.codex home
+tcodex piti gate-work                # CODEX_HOME=~/.codex_piti codex
 thermes h-default                    # runs: hermes
 thermes h-chat chat                  # runs: hermes chat
 thermes h-coach -p coach chat        # runs: hermes -p coach chat
@@ -333,6 +336,12 @@ tattach                              # native interactive session tree
 tchoose                              # same native tree explicitly
 tkeys                                # print the navigation keys
 ```
+
+For `tcodex`, an existing `~/.codex_<profile>` may be placed before the tmux
+session name. The session keeps exactly the requested name, and `CODEX_HOME` is
+set only for the Codex process. Remaining arguments are forwarded unchanged;
+Codex's `-p/--profile` option selects a layered config inside the chosen
+`CODEX_HOME` and does not select the home itself.
 
 The first `thermes` argument is only the tmux session name. Every remaining
 argument is forwarded to Hermes in the same order; the helper never infers a

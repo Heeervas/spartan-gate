@@ -116,22 +116,6 @@ fi
 # Installed-code patches are build-time-only. Runtime hooks below may update
 # only data/config under HERMES_HOME.
 
-# Seed runtime docs once, leaving local edits in /opt/data authoritative.
-runtime_doc_src="$INSTALL_DIR/runtime-docs/package-installs.md"
-runtime_docs_dir="$HERMES_HOME/brain/runtime_docs"
-runtime_doc_dst="$runtime_docs_dir/package-installs.md"
-if [ -f "$runtime_doc_src" ] && [ ! -f "$runtime_doc_dst" ]; then
-    if mkdir -p "$runtime_docs_dir"; then
-        chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$runtime_docs_dir" 2>/dev/null || true
-        chmod u+rwx "$runtime_docs_dir" 2>/dev/null || true
-    fi
-    if run_as_hermes test -w "$runtime_docs_dir" && run_as_hermes cp "$runtime_doc_src" "$runtime_doc_dst"; then
-        echo "[entrypoint] Runtime package install doc copied to ${runtime_doc_dst}"
-    else
-        echo "[entrypoint] Runtime package install doc not copied to ${runtime_doc_dst}; continuing" >&2
-    fi
-fi
-
 # Keep the Meet workspace private and writable by the Hermes runtime user.
 meet_workspace="$HERMES_HOME/workspace/meetings"
 run_as_hermes mkdir -p "$meet_workspace"

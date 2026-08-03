@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Mounted versioned Hermes runtime guides read-only from Compose, including public package-install and Camofox capability guidance plus a separate private documentation overlay. Removed the image-baked guide and startup seeding path.
+
+- Added optional `CODEX_HOME` selection to `sg-tmux codex` when an existing named local Codex home is supplied, while preserving exact tmux session names and argument forwarding.
+
 - Added native Responses transport for Codex Subscription and OpenAI API-key
   providers, including encrypted reasoning replay, signed profile/session realm
   affinity, pre-commit-only slot retry, nullable reasoning-token telemetry,

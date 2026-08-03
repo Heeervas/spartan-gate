@@ -380,8 +380,15 @@ Usage:
   sg-tmux attach [name]                     attach by name or open the session tree
   sg-tmux choose                            open the native tmux session tree
   sg-tmux keys                              show interactive navigation keys
-  sg-tmux codex <name> [codex-args...]      start Codex in the current directory
+  sg-tmux codex [profile] <name> [codex-args...]
+                                            start Codex in the current directory
   sg-tmux hermes <name> [hermes-args...]    enter Hermes and run exact arguments
+
+Codex examples:
+  sg-tmux codex gate-work
+      runs Codex with its normal ~/.codex home
+  sg-tmux codex piti gate-work
+      runs: CODEX_HOME=~/.codex_piti codex
 
 Hermes examples:
   sg-tmux hermes h-default
@@ -1163,11 +1170,20 @@ sg_tmux_new() {
 
 sg_tmux_codex() {
     if [[ "$#" -lt 1 ]]; then
-        printf 'Usage: sg-tmux codex <name> [codex-args...]\n' >&2
+        printf 'Usage: sg-tmux codex [profile] <name> [codex-args...]\n' >&2
         return 2
     fi
     sg_tmux_require || return
+    local codex_home=""
     local name="$1"
+    if [[ "$#" -ge 2 \
+        && "$1" =~ ^[A-Za-z0-9_-]+$ \
+        && -d "$HOME/.codex_$1" \
+        && "$2" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        codex_home="$HOME/.codex_$1"
+        shift
+        name="$1"
+    fi
     shift
     sg_tmux_validate_name "$name" || return
     if sg_tmux_has_session "$name"; then
@@ -1183,6 +1199,10 @@ sg_tmux_codex() {
     if [[ ! -x "$codex_bin" ]]; then
         printf 'codex did not resolve to an executable file: %s\n' "$codex_bin" >&2
         return 127
+    fi
+    if [[ -n "$codex_home" ]]; then
+        sg_tmux_start_new "$name" host "$PWD" env "CODEX_HOME=$codex_home" "$codex_bin" "$@"
+        return
     fi
     sg_tmux_start_new "$name" host "$PWD" "$codex_bin" "$@"
 }

@@ -98,6 +98,8 @@ services:
     volumes:
       # private/local: persistent Hermes data outside the repo.
       - ${SPARTAN_HERMES_DATA_PATH:-../../runtime/hermes}:/opt/data:Z
+      # private/local: installation-specific runtime guidance.
+      - ../../private/docs/hermes-shared:/opt/data/brain/runtime_docs/local/private:ro
       # private/local: optional GogCLI credentials.
       - ${SPARTAN_GOGCLI_DATA_PATH:-../../runtime/gogcli}:/opt/data/.config/gogcli:Z
       # private/local: same persistent Chromium profiles mounted by Browserless.
