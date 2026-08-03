@@ -386,9 +386,9 @@ Usage:
 
 Codex examples:
   sg-tmux codex gate-work
-      runs Codex with its normal ~/.codex home
-  sg-tmux codex piti gate-work
-      runs: CODEX_HOME=~/.codex_piti codex
+      runs Codex with its normal $HOME/.codex home
+  sg-tmux codex review gate-work
+      runs: CODEX_HOME=$HOME/.codex_review codex
 
 Hermes examples:
   sg-tmux hermes h-default

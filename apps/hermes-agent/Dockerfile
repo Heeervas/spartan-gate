@@ -1,4 +1,5 @@
-FROM docker.io/nousresearch/hermes-agent:main@sha256:ed51b14789be47f727dfd6e3fd1dd796c2c037891a85b24a7c550695a4e92869
+# Upstream main revision: d1afa16053a3777849c2b5465d59a0147b2172f9
+FROM docker.io/nousresearch/hermes-agent:main@sha256:77cb88a70d4912eb90f02af924ca4b96246faf010ab419e2c31ada00d890c1b3
 
 USER root
 
@@ -182,12 +183,14 @@ RUN python3 /opt/hermes/patches/patch_workstation_approval_scope.py
 # Fail closed on upstream or patch ownership drift without rewriting the full
 # venv/node_modules tree into a slow copy-on-write chown layer.
 COPY --chown=0:0 --chmod=0644 audit-install-tree.py /opt/hermes/patches/audit-install-tree.py
-RUN chmod 0644 /opt/hermes/.venv/.lock \
+RUN chmod 0755 /opt/hermes/bootstrap \
+    && chmod 0644 /opt/hermes/.venv/.lock \
     && python3 /opt/hermes/patches/audit-install-tree.py /opt/hermes
-RUN test "$(stat -c '%u:%g' /opt/hermes/tools/browser_camofox.py)" = "0:0" \
+RUN test "$(stat -c '%a' /opt/hermes/bootstrap)" = "755" \
+    && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_camofox.py)" = "0:0" \
     && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_tool.py)" = "0:0" \
     && setpriv --reuid=65534 --regid=65534 --clear-groups \
-        python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/tools/browser_camofox.py", "/opt/hermes/tools/browser_tool.py")]'
+        python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/bootstrap/cdp-patch.js", "/opt/hermes/tools/browser_camofox.py", "/opt/hermes/tools/browser_tool.py")]'
 
 # NOTE: No USER directive - the container starts as root so upstream /init can
 # run cont-init hooks, drop Hermes workloads to the configured UID/GID, and

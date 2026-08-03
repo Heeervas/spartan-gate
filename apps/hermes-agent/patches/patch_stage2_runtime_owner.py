@@ -67,6 +67,25 @@ MANAGED_FILE_ENTRIES = (
     "active_profile",
     "config.yaml",
 )
+RECURSIVE_CHOWN_ANCHOR = 'chown -R hermes:hermes "$target"'
+TREE_OWNER_ANCHOR = (
+    r'find "$target" \( ! -user hermes -o ! -group hermes \) '
+    '-print -quit 2>/dev/null | grep -q .'
+)
+TREE_OWNER_REPLACEMENT = (
+    r'find "$target" \( ! -uid "$SPARTAN_HERMES_RUN_UID" '
+    r'-o ! -gid "$SPARTAN_HERMES_RUN_GID" \) '
+    '-print -quit 2>/dev/null | grep -q .'
+)
+RUNTIME_CHOWN_ANCHORS = (
+    'chown hermes:hermes "$HERMES_HOME"',
+    'chown hermes:hermes "$HERMES_HOME/logs/gateways"',
+    'chown hermes:hermes "$HERMES_HOME/$f"',
+    'chown hermes:hermes "$HERMES_HOME/config.yaml"',
+    'chown hermes:hermes "$HERMES_HOME/.env"',
+    'chown hermes:hermes "$HERMES_HOME/auth.json"',
+    'chown hermes:hermes "$HERMES_HOME/gateway_state.json"',
+)
 
 BOOTSTRAP_MKDIR_BLOCK = """# --- Bootstrap HERMES_HOME as root ---
 # Create the directory (and any missing parents) while we still have root
@@ -333,16 +352,25 @@ def patch_source(source: str) -> str:
         'echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to $SPARTAN_HERMES_RUNTIME_OWNER"',
     )
     if RUNTIME_IDENTITY_MARKER not in source:
-        if patched.count("chown -R hermes:hermes") != 1:
-            raise ValueError("unexpected recursive Hermes chown anchor count")
-        if patched.count("chown hermes:hermes") != 6:
-            raise ValueError("unexpected Hermes chown anchor count")
+        if patched.count(RECURSIVE_CHOWN_ANCHOR) != 1:
+            raise ValueError("recursive Hermes chown anchor changed")
         patched = patched.replace(
-            "chown -R hermes:hermes", 'chown -hR "$SPARTAN_HERMES_RUNTIME_OWNER"'
+            RECURSIVE_CHOWN_ANCHOR,
+            'chown -hR "$SPARTAN_HERMES_RUNTIME_OWNER" "$target"',
+            1,
         )
-        patched = patched.replace(
-            "chown hermes:hermes", 'chown "$SPARTAN_HERMES_RUNTIME_OWNER"'
-        )
+        if patched.count(TREE_OWNER_ANCHOR) != 1:
+            raise ValueError("runtime ownership scan anchor changed")
+        patched = patched.replace(TREE_OWNER_ANCHOR, TREE_OWNER_REPLACEMENT, 1)
+        for anchor in RUNTIME_CHOWN_ANCHORS:
+            if patched.count(anchor) != 1:
+                raise ValueError(f"runtime chown anchor changed: {anchor}")
+            replacement = anchor.replace(
+                "chown hermes:hermes",
+                'chown "$SPARTAN_HERMES_RUNTIME_OWNER"',
+                1,
+            )
+            patched = patched.replace(anchor, replacement, 1)
     patched = patched.replace(
         '    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python"',
         '    as_hermes "$INSTALL_DIR/.venv/bin/python"',

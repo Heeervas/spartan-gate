@@ -25,8 +25,8 @@ class GatewayServiceCdpEnvPatchTests(unittest.TestCase):
         source = (
             f'before\n_HERMES_UID = 10000\n_HERMES_GID = 10000\n{module.ANCHOR}\n'
             '        lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")\n'
-            '            f\'chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true\\n\'\n'
-            '            f\'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\\n\'\n'
+            '            f\'  s6-setuidgid hermes mkdir -p "$log_dir"\\n\'\n'
+            '            f\'  s6-setuidgid hermes rm -f "$log_dir/lock"\\n\'\n'
             '            f\'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\\n\'\n'
             'after\n'
         )
@@ -53,8 +53,10 @@ class GatewayServiceCdpEnvPatchTests(unittest.TestCase):
         self.assertIn('/command/s6-applyuidgid -u "$_spartan_run_uid" -g "$_spartan_run_gid"', patched)
         self.assertIn('SPARTAN_HERMES_RUN_UID', patched)
         self.assertIn('SPARTAN_HERMES_RUN_GID', patched)
-        self.assertIn('chown "${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}:${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}" "$HERMES_HOME/logs/gateways"', patched)
-        self.assertIn('chown -R "${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}:${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}" "$log_dir"', patched)
+        self.assertNotIn('chown hermes:hermes', patched)
+        self.assertNotIn('chown -R', patched)
+        self.assertIn('/command/s6-applyuidgid -u "${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}" -g "${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}" mkdir -p "$log_dir"', patched)
+        self.assertIn('/command/s6-applyuidgid -u "${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}" -g "${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}" rm -f "$log_dir/lock"', patched)
         self.assertIn('        lines.append(f"exec /command/s6-setuidgid hermes {gateway_cmd}")', patched)
         self.assertNotIn('SPARTAN_HERMES_DATA_GID', patched)
         self.assertNotIn('-G "$SPARTAN_HERMES_DATA_GID"', patched)

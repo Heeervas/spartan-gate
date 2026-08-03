@@ -7,7 +7,7 @@ and the explicit OpenAI API-key realm. Subscription replay uses `store=false`,
 encrypted reasoning items, signed `HERMES_HOME + session_id` affinity,
 pre-commit-only slot retry, and nullable reasoning-token telemetry. Hermes
 profiles with explicit `codex/*` Responses models discover and enable the
-`spartan-cache-lineage` 0.2.1 plugin; cross-profile reasoning is reset while
+`spartan-cache-lineage` 0.3.0 plugin; cross-profile reasoning is reset while
 visible history remains. The active private vault path completed a real Terra
 turn and LCM persisted one reasoning item with chain, realm, and MAC fields.
 Unsigned replay returns 400 and a signed Subscription-to-API crossing returns

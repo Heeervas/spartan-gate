@@ -119,6 +119,78 @@ class SpartanCacheLineagePluginTests(unittest.TestCase):
         self.assertNotIn("raw-secret-cache-key", serialized_state)
         self.assertNotIn("secret prompt", serialized_state)
 
+    def test_responses_lineage_tracks_instructions_input_tools_and_transport(self) -> None:
+        plugin = load_plugin()
+        env = {
+            "OPENAI_BASE_URL": "http://spartan-route:18790/v1",
+            "SPARTAN_REASONING_BINDING_SECRET": "09" * 32,
+            "SPARTAN_REASONING_REALM": "codex_subscription",
+        }
+
+        def lineage(instructions, input_items, tools=None):
+            with patch.dict(os.environ, env, clear=False):
+                result = plugin._llm_request_middleware(
+                    request={
+                        "instructions": instructions,
+                        "input": input_items,
+                        "tools": tools or [{"type": "function", "name": "read_file"}],
+                    },
+                    session_id="responses-session",
+                    base_url=env["OPENAI_BASE_URL"],
+                    api_mode="codex_responses",
+                )
+            return (
+                result["request"]["extra_body"]["spartan_cache_lineage"],
+                result["request"]["extra_body"]["spartan_cache_lineage_reason"],
+            )
+
+        base = [{"role": "user", "content": "first secret prompt"}]
+        extended = [*base, {"role": "assistant", "content": "answer"}]
+        self.assertEqual(lineage("stable secret instructions", base), (0, "baseline"))
+        self.assertEqual(lineage("stable secret instructions", base), (0, "retry"))
+        self.assertEqual(lineage("stable secret instructions", extended), (0, "prefix"))
+        self.assertEqual(lineage("changed secret instructions", extended), (1, "history_rewrite"))
+        self.assertEqual(lineage("changed secret instructions", base), (2, "history_rewrite"))
+        self.assertEqual(
+            lineage(
+                "changed secret instructions",
+                base,
+                tools=[{"type": "function", "name": "write_file"}],
+            ),
+            (3, "tool_schema_changed"),
+        )
+
+        with patch.dict(os.environ, env, clear=False):
+            chat = plugin._llm_request_middleware(
+                request={"messages": [{"role": "user", "content": "chat"}]},
+                session_id="responses-session",
+                base_url=env["OPENAI_BASE_URL"],
+                api_mode="chat_completions",
+            )
+        self.assertEqual(chat["request"]["extra_body"]["spartan_cache_lineage"], 0)
+        self.assertEqual(chat["request"]["extra_body"]["spartan_cache_lineage_reason"], "baseline")
+        def scalar_lineage(value):
+            with patch.dict(os.environ, env, clear=False):
+                result = plugin._llm_request_middleware(
+                    request={"instructions": "scalar", "input": value},
+                    session_id="scalar-responses-session",
+                    base_url=env["OPENAI_BASE_URL"],
+                    api_mode="codex_responses",
+                )
+            return (
+                result["request"]["extra_body"]["spartan_cache_lineage"],
+                result["request"]["extra_body"]["spartan_cache_lineage_reason"],
+            )
+
+        self.assertEqual(scalar_lineage("first scalar secret"), (0, "baseline"))
+        self.assertEqual(scalar_lineage("first scalar secret"), (0, "retry"))
+        self.assertEqual(scalar_lineage("changed scalar secret"), (1, "history_rewrite"))
+
+        serialized_state = repr(plugin._state)
+        self.assertNotIn("secret instructions", serialized_state)
+        self.assertNotIn("secret prompt", serialized_state)
+        self.assertNotIn("scalar secret", serialized_state)
+
     def test_codex_responses_normalizes_legacy_reasoning_effort_before_adapter(self) -> None:
         plugin = load_plugin()
         env = {

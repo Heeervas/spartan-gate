@@ -31,7 +31,11 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn(
             'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:ed51b14789be47f727dfd6e3fd1dd796c2c037891a85b24a7c550695a4e92869',
+            'sha256:77cb88a70d4912eb90f02af924ca4b96246faf010ab419e2c31ada00d890c1b3',
+            dockerfile,
+        )
+        self.assertIn(
+            'Upstream main revision: d1afa16053a3777849c2b5465d59a0147b2172f9',
             dockerfile,
         )
 
@@ -74,8 +78,10 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertNotIn('runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
         self.assertNotIn('RUN chown -R root:root /opt/hermes', dockerfile)
+        self.assertIn('chmod 0755 /opt/hermes/bootstrap', dockerfile)
         self.assertIn('chmod 0644 /opt/hermes/.venv/.lock', dockerfile)
         self.assertIn('audit-install-tree.py /opt/hermes', dockerfile)
+        self.assertIn('"/opt/hermes/bootstrap/cdp-patch.js"', dockerfile)
         self.assertNotIn('/opt/hermes-plugins', dockerfile)
         self.assertNotIn('RUN chown -R 10000:10000 /opt/hermes/.venv', dockerfile)
         self.assertNotIn('RUN chown -R 1000:1000 /opt/hermes/.venv', dockerfile)

@@ -851,11 +851,11 @@ esac
     def test_tmux_codex_accepts_existing_codex_home_profile(self):
         bin_dir, log = self.write_tmux_stub()
         test_home = self.root / "home"
-        profile_home = test_home / ".codex_piti"
+        profile_home = test_home / ".codex_review"
         profile_home.mkdir(parents=True)
 
         result = self.run_sourced_with_path(
-            "sg-tmux codex piti gate-work --search",
+            "sg-tmux codex review gate-work --search",
             bin_dir,
             {"HOME": str(test_home)},
         )
@@ -867,7 +867,7 @@ esac
         self.assertIn(f"CODEX_HOME={profile_home}", calls)
         self.assertIn(str(bin_dir / "codex"), calls)
         self.assertIn("--search", calls)
-        self.assertNotIn("<-s> <piti>", calls)
+        self.assertNotIn("<-s> <review>", calls)
 
     def test_tmux_hermes_entry_forwards_exact_cli_shape(self):
         for arguments, expected in (

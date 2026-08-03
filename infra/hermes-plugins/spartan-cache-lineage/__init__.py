@@ -13,6 +13,7 @@ from typing import Any
 
 
 PLUGIN_NAME = "spartan-cache-lineage"
+LINEAGE_SCHEMA_VERSION = 2
 LINEAGE_FIELD = "spartan_cache_lineage"
 LINEAGE_REASON_FIELD = "spartan_cache_lineage_reason"
 DEFAULT_MAX_TRACKED_KEYS = 512
@@ -82,8 +83,8 @@ def _llm_request_middleware(
         lineage, reason = _lineage_for_request(
             session_id=session_id,
             logical_cache_key=logical_cache_key,
-            messages=updated.get("messages"),
-            tools=updated.get("tools"),
+            request=updated,
+            api_mode=api_mode,
         )
         extra_body[LINEAGE_FIELD] = lineage
         extra_body[LINEAGE_REASON_FIELD] = reason
@@ -217,12 +218,21 @@ def _lineage_for_request(
     *,
     session_id: str,
     logical_cache_key: str,
-    messages: Any,
-    tools: Any,
+    request: dict[str, Any],
+    api_mode: str,
 ) -> tuple[int, str]:
-    message_fps = tuple(_fingerprint(item) for item in messages) if isinstance(messages, list) else ()
+    transport = api_mode or (
+        "codex_responses" if "input" in request and "messages" not in request else "chat_completions"
+    )
+    history_fps = _history_fingerprints(request, transport)
+    tools = request.get("tools")
     tool_fp = _fingerprint(_canonical_tools(tools)) if isinstance(tools, list) else ""
-    state_key = _state_key(session_id, logical_cache_key)
+    realm = (
+        _clean_string(os.environ.get("SPARTAN_REASONING_REALM")).lower() or "invalid"
+        if transport == "codex_responses"
+        else "chat"
+    )
+    state_key = _state_key(session_id, logical_cache_key, transport, realm)
     max_keys = _max_tracked_keys()
     with _lock:
         previous = _state.get(state_key)
@@ -231,14 +241,14 @@ def _lineage_for_request(
             reason = "baseline"
         else:
             lineage = int(previous.get("lineage") or 0)
-            previous_messages = tuple(previous.get("messages") or ())
+            previous_history = tuple(previous.get("history") or ())
             previous_tool_fp = str(previous.get("tool_fp") or "")
             if previous_tool_fp != tool_fp:
                 lineage += 1
                 reason = "tool_schema_changed"
-            elif previous_messages == message_fps:
+            elif previous_history == history_fps:
                 reason = "retry"
-            elif len(message_fps) >= len(previous_messages) and message_fps[: len(previous_messages)] == previous_messages:
+            elif len(history_fps) >= len(previous_history) and history_fps[: len(previous_history)] == previous_history:
                 reason = "prefix"
             else:
                 lineage += 1
@@ -246,7 +256,7 @@ def _lineage_for_request(
 
         _state[state_key] = {
             "lineage": lineage,
-            "messages": message_fps,
+            "history": history_fps,
             "tool_fp": tool_fp,
         }
         _state.move_to_end(state_key)
@@ -255,8 +265,31 @@ def _lineage_for_request(
         return lineage, reason
 
 
-def _state_key(session_id: str, logical_cache_key: str) -> str:
-    raw = f"{session_id}\0{logical_cache_key}"
+def _history_fingerprints(request: dict[str, Any], transport: str) -> tuple[str, ...]:
+    if transport == "codex_responses":
+        instructions_fp = _fingerprint({"instructions": request.get("instructions")})
+        input_items = request.get("input")
+        if isinstance(input_items, list):
+            item_fps = tuple(_fingerprint(item) for item in input_items)
+        elif input_items is None:
+            item_fps = ()
+        else:
+            item_fps = (_fingerprint({"input": input_items}),)
+        return (instructions_fp, *item_fps)
+    messages = request.get("messages")
+    return tuple(_fingerprint(item) for item in messages) if isinstance(messages, list) else ()
+
+
+def _state_key(
+    session_id: str,
+    logical_cache_key: str,
+    transport: str,
+    realm: str,
+) -> str:
+    raw = (
+        f"v{LINEAGE_SCHEMA_VERSION}\0{transport}\0{realm}\0"
+        f"{_active_hermes_home()}\0{session_id}\0{logical_cache_key}"
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 

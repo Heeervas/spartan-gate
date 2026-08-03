@@ -64,14 +64,27 @@ validate_uid_gid() {
 HERMES_UID="__DOLLAR__{HERMES_UID:-__DOLLAR__{PUID:-}}"
 HERMES_GID="__DOLLAR__{HERMES_GID:-__DOLLAR__{PGID:-}}"
 actual_hermes_uid=$(id -u hermes)
+
+chown_hermes_tree() {
+    target="$1"
+    chown -R hermes:hermes "$target"
+}
+
+tree_has_non_hermes_owner() {
+    target="$1"
+    find "$target" \( ! -user hermes -o ! -group hermes \) -print -quit 2>/dev/null | grep -q .
+}
+
 needs_chown=false
 if [ "$needs_chown" = true ]; then
     echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_uid)"
     chown hermes:hermes "$HERMES_HOME"
     for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing lazy-packages; do
-        chown -R hermes:hermes "$HERMES_HOME/$sub"
+        chown_hermes_tree "$HERMES_HOME/$sub"
     done
 fi
+
+chown hermes:hermes "$HERMES_HOME/logs/gateways"
 
 # --- Immutable install tree ---
 # Upstream keeps /opt/hermes root-owned.
@@ -121,7 +134,13 @@ class Stage2RuntimeOwnerPatchTests(unittest.TestCase):
         self.assertIn('actual_hermes_uid="$SPARTAN_HERMES_RUN_UID"', patched)
         self.assertIn('export SPARTAN_HERMES_RUN_UID SPARTAN_HERMES_RUN_GID', patched)
         self.assertIn('chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$HERMES_HOME"', patched)
-        self.assertIn('chown -hR "$SPARTAN_HERMES_RUNTIME_OWNER" "$HERMES_HOME/$sub"', patched)
+        self.assertIn('chown -hR "$SPARTAN_HERMES_RUNTIME_OWNER" "$target"', patched)
+        self.assertIn('! -uid "$SPARTAN_HERMES_RUN_UID"', patched)
+        self.assertIn('! -gid "$SPARTAN_HERMES_RUN_GID"', patched)
+        self.assertIn(
+            'chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$HERMES_HOME/logs/gateways"',
+            patched,
+        )
         self.assertIn('"$HERMES_HOME/kanban"', patched)
         self.assertIn('"$HERMES_HOME/.local/state/hermes/gateway-locks"', patched)
         self.assertIn("platforms/pairing lazy-packages kanban .local/state/hermes; do", patched)

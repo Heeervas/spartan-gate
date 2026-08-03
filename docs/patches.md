@@ -12,11 +12,11 @@ unless upstream provides the same invariant.
 
 | Patch | Role |
 | --- | --- |
-| `patch_stage2_runtime_owner.py` | Adds only Spartan Gate's numeric runtime owner, writable data-dir allowlist, and pre-reconciliation route migration. Upstream keeps ownership of the immutable install-tree and schema-migration logic. |
+| `patch_stage2_runtime_owner.py` | Adds Spartan Gate's immutable numeric runtime identity, closed ownership/mount preflight, writable data-dir allowlist, and pre-reconciliation route migration. It reuses upstream's symlink refusal and warm-boot ownership scans, including `logs/gateways`; upstream keeps immutable-install-tree and schema-migration ownership. |
 | `patch_runtime_identity_drop.py` | Drops runtime workloads to configured numeric UID/GID. |
 | `patch_s6_service_permissions.py` | Keeps dynamic s6 service definitions root-owned and disables unsafe runtime service registration. |
 | `patch_stage2_cdp_env.py` | Materializes browser/CDP env before supervised services start. |
-| `patch_gateway_service_cdp_env.py` | Imports browser/CDP env into supervised gateway services. |
+| `patch_gateway_service_cdp_env.py` | Imports browser/CDP env into supervised gateways and applies the configured numeric identity to gateway/log execution. It preserves upstream's restart-safe log setup and never adds root-context ownership rewrites. |
 | `patch_chrome_devtools_ws_auth.py` | Migrates browser tooling to authenticated configured CDP endpoints. |
 | `patch_codex_429_fail_fast.py` | Treats only HTTP 429 with top-level `error.code=codex_429` as terminal Codex capacity exhaustion before credential rotation, fallback, or backoff. It still uses normal turn finalization and persistence. |
 
@@ -37,8 +37,9 @@ extension points.
 | --- | --- |
 | `patch_clawroute_named_provider.py` | Migrates legacy Hermes route provider config to native `openai-api` while preserving the Spartan Route base URL. |
 | `patch_route_env_placeholders.py` | Atomically resolves only `OPENAI_API_KEY` and legacy `CUSTOM_1_API_KEY` aliases in config, profile secret scopes, and credential-pool seeding. It preserves upstream `op://` precedence, rejects anchor drift before writing any file, and never expands arbitrary profile secrets. |
-| `patch_clawroute_prompt_cache_key.py` | Forwards Hermes `session_id` as Spartan Route `prompt_cache_key` and preserves raw `reasoning_config.effort`, including `ultra`, before upstream profile normalization. Transport ownership remains necessary because plugin middleware cannot observe the original config. |
+| `patch_clawroute_prompt_cache_key.py` | On Chat Completions, forwards Hermes `session_id` as Spartan Route `prompt_cache_key` and preserves raw `reasoning_config.effort`, including `ultra`, before upstream profile normalization. Native Responses owns its top-level cache key and nested reasoning fields. |
 | `patch_camofox_tab_isolation.py` | Scopes Camofox registry state by durable Hermes `session_id` (with task fallback), adopts only the exact tab group, recreates stale 404/410 tabs only for explicit navigation, and makes other stale actions require a new navigation. Managed close deletes the tab without deleting its persistent profile context. This remains a build-time adapter because Hermes plugins and hooks do not expose these browser-tool decisions. |
+| `spartan-cache-lineage` 0.3.0 plugin | HMAC-binds Responses reasoning to profile/session/realm and fingerprints Chat `messages` or Responses `instructions` plus `input`, with canonical tool hashing and transport-separated bounded state. It stores only hashes and treats invalid or foreign reasoning as a cold chain. |
 | Camofox auth env mapping | Passes the protected-route `CAMOFOX_ACCESS_KEY` to Hermes under upstream's expected `CAMOFOX_API_KEY` client variable. |
 | `proxy-bootstrap.py` | Routes selected web/search traffic through Spartan Gate controls and logs audited egress. |
 | `browserless-cdp-broker.py` | Shares one persistent Browserless profile session across local CDP clients. |
@@ -75,7 +76,7 @@ These should be proposed upstream or deleted when upstream fixes the behavior.
 
 | Patch | Why it looks upstreamable |
 | --- | --- |
-| `patch_mcp_proxy_env.py` | Stdio MCP subprocesses need proxy variables in network-constrained containers. |
+| `patch_mcp_proxy_env.py` | Stdio MCP subprocesses need proxy variables in network-constrained containers, and the current MCP SDK requires legacy YAML boolean/number environment scalars to be normalized to strings. |
 | Camofox display/noVNC/Playwright pinning in `infra/camofox/` | Operational browser container fixes, not specific to Spartan Gate policy. |
 | Camofox runtime viewport route in `infra/camofox/patch-server.js` | Upstream should resize the page runtime viewport and report effective dimensions instead of returning `ok` for screenshot-only crops or no-ops. |
 

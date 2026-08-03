@@ -324,8 +324,8 @@ The public `sg-tmux` group and the personal shortcuts in
 
 ```sh
 tnew scratch                         # named interactive shell
-tcodex gate-work                     # Codex with the normal ~/.codex home
-tcodex piti gate-work                # CODEX_HOME=~/.codex_piti codex
+tcodex gate-work                     # Codex with the normal $HOME/.codex home
+tcodex review gate-work              # CODEX_HOME=$HOME/.codex_review codex
 thermes h-default                    # runs: hermes
 thermes h-chat chat                  # runs: hermes chat
 thermes h-coach -p coach chat        # runs: hermes -p coach chat
@@ -337,7 +337,7 @@ tchoose                              # same native tree explicitly
 tkeys                                # print the navigation keys
 ```
 
-For `tcodex`, an existing `~/.codex_<profile>` may be placed before the tmux
+For `tcodex`, an existing `$HOME/.codex_<profile>` may be placed before the tmux
 session name. The session keeps exactly the requested name, and `CODEX_HOME` is
 set only for the Codex process. Remaining arguments are forwarded unchanged;
 Codex's `-p/--profile` option selects a layered config inside the chosen

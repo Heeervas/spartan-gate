@@ -91,21 +91,21 @@ _HERMES_GID = 0
             raise ValueError("service manager gateway privilege-drop anchor not found")
         patched = patched.replace(gateway_anchor, gateway_replacement, 1)
 
-        log_chown_anchor = "            f'chown -R hermes:hermes \"$log_dir\" 2>/dev/null || true\\n'"
-        log_chown_replacement = (
-            "            f'chown -R \"${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}:${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}\" \"$log_dir\" 2>/dev/null || true\\n'"
+        log_mkdir_anchor = "            f'  s6-setuidgid hermes mkdir -p \"$log_dir\"\\n'"
+        log_mkdir_replacement = (
+            "            f'  /command/s6-applyuidgid -u \"${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}\" -g \"${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}\" mkdir -p \"$log_dir\"\\n'"
         )
-        if log_chown_anchor not in patched:
-            raise ValueError("service manager log ownership anchor not found")
-        patched = patched.replace(log_chown_anchor, log_chown_replacement, 1)
+        if log_mkdir_anchor not in patched:
+            raise ValueError("service manager log mkdir identity anchor not found")
+        patched = patched.replace(log_mkdir_anchor, log_mkdir_replacement, 1)
 
-        log_parent_chown_anchor = "            f'chown hermes:hermes \"$HERMES_HOME/logs/gateways\" 2>/dev/null || true\\n'"
-        log_parent_chown_replacement = (
-            "            f'chown \"${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}:${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}\" \"$HERMES_HOME/logs/gateways\" 2>/dev/null || true\\n'"
+        log_lock_anchor = "            f'  s6-setuidgid hermes rm -f \"$log_dir/lock\"\\n'"
+        log_lock_replacement = (
+            "            f'  /command/s6-applyuidgid -u \"${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}\" -g \"${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}\" rm -f \"$log_dir/lock\"\\n'"
         )
-        if log_parent_chown_anchor not in patched:
-            raise ValueError("service manager log parent ownership anchor not found")
-        patched = patched.replace(log_parent_chown_anchor, log_parent_chown_replacement, 1)
+        if log_lock_anchor not in patched:
+            raise ValueError("service manager log lock identity anchor not found")
+        patched = patched.replace(log_lock_anchor, log_lock_replacement, 1)
 
         log_drop_anchor = "            f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T \"$log_dir\"\\n'"
         log_drop_replacement = (
