@@ -348,6 +348,34 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((await ws.receive()).type, {WSMsgType.CLOSE, WSMsgType.CLOSED})
         await ws.close()
 
+    async def test_late_cancel_is_a_noop_and_next_turn_survives(self):
+        self.mint_error = {'error': {'type': 'invalid_request_error',
+                                    'code': 'response_cancel_not_active',
+                                    'message': 'private-upstream-message'}}
+        ticket = (await (await self.mint()).json())['value']
+        ws = await self.connect(ticket)
+        await ws.send_json({'type': 'response.cancel', 'event_id': 'provider-error'})
+        await ws.send_json({'type': 'response.create', 'event_id': 'next-turn'})
+        value = await asyncio.wait_for(ws.receive_json(), 2)
+        self.assertEqual(value, {'type': 'response.create', 'event_id': 'next-turn'})
+        reservation = next(iter(self.service.pool.entries.values()))
+        self.assertEqual(reservation.metrics['inactive_cancel_count'], 1)
+        await ws.close()
+
+    async def test_cancel_exception_does_not_weaken_other_provider_errors(self):
+        for error in ({'type': 'server_error', 'code': 'response_cancel_not_active'},
+                      {'type': 'invalid_request_error', 'code': 'unknown'},
+                      {'type': 'invalid_request_error', 'code': ['response_cancel_not_active']}):
+            with self.subTest(error=error):
+                self.mint_error = {'error': error}
+                ticket = (await (await self.mint()).json())['value']
+                ws = await self.connect(ticket)
+                await ws.send_json({'type': 'response.cancel', 'event_id': 'provider-error'})
+                self.assertEqual((await ws.receive_json())['type'], 'error')
+                self.assertIn((await ws.receive()).type, {WSMsgType.CLOSE, WSMsgType.CLOSED})
+                await ws.close()
+                await asyncio.sleep(0.02)
+
     async def test_oversized_frame_and_http_body_are_bounded(self):
         response = await self.mint(payload={'session': {**session(), 'instructions': 'x' * (self.service.config.mint_bytes + 1)}})
         self.assertEqual(response.status, 413)

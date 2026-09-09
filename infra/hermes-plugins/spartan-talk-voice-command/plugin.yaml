@@ -1,0 +1,4 @@
+name: spartan-talk-voice-command
+version: "0.1.0"
+description: Start and stop Hermes Talk through native Discord voice commands.
+kind: standalone

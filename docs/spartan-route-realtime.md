@@ -323,3 +323,16 @@ switching to direct OpenAI. No OAuth grant is copied or restored. A host-specifi
 activation bundle should retain the previous private Compose configuration,
 reviewed source revision and original Route image identity separately from
 public source control.
+
+## Late cancellation during barge-in
+
+OpenAI explicitly keeps a session usable when `response.cancel` arrives after
+its response has finished or server VAD already cancelled it. Route treats only
+`invalid_request_error` / `response_cancel_not_active` as a no-op and records an
+`inactive_cancel_count` counter. It does not forward the private provider message
+or synthesize a response completion. Unknown errors, authentication failures,
+invalid client events and policy violations retain their terminal behavior.
+
+The real upstream cancellation probe confirms a subsequent audio response works;
+a regression covers the previously incorrect Route closure and next-turn recovery.
+See the [OpenAI cancellation contract](https://platform.openai.com/docs/api-reference/realtime-client-events#response-cancel).

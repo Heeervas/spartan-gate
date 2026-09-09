@@ -625,6 +625,19 @@ class RealtimeService:
                     if not isinstance(event, dict) or not isinstance(event.get("type"), str):
                         raise RealtimeError("realtime_upstream_invalid_event", 502)
                     if event["type"] == "error":
+                        error = event.get("error")
+                        # VAD can finish/cancel a response before the client's
+                        # barge-in cancel arrives. OpenAI defines this exact
+                        # condition as harmless to the session. Do not turn it
+                        # into a terminal error (or expose provider messages).
+                        if (isinstance(error, dict)
+                                and error.get("type") == "invalid_request_error"
+                                and error.get("code") == "response_cancel_not_active"):
+                            key = "inactive_cancel_count"
+                            reservation.metrics[key] = reservation.metrics.get(key, 0) + 1
+                            cancel_at = None
+                            last_activity = time.monotonic()
+                            continue
                         failure = provider_error(400, event)
                         if isinstance(event.get("event_id"), str):
                             failure.event_id = event["event_id"]

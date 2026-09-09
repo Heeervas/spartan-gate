@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Preserve Realtime sessions across the provider's benign inactive-response cancellation, with a content-free counter and fail-closed regressions. Add an opt-in Hermes plugin that starts Talk with `/voice join` and stops the matching session with `/voice leave`, preserving existing tool authority.
+
 - Enabled the local Discord voice relay prototype for all Hermes profiles with one shared session, preserving internal-only Hermes networking. Verified real upstream voice signaling; channel audio acceptance remains pending the operator test.
 
 - Added an opt-in Discord voice relay proof of concept and a narrow Hermes adapter, with authenticated signaling, provider-derived UDP destinations, bounded opaque packet forwarding and local security/transport tests. Real Discord acceptance remains pending; the relay is not enabled by default.

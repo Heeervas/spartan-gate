@@ -81,3 +81,22 @@ Rollback: disable the adapter in the test profile, restore its prior private
 configuration, restart that gateway as needed, and remove only the relay service
 and mounts. Do not add a direct internet route to Hermes or silently fall back
 to direct UDP. The existing Route Realtime service is independent of this relay.
+
+## One-command Talk lifecycle
+
+The optional `spartan-talk-voice-command` plugin composes the native Discord
+`/voice join` with the registered `/talk join` handler. Enable it alongside Talk
+and mount its own plugin directory read-only. `/voice leave` stops the matching
+Talk task before disconnecting the native channel. `/talk status`, pause and
+resume remain available. A failed or ambiguous channel join never starts Talk.
+
+This wrapper changes command ergonomics only: it does not supply host execution
+attachments, grant operator authority, or bypass speaker verification. On a host
+without the canonical tool attachment API, Talk retains its existing limited
+legacy lane. Its registered handler reports that limitation. Full Hermes tool
+parity requires the corresponding host capability; a command alias cannot add it.
+
+The integration relies on the current GatewayRunner join/leave methods and Talk
+session ownership state because Hermes has no voice lifecycle hook. Revalidate
+these surfaces when upgrading either component. Disable this plugin to restore
+the separate native voice and Talk commands.
