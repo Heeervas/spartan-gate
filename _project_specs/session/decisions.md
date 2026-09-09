@@ -117,3 +117,14 @@
 - Rollback disables Talk plugin enablement and Route Realtime admission while
   preserving the Spartan transport setting. No direct-provider fallback is
   implied. Live Hermes and Discord acceptance remains a separate next step.
+
+## 2026-09-09 — Operator-authorized activation
+
+- The operator explicitly waived the disk gate for this activation only and
+  requested execution of the prepared rebuild/recreate sequence. The normal
+  guard remains in the saved activation script.
+- Rebuilt only Route and recreated the stack with the existing Hermes image.
+  Preserved gateway autostart policy while making Talk available to all profiles.
+- Validated the installed client's native Route transport with synthetic audio
+  and inert tools, including barge-in protocol and next-turn recovery. No Discord
+  call, user-directed message or real tool execution formed part of the test.

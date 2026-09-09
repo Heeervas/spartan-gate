@@ -1,17 +1,28 @@
 # Current State
 
-## Hermes Talk activation preparation (2026-09-09)
+## Hermes Talk activated (2026-09-09)
 
-The reviewed client passed independent offline acceptance at revision
-`477bf7c79fe212ae4b596374626c869e1d38e668`. Private next-start configuration now
-stages its read-only snapshot, a dedicated voice credential, Route registry, and
-an s6 boot hook to enable Talk across the existing profiles. Runtime services
-have not been restarted. The operator will rebuild only Spartan Route and
-recreate the stack; Hermes needs no image rebuild. The private activation
-preflight checks source integrity, credential wiring and disk headroom. Live
-Hermes/Discord acceptance is still pending. All profiles share the current
-one-session voice-client limit. See the all-profile section of
-`docs/spartan-route-realtime.md` for the boot and rollback contract.
+The operator authorized activation and a one-time exception to the local disk
+headroom gate. Only Spartan Route was rebuilt; the stack was taken down and
+recreated with `--no-build`, retaining the existing Hermes image. All eight
+stack services are healthy. The boot hook enabled the reviewed Talk client
+`477bf7c79fe212ae4b596374626c869e1d38e668` in all 11 existing profile configs.
+Active gateways inherited the dedicated voice credential; existing per-profile
+autostart choices were preserved. All profiles share one active voice session.
+
+Live synthetic acceptance from inside Hermes passed through both the deployed
+Route endpoint and the installed Talk native wire client: audio, inert tool
+output/continuation, cancellation, truncation, next turn and clean close. The
+installed-client check took 7.8 seconds, with first audio at 1.2 seconds and
+cancellation completion at 160 ms. The initial 128-token audio continuation was
+truncated; the successful checks used a bounded 512-token audio budget without
+changing production limits. Billing remains unknown. Private redacted evidence
+and rollback scripts are retained in the activation bundle.
+
+Discord playback/interruptions and real tool delegation remain untested. Startup
+reported command-discovery/sync warnings involving other configured plugins;
+this is recorded for the Hermes-side Discord follow-up. No Discord call or chat
+message was initiated by this activation.
 
 ## Subscription Realtime Gateway (2026-09-09)
 
@@ -24,9 +35,9 @@ is `gpt-realtime-2.1`, voice `cedar`, PCM16 mono 24 kHz. Billing/quota attributi
 remains unknown; no API-key or alternate-account fallback exists.
 
 See `docs/spartan-route-realtime.md` for the exact contract and reproducible
-harness. The running production service remains unchanged and disabled. Dedicated client
-provisioning is now staged privately for the next operator recreation; activation
-and live Hermes/Discord integration remain pending. The existing Caddy listener is not a voice ingress. Full Route and script
+harness. The local production service is now enabled following explicit operator
+authorization; synthetic installed-client acceptance passed as recorded above.
+Real Discord acceptance remains pending. The existing Caddy listener is not a voice ingress. Full Route and script
 suites pass; doctor stops on pre-existing workstation-plugin path-scan matches.
 
 ## Native Responses Update (2026-07-30)

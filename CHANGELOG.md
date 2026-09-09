@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Recorded operator-authorized local Realtime activation and successful live synthetic acceptance through the installed Hermes Talk native transport. All profiles have Talk available; real Discord playback and delegation acceptance remain pending.
+
 - Added an opt-in, fail-closed boot helper for enabling a reviewed Hermes Talk plugin across profiles, with preflight, idempotence, rollback and private Compose credential delivery. Supports container recreation without a Hermes rebuild; live Hermes/Discord acceptance remains pending.
 
 - Passed real isolated Route acceptance for audio, inert tools, cancellation, truncation and next-turn recovery with no remaining reservations/tickets. Added disabled-by-default Compose settings, the HTTP/WS operator/Hermes contract, malformed/oversize/race regressions and a credential-free source-bundle check. Production and Discord activation remain pending.
