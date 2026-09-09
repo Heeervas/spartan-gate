@@ -1,4 +1,4 @@
-ARG CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137
+ARG CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce
 FROM ${CAMOFOX_BASE_IMAGE}
 
 RUN apt-get update \
@@ -48,6 +48,7 @@ RUN set -eux; \
 
 ENV CAMOFOX_CRASH_REPORT_ENABLED=false
 ENV CAMOFOX_GEOIP=false
+ENV CAMOFOX_DISABLE_DEFAULT_ADDONS=false
 ENV CAMOFOX_ADDONS=
 
 RUN command -v yt-dlp >/dev/null && yt-dlp --version >/dev/null
@@ -67,11 +68,13 @@ COPY patch-operator-lease-api.js /tmp/spartan-camofox-patch-operator-lease-api.j
 RUN node /tmp/spartan-camofox-patch-operator-lease-api.js && rm /tmp/spartan-camofox-patch-operator-lease-api.js
 COPY patch-memory-pressure.js /tmp/spartan-camofox-patch-memory-pressure.js
 RUN node /tmp/spartan-camofox-patch-memory-pressure.js && rm /tmp/spartan-camofox-patch-memory-pressure.js
+RUN grep -q "SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1" server.js \
+    && grep -q "SPARTAN_PERSISTENCE_DURABILITY_V2" lib/persistence.js \
+    && grep -q "SPARTAN_OPERATOR_LEASE_V2" server.js \
+    && node --check server.js \
+    && node --check lib/persistence.js \
+    && node --check plugins/persistence/index.js
 
-# Upstream ships the VNC plugin entry with "enabled": false. The plugin loader
-# skips disabled plugins before the plugin can read ENABLE_VNC, so remove only
-# that static flag and let ENABLE_VNC control runtime activation.
-RUN node -e "const fs=require('fs'); const path='camofox.config.json'; const config=JSON.parse(fs.readFileSync(path,'utf8')); if(!config.plugins?.vnc || config.plugins.vnc.enabled !== false) throw new Error('expected disabled vnc plugin config not found'); delete config.plugins.vnc.enabled; fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');"
 
 # Upstream enables camoufox-js geoip whenever a proxy is configured. Spartan
 # Gate's default proxy is local Tinyproxy, not a residential proxy with a useful

@@ -12,7 +12,7 @@ function replaceOnce(source, from, to, label) {
 
 function patchOperatorLeaseApi(source) {
   if (source.includes(MARKER)) return source;
-  if (!source.includes('// SPARTAN_OPERATOR_LEASE_V1')) {
+  if (!source.includes('// SPARTAN_OPERATOR_LEASE_V1') && !source.includes('// SPARTAN_OPERATOR_LEASE_V2')) {
     throw new Error('operator lease core must be patched before its API');
   }
   source = replaceOnce(

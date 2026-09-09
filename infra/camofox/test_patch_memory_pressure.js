@@ -39,10 +39,12 @@ test('pressure policy waits for two samples, evicts one non-leased LRU, and hyst
   let interval;
   const closed = [];
   const leased = { lastAccess: 1, leased: true, tabGroups: new Map() };
+  const pageLeased = { lastAccess: 0, pageLeased: true, tabGroups: new Map() };
   const oldest = { lastAccess: 2, tabGroups: new Map() };
   const newest = { lastAccess: 3, tabGroups: new Map() };
   const sessions = new Map([
     ['leased', leased],
+    ['page-leased', pageLeased],
     ['oldest', oldest],
     ['newest', newest],
   ]);
@@ -51,6 +53,7 @@ test('pressure policy waits for two samples, evicts one non-leased LRU, and hyst
     sessions,
     readSpartanCgroupMemory: () => ({ state: 'known', ratio }),
     spartanHasPendingUserCreate: () => false,
+    hasActivePageLeases: session => session.pageLeased === true,
     spartanOperatorSessionLeaseActive: session => session.leased === true,
     closeSession: async key => {
       closed.push(key);

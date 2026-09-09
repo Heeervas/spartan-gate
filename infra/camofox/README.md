@@ -224,8 +224,8 @@ browser is using the expected network path.
 Spartan Gate builds a thin local wrapper image:
 
 ```env
-CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137
-CAMOFOX_IMAGE=spartan-gate-camofox:1.11.2
+CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce
+CAMOFOX_IMAGE=spartan-gate-camofox:1.14.0
 ```
 
 The wrapper does not fork Camofox. It pre-fetches Camofox's default uBlock
@@ -238,6 +238,19 @@ The wrapper also makes upstream Camofox geo-IP proxy probing opt-in through
 `CAMOFOX_GEOIP`. The default is `false` because Spartan Gate's normal Camofox
 proxy is local Tinyproxy, not a residential proxy with a useful geolocation
 target.
+
+For analytics work, set `CAMOFOX_DISABLE_DEFAULT_ADDONS=true` and recreate only
+Camofox. This uses upstream Camofox's native switch to omit its default uBlock
+Origin add-on; `false` remains the privacy-preserving default. The switch does
+not bypass Spartan Gate's Tinyproxy or DNS allowlists, and Camofox still omits
+known analytics iframes from accessibility snapshots even though their network
+requests can load.
+
+Bundled Camoufox 135 cannot preserve default UBO blocking when any custom
+add-on is also loaded. To avoid silently weakening the protected default, the
+wrapper fails closed when `CAMOFOX_ADDONS` is non-empty unless
+`CAMOFOX_DISABLE_DEFAULT_ADDONS` is exactly `true` or `1`. Custom add-ons are
+therefore an explicit analytics/inspection-mode choice for this bundled browser.
 
 ## Add-ons
 
@@ -335,8 +348,9 @@ source scripts/aliases.sh
 sg-camofox-viewport-check 390 844
 ```
 
-The diagnostic runs inside the `hermes` container against
-`http://camofox:9377`, creates a scratch `spartan-viewport-smoke-*` session,
+The diagnostic client runs inside the `hermes` container against
+`http://camofox:9377` and loads an allowlisted external page (default
+`https://example.com/`; pass a third argument to select another permitted URL),
 checks viewport-before-navigation, viewport-after-navigation, viewport-then-
 reload, and create-with-viewport observation, captures `fullPage=false`
 screenshot dimensions, verifies the screenshot is non-empty and dimensionally

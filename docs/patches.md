@@ -77,7 +77,7 @@ These should be proposed upstream or deleted when upstream fixes the behavior.
 | Patch | Why it looks upstreamable |
 | --- | --- |
 | `patch_mcp_proxy_env.py` | Stdio MCP subprocesses need proxy variables in network-constrained containers, and the current MCP SDK requires legacy YAML boolean/number environment scalars to be normalized to strings. |
-| Camofox display/noVNC/Playwright pinning in `infra/camofox/` | Operational browser container fixes, not specific to Spartan Gate policy. |
+| Camofox live-profile cleanup, fixed-proxy timeout handling, and bounded waiter retention in `infra/camofox/patch-server.js` | Upstream should avoid scanning active Firefox temp profiles, preserve fixed-proxy sessions on a single navigation timeout, and remove expired concurrency waiters. The former noVNC override was deleted after v1.14.0 gained the required native behavior. |
 | Camofox runtime viewport route in `infra/camofox/patch-server.js` | Upstream should resize the page runtime viewport and report effective dimensions instead of returning `ok` for screenshot-only crops or no-ops. |
 
 ## Review Rule

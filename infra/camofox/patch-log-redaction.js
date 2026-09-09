@@ -74,12 +74,12 @@ function log(level, msg, fields = {}) {
     'structured logger',
   );
 
-  source = replaceOnce(
-    source,
-    '      path: res.req?.originalUrl,',
-    '      path: res.req?.path,',
-    'Sentry request path',
-  );
+  if (source.includes('      path: res.req?.originalUrl,')) {
+    source = replaceOnce(source, '      path: res.req?.originalUrl,', '      path: res.req?.path,', 'legacy Sentry request path');
+  } else {
+    source = replaceOnce(source, '      path: req?.originalUrl,', '      path: req?.path,', 'Sentry response request path');
+    source = replaceOnce(source, '    path: req.originalUrl,', '    path: req.path,', 'Sentry route request path');
+  }
   return source;
 }
 

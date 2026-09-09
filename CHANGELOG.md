@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Checkpointed existing Camofox 1.14 adapter, addon protection, persistence and operator changes. Local browser/script suites and Compose rendering pass; the pristine upstream patch-chain fixture and live browser acceptance were not run, so this checkpoint is not deployment validation.
+
 - Checkpointed existing Hermes main compatibility updates and runtime-overlay import precedence before Realtime work. Local Python and JavaScript patch suites pass; this checkpoint does not deploy or rebuild Hermes.
 
 - Refreshed Hermes to upstream main `d1afa160` on immutable amd64 digest `sha256:77cb88a7...`, rebased numeric Stage2 and gateway supervision patches onto upstream ownership/TOCTOU hardening, made cache-lineage 0.3.0 fingerprint native Responses instructions and input separately from Chat history, retained legacy scalar YAML values in MCP subprocess environments through explicit string normalization, and restored non-root traversal of the newly created Node/Python bootstrap directory.

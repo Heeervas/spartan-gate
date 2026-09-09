@@ -620,6 +620,18 @@ class SupervisorTests(unittest.TestCase):
                 }
             ).encode(),
         )
+        stuck = self.supervisor.parse_deep_health_response(
+            503,
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "browser_lifecycle_stuck",
+                    "stage": "lifecycle",
+                    "browserGeneration": 1,
+                }
+            ).encode(),
+        )
+        self.assertFalse(stuck.recovery_deferred)
         ready = self.supervisor.parse_deep_health_response(
             200,
             json.dumps(
@@ -652,6 +664,24 @@ class SupervisorTests(unittest.TestCase):
                 "unhealthy",
             )
             self.assertEqual(policy.failure_count, 1)
+        self.assertEqual(
+            policy.observe(
+                healthy=stuck.healthy,
+                hard_trigger=stuck.hard_trigger,
+                defer_recovery=stuck.recovery_deferred,
+            ),
+            "unhealthy",
+        )
+        self.assertEqual(policy.failure_count, 2)
+        self.assertEqual(
+            policy.observe(
+                healthy=stuck.healthy,
+                hard_trigger=stuck.hard_trigger,
+                defer_recovery=stuck.recovery_deferred,
+            ),
+            "recover",
+        )
+        self.assertEqual(policy.failure_count, 3)
         self.assertEqual(
             policy.observe(
                 healthy=ready.healthy,

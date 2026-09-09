@@ -319,10 +319,15 @@ class CamofoxContractTests(unittest.TestCase):
         self.assertIn('"set-after-navigate"', helper)
         self.assertIn('"set-then-reload"', helper)
         self.assertIn('"create-with-viewport-observed"', helper)
-        self.assertIn('http.server', helper)
-        self.assertIn('socketserver.ThreadingTCPServer', helper)
-        self.assertIn('DIAGNOSTIC_URL = f"http://hermes:{diagnostic_port}/diagnostic"', helper)
-        self.assertIn('create_tab(BOOT_URL)', helper)
+        self.assertNotIn("http.server", helper)
+        self.assertNotIn("socketserver", helper)
+        self.assertIn('DIAGNOSTIC_URL = os.environ["CAMOFOX_VIEWPORT_URL"]', helper)
+        self.assertIn("create_tab(None)", helper)
+        self.assertIn('if url is not None:', helper)
+        self.assertIn('effective.get("maxWidth767") == (WIDTH <= 767)', helper)
+        self.assertIn('effective.get("maxWidth430") == (WIDTH <= 430)', helper)
+        self.assertNotIn('request("DELETE", f"/tabs/', helper)
+        self.assertIn('summary["ok"] = False', helper)
         self.assertNotIn('data:text/html', helper)
         self.assertNotIn('about:blank', helper)
         self.assertIn('"GET", f"/tabs/{enc(tab_id)}/screenshot?userId={enc(USER_ID)}&fullPage=false"', helper)
@@ -385,9 +390,12 @@ class AliasHelpTests(unittest.TestCase):
         result = self.run_sourced("sg-browser -h; declare -F sg-camofox-viewport-check sg_camofox_viewport_check")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("sg-browser camofox-viewport-check [width height]", result.stdout)
+        self.assertIn("sg-browser camofox-viewport-check [width height [url]]", result.stdout)
         self.assertIn("sg-camofox-viewport-check", result.stdout)
         self.assertIn("sg_camofox_viewport_check", result.stdout)
+        source = (ROOT / "scripts" / "aliases.sh").read_text(encoding="utf-8")
+        self.assertIn('CAMOFOX_VIEWPORT_URL="$url"', source)
+        self.assertIn('url="${3:-https://example.com/}"', source)
 
     def test_camofox_live_passes_operator_group_without_switching_hermes(self):
         command = """

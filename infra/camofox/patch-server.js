@@ -3,6 +3,29 @@ const fs = require('fs');
 const path = 'server.js';
 let source = fs.readFileSync(path, 'utf8');
 
+if (source.includes('SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1')) {
+  for (const [marker, label] of [
+    ['SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1', 'lifecycle coordinator'],
+    ['spartanTrackLifecyclePromise(promise)', 'timeout retention'],
+    ['if (timer) clearTimeout(timer);', 'timeout timer cleanup'],
+    ['if (state.queue.length >= MAX_SESSIONS)', 'bounded per-user waiters'],
+    ['currentSession !== sourceSession', 'popup generation fence'],
+    ["code: 'legacy_tab_open_disabled'", 'legacy tabs-open disablement'],
+    ['await session.context.close();', 'context-close error propagation'],
+    ['Spartan queued-create fence: pressure cleanup.', 'pressure cleanup create fence'],
+    ['Spartan queued-create fence: tab reaper.', 'tab reaper create fence'],
+    ['spartanBindPendingCreateSession(userId, spartanCreateFence, session)', 'create generation bind'],
+    ['closeLeasedPage(late.session, late.page, late.lease)', 'late leased-page cleanup'],
+    ["app.get('/spartan/health/deep'", 'deep health'],
+    ["app.get('/live'", 'liveness'],
+    ['never scan Firefox temp profiles while a browser is live', 'live profile protection'],
+    ['NAVIGATION_TIMEOUT_ACTIONS.has(action) && proxyPool?.canRotateSessions', 'timeout proxy guard'],
+  ]) {
+    if (!source.includes(marker)) throw new Error(`Camofox 1.14 patch marker is incomplete: ${label}`);
+  }
+  process.exit(0);
+}
+
 const spartanHealthImportV1 = "import { createSpartanDeepHealthController, spartanInternalRequestAuthorized, spartanCgroupAdmissionAllowed } from './spartan-health.mjs';\n";
 const spartanHealthImport = "import { createSpartanDeepHealthController, createSpartanNavigationReadiness, spartanInternalRequestAuthorized, spartanCgroupAdmissionAllowed } from './spartan-health.mjs';\n";
 if (source.includes(spartanHealthImportV1)) {
@@ -65,7 +88,9 @@ function spartanStageObsidianClipperAddon(addonPath) {
   const stagedPath = \`\${stagedRoot}/web-clipper-obsidian\`;
   fs.rmSync(stagedPath, { recursive: true, force: true });
   fs.mkdirSync(stagedRoot, { recursive: true });
+
   fs.cpSync(addonPath, stagedPath, { recursive: true });
+
 
   const stagedContentPath = \`\${stagedPath}/content.js\`;
   const marker = 'spartan-gate-obsidian-clipper-bridge';
@@ -125,6 +150,12 @@ function camofoxAddonPaths() {
     .map(path => path.trim())
     .filter(Boolean);
 
+
+  if (paths.length > 0 && !CONFIG.disableDefaultAddons) {
+    throw new Error(
+      'CAMOFOX_ADDONS requires CAMOFOX_DISABLE_DEFAULT_ADDONS=true: bundled Camoufox cannot preserve default UBO blocking when custom add-ons are loaded',
+    );
+  }
   return paths.map(addonPath => {
     if (!fs.existsSync(addonPath) || !fs.existsSync(\`\${addonPath}/manifest.json\`)) {
       throw new Error(\`CAMOFOX_ADDONS path is not an extracted Firefox addon: \${addonPath}\`);
@@ -161,9 +192,11 @@ const safeErrorCodeMarker = `function safeError(err) {
 const safeErrorCodeReplacement = `function safeError(err) {
   if (err.code) return err.message;
   if (CONFIG.nodeEnv === 'production') {`;
-if (source.includes(safeErrorCodeMarker)) {
+const upstreamStructuredErrors = source.includes('const code = browserErrorCode(err);')
+  && source.includes('retryable: isRetryableBrowserError(err),');
+if (source.includes(safeErrorCodeMarker) && !upstreamStructuredErrors) {
   source = source.replace(safeErrorCodeMarker, safeErrorCodeReplacement);
-} else if (!source.includes('if (err.code) return err.message;')) {
+} else if (!upstreamStructuredErrors && !source.includes('if (err.code) return err.message;')) {
   throw new Error('expected Camofox safeError marker not found');
 }
 
@@ -176,7 +209,22 @@ const sendErrorCodeReplacement = `  const body = { error: err.spartanPublicMessa
   if (err.code && !body.code) body.code = err.code;
   if (err.failureClass && !body.failureClass) body.failureClass = err.failureClass;
   if (err instanceof StaleRefsError) {`;
-if (source.includes(sendErrorCodeMarker)) {
+const upstreamSendErrorMarker = `  const body = {
+    error: safeError(err),
+    retryable: isRetryableBrowserError(err),
+    ...extraFields,
+  };
+  if (code) body.code = code;`;
+const upstreamSendErrorReplacement = `  const body = {
+    error: err.spartanPublicMessage || safeError(err),
+    retryable: isRetryableBrowserError(err),
+    ...extraFields,
+  };
+  if (code) body.code = code;
+  if (err.failureClass && !body.failureClass) body.failureClass = err.failureClass;`;
+if (source.includes(upstreamSendErrorMarker)) {
+  source = source.replace(upstreamSendErrorMarker, upstreamSendErrorReplacement);
+} else if (source.includes(sendErrorCodeMarker)) {
   source = source.replace(sendErrorCodeMarker, sendErrorCodeReplacement);
 } else if (source.includes(sendErrorCodeV1)) {
   source = source.replace(sendErrorCodeV1, sendErrorCodeReplacement);
@@ -190,10 +238,16 @@ const displayReplacement = `    const useVirtualDisplay = !!vdDisplay;
     const addonPaths = camofoxAddonPaths();
     log('info', 'launching camoufox', {`;
 if (!source.includes('const addonPaths = camofoxAddonPaths();')) {
-  if (!source.includes(displayMarker)) {
+  if (source.includes(displayMarker)) {
+    source = source.replace(displayMarker, displayReplacement);
+  } else if (source.includes('    const useVirtualDisplay = !!vdDisplay;\n')) {
+    source = source.replace(
+      '    const useVirtualDisplay = !!vdDisplay;\n',
+      '    const useVirtualDisplay = !!vdDisplay;\n    const addonPaths = camofoxAddonPaths();\n',
+    );
+  } else {
     throw new Error('expected Camofox launch log marker not found');
   }
-  source = source.replace(displayMarker, displayReplacement);
 }
 
 const logMarker = `      virtualDisplay: useVirtualDisplay,
@@ -201,11 +255,17 @@ const logMarker = `      virtualDisplay: useVirtualDisplay,
 const logReplacement = `      virtualDisplay: useVirtualDisplay,
       addons: addonPaths,
     });`;
-if (!source.includes('      addons: addonPaths,\n    });')) {
-  if (!source.includes(logMarker)) {
+if (!source.includes('      addons: addonPaths,\n')) {
+  if (source.includes(logMarker)) {
+    source = source.replace(logMarker, logReplacement);
+  } else if (source.includes('      interactiveMode: CONFIG.interactiveMode,\n')) {
+    source = source.replace(
+      '      interactiveMode: CONFIG.interactiveMode,\n',
+      '      interactiveMode: CONFIG.interactiveMode,\n      addons: addonPaths,\n',
+    );
+  } else {
     throw new Error('expected Camofox launch log fields marker not found');
   }
-  source = source.replace(logMarker, logReplacement);
 }
 
 const launchMarker = `        enable_cache: true,
@@ -852,8 +912,13 @@ if (!createTabRoute.includes('const spartanNonDestructiveCreate')) {
 }
 
 if (!createTabRoute.includes('const spartanCleanupCreatedTab')) {
-  const cleanupMarker = `      group.set(tabId, tabState);
+  const legacyCleanupMarker = `      group.set(tabId, tabState);
       attachPopupHandler(page, userId, resolvedSessionKey);`;
+  const leasedCleanupMarker = `      attachPopupHandler(page, userId, resolvedSessionKey);
+      refreshActiveTabsGauge();`;
+  const cleanupMarker = createTabRoute.includes(legacyCleanupMarker)
+    ? legacyCleanupMarker
+    : leasedCleanupMarker;
   const cleanupReplacement = `${cleanupMarker}
       const spartanCleanupCreatedTab = async () => {
         if (tabState.navigateAbort) tabState.navigateAbort.abort();
@@ -958,1419 +1023,102 @@ if (closeTabRouteStartIndex !== -1) {
   }
 }
 
-const spartanCreateLimitMarker = 'const userConcurrency = new Map();';
-const spartanCreateLimitReplacement = `const userConcurrency = new Map();
-
-const SPARTAN_MAX_CONCURRENT_CREATES_RAW = Number(process.env.SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES || '1');
-const SPARTAN_MAX_CONCURRENT_CREATES = SPARTAN_MAX_CONCURRENT_CREATES_RAW;
-if (
-  !Number.isInteger(SPARTAN_MAX_CONCURRENT_CREATES)
-  || SPARTAN_MAX_CONCURRENT_CREATES < 1
-  || SPARTAN_MAX_CONCURRENT_CREATES > MAX_SESSIONS
-) throw new Error('SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES must be an integer between 1 and MAX_SESSIONS');
-
-const spartanCreateWaiters = [];
-let spartanActiveCreates = 0;
-function spartanCreateQueueError(code, message) {
-  const error = new Error(message);
-  error.statusCode = 503;
-  error.code = code;
-  return error;
-}
-async function spartanWithCreateLimit(operation, queueTimeoutMs = 30000) {
-  if (spartanActiveCreates < SPARTAN_MAX_CONCURRENT_CREATES) {
-    spartanActiveCreates++;
-  } else {
-    if (spartanCreateWaiters.length >= MAX_SESSIONS) {
-      throw spartanCreateQueueError('tab_create_queue_full', 'Camofox tab create queue is full');
-    }
-    const timeoutMs = Number(queueTimeoutMs);
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
-      throw spartanCreateQueueError('tab_create_queue_timeout', 'Camofox tab create queue deadline expired');
-    }
-    await new Promise((resolve, reject) => {
-      const waiter = {
-        activate() {
-          clearTimeout(waiter.timer);
-          resolve();
-        },
-        timer: null,
-      };
-      waiter.timer = setTimeout(() => {
-        const index = spartanCreateWaiters.indexOf(waiter);
-        if (index < 0) return;
-        spartanCreateWaiters.splice(index, 1);
-        reject(spartanCreateQueueError('tab_create_queue_timeout', 'Camofox tab create queue deadline expired'));
-      }, timeoutMs);
-      spartanCreateWaiters.push(waiter);
-    });
-  }
-  try {
-    return await operation();
-  } finally {
-    const next = spartanCreateWaiters.shift();
-    if (next) next.activate();
-    else spartanActiveCreates--;
-  }
-}`;
-if (!source.includes('async function spartanWithCreateLimit(')) {
-  if (!source.includes(spartanCreateLimitMarker)) {
-    throw new Error('expected Camofox user-concurrency marker not found');
-  }
-  source = source.replace(spartanCreateLimitMarker, spartanCreateLimitReplacement);
-}
-
-const spartanLifecycleCreateTabRouteStart = "app.post('/tabs', async (req, res) => {";
-const spartanLifecycleCreateTabRouteEnd = "\n});\n\n// Navigate";
-const spartanLifecycleCreateTabRouteStartIndex = source.indexOf(spartanLifecycleCreateTabRouteStart);
-if (spartanLifecycleCreateTabRouteStartIndex !== -1) {
-  const spartanLifecycleCreateTabRouteEndIndex = source.indexOf(spartanLifecycleCreateTabRouteEnd, spartanLifecycleCreateTabRouteStartIndex);
-  if (spartanLifecycleCreateTabRouteEndIndex === -1) throw new Error('expected Camofox create-tab route end marker not found');
-  let spartanLifecycleCreateTabRoute = source.slice(spartanLifecycleCreateTabRouteStartIndex, spartanLifecycleCreateTabRouteEndIndex);
-  if (!spartanLifecycleCreateTabRoute.includes('const spartanCreateFence =')) {
-    const routeOpen = `${spartanLifecycleCreateTabRouteStart}\n  try {`;
-    const routeOpenReplacement = `${spartanLifecycleCreateTabRouteStart}\n  const spartanCreateFence = {\n    active: true,\n    stage: 'validate',\n    startedAt: Date.now(),\n    session: null,\n    page: null,\n    group: null,\n    tabId: null,\n    userKey: null,\n  };\n  try {`;
-    const getSessionMarker = '      let session = await getSession(userId, { trace: !!trace });';
-    const getSessionReplacement = `      spartanCreateFence.stage = 'get_session';
-      spartanCreateFence.userKey = normalizeUserId(userId);
-      let session = await getSession(userId, { trace: !!trace });
-      spartanCreateFence.session = session;
-      if (!(session._spartanPendingCreates instanceof Set)) session._spartanPendingCreates = new Set();
-      session._spartanPendingCreates.add(spartanCreateFence);
-      if (!spartanCreateFence.active) {
-        if (sessions.get(spartanCreateFence.userKey) === session) sessions.delete(spartanCreateFence.userKey);
-        session._closing = true;
-        closeSession(spartanCreateFence.userKey, session, { reason: 'late_tab_create', clearDownloads: true, clearLocks: true }).catch(() => {});
-        throw Object.assign(new Error('tab create completed after deadline'), { statusCode: 503, code: 'tab_create_timeout' });
-      }`;
-    const groupMarker = '      const group = getTabGroup(session, resolvedSessionKey);';
-    const groupReplacement = `${groupMarker}
-      spartanCreateFence.group = group;`;
-    const newPageMarker = '      const page = await session.context.newPage();';
-    const newPageReplacement = `      spartanCreateFence.stage = 'new_page';
-      const spartanPagePromise = session.context.newPage();
-      spartanPagePromise.then(latePage => {
-        if (!spartanCreateFence.active) safePageClose(latePage).catch(() => {});
-      }).catch(() => {});
-      const page = await spartanPagePromise;
-      if (!spartanCreateFence.active) {
-        safePageClose(page).catch(() => {});
-        throw Object.assign(new Error('tab create completed after deadline'), { statusCode: 503, code: 'tab_create_timeout' });
-      }
-      spartanCreateFence.page = page;`;
-    const tabIdMarker = '      const tabId = fly.makeTabId();';
-    const tabIdReplacement = `${tabIdMarker}
-      spartanCreateFence.tabId = tabId;`;
-    const navigationMarkerBasic = `      if (url) {
-        const urlErr = validateUrl(url);`;
-    const navigationMarkerWithRetry = `      if (url) {
-        try {`;
-    const navigationMarker = spartanLifecycleCreateTabRoute.includes(navigationMarkerBasic)
-      ? navigationMarkerBasic
-      : navigationMarkerWithRetry;
-    const navigationReplacement = navigationMarker.replace(
-      '      if (url) {',
-      `      if (url) {
-        spartanCreateFence.stage = 'navigate';`,
-    );
-    const createPromiseCloseMarker = `    })(), requestTimeoutMs(), 'tab create');`;
-    const createOperationOpenMarker = 'const result = await withTimeout((async () => {';
-    const createOperationOpenReplacement = 'const result = await withTimeout(spartanWithCreateLimit(async () => {';
-    const createPromiseCloseReplacement = `    }, Math.max(1, requestTimeoutMs() - 1000)).finally(() => {
-      const spartanPendingCreates = spartanCreateFence.session?._spartanPendingCreates;
-      if (spartanPendingCreates instanceof Set) {
-        spartanPendingCreates.delete(spartanCreateFence);
-        if (spartanPendingCreates.size === 0) delete spartanCreateFence.session._spartanPendingCreates;
-      }
-    }), requestTimeoutMs(), 'tab create');`;
-    const catchMarkerWithLog = `  } catch (err) {
-    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });`;
-    const catchMarkerBare = '  } catch (err) {';
-    const catchMarker = spartanLifecycleCreateTabRoute.includes(catchMarkerWithLog)
-      ? catchMarkerWithLog
-      : catchMarkerBare;
-    const preservedCatchLog = catchMarker === catchMarkerWithLog
-      ? "    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });\n"
-      : "";
-    const catchReplacement = `  } catch (err) {
-    spartanCreateFence.active = false;
-    const spartanCreateTimedOut = err?.code === 'tab_create_timeout'
-      || String(err?.message || '').includes('tab create timed out');
-    if (spartanCreateTimedOut) {
-      err.statusCode = 503;
-      err.code = 'tab_create_timeout';
-      log('error', 'tab create stage failed', {
-        reqId: req.reqId,
-        stage: spartanCreateFence.stage,
-        durationMs: Date.now() - spartanCreateFence.startedAt,
-        code: err.code,
-      });
-      if (spartanCreateFence.group && spartanCreateFence.tabId) {
-        spartanCreateFence.group.delete(spartanCreateFence.tabId);
-        refreshActiveTabsGauge();
-      }
-      if (spartanCreateFence.page) {
-        await withTimeout(safePageClose(spartanCreateFence.page), 2000, 'tab create cleanup').catch(() => {
-          restartBrowser('tab_create_cleanup_timeout').catch(() => {});
-        });
-      } else if (spartanCreateFence.session && spartanCreateFence.userKey) {
-        const current = sessions.get(spartanCreateFence.userKey);
-        if (current === spartanCreateFence.session) sessions.delete(spartanCreateFence.userKey);
-        spartanCreateFence.session._closing = true;
-        await withTimeout(closeSession(spartanCreateFence.userKey, spartanCreateFence.session, {
-          reason: 'tab_create_timeout', clearDownloads: true, clearLocks: true,
-        }), 2000, 'tab create session cleanup').catch(() => {
-          restartBrowser('tab_create_session_cleanup_timeout').catch(() => {});
-        });
-      }
-    }
-${preservedCatchLog}`;
-
-    for (const [marker, replacement, label] of [
-      [routeOpen, routeOpenReplacement, 'route open'],
-      [getSessionMarker, getSessionReplacement, 'getSession'],
-      [groupMarker, groupReplacement, 'group'],
-      [newPageMarker, newPageReplacement, 'newPage'],
-      [tabIdMarker, tabIdReplacement, 'tabId'],
-      [navigationMarker, navigationReplacement, 'navigation'],
-      [createOperationOpenMarker, createOperationOpenReplacement, 'operation open'],
-      [createPromiseCloseMarker, createPromiseCloseReplacement, 'promise close'],
-      [catchMarker, catchReplacement, 'catch'],
-    ]) {
-      if (!spartanLifecycleCreateTabRoute.includes(marker)) throw new Error(`expected Camofox create-tab ${label} marker not found`);
-      spartanLifecycleCreateTabRoute = spartanLifecycleCreateTabRoute.replace(marker, replacement);
-    }
-    source = source.slice(0, spartanLifecycleCreateTabRouteStartIndex) + spartanLifecycleCreateTabRoute + source.slice(spartanLifecycleCreateTabRouteEndIndex);
-  }
-}
-
-const spartanCloseSessionDeleteMarker = `  await session.context.close().catch(() => {});
-  sessions.delete(key);`;
-const spartanCloseSessionDeleteReplacement = `  await session.context.close().catch(() => {});
-  // A reaped session may already have been replaced for the same user while
-  // context.close() was pending. Never delete that replacement.
-  if (sessions.get(key) === session) sessions.delete(key);`;
-if (source.includes(spartanCloseSessionDeleteMarker)) {
-  source = source.replace(
-    spartanCloseSessionDeleteMarker,
-    spartanCloseSessionDeleteReplacement,
-  );
-} else if (!source.includes(
-  'if (sessions.get(key) === session) sessions.delete(key);',
-)) {
-  throw new Error('expected Camofox close-session delete marker not found');
-}
-
-const spartanEmptyGroupReaperMarker = `      if (group.size === 0) {
-        session.tabGroups.delete(listItemId);
-      }`;
-const spartanEmptyGroupReaperReplacement = `      const spartanGroupCreatePending = session._spartanPendingCreates instanceof Set
-        && [...session._spartanPendingCreates].some(pending => pending.group === group);
-      if (group.size === 0 && !spartanGroupCreatePending) {
-        session.tabGroups.delete(listItemId);
-      }`;
-if (source.includes(spartanEmptyGroupReaperMarker)) {
-  source = source.replace(
-    spartanEmptyGroupReaperMarker,
-    spartanEmptyGroupReaperReplacement,
-  );
-} else if (!source.includes('const spartanGroupCreatePending =')) {
-  throw new Error('expected Camofox empty-group reaper marker not found');
-}
-
-const spartanEmptySessionReaperMarker = `    // Clean up sessions with zero tabs remaining -- free browser context memory
-    if (session.tabGroups.size === 0) {`;
-const spartanEmptySessionReaperReplacement = `    // A create fence lives until the underlying work settles, not merely until
-    // the HTTP timeout. Never tear down a context that is still creating a tab.
-    const spartanSessionCreatePending = session._spartanPendingCreates instanceof Set
-      && session._spartanPendingCreates.size > 0;
-    if (
-      session.tabGroups.size === 0
-      && !spartanSessionCreatePending
-    ) {`;
-if (source.includes(spartanEmptySessionReaperMarker)) {
-  source = source.replace(
-    spartanEmptySessionReaperMarker,
-    spartanEmptySessionReaperReplacement,
-  );
-} else if (!source.includes('const spartanSessionCreatePending =')) {
-  throw new Error('expected Camofox empty-session reaper marker not found');
-}
-
-const spartanOrphanReaperMarker = `    if (session._closing) continue;
-    let contextPages;
-    try {
-      contextPages = session.context.pages();`;
-const spartanOrphanReaperReplacement = `    if (session._closing) continue;
-    if (session._spartanPendingCreates instanceof Set && session._spartanPendingCreates.size > 0) continue;
-    let contextPages;
-    try {
-      contextPages = session.context.pages();`;
-if (source.includes(spartanOrphanReaperMarker)) {
-  source = source.replace(
-    spartanOrphanReaperMarker,
-    spartanOrphanReaperReplacement,
-  );
-} else if (!source.includes(spartanOrphanReaperReplacement)) {
-  throw new Error('expected Camofox orphan reaper marker not found');
-}
-
-const nativeMemResetMarker = `  // Reset native memory baseline so next browser measures from fresh
-  reporter.resetNativeMemBaseline();
-  _nativeMemBaseline = null;`;
-const nativeMemResetReplacement = `  // Reset native memory baseline so next browser measures from fresh
-  if (typeof reporter.resetNativeMemBaseline === 'function') {
-    reporter.resetNativeMemBaseline();
-  }
-  _nativeMemBaseline = null;`;
-if (source.includes(nativeMemResetMarker)) {
-  source = source.replace(nativeMemResetMarker, nativeMemResetReplacement);
-} else if (!source.includes("typeof reporter.resetNativeMemBaseline === 'function'")) {
-  throw new Error('expected Camofox native memory reset marker not found');
-}
-
-const spartanCgroupAdmissionMarker = `      // Memory admission control (Fly.io only) — reject new sessions when
-      // system memory is critically low. 503 tells Fly Proxy to try another machine.`;
-const spartanCgroupAdmission = `      if (process.env.SPARTAN_CAMOFOX_CGROUP_ADMISSION === 'true') {
-        const admission = spartanCgroupAdmissionAllowed({
-          threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.90),
-        });
-        if (!admission.allowed) {
-          const err = new Error('Camofox cgroup memory admission rejected');
-          err.statusCode = 503;
-          err.code = admission.code || 'memory_pressure';
-          throw err;
-        }
-      }
-`;
-if (!source.includes('spartanCgroupAdmissionAllowed({')) {
-  if (!source.includes(spartanCgroupAdmissionMarker)) {
-    throw new Error('expected Camofox memory admission marker not found');
-  }
-  source = source.replace(spartanCgroupAdmissionMarker, spartanCgroupAdmission + spartanCgroupAdmissionMarker);
-}
-
-const spartanDeepHealthMarker = "app.get('/health',";
-const spartanDeepHealthRoutes = `const spartanDeepHealthSecretPath = process.env.SPARTAN_CAMOFOX_INTERNAL_SECRET_FILE
-  || '/run/spartan-camofox/internal.key';
-const spartanDeepHealth = createSpartanDeepHealthController({
-  getBrowser: ensureBrowser,
-  recoverBrowser: () => restartBrowser('spartan_deep_health'),
-  probeTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS || 8000),
-  cleanupTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 2000),
-  recoveryTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS || 20000),
-});
-
-function spartanRequireInternalHealth(req, res) {
-  if (spartanInternalRequestAuthorized(req, spartanDeepHealthSecretPath)) return true;
-  res.status(403).json({ ok: false, code: 'forbidden' });
-  return false;
-}
-
-app.get('/spartan/health/deep', async (req, res) => {
-  if (!spartanRequireInternalHealth(req, res)) return;
-  const result = await spartanDeepHealth.probe();
-  res.status(result.ok ? 200 : 503).json(result);
-});
-
-app.post('/spartan/recover', async (req, res) => {
-  if (!spartanRequireInternalHealth(req, res)) return;
-  const result = await spartanDeepHealth.recover();
-  res.status(result.ok ? 200 : 503).json(result);
-});
-
-`;
-if (!source.includes("app.get('/spartan/health/deep'")) {
-  if (!source.includes(spartanDeepHealthMarker)) {
-    throw new Error('expected Camofox health route marker not found');
-  }
-  source = source.replace(spartanDeepHealthMarker, spartanDeepHealthRoutes + spartanDeepHealthMarker);
-}
-
-// Camoufox can wedge when one context close overlaps one page create or
-// navigation. Converge pristine upstream and the deployed create-only FIFO on
-// one versioned, re-entrant lifecycle coordinator. Unknown partial variants
-// fail before the single server.js write at the end of this patcher.
-const spartanLifecycleVersionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;';
-const spartanLifecycleRevisionMarker = 'const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 2;';
-const spartanLifecycleQueuedCreateMarker = 'const SPARTAN_QUEUED_CREATE_FENCE_REVISION = 1;';
-const spartanReadinessRevisionMarker = 'const SPARTAN_CAMOFOX_READINESS_REVISION = 2;';
-const spartanRetentionRevisionMarker = 'const SPARTAN_CAMOFOX_RETENTION_REVISION = 1;';
-const spartanReadinessRuntimeBlock = `let spartanBrowserGeneration = 0;
-
-function spartanPublishBrowser(candidate) {
-  browser = candidate;
-  spartanBrowserGeneration++;
-  return candidate;
-}
-
-const spartanNavigationReadiness = createSpartanNavigationReadiness({
-  getGeneration: () => spartanBrowserGeneration,
-  markDegraded: code => spartanBrowserLifecycle.markDegraded(code),
-});
-const SPARTAN_NAVIGATION_ATTEMPT_FAILURE = Symbol('spartanNavigationAttemptFailure');
-
-function spartanMarkNavigationAttemptError(error) {
-  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return error;
-  const message = String(error.message || '');
-  const excluded = isProxyError(error)
-    || error.code === 'proxy_forbidden'
-    || error.statusCode === 400
-    || message.includes('Navigation aborted')
-    || message.includes('SEC_ERROR')
-    || message.includes('SSL_ERROR')
-    || message.includes('MOZILLA_PKIX_ERROR');
-  if (excluded) return error;
-  const failureClass = isTimeoutError(error) ? 'internal_timeout' : null;
-  if (!failureClass) return error;
-  try {
-    Object.defineProperty(error, SPARTAN_NAVIGATION_ATTEMPT_FAILURE, {
-      value: failureClass,
-      configurable: true,
-    });
-  } catch {
-    // A frozen upstream error still fails the request, but cannot poison readiness.
-  }
-  return error;
-}
-
-async function spartanObserveNavigationAttempt(operation) {
-  try {
-    return await operation();
-  } catch (navErr) {
-    spartanMarkNavigationAttemptError(navErr);
-    throw navErr;
-  }
-}
-
-function spartanSettleNavigationFailure(ticket, error) {
-  ticket?.failure({ qualifying: Boolean(error?.[SPARTAN_NAVIGATION_ATTEMPT_FAILURE]) });
-}
-
-function spartanClassifyPublicFailure(error) {
-  const code = String(error?.code || '');
-  const message = String(error?.message || '');
-  const capacityCodes = new Set([
-    'admission_rejected',
-    'memory_pressure',
-    'tab_capacity_reached',
-    'tab_create_queue_full',
-    'browser_lifecycle_queue_full',
-  ]);
-  const capacityMessage = message.includes('Maximum concurrent sessions reached')
-    || message.includes('Maximum tabs')
-    || message.includes('User concurrency limit reached')
-    || message.includes('queue is full');
-  if (error?.statusCode === 429 || capacityCodes.has(code) || capacityMessage) {
-    let publicCode = 'local_capacity_reached';
-    if (code === 'tab_capacity_reached' || message.includes('Maximum tabs')) {
-      publicCode = 'tab_capacity_reached';
-    } else if (message.includes('Maximum concurrent sessions')) {
-      publicCode = 'session_capacity_reached';
-    } else if (message.includes('User concurrency')) {
-      publicCode = 'user_concurrency_reached';
-    }
-    return {
-      statusCode: 429,
-      code: publicCode,
-      failureClass: 'capacity_limit',
-      publicMessage: 'Local Camofox capacity reached; retry later.',
-    };
+// Camofox 1.14 ships targeted per-user recovery and page leases. Compose the
+// Spartan lifecycle boundary around those primitives instead of rewriting them
+// back to the pre-1.12 server shape.
+const spartanModernUpstream = source.includes('const sessionCreations = new Map();')
+  && source.includes('createPageWithRecoveryForUser');
+if (spartanModernUpstream) {
+  function modernReplaceOnce(marker, replacement, label) {
+    const count = source.split(marker).length - 1;
+    if (count !== 1) throw new Error(`expected one Camofox 1.14 ${label} marker, found ${count}`);
+    source = source.replace(marker, replacement);
   }
 
-  const browserStateCodes = new Set([
-    'browser_navigation_degraded',
-    'browser_lifecycle_degraded',
-    'browser_lifecycle_stuck',
-    'browser_lifecycle_recovering',
-    'browser_recovering',
-    'browser_recovery_failed',
-  ]);
-  if (
-    error?.[SPARTAN_NAVIGATION_ATTEMPT_FAILURE] === 'browser_state'
-    || browserStateCodes.has(code)
-    || isDeadContextError(error)
-  ) {
-    return {
-      statusCode: 503,
-      code: code === 'browser_navigation_degraded'
-        ? code
-        : 'browser_navigation_unavailable',
-      failureClass: 'browser_state',
-      publicMessage: 'Camofox browser state is unavailable; retry after recovery.',
-    };
-  }
-
-  const timeoutCodes = new Set([
-    'tab_create_timeout',
-    'tab_create_queue_timeout',
-    'browser_lifecycle_queue_timeout',
-    'deep_probe_timeout',
-  ]);
-  if (
-    error?.[SPARTAN_NAVIGATION_ATTEMPT_FAILURE] === 'internal_timeout'
-    || timeoutCodes.has(code)
-    || isTimeoutError(error)
-  ) {
-    return {
-      statusCode: 503,
-      code: error?.[SPARTAN_NAVIGATION_ATTEMPT_FAILURE] === 'internal_timeout'
-        ? 'navigation_timeout'
-        : (timeoutCodes.has(code) ? code : 'request_timeout'),
-      failureClass: 'internal_timeout',
-      publicMessage: 'Camofox operation timed out; retry after recovery.',
-    };
-  }
-  return null;
-}
-
-function spartanApplyPublicFailure(error) {
-  const classification = spartanClassifyPublicFailure(error);
-  if (!classification || !error) return false;
-  error.statusCode = classification.statusCode;
-  error.code = classification.code;
-  error.failureClass = classification.failureClass;
-  error.spartanPublicMessage = classification.publicMessage;
-  return true;
-}
-
-function spartanIsCapacityFailure(error) {
-  return spartanClassifyPublicFailure(error)?.failureClass === 'capacity_limit';
-}
-
-function spartanPublicReadinessSnapshot() {
-  const generation = spartanBrowserGeneration;
-  const navigation = spartanNavigationReadiness.snapshot();
-  if (navigation.latched) {
-    return {
-      ok: false,
-      code: 'browser_navigation_degraded',
-      stage: 'lifecycle',
-      generation,
-      ageMs: navigation.latchedAt === null ? null : Math.max(0, Date.now() - navigation.latchedAt),
-    };
-  }
-  if (healthState.isRecovering) {
-    return { ok: false, code: 'browser_recovering', stage: 'recovery', generation, ageMs: 0 };
-  }
-  const lifecycle = spartanBrowserLifecycle.snapshot();
-  if (lifecycle.recovering) {
-    return { ok: false, code: 'browser_recovering', stage: 'recovery', generation, ageMs: 0 };
-  }
-  if (lifecycle.degradedCode) {
-    return { ok: false, code: lifecycle.degradedCode, stage: 'lifecycle', generation, ageMs: null };
-  }
-  const connected = browser !== null && (browser.isConnected?.() ?? false);
-  if (!connected) {
-    return { ok: false, code: 'browser_disconnected', stage: 'browser', generation, ageMs: null };
-  }
-  return spartanDeepHealth.snapshot();
-}
-
-const SPARTAN_DEEP_PUBLIC_CODES = new Set([
-  'browser_lifecycle_degraded',
-  'browser_lifecycle_invalidated',
-  'browser_lifecycle_queue_timeout',
-  'browser_lifecycle_recovering',
-  'browser_lifecycle_stuck',
-  'browser_navigation_degraded',
-  'busy',
-  'deep_probe_busy_stale',
-  'deep_probe_cleanup_failed',
-  'deep_probe_failed',
-  'deep_probe_sentinel',
-  'deep_probe_timeout',
-  'ready',
-]);
-const SPARTAN_DEEP_PUBLIC_STAGES = new Set([
-  'cleanup', 'complete', 'ensure_browser', 'evaluate', 'goto', 'lifecycle',
-  'lifecycle_settle', 'new_context', 'new_page',
-]);
-
-function spartanDeepHealthPayload(result) {
-  let ok = result?.ok === true;
-  let code = SPARTAN_DEEP_PUBLIC_CODES.has(result?.code) ? result.code : 'deep_probe_failed';
-  let stage = SPARTAN_DEEP_PUBLIC_STAGES.has(result?.stage) ? result.stage : 'lifecycle';
-  if (code === 'ready' && stage !== 'complete') {
-    ok = false;
-    code = 'deep_probe_failed';
-    stage = 'lifecycle';
-  } else if (code === 'busy') {
-    ok = ok && stage === 'lifecycle';
-  } else if (code === 'browser_navigation_degraded') {
-    ok = false;
-    stage = 'lifecycle';
-  } else if (code !== 'ready' && code !== 'busy') {
-    ok = false;
-  }
-  const browserGeneration = Number.isSafeInteger(result?.generation)
-    && result.generation >= 0
-    ? result.generation
-    : spartanBrowserGeneration;
-  return { ok, code, stage, browserGeneration };
-}
-`;
-
-const spartanReadinessHealthRoutes = `app.get('/health', (_req, res) => {
-  const readiness = spartanPublicReadinessSnapshot();
-  const navigation = spartanNavigationReadiness.snapshot();
-  const running = browser !== null && (browser.isConnected?.() ?? false);
-  const mem = process.memoryUsage();
-  const rssMb = Math.round(mem.rss / 1048576);
-  const heapUsedMb = Math.round(mem.heapUsed / 1048576);
-  const nativeMemMb = rssMb - heapUsedMb;
-  res.status(readiness.ok ? 200 : 503).json({
-    ok: readiness.ok,
-    engine: 'camoufox',
-    browserConnected: running,
-    browserRunning: running,
-    browserGeneration: spartanBrowserGeneration,
-    activeTabs: getTotalTabCount(),
-    activeSessions: sessions.size,
-    consecutiveFailures: navigation.consecutiveFailures,
-    readiness: {
-      code: readiness.code,
-      stage: readiness.stage || null,
-      ageMs: readiness.ageMs ?? null,
-      generation: readiness.generation ?? spartanBrowserGeneration,
-    },
-    memory: { rssMb, heapUsedMb, nativeMemMb },
-    ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
-  });
-});
-
-app.get('/live', (_req, res) => {
-  res.status(200).json({ ok: true, engine: 'camoufox', live: true });
-});`;
-
-function spartanReplaceReadinessOnce(text, marker, replacement, label) {
-  const count = text.split(marker).length - 1;
-  if (count !== 1) {
-    throw new Error(`expected one Camofox readiness ${label} marker, found ${count}`);
-  }
-  return text.replace(marker, replacement);
-}
-
-function spartanReplaceReadinessVariant(text, variants, label) {
-  const matches = variants.filter(([marker]) => text.includes(marker));
-  if (matches.length !== 1) {
-    throw new Error(`expected one Camofox readiness ${label} variant, found ${matches.length}`);
-  }
-  return spartanReplaceReadinessOnce(text, matches[0][0], matches[0][1], label);
-}
-
-function spartanReadinessRoute(prefix, label) {
-  const start = source.indexOf(prefix);
-  if (start === -1 || source.indexOf(prefix, start + prefix.length) !== -1) {
-    throw new Error(`expected one Camofox readiness ${label} route`);
-  }
-  const end = spartanFindCallExpressionEnd(source, start);
-  if (end === -1) throw new Error(`expected Camofox readiness ${label} route end`);
-  return { value: source.slice(start, end) };
-}
-
-const spartanLifecycleRuntimeBlock = `const userConcurrency = new Map();
+  const modernRuntimeAnchor = 'const userConcurrency = new Map();';
+  const modernRuntime = `const userConcurrency = new Map();
 
 const SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1;
+const SPARTAN_LIFECYCLE_COORDINATOR_REVISION = 3;
+const SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1;
 const SPARTAN_MAX_CONCURRENT_CREATES_RAW = Number(process.env.SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES || '1');
 if (!Number.isInteger(SPARTAN_MAX_CONCURRENT_CREATES_RAW) || SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1) {
   throw new Error('SPARTAN_CAMOFOX_MAX_CONCURRENT_CREATES must be exactly 1');
 }
-const SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS = Number(
-  process.env.SPARTAN_CAMOFOX_RECOVERY_DRAIN_TIMEOUT_MS || 2000,
-);
+const SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_RECOVERY_DRAIN_TIMEOUT_MS || 2000);
 if (!Number.isFinite(SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS) || SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS < 1) {
   throw new Error('SPARTAN_CAMOFOX_RECOVERY_DRAIN_TIMEOUT_MS must be positive');
 }
+const SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS + 1;
+const spartanPendingUserCreates = new Map();
+let spartanPendingUserCreateCount = 0;
+let spartanBrowserGeneration = 0;
 
-const spartanBrowserLifecycle = createSpartanBrowserLifecycleCoordinator({
-  maxQueued: MAX_SESSIONS,
-  backgroundAgingMs: 1000,
-});
+const spartanBrowserLifecycle = createSpartanBrowserLifecycleCoordinator({ maxQueued: MAX_SESSIONS, backgroundAgingMs: 1000 });
 const spartanGuardedBrowsers = new WeakSet();
 const spartanGuardedContexts = new WeakSet();
 const spartanGuardedPages = new WeakSet();
 const spartanClosePromises = new WeakMap();
-const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close']);
-
-function spartanLifecycleMethodKind(prefix, methodName) {
-  return \`\${prefix}_\${String(methodName).replace(/[A-Z]/g, value => \`_\${value.toLowerCase()}\`)}\`;
-}
+const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close', 'goBack', 'goForward', 'goto', 'reload']);
 
 function spartanTrackLifecyclePromise(promise) {
-  return spartanBrowserLifecycle.hasLease()
-    ? spartanBrowserLifecycle.track(promise)
-    : promise;
+  return spartanBrowserLifecycle.hasLease() ? spartanBrowserLifecycle.track(promise) : promise;
 }
-
-function spartanGuardLifecycleMethod(target, methodName, {
-  prefix,
-  priority = 'foreground',
-  transform = value => value,
-} = {}) {
+function spartanGuardLifecycleMethod(target, methodName, { prefix, priority = 'foreground', transform = value => value } = {}) {
   const original = target?.[methodName];
   if (typeof original !== 'function') return;
-  const kind = spartanLifecycleMethodKind(prefix, methodName);
   target[methodName] = function spartanGuardedLifecycleMethod(...args) {
     if (methodName === 'close') {
       const existing = spartanClosePromises.get(target);
       if (existing) return existing;
     }
-    const invoke = () => Promise.resolve()
-      .then(() => original.apply(this, args))
-      .then(transform);
+    const invoke = () => Promise.resolve().then(() => original.apply(this, args)).then(transform);
+    const kind = prefix + '_' + String(methodName).replace(/[A-Z]/g, value => '_' + value.toLowerCase());
     const running = spartanBrowserLifecycle.hasLease()
       ? spartanBrowserLifecycle.track(invoke())
       : spartanBrowserLifecycle.run(kind, invoke, {
           priority,
-          waitTimeoutMs: priority === 'background'
-            ? null
-            : Math.max(1, HANDLER_TIMEOUT_MS - 1000),
-          deadlineAt: priority === 'background'
-            ? null
-            : Date.now() + HANDLER_TIMEOUT_MS,
+          waitTimeoutMs: priority === 'background' ? null : Math.max(1, HANDLER_TIMEOUT_MS - 1000),
+          deadlineAt: priority === 'background' ? null : Date.now() + HANDLER_TIMEOUT_MS,
         });
-    if (methodName === 'close') spartanClosePromises.set(target, running);
+    if (methodName === 'close') {
+      spartanClosePromises.set(target, running);
+      running.finally(() => {
+        if (spartanClosePromises.get(target) === running) spartanClosePromises.delete(target);
+      }).catch(() => {});
+    }
     return running;
   };
 }
-
 function spartanGuardPage(page) {
   if (!page || spartanGuardedPages.has(page)) return page;
   spartanGuardedPages.add(page);
   for (const methodName of SPARTAN_PAGE_LIFECYCLE_METHODS) {
-    spartanGuardLifecycleMethod(page, methodName, {
-      prefix: 'page',
-      priority: methodName === 'close' ? 'background' : 'foreground',
-    });
+    spartanGuardLifecycleMethod(page, methodName, { prefix: 'page', priority: methodName === 'close' ? 'background' : 'foreground' });
   }
   return page;
 }
-
 function spartanGuardContext(context) {
   if (!context || spartanGuardedContexts.has(context)) return context;
   spartanGuardedContexts.add(context);
-  spartanGuardLifecycleMethod(context, 'newPage', {
-    prefix: 'context',
-    transform: spartanGuardPage,
-  });
+  spartanGuardLifecycleMethod(context, 'newPage', { prefix: 'context', transform: spartanGuardPage });
   spartanGuardLifecycleMethod(context, 'addCookies', { prefix: 'context' });
-  spartanGuardLifecycleMethod(context, 'close', {
-    prefix: 'context',
-    priority: 'background',
-  });
-  try {
-    for (const page of context.pages?.() || []) spartanGuardPage(page);
-  } catch {
-    // Keep a stale context guarded without masking the original browser error.
-  }
+  spartanGuardLifecycleMethod(context, 'close', { prefix: 'context', priority: 'background' });
+  try { for (const page of context.pages?.() || []) spartanGuardPage(page); } catch {}
   return context;
 }
-
 function spartanGuardBrowser(candidate) {
   if (!candidate || spartanGuardedBrowsers.has(candidate)) return candidate;
   spartanGuardedBrowsers.add(candidate);
-  spartanGuardLifecycleMethod(candidate, 'newContext', {
-    prefix: 'browser',
-    transform: spartanGuardContext,
-  });
-  spartanGuardLifecycleMethod(candidate, 'close', {
-    prefix: 'browser',
-    priority: 'background',
-  });
+  spartanGuardLifecycleMethod(candidate, 'newContext', { prefix: 'browser', transform: spartanGuardContext });
+  spartanGuardLifecycleMethod(candidate, 'close', { prefix: 'browser', priority: 'background' });
   return candidate;
 }
-
-async function spartanWithCreateLimit(operation, queueTimeoutMs = 30000) {
-  const timeoutMs = Number(queueTimeoutMs);
-  if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
-    throw spartanBrowserLifecycleError(
-      'browser_lifecycle_queue_timeout',
-      'Camofox browser lifecycle queue deadline expired',
-    );
-  }
-  return await spartanBrowserLifecycle.run('tab_create', operation, {
-    priority: 'foreground',
-    waitTimeoutMs: timeoutMs,
-    deadlineAt: Date.now() + timeoutMs,
-  });
-}`;
-
-function spartanReplaceLifecycleOnce(marker, replacement, label) {
-  const first = source.indexOf(marker);
-  if (first === -1) throw new Error(`expected Camofox lifecycle ${label} marker not found`);
-  if (source.indexOf(marker, first + marker.length) !== -1) {
-    throw new Error(`duplicate Camofox lifecycle ${label} marker`);
-  }
-  source = source.slice(0, first) + replacement + source.slice(first + marker.length);
+function spartanPublishBrowser(candidate) {
+  browser = spartanGuardBrowser(candidate);
+  spartanBrowserGeneration++;
+  return browser;
 }
-
-function spartanLifecycleRange(startMarker, endMarker, label) {
-  const start = source.indexOf(startMarker);
-  if (start === -1) throw new Error(`expected Camofox lifecycle ${label} start not found`);
-  const end = source.indexOf(endMarker, start + startMarker.length);
-  if (end === -1) throw new Error(`expected Camofox lifecycle ${label} end not found`);
-  return { start, end, value: source.slice(start, end) };
-}
-
-function spartanReplaceLifecycleRange(range, replacement) {
-  const currentStart = source.indexOf(range.value);
-  if (currentStart === -1) {
-    throw new Error('Camofox lifecycle range changed after preflight');
-  }
-  if (source.indexOf(range.value, currentStart + range.value.length) !== -1) {
-    throw new Error('duplicate Camofox lifecycle range after preflight');
-  }
-  source = source.slice(0, currentStart)
-    + replacement
-    + source.slice(currentStart + range.value.length);
-}
-
-const spartanLifecycleVersionCount = source.split(spartanLifecycleVersionMarker).length - 1;
-if (spartanLifecycleVersionCount > 1) {
-  throw new Error('duplicate Camofox lifecycle coordinator version marker');
-}
-if (spartanLifecycleVersionCount === 0) {
-  const legacyCreateBlock = spartanCreateLimitReplacement;
-  if (!source.includes(legacyCreateBlock)) {
-    throw new Error('unsupported Camofox create limiter variant; refusing partial lifecycle migration');
-  }
-
-  const tabLockRange = spartanLifecycleRange(
-    'async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {',
-    '\n}\n\nfunction withTimeout(',
-    'tab lock',
-  );
-  const expectedTabLockBody = `async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
-  const lock = getTabLock(tabId);
-  await lock.acquire(TAB_LOCK_TIMEOUT_MS);
-  try {
-    return await withTimeout(operation(), timeoutMs, 'action');
-  } finally {
-    lock.release();
-  }`;
-  if (tabLockRange.value !== expectedTabLockBody) {
-    throw new Error('unsupported Camofox tab-lock variant; refusing lifecycle migration');
-  }
-
-  const ensureRange = spartanLifecycleRange(
-    'async function ensureBrowser() {',
-    '\n}\n\n// Helper to normalize userId',
-    'ensure browser',
-  );
-  const closeSessionRange = spartanLifecycleRange(
-    'async function closeSession(userId, session, {',
-    '\n}\n\nasync function closeAllSessions(',
-    'close session',
-  );
-  const restartRange = spartanLifecycleRange(
-    'async function restartBrowser(reason) {',
-    '\n}\n\nfunction getTotalTabCount(',
-    'restart browser',
-  );
-  const popupRange = spartanLifecycleRange(
-    'function attachPopupHandler(page, userId, sessionKey) {',
-    '\n}\n\nfunction pressureHash(',
-    'popup handler',
-  );
-  const openRouteRange = spartanLifecycleRange(
-    "app.post('/tabs/open', async (req, res) => {",
-    "\n});\n\n// POST /start",
-    'tabs open route',
-  );
-
-  for (const [marker, label] of [
-    ['async function closeBrowserFully(reason) {\n  if (_browserClosePromise)', 'close browser'],
-    ['async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {', 'close all sessions'],
-    ['async function getSession(userId, { trace = false } = {}) {', 'get session'],
-    ['async function withUserLimit(userId, operation) {', 'user operation'],
-    ['  return Promise.race([\n    promise,\n    new Promise((_, reject) =>', 'timeout tracking'],
-    ['await session.context.close().catch(() => {});', 'context close propagation'],
-    ["  } catch (err) {\n    log('error', 'browser restart failed', { error: err.message });\n  } finally {", 'restart error propagation'],
-    ['session.tabGroups.size === 0\n      && !spartanSessionCreatePending', 'empty-session reaper'],
-    ['    const session = await getSession(userId);\n    await session.context.addCookies(sanitized);', 'cookie import'],
-    [spartanDeepHealthRoutes, 'legacy deep health'],
-  ]) {
-    if (!source.includes(marker)) {
-      throw new Error(`expected Camofox lifecycle ${label} marker not found`);
-    }
-  }
-
-  spartanReplaceLifecycleOnce(legacyCreateBlock, spartanLifecycleRuntimeBlock, 'legacy create limiter');
-
-  spartanReplaceLifecycleOnce(
-    '  return Promise.race([\n    promise,\n    new Promise((_, reject) =>',
-    '  return Promise.race([\n    spartanTrackLifecyclePromise(promise),\n    new Promise((_, reject) =>',
-    'timeout promise tracking',
-  );
-
-  spartanReplaceLifecycleOnce(
-    'async function withUserLimit(userId, operation) {',
-    `async function withUserLimit(userId, operation) {
-  if (!spartanBrowserLifecycle.hasLease()) {
-    const lifecycleTimeoutMs = requestTimeoutMs();
-    return await spartanBrowserLifecycle.run('user_operation', () => withUserLimit(userId, operation), {
-      priority: 'foreground',
-      waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
-      deadlineAt: Date.now() + lifecycleTimeoutMs,
-    });
-  }`,
-    'user operation guard',
-  );
-
-  const coordinatedTabLock = `async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
-  if (spartanBrowserLifecycle.hasLease()) {
-    const lock = getTabLock(tabId);
-    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
-    try {
-      return await operation();
-    } finally {
-      lock.release();
-    }
-  }
-  const underlying = spartanBrowserLifecycle.run('tab_operation', async () => {
-    const lock = getTabLock(tabId);
-    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
-    try {
-      return await operation();
-    } finally {
-      lock.release();
-    }
-  }, {
-    priority: 'foreground',
-    waitTimeoutMs: Math.max(1, Number(timeoutMs) - 1000),
-    deadlineAt: Date.now() + Number(timeoutMs),
-  });
-  return await withTimeout(underlying, timeoutMs, 'action');`;
-  spartanReplaceLifecycleRange(tabLockRange, coordinatedTabLock);
-
-  let coordinatedEnsure = ensureRange.value.replace(
-    'async function ensureBrowser() {',
-    `async function ensureBrowser() {
-  if (!spartanBrowserLifecycle.hasLease()) {
-    return await spartanBrowserLifecycle.run('browser_ensure', () => ensureBrowser(), {
-      priority: 'foreground',
-      waitTimeoutMs: Math.max(1, HANDLER_TIMEOUT_MS - 1000),
-      deadlineAt: Date.now() + HANDLER_TIMEOUT_MS,
-    });
-  }`,
-  );
-  coordinatedEnsure = coordinatedEnsure
-    .replace('if (browser) return browser;', 'if (browser) return spartanGuardBrowser(browser);')
-    .replace(
-      'if (browserLaunchPromise) return browserLaunchPromise;',
-      'if (browserLaunchPromise) return browserLaunchPromise.then(spartanGuardBrowser);',
-    )
-    .replace('return browserLaunchPromise;', 'return browserLaunchPromise.then(spartanGuardBrowser);');
-  if (!coordinatedEnsure.includes('return browserLaunchPromise.then(spartanGuardBrowser);')) {
-    throw new Error('expected Camofox ensure-browser return marker not found');
-  }
-  spartanReplaceLifecycleRange(ensureRange, coordinatedEnsure);
-
-  spartanReplaceLifecycleOnce(
-    'async function closeBrowserFully(reason) {\n  if (_browserClosePromise)',
-    `async function closeBrowserFully(reason) {
-  if (!spartanBrowserLifecycle.hasLease()) {
-    return await spartanBrowserLifecycle.run(
-      'browser_close',
-      () => closeBrowserFully(reason),
-      { priority: 'background', waitTimeoutMs: null },
-    );
-  }
-  if (_browserClosePromise)`,
-    'close browser guard',
-  );
-
-  let coordinatedCloseSession = closeSessionRange.value.replace(
-    `} = {}) {
-  if (!session) return;`,
-    `} = {}) {
-  if (!session) return;
-  if (!spartanBrowserLifecycle.hasLease()) {
-    if (session._spartanClosePromise) return await session._spartanClosePromise;
-    session._closing = true;
-    const closing = spartanBrowserLifecycle.run(
-      'session_close',
-      async () => {
-        if (session._spartanCloseComplete) return;
-        return await closeSession(userId, session, { reason, clearDownloads, clearLocks });
-      },
-      { priority: 'background', waitTimeoutMs: null },
-    ).catch(error => {
-      const expectedRecoveryAbort = error?.code === 'browser_lifecycle_invalidated'
-        || error?.code === 'browser_lifecycle_recovering';
-      if (!expectedRecoveryAbort) {
-        spartanBrowserLifecycle.markDegraded('session_close_failed');
-      }
-      throw error;
-    });
-    session._spartanClosePromise = closing;
-    return await closing;
-  }
-  if (session._spartanCloseComplete) return;
-  session._closing = true;`,
-  );
-  coordinatedCloseSession = coordinatedCloseSession.replace(
-    '  await session.context.close().catch(() => {});',
-    `  try {
-    await session.context.close();
-  } catch (error) {
-    const closeMessage = String(error?.message || '');
-    const alreadyClosed = closeMessage.includes('Target page, context or browser has been closed')
-      || closeMessage.includes('browser has been closed')
-      || closeMessage.includes('Context closed')
-      || closeMessage.includes('Browser closed');
-    if (!alreadyClosed) {
-      spartanBrowserLifecycle.markDegraded('session_close_failed');
-      throw error;
-    }
-  }`,
-  );
-  coordinatedCloseSession = coordinatedCloseSession.replace(
-    '  if (sessions.get(key) === session) sessions.delete(key);',
-    `  if (sessions.get(key) === session) sessions.delete(key);
-  session._spartanCloseComplete = true;`,
-  );
-  if (!coordinatedCloseSession.includes('session._spartanClosePromise = closing;')) {
-    throw new Error('expected Camofox close-session body marker not found');
-  }
-  spartanReplaceLifecycleRange(closeSessionRange, coordinatedCloseSession);
-
-  spartanReplaceLifecycleOnce(
-    'async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {',
-    `async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
-  if (!spartanBrowserLifecycle.hasLease()) {
-    return await spartanBrowserLifecycle.run(
-      'sessions_close_all',
-      () => closeAllSessions(reason, { clearDownloads, clearLocks }),
-      { priority: 'background', waitTimeoutMs: null },
-    );
-  }`,
-    'close all sessions guard',
-  );
-
-  spartanReplaceLifecycleOnce(
-    'async function getSession(userId, { trace = false } = {}) {',
-    `async function getSession(userId, { trace = false } = {}) {
-  if (!spartanBrowserLifecycle.hasLease()) {
-    return await spartanBrowserLifecycle.run(
-      'session_get',
-      () => getSession(userId, { trace }),
-      {
-        priority: 'foreground',
-        waitTimeoutMs: Math.max(1, HANDLER_TIMEOUT_MS - 1000),
-        deadlineAt: Date.now() + HANDLER_TIMEOUT_MS,
-      },
-    );
-  }`,
-    'get session guard',
-  );
-
-  let coordinatedRestart = restartRange.value.replace(
-    'async function restartBrowser(reason) {',
-    `async function restartBrowser(reason) {
-  if (!spartanBrowserLifecycle.isRecoveryLease()) {
-    if (spartanBrowserLifecycle.hasLease()) {
-      spartanBrowserLifecycle.markDegraded('browser_recovery_reentrant');
-      throw spartanBrowserLifecycleError(
-        'browser_recovery_reentrant',
-        'browser recovery requested by an active lifecycle operation',
-      );
-    }
-    return await spartanBrowserLifecycle.recover(
-      () => restartBrowser(reason),
-      { drainTimeoutMs: SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS },
-    );
-  }`,
-  );
-  coordinatedRestart = coordinatedRestart.replace(
-    "  } catch (err) {\n    log('error', 'browser restart failed', { error: err.message });\n  } finally {",
-    "  } catch (err) {\n    log('error', 'browser restart failed', { error: err.message });\n    throw err;\n  } finally {",
-  );
-  spartanReplaceLifecycleRange(restartRange, coordinatedRestart);
-
-  let coordinatedPopup = popupRange.value
-    .replace(
-      `function attachPopupHandler(page, userId, sessionKey) {
-  page.on('popup', (popupPage) => {
-    const key = normalizeUserId(userId);
-    const currentSession = sessions.get(key);
-    if (!currentSession || currentSession._closing) return;`,
-      `function attachPopupHandler(page, userId, sessionKey) {
-  const key = normalizeUserId(userId);
-  const sourceSession = sessions.get(key);
-  page = spartanGuardPage(page);
-  page.on('popup', (popupPage) => {
-    const guardedPopup = spartanGuardPage(popupPage);
-    const currentSession = sessions.get(key);
-    if (!sourceSession || currentSession !== sourceSession || currentSession._closing) {
-      safePageClose(guardedPopup).catch(() => {});
-      return;
-    }`,
-    )
-    .replace('const popupTabState = createTabState(popupPage);', 'const popupTabState = createTabState(guardedPopup);')
-    .replaceAll('url: popupPage.url()', 'url: guardedPopup.url()')
-    .replace('attachPopupHandler(popupPage, userId, sessionKey);', 'attachPopupHandler(guardedPopup, userId, sessionKey);');
-  if (!coordinatedPopup.includes('currentSession !== sourceSession')) {
-    throw new Error('expected Camofox popup handler body marker not found');
-  }
-  spartanReplaceLifecycleRange(popupRange, coordinatedPopup);
-
-  spartanReplaceLifecycleOnce(
-    'session.tabGroups.size === 0\n      && !spartanSessionCreatePending',
-    'session.tabGroups.size === 0\n      && !spartanSessionCreatePending\n      && !session._closing',
-    'empty-session reaper guard',
-  );
-
-  spartanReplaceLifecycleOnce(
-    '    const session = await getSession(userId);\n    await session.context.addCookies(sanitized);',
-    `    const session = await spartanBrowserLifecycle.run('cookie_import', async () => {
-      const current = await getSession(userId);
-      await current.context.addCookies(sanitized);
-      return current;
-    }, {
-      priority: 'foreground',
-      waitTimeoutMs: Math.max(1, HANDLER_TIMEOUT_MS - 1000),
-      deadlineAt: Date.now() + HANDLER_TIMEOUT_MS,
-    });`,
-    'cookie import operation',
-  );
-
-  const openRouteBody = openRouteRange.value.slice(
-    "app.post('/tabs/open', async (req, res) => {".length,
-  );
-  const indentedOpenRouteBody = openRouteBody
-    .split('\n')
-    .map(line => line ? `    ${line}` : line)
-    .join('\n');
-  const coordinatedOpenRoute = `app.post('/tabs/open', async (req, res) => {
-  try {
-    return await spartanBrowserLifecycle.run('tab_open', async () => {${indentedOpenRouteBody}
-    }, {
-      priority: 'foreground',
-      waitTimeoutMs: Math.max(1, requestTimeoutMs() - 1000),
-      deadlineAt: Date.now() + requestTimeoutMs(),
-    });
-  } catch (err) {
-    log('error', 'openclaw tab lifecycle admission failed', {
-      reqId: req.reqId,
-      code: err?.code || 'browser_lifecycle_failed',
-    });
-    handleRouteError(err, req, res);
-  }`;
-  spartanReplaceLifecycleRange(openRouteRange, coordinatedOpenRoute);
-
-  const coordinatedDeepHealthRoutes = `const spartanDeepHealthSecretPath = process.env.SPARTAN_CAMOFOX_INTERNAL_SECRET_FILE
-  || '/run/spartan-camofox/internal.key';
-const SPARTAN_DEEP_PROBE_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS || 8000);
-const SPARTAN_DEEP_CLEANUP_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 1000);
-const spartanDeepHealth = createSpartanDeepHealthController({
-  getBrowser: ensureBrowser,
-  recoverBrowser: () => restartBrowser('spartan_deep_health'),
-  runExclusive: operation => {
-    const lifecycle = spartanBrowserLifecycle.snapshot();
-    const fallbackDeadlineExceeded = lifecycle.ownerKind
-      && lifecycle.ownerDeadlineAt === null
-      && lifecycle.ownerAgeMs > HANDLER_TIMEOUT_MS;
-    if (lifecycle.ownerDeadlineExceeded || fallbackDeadlineExceeded) {
-      throw spartanBrowserLifecycleError(
-        'browser_lifecycle_stuck',
-        'browser lifecycle owner exceeded its declared deadline',
-      );
-    }
-    return spartanBrowserLifecycle.run('deep_probe', operation, {
-      priority: 'health',
-      waitTimeoutMs: 500,
-      deadlineAt: Date.now() + SPARTAN_DEEP_PROBE_TIMEOUT_MS + SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,
-    }).catch(error => {
-      if (error?.code !== 'browser_lifecycle_queue_timeout') throw error;
-      const afterWait = spartanBrowserLifecycle.snapshot();
-      const ownerWithinDeadline = afterWait.ownerKind
-        && !afterWait.ownerDeadlineExceeded
-        && !(afterWait.ownerDeadlineAt === null && afterWait.ownerAgeMs > HANDLER_TIMEOUT_MS);
-      if (!ownerWithinDeadline) throw error;
-      throw spartanBrowserLifecycleError(
-        'browser_lifecycle_busy',
-        'browser lifecycle is busy within its declared deadline',
-      );
-    });
-  },
-  probeTimeoutMs: SPARTAN_DEEP_PROBE_TIMEOUT_MS,
-  cleanupTimeoutMs: SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,
-  recoveryTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS || 20000),
-});
-
-function spartanRequireInternalHealth(req, res) {
-  if (spartanInternalRequestAuthorized(req, spartanDeepHealthSecretPath)) return true;
-  res.status(403).json({ ok: false, code: 'forbidden' });
-  return false;
-}
-
-app.get('/spartan/health/deep', async (req, res) => {
-  if (!spartanRequireInternalHealth(req, res)) return;
-  const result = await spartanDeepHealth.probe();
-  res.status(result.ok ? 200 : 503).json(result);
-});
-
-app.post('/spartan/recover', async (req, res) => {
-  if (!spartanRequireInternalHealth(req, res)) return;
-  const result = await spartanDeepHealth.recover();
-  res.status(result.ok ? 200 : 503).json(result);
-});
-
-`;
-  spartanReplaceLifecycleOnce(
-    spartanDeepHealthRoutes,
-    coordinatedDeepHealthRoutes,
-    'deep health coordination',
-  );
-} else {
-  for (const [marker, label] of [
-    ["spartanBrowserLifecycle.run('deep_probe'", 'deep health'],
-    ['spartanTrackLifecyclePromise(promise)', 'timeout promise tracking'],
-    ['SPARTAN_MAX_CONCURRENT_CREATES_RAW !== 1', 'fixed lifecycle capacity'],
-    ["spartanBrowserLifecycle.run('cookie_import'", 'cookie import'],
-    ['const closing = spartanBrowserLifecycle.run(', 'session close'],
-    ['currentSession !== sourceSession', 'popup generation fence'],
-    ['&& !session._closing', 'reaper closing guard'],
-  ]) {
-    if (!source.includes(marker)) {
-      throw new Error(`Camofox lifecycle v1 marker is incomplete: ${label}`);
-    }
-  }
-  if (
-    !source.includes("spartanBrowserLifecycle.run('tab_open'")
-    && !source.includes("'legacy_tab_open_disabled'")
-  ) {
-    throw new Error('Camofox lifecycle v1 marker is incomplete: tabs open');
-  }
-}
-
-// Revision 2 narrows the global lane to browser/context mutation, explicit page
-// navigation/close, creates, cookie import, viewport relaunch, and deep health.
-// It also migrates servers already patched with revision 1 before one write.
-const spartanLifecycleRevisionCount = source.split(spartanLifecycleRevisionMarker).length - 1;
-if (spartanLifecycleRevisionCount > 1) {
-  throw new Error('duplicate Camofox lifecycle coordinator revision marker');
-}
-if (spartanLifecycleRevisionCount > 0 && spartanLifecycleVersionCount === 0) {
-  throw new Error('Camofox lifecycle revision exists without its version marker');
-}
-if (spartanLifecycleRevisionCount === 0) {
-  const broadUserGuard = `async function withUserLimit(userId, operation) {
-  if (!spartanBrowserLifecycle.hasLease()) {
-    const lifecycleTimeoutMs = requestTimeoutMs();
-    return await spartanBrowserLifecycle.run('user_operation', () => withUserLimit(userId, operation), {
-      priority: 'foreground',
-      waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
-      deadlineAt: Date.now() + lifecycleTimeoutMs,
-    });
-  }`;
-  const broadTabLock = `async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
-  if (spartanBrowserLifecycle.hasLease()) {
-    const lock = getTabLock(tabId);
-    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
-    try {
-      return await operation();
-    } finally {
-      lock.release();
-    }
-  }
-  const underlying = spartanBrowserLifecycle.run('tab_operation', async () => {
-    const lock = getTabLock(tabId);
-    await lock.acquire(TAB_LOCK_TIMEOUT_MS);
-    try {
-      return await operation();
-    } finally {
-      lock.release();
-    }
-  }, {
-    priority: 'foreground',
-    waitTimeoutMs: Math.max(1, Number(timeoutMs) - 1000),
-    deadlineAt: Date.now() + Number(timeoutMs),
-  });
-  return await withTimeout(underlying, timeoutMs, 'action');`;
-  const upstreamTabLock = `async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
-  const lock = getTabLock(tabId);
-  await lock.acquire(TAB_LOCK_TIMEOUT_MS);
-  try {
-    return await withTimeout(operation(), timeoutMs, 'action');
-  } finally {
-    lock.release();
-  }`;
-  const closeOnlyMethods = "const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close']);";
-  const narrowMethods = "const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close', 'goBack', 'goForward', 'goto', 'reload']);";
-  const viewportSignature = 'async function spartanRelaunchViewportTab({ userId, sessionKey, tabId, tabState, requested, effective, timeoutMs }) {';
-  const viewportGuard = `async function spartanRelaunchViewportTab(options) {
-  const { userId, sessionKey, tabId, tabState, requested, effective, timeoutMs } = options;
-  if (!spartanBrowserLifecycle.hasLease()) {
-    const lifecycleTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
-      ? Number(timeoutMs)
-      : requestTimeoutMs();
-    return await spartanBrowserLifecycle.run(
-      'viewport_relaunch',
-      () => spartanRelaunchViewportTab(options),
-      {
-        priority: 'foreground',
-        waitTimeoutMs: Math.max(1, lifecycleTimeoutMs - 1000),
-        deadlineAt: Date.now() + lifecycleTimeoutMs,
-      },
-    );
-  }`;
-  const closeCacheMarker = "    if (methodName === 'close') spartanClosePromises.set(target, running);";
-  const closeCacheReplacement = `    if (methodName === 'close') {
-      spartanClosePromises.set(target, running);
-      const clearClosePromise = () => {
-        if (spartanClosePromises.get(target) === running) spartanClosePromises.delete(target);
-      };
-      running.then(clearClosePromise, clearClosePromise);
-    }`;
-  const revisionOneCloseCatch = `    ).catch(error => {
-      spartanBrowserLifecycle.markDegraded('session_close_failed');
-      throw error;
-    });`;
-  const recoverySafeCloseCatch = `    ).catch(error => {
-      const expectedRecoveryAbort = error?.code === 'browser_lifecycle_invalidated'
-        || error?.code === 'browser_lifecycle_recovering';
-      if (!expectedRecoveryAbort) {
-        spartanBrowserLifecycle.markDegraded('session_close_failed');
-      }
-      throw error;
-    });`;
-  const deepCleanupMarker = 'const SPARTAN_DEEP_CLEANUP_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 1000);\n';
-  const deepCleanupReplacement = `const SPARTAN_DEEP_CLEANUP_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 1000);
-const SPARTAN_DEEP_BUSY_MAX_AGE_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS || 45000);
-`;
-  const deepOptionMarker = '  cleanupTimeoutMs: SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,\n  recoveryTimeoutMs:';
-  const deepOptionReplacement = '  cleanupTimeoutMs: SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,\n  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  recoveryTimeoutMs:';
-
-  for (const [marker, label] of [
-    [broadUserGuard, 'revision-1 user guard'],
-    [closeOnlyMethods, 'revision-1 page methods'],
-    [closeCacheMarker, 'close single-flight cache'],
-    [deepCleanupMarker, 'deep busy TTL constant'],
-    [deepOptionMarker, 'deep busy TTL option'],
-  ]) {
-    const count = source.split(marker).length - 1;
-    if (count !== 1) {
-      throw new Error(`expected one Camofox lifecycle ${label} marker, found ${count}`);
-    }
-  }
-  const guardedViewportMarker = "spartanBrowserLifecycle.run(\n      'viewport_relaunch'";
-  const unguardedViewportCount = source.split(viewportSignature).length - 1;
-  const guardedViewportCount = source.split(guardedViewportMarker).length - 1;
-  if (unguardedViewportCount + guardedViewportCount !== 1) {
-    throw new Error('expected exactly one guarded or revision-1 viewport relaunch');
-  }
-  const revisionOneCloseCatchCount = source.split(revisionOneCloseCatch).length - 1;
-  const recoverySafeCloseCatchCount = source.split(recoverySafeCloseCatch).length - 1;
-  if (revisionOneCloseCatchCount + recoverySafeCloseCatchCount !== 1) {
-    throw new Error('expected exactly one revision-1 or recovery-safe session close catch');
-  }
-  const revisionTabLockRange = spartanLifecycleRange(
-    'async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {',
-    '\n}\n\nfunction withTimeout(',
-    'revision-1 tab lock',
-  );
-  if (revisionTabLockRange.value !== broadTabLock) {
-    throw new Error('unsupported Camofox revision-1 tab-lock variant');
-  }
-  const revisionEnsureRange = spartanLifecycleRange(
-    'async function ensureBrowser() {',
-    '\n}\n\n// Helper to normalize userId',
-    'revision-1 ensure browser',
-  );
-  if ((revisionEnsureRange.value.split('launchBrowserInstance(),').length - 1) !== 1) {
-    throw new Error('expected one underlying browser launch marker');
-  }
-
-  spartanReplaceLifecycleOnce(
-    broadUserGuard,
-    'async function withUserLimit(userId, operation) {',
-    'narrow user operation',
-  );
-  spartanReplaceLifecycleRange(revisionTabLockRange, upstreamTabLock);
-  spartanReplaceLifecycleOnce(closeOnlyMethods, narrowMethods, 'narrow page methods');
-  if (unguardedViewportCount === 1) {
-    spartanReplaceLifecycleOnce(viewportSignature, viewportGuard, 'viewport relaunch guard');
-  }
-  spartanReplaceLifecycleOnce(closeCacheMarker, closeCacheReplacement, 'close cache cleanup');
-  if (revisionOneCloseCatchCount === 1) {
-    spartanReplaceLifecycleOnce(
-      revisionOneCloseCatch,
-      recoverySafeCloseCatch,
-      'recovery-safe session close catch',
-    );
-  }
-  spartanReplaceLifecycleOnce(deepCleanupMarker, deepCleanupReplacement, 'deep busy TTL constant');
-  spartanReplaceLifecycleOnce(deepOptionMarker, deepOptionReplacement, 'deep busy TTL option');
-
-  const trackedEnsure = revisionEnsureRange.value.replace(
-    'launchBrowserInstance(),',
-    'spartanTrackLifecyclePromise(launchBrowserInstance()),',
-  );
-  spartanReplaceLifecycleRange(revisionEnsureRange, trackedEnsure);
-  spartanReplaceLifecycleOnce(
-    spartanLifecycleVersionMarker,
-    `${spartanLifecycleVersionMarker}
-${spartanLifecycleRevisionMarker}`,
-    'lifecycle revision marker',
-  );
-} else {
-  for (const [marker, label] of [
-    ["const SPARTAN_PAGE_LIFECYCLE_METHODS = Object.freeze(['close', 'goBack', 'goForward', 'goto', 'reload']);", 'narrow page methods'],
-    ["spartanBrowserLifecycle.run(\n      'viewport_relaunch'", 'viewport relaunch'],
-    ['spartanTrackLifecyclePromise(launchBrowserInstance())', 'tracked browser launch'],
-    ['spartanClosePromises.delete(target)', 'retryable close cache'],
-    ['const expectedRecoveryAbort =', 'recovery-safe session close'],
-    ['SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS', 'deep busy TTL'],
-  ]) {
-    if (!source.includes(marker)) {
-      throw new Error(`Camofox lifecycle revision 2 marker is incomplete: ${label}`);
-    }
-  }
-  for (const forbidden of [
-    "spartanBrowserLifecycle.run('tab_operation'",
-    "spartanBrowserLifecycle.run('user_operation'",
-  ]) {
-    if (source.includes(forbidden)) {
-      throw new Error('Camofox lifecycle revision 2 retains a broad operation guard');
-    }
-  }
-}
-
-// Revision 3 closes the admission-to-lease gap: queued creates protect an
-// existing session before the lifecycle mutex is acquired, so automatic
-// context reapers cannot close and reopen it in the same request burst.
-const spartanLifecycleQueuedCreateCount = source.split(spartanLifecycleQueuedCreateMarker).length - 1;
-if (spartanLifecycleQueuedCreateCount > 1) {
-  throw new Error('duplicate Camofox queued-create coordinator revision marker');
-}
-if (
-  spartanLifecycleQueuedCreateCount > 0
-  && (
-    source.split(spartanLifecycleVersionMarker).length - 1 !== 1
-    || source.split(spartanLifecycleRevisionMarker).length - 1 !== 1
-  )
-) {
-  throw new Error('Camofox queued-create revision exists without prior lifecycle revisions');
-}
-if (spartanLifecycleQueuedCreateCount === 0) {
-  const coordinatorMarker = `const spartanBrowserLifecycle = createSpartanBrowserLifecycleCoordinator({
-  maxQueued: MAX_SESSIONS,
-  backgroundAgingMs: 1000,
-});
-`;
-  const queuedCreateRegistry = `${coordinatorMarker}
-const SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS + 1;
-const spartanPendingUserCreates = new Map();
-let spartanPendingUserCreateCount = 0;
-
-function spartanHasPendingUserCreate(userId) {
-  const pending = spartanPendingUserCreates.get(normalizeUserId(userId));
-  return pending instanceof Set && pending.size > 0;
-}
-
 function spartanPendingUserCreateSnapshot(now = Date.now()) {
   let oldestAgeMs = 0;
   let deadlineExceeded = false;
@@ -2380,720 +1128,77 @@ function spartanPendingUserCreateSnapshot(now = Date.now()) {
       if (now >= token.deadlineAt) deadlineExceeded = true;
     }
   }
-  return {
-    count: spartanPendingUserCreateCount,
-    oldestAgeMs,
-    deadlineExceeded,
-  };
+  return { count: spartanPendingUserCreateCount, oldestAgeMs, deadlineExceeded };
 }
-
-function spartanDeferUserSessionDestroy(userId, session) {
-  const key = normalizeUserId(userId);
-  const pending = spartanPendingUserCreates.get(key);
-  if (!session || !(pending instanceof Set)) return false;
-  const affected = [...pending].filter(token => token.fence?.session === session);
-  if (affected.length === 0) return false;
-  session._closing = true;
-  if (sessions.get(key) === session) sessions.delete(key);
-  if (!(session._spartanDeferredDestroyTokens instanceof Set)) {
-    session._spartanDeferredDestroyTokens = new Set();
-  }
-  for (const token of affected) {
-    token.invalidatedSession = session;
-    token.fence.active = false;
-    session._spartanDeferredDestroyTokens.add(token);
-  }
-  return true;
+function spartanHasPendingUserCreate(userId) {
+  const pending = spartanPendingUserCreates.get(normalizeUserId(userId));
+  return pending instanceof Set && pending.size > 0;
 }
 function spartanBindPendingCreateSession(userId, fence, session) {
-  if (!fence || typeof fence !== 'object') {
-    throw new TypeError('queued create fence must be an object');
-  }
   const key = normalizeUserId(userId);
   fence.userKey = key;
   fence.session = session;
   if (!session || session._closing || sessions.get(key) !== session) {
     fence.active = false;
-    throw spartanBrowserLifecycleError(
-      'session_invalidated_during_create',
-      'session was invalidated before tab creation could bind to it',
-    );
+    throw spartanBrowserLifecycleError('session_invalidated_during_create', 'session was invalidated during tab creation');
   }
   return session;
 }
-
-
 async function spartanWithPendingUserCreate(userId, fence, operation, deadlineAt) {
-  if (!fence || typeof fence !== 'object') {
-    throw new TypeError('queued create fence must be an object');
-  }
-  if (typeof operation !== 'function') {
-    throw new TypeError('queued create operation must be a function');
-  }
-  const startedAt = Date.now();
-  const numericDeadlineAt = Number(deadlineAt ?? (startedAt + requestTimeoutMs()));
-  if (!Number.isFinite(numericDeadlineAt) || numericDeadlineAt <= 0) {
-    throw new TypeError('queued create deadline must be a positive finite timestamp');
-  }
   if (spartanPendingUserCreateCount >= SPARTAN_PENDING_USER_CREATE_LIMIT) {
-    throw spartanBrowserLifecycleError(
-      'browser_lifecycle_queue_full',
-      'Camofox queued create registry is full',
-    );
+    throw spartanBrowserLifecycleError('browser_lifecycle_queue_full', 'Camofox queued create registry is full');
   }
   const key = normalizeUserId(userId);
   let pending = spartanPendingUserCreates.get(key);
-  if (!(pending instanceof Set)) {
+  if (!pending) {
     pending = new Set();
     spartanPendingUserCreates.set(key, pending);
   }
-  const token = { fence, startedAt, deadlineAt: numericDeadlineAt, invalidatedSession: null };
+  const token = { fence, startedAt: Date.now(), deadlineAt };
   pending.add(token);
   spartanPendingUserCreateCount++;
-  let result;
-  let failure = null;
   try {
-    result = await operation();
-  } catch (error) {
-    failure = error;
-  }
-  if (pending.delete(token)) spartanPendingUserCreateCount--;
-  if (pending.size === 0 && spartanPendingUserCreates.get(key) === pending) {
-    spartanPendingUserCreates.delete(key);
-  }
-  if (token.invalidatedSession) {
-    const invalidatedSession = token.invalidatedSession;
-    const deferred = invalidatedSession._spartanDeferredDestroyTokens;
-    if (deferred instanceof Set) {
-      deferred.delete(token);
-      if (deferred.size === 0) {
-        delete invalidatedSession._spartanDeferredDestroyTokens;
-        closeSession(key, invalidatedSession, {
-          reason: 'deferred_destroy_session',
-          clearDownloads: true,
-          clearLocks: true,
-        }).catch(() => {});
-      }
-    }
-    throw spartanBrowserLifecycleError(
-      'session_destroyed_during_create',
-      'session was invalidated while tab creation was active',
-    );
-  }
-  if (failure) throw failure;
-  return result;
-}
-`;
-  const createAdmissionOpen = 'const result = await withTimeout(spartanWithCreateLimit(async () => {';
-  const createAdmissionReplacement = `const spartanCreateTimeoutMs = requestTimeoutMs();
-    const spartanCreateDeadlineAt = Date.now() + spartanCreateTimeoutMs;
-    const result = await withTimeout(spartanWithPendingUserCreate(userId, spartanCreateFence, () => spartanWithCreateLimit(async () => {`;
-  const createQueueTimeout = '    }, Math.max(1, requestTimeoutMs() - 1000)).finally(() => {';
-  const createQueueTimeoutReplacement = '    }, Math.max(1, spartanCreateDeadlineAt - Date.now() - 1000)).finally(() => {';
-  const createAdmissionClose = `    }), requestTimeoutMs(), 'tab create');`;
-  const createAdmissionCloseReplacement = `    }), spartanCreateDeadlineAt), spartanCreateTimeoutMs, 'tab create');`;
-  const createSessionBind = '      spartanCreateFence.session = session;';
-  const createSessionBindReplacement = '      spartanBindPendingCreateSession(userId, spartanCreateFence, session);';
-  const sessionPendingMarker = `const spartanSessionCreatePending = session._spartanPendingCreates instanceof Set
-      && session._spartanPendingCreates.size > 0;`;
-  const sessionPendingReplacement = `const spartanSessionCreatePending = spartanHasPendingUserCreate(userId)
-      || (
-        session._spartanPendingCreates instanceof Set
-        && session._spartanPendingCreates.size > 0
-      );`;
-  const groupPendingMarker = `const spartanGroupCreatePending = session._spartanPendingCreates instanceof Set
-        && [...session._spartanPendingCreates].some(pending => pending.group === group);`;
-  const groupPendingReplacement = `const spartanGroupCreatePending = spartanHasPendingUserCreate(userId)
-        || (
-          session._spartanPendingCreates instanceof Set
-          && [...session._spartanPendingCreates].some(pending => pending.group === group)
-        );`;
-  const explicitCloseMarker = `  if (!session) return;
-  if (!spartanBrowserLifecycle.hasLease()) {`;
-  const explicitCloseReplacement = `  if (!session) return;
-  if (
-    reason === 'api_delete_session'
-    && spartanHasPendingUserCreate(userId)
-  ) {
-    throw spartanBrowserLifecycleError(
-      'session_create_pending',
-      'session has pending tab creation',
-    );
-  }
-  if (!spartanBrowserLifecycle.hasLease()) {`;
-  const deepSnapshotMarker = `    const lifecycle = spartanBrowserLifecycle.snapshot();
-    const fallbackDeadlineExceeded`;
-  const deepSnapshotReplacement = `    const lifecycle = spartanBrowserLifecycle.snapshot();
-    const pendingCreate = spartanPendingUserCreateSnapshot();
-    const fallbackDeadlineExceeded`;
-  const deepDeadlineMarker = 'if (lifecycle.ownerDeadlineExceeded || fallbackDeadlineExceeded) {';
-  const deepDeadlineReplacement = 'if (pendingCreate.deadlineExceeded || lifecycle.ownerDeadlineExceeded || fallbackDeadlineExceeded) {';
-  const destroySessionMarker = `function destroySession(userId) {
-  const key = normalizeUserId(userId);
-  const session = sessions.get(key);
-  if (!session) return;
-  log('warn', 'destroying dead session', { userId: key });
-  sessions.delete(key);
-  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
-}`;
-  const destroySessionReplacement = `function destroySession(userId) {
-  const key = normalizeUserId(userId);
-  const session = sessions.get(key);
-  if (!session) return;
-  if (spartanDeferUserSessionDestroy(key, session)) {
-    log('warn', 'deferring dead session destroy until active create settles', { userId: key });
-    return;
-  }
-  log('warn', 'destroying dead session', { userId: key });
-  sessions.delete(key);
-  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
-}`;
-  const destroySessionPresent = source.includes('function destroySession(userId)');
-  if (destroySessionPresent && !source.includes(destroySessionMarker)) {
-    throw new Error(
-      'unsupported Camofox destroy-session variant; refusing partial queued-create migration',
-    );
-  }
-  const legacyOpenRange = spartanLifecycleRange(
-    "app.post('/tabs/open', async (req, res) => {",
-    '\n});\n\n// POST /start',
-    'legacy tabs open',
-  );
-  if (!legacyOpenRange.value.includes("spartanBrowserLifecycle.run('tab_open'")) {
-    throw new Error('unsupported Camofox legacy tabs-open variant');
-  }
-  const disabledLegacyOpenRoute = `app.post('/tabs/open', (_req, res) => {
-  return res.status(410).json({
-    error: 'Deprecated endpoint disabled; use POST /tabs',
-    code: 'legacy_tab_open_disabled',
-  });`;
-
-  for (const [marker, label] of [
-    [coordinatorMarker, 'coordinator registry insertion'],
-    [createAdmissionOpen, 'queued create admission open'],
-    [createQueueTimeout, 'queued create shared deadline'],
-    [createAdmissionClose, 'queued create admission close'],
-    [sessionPendingMarker, 'queued create empty-session fence'],
-    [createSessionBind, 'queued create session generation bind'],
-    [groupPendingMarker, 'queued create empty-group fence'],
-    [explicitCloseMarker, 'explicit session close fence'],
-    [deepSnapshotMarker, 'queued create health snapshot'],
-    [deepDeadlineMarker, 'queued create health deadline'],
-  ]) {
-    const count = source.split(marker).length - 1;
-    if (count !== 1) {
-      throw new Error(`expected one Camofox ${label} marker, found ${count}`);
-    }
-  }
-
-  spartanReplaceLifecycleOnce(coordinatorMarker, queuedCreateRegistry, 'queued create registry');
-  spartanReplaceLifecycleOnce(createAdmissionOpen, createAdmissionReplacement, 'queued create admission open');
-  spartanReplaceLifecycleOnce(createQueueTimeout, createQueueTimeoutReplacement, 'queued create shared deadline');
-  spartanReplaceLifecycleOnce(createAdmissionClose, createAdmissionCloseReplacement, 'queued create admission close');
-  spartanReplaceLifecycleOnce(createSessionBind, createSessionBindReplacement, 'queued create session generation bind');
-  if (destroySessionPresent) {
-    spartanReplaceLifecycleOnce(destroySessionMarker, destroySessionReplacement, 'deferred destroy session');
-  }
-  spartanReplaceLifecycleRange(legacyOpenRange, disabledLegacyOpenRoute);
-  spartanReplaceLifecycleOnce(sessionPendingMarker, sessionPendingReplacement, 'queued create empty-session fence');
-  spartanReplaceLifecycleOnce(groupPendingMarker, groupPendingReplacement, 'queued create empty-group fence');
-  spartanReplaceLifecycleOnce(explicitCloseMarker, explicitCloseReplacement, 'explicit session close fence');
-  spartanReplaceLifecycleOnce(deepSnapshotMarker, deepSnapshotReplacement, 'queued create health snapshot');
-  spartanReplaceLifecycleOnce(deepDeadlineMarker, deepDeadlineReplacement, 'queued create health deadline');
-
-  const optionalAutomaticClosers = [
-    {
-      presence: "reason: 'session_timeout'",
-      marker: 'if (now - session.lastAccess > SESSION_TIMEOUT_MS) {',
-      replacement: `// Spartan queued-create fence: session timeout.
-    if (
-      now - session.lastAccess > SESSION_TIMEOUT_MS
-      && !spartanHasPendingUserCreate(userId)
-    ) {`,
-      label: 'session timeout fence',
-    },
-    {
-      presence: "reason: 'memory_pressure'",
-      marker: `for (const [key, session] of sessions) {
-        if (session._closing) continue;
-        if (session.lastAccess < oldestAccess) {`,
-      replacement: `// Spartan queued-create fence: memory pressure.
-      for (const [key, session] of sessions) {
-        if (session._closing || spartanHasPendingUserCreate(key)) continue;
-        if (session.lastAccess < oldestAccess) {`,
-      label: 'memory pressure fence',
-    },
-    {
-      presence: "reason: 'pressure_cleanup_empty_session'",
-      marker: `for (const [userId, session] of Array.from(sessions.entries())) {
-      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {`,
-      replacement: `for (const [userId, session] of Array.from(sessions.entries())) {
-      // Spartan queued-create fence: pressure cleanup.
-      if (spartanHasPendingUserCreate(userId)) continue;
-      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {`,
-      label: 'pressure cleanup iteration fence',
-    },
-    {
-      presence: "reason: 'pressure_cleanup_empty_session'",
-      marker: 'if (closeEmptySessions && session.tabGroups.size === 0) {',
-      replacement: `if (
-        closeEmptySessions
-        && session.tabGroups.size === 0
-        && !spartanHasPendingUserCreate(userId)
-      ) {`,
-      label: 'pressure cleanup close fence',
-    },
-  ];
-  for (const item of optionalAutomaticClosers) {
-    if (!source.includes(item.presence)) continue;
-    const count = source.split(item.marker).length - 1;
-    if (count !== 1) {
-      throw new Error(`expected one Camofox ${item.label} marker, found ${count}`);
-    }
-    spartanReplaceLifecycleOnce(item.marker, item.replacement, item.label);
-  }
-
-  spartanReplaceLifecycleOnce(
-    spartanLifecycleRevisionMarker,
-    `${spartanLifecycleRevisionMarker}
-${spartanLifecycleQueuedCreateMarker}`,
-    'queued create revision marker',
-  );
-} else {
-  for (const [marker, label] of [
-    ['const SPARTAN_PENDING_USER_CREATE_LIMIT = MAX_SESSIONS + 1;', 'bounded queued create registry'],
-    ['async function spartanWithPendingUserCreate(', 'queued create scope'],
-    ['const spartanCreateTimeoutMs = requestTimeoutMs();', 'queued create effective timeout'],
-    ['spartanCreateDeadlineAt - Date.now() - 1000', 'queued create shared deadline'],
-    ['spartanCreateDeadlineAt), spartanCreateTimeoutMs', 'queued create outer deadline'],
-    ['now >= token.deadlineAt', 'per-token queued create deadline'],
-    ['function spartanDeferUserSessionDestroy(', 'deferred session destroy'],
-    ['const spartanSessionCreatePending = spartanHasPendingUserCreate(userId)', 'queued create empty-session fence'],
-    ['spartanBindPendingCreateSession(userId, spartanCreateFence, session)', 'queued create session generation bind'],
-    ['const spartanGroupCreatePending = spartanHasPendingUserCreate(userId)', 'queued create empty-group fence'],
-    ["reason === 'api_delete_session'", 'explicit session close fence'],
-    ['const pendingCreate = spartanPendingUserCreateSnapshot();', 'queued create health snapshot'],
-    ['if (pendingCreate.deadlineExceeded || lifecycle.ownerDeadlineExceeded', 'queued create health deadline'],
-    ["code: 'legacy_tab_open_disabled'", 'disabled legacy tabs open'],
-  ]) {
-    if (!source.includes(marker)) {
-      throw new Error(`Camofox lifecycle revision 3 marker is incomplete: ${label}`);
-    }
-  }
-  if (
-    source.includes('function destroySession(userId)')
-    && !source.includes('spartanDeferUserSessionDestroy(key, session)')
-  ) {
-    throw new Error(
-      'Camofox lifecycle revision 3 marker is incomplete: deferred destroy session',
-    );
-  }
-  for (const [presence, guard, label] of [
-    ["reason: 'session_timeout'", '// Spartan queued-create fence: session timeout.', 'session timeout fence'],
-    ["reason: 'memory_pressure'", '// Spartan queued-create fence: memory pressure.', 'memory pressure fence'],
-    ["reason: 'pressure_cleanup_empty_session'", '// Spartan queued-create fence: pressure cleanup.', 'pressure cleanup iteration fence'],
-    ["reason: 'pressure_cleanup_empty_session'", '&& !spartanHasPendingUserCreate(userId)', 'pressure cleanup close fence'],
-  ]) {
-    if (source.includes(presence) && !source.includes(guard)) {
-      throw new Error(`Camofox lifecycle revision 3 marker is incomplete: ${label}`);
-    }
-  }
-}
-
-const spartanReadinessRevisionCount = source.split(spartanReadinessRevisionMarker).length - 1;
-if (spartanReadinessRevisionCount > 1) {
-  throw new Error('duplicate Camofox readiness revision marker');
-}
-if (spartanReadinessRevisionCount === 0) {
-  for (const [marker, label] of [
-    [spartanLifecycleVersionMarker, 'lifecycle version prerequisite'],
-    [spartanLifecycleRevisionMarker, 'lifecycle revision prerequisite'],
-    [spartanLifecycleQueuedCreateMarker, 'queued-create prerequisite'],
-    ['const spartanGuardedBrowsers = new WeakSet();', 'runtime insertion'],
-    ["  recoverBrowser: () => restartBrowser('spartan_deep_health'),\n  runExclusive: operation => {", 'deep generation'],
-    ['  runExclusive: operation => {\n    const lifecycle = spartanBrowserLifecycle.snapshot();', 'deep navigation latch'],
-    ['  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  recoveryTimeoutMs:', 'deep cache TTL'],
-    ['  const result = await spartanDeepHealth.probe();\n  res.status(result.ok ? 200 : 503).json(result);', 'deep public payload'],
-  ]) {
-    const count = source.split(marker).length - 1;
-    if (count !== 1) {
-      throw new Error(`expected one Camofox readiness ${label} marker, found ${count}`);
-    }
-  }
-  const optionalReadinessMarkers = [
-    ['  const action = actionFromReq(req);\n  failuresTotal.labels(failureType, action).inc();', 'public failure handler'],
-    ['if (FLY_MACHINE_ID && err.statusCode === 503)', 'Fly capacity replay'],
-  ];
-  for (const [marker, label] of optionalReadinessMarkers) {
-    const count = source.split(marker).length - 1;
-    if (count > 1) {
-      throw new Error(`duplicate Camofox readiness ${label} marker`);
-    }
-  }
-  if (!source.includes(spartanHealthImport)) {
-    throw new Error('Camofox readiness requires the navigation health import');
-  }
-  if (!source.includes('if (err.failureClass && !body.failureClass) body.failureClass = err.failureClass;')) {
-    throw new Error('Camofox readiness requires classified error responses');
-  }
-
-  const publishVariants = [
-    [
-      'browser = candidateBrowser; // publish AFTER PID is captured',
-      'spartanPublishBrowser(candidateBrowser); // publish AFTER PID is captured',
-    ],
-    ['browser = value;', 'spartanPublishBrowser(value);'],
-  ];
-  const publishMatches = publishVariants.filter(([marker]) => source.includes(marker));
-  if (publishMatches.length !== 1) {
-    throw new Error(`expected one Camofox readiness browser publication variant, found ${publishMatches.length}`);
-  }
-
-  const healthRoute = spartanReadinessRoute("app.get('/health',", 'public health');
-  const createRoute = spartanReadinessRoute("app.post('/tabs',", 'create-tab');
-  const navigateRoute = spartanReadinessRoute("app.post('/tabs/:tabId/navigate',", 'navigate');
-
-  let patchedCreateRoute = spartanReplaceReadinessOnce(
-    createRoute.value,
-    `    userKey: null,
-  };
-  try {`,
-    `    userKey: null,
-  };
-  let spartanCreateNavigation = null;
-  try {`,
-    'create outcome declaration',
-  );
-  patchedCreateRoute = spartanReplaceReadinessVariant(
-    patchedCreateRoute,
-    [
-      [
-        `        tabState.lastRequestedUrl = url;
-        try {`,
-        `        tabState.lastRequestedUrl = url;
-        spartanCreateNavigation = spartanNavigationReadiness.begin();
-        try {`,
-      ],
-      [
-        `        if (urlErr) throw new Error(urlErr);
-        await page.goto(url);`,
-        `        if (urlErr) throw new Error(urlErr);
-        spartanCreateNavigation = spartanNavigationReadiness.begin();
-        await page.goto(url);`,
-      ],
-      [
-        `      if (url) {
-        try {`,
-        `      if (url) {
-        spartanCreateNavigation = spartanNavigationReadiness.begin();
-        try {`,
-      ],
-      [
-        `      if (url) {
-        spartanCreateFence.stage = 'navigate';
-        try {`,
-        `      if (url) {
-        spartanCreateFence.stage = 'navigate';
-        spartanCreateNavigation = spartanNavigationReadiness.begin();
-        try {`,
-      ],
-    ],
-    'create outcome begin',
-  );
-
-  const createGotoVariants = [
-    [
-      "await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));",
-      "await spartanObserveNavigationAttempt(() => withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })));",
-    ],
-    [
-      "await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));",
-      "await spartanObserveNavigationAttempt(() => withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })));",
-    ],
-    ['await page.goto(url);', 'await spartanObserveNavigationAttempt(() => page.goto(url));'],
-  ];
-  let createGotoCount = 0;
-  for (const [marker, replacement] of createGotoVariants) {
-    const count = patchedCreateRoute.split(marker).length - 1;
-    if (count > 1) throw new Error('duplicate Camofox readiness create goto marker');
-    if (count === 1) {
-      patchedCreateRoute = patchedCreateRoute.replace(marker, replacement);
-      createGotoCount++;
-    }
-  }
-  if (createGotoCount < 1) throw new Error('expected Camofox readiness create goto marker');
-
-  patchedCreateRoute = spartanReplaceReadinessVariant(
-    patchedCreateRoute,
-    [
-      [
-        '        tabState.visitedUrls.add(url);',
-        '        spartanCreateNavigation?.success();\n        tabState.visitedUrls.add(url);',
-      ],
-      [
-        '        await spartanObserveNavigationAttempt(() => page.goto(url));\n      }',
-        '        await spartanObserveNavigationAttempt(() => page.goto(url));\n        spartanCreateNavigation?.success();\n      }',
-      ],
-      [
-        '        }\n      }\n      return { tabId };',
-        '        }\n        spartanCreateNavigation?.success();\n      }\n      return { tabId };',
-      ],
-    ],
-    'create outcome success',
-  );
-
-  const createSslMarker = `    if (isSslError) {
-      return res.status(502).json({`;
-  if (patchedCreateRoute.includes(createSslMarker)) {
-    patchedCreateRoute = spartanReplaceReadinessOnce(
-      patchedCreateRoute,
-      createSslMarker,
-      `    if (isSslError) {
-      spartanSettleNavigationFailure(spartanCreateNavigation, err);
-      return res.status(502).json({`,
-      'create SSL settlement',
-    );
-  }
-  const createFlyMarker = "    if (FLY_MACHINE_ID && err.statusCode === 503) {\n      res.set('fly-replay',";
-  if (patchedCreateRoute.includes(createFlyMarker)) {
-    patchedCreateRoute = spartanReplaceReadinessOnce(
-      patchedCreateRoute,
-      createFlyMarker,
-      "    if (FLY_MACHINE_ID && err.statusCode === 503) {\n"
-        + "      spartanSettleNavigationFailure(spartanCreateNavigation, err);\n"
-        + "      res.set('fly-replay',",
-      'create Fly settlement',
-    );
-  }
-  patchedCreateRoute = spartanReplaceReadinessOnce(
-    patchedCreateRoute,
-    '    handleRouteError(err, req, res);',
-    `    spartanApplyPublicFailure(err);
-    spartanSettleNavigationFailure(spartanCreateNavigation, err);
-    handleRouteError(err, req, res);`,
-    'create failure settlement',
-  );
-
-  let patchedNavigateRoute = spartanReplaceReadinessOnce(
-    navigateRoute.value,
-    '  const tabId = req.params.tabId;',
-    `  const tabId = req.params.tabId;
-  let spartanNavigateOutcome = null;`,
-    'navigate outcome declaration',
-  );
-  patchedNavigateRoute = spartanReplaceReadinessOnce(
-    patchedNavigateRoute,
-    'if (urlErr) throw new Error(urlErr);',
-    `if (urlErr) throw new Error(urlErr);
-      spartanNavigateOutcome = spartanNavigationReadiness.begin();`,
-    'navigate outcome begin',
-  );
-  const navigateGotoMarker = 'await navigateCurrentPage();';
-  const navigateGotoCount = patchedNavigateRoute.split(navigateGotoMarker).length - 1;
-  if (navigateGotoCount < 1) throw new Error('expected Camofox readiness terminal navigate call');
-  patchedNavigateRoute = patchedNavigateRoute.replaceAll(
-    navigateGotoMarker,
-    'await spartanObserveNavigationAttempt(() => navigateCurrentPage());',
-  );
-  patchedNavigateRoute = spartanReplaceReadinessVariant(
-    patchedNavigateRoute,
-    [
-      [
-        '\n        // For Google SERP: skip eager ref building during navigate.',
-        '\n        spartanNavigateOutcome?.success();\n\n        // For Google SERP: skip eager ref building during navigate.',
-      ],
-      [
-        '\n    // For Google SERP: skip eager ref building during navigate.',
-        '\n    spartanNavigateOutcome?.success();\n    // For Google SERP: skip eager ref building during navigate.',
-      ],
-    ],
-    'navigate outcome success',
-  );
-  const navigate400Marker = `    if (is400) {
-      return res.status(400).json({ error: safeError(err) });`;
-  if (patchedNavigateRoute.includes(navigate400Marker)) {
-    patchedNavigateRoute = spartanReplaceReadinessOnce(
-      patchedNavigateRoute,
-      navigate400Marker,
-      `    if (is400) {
-      spartanSettleNavigationFailure(spartanNavigateOutcome, err);
-      return res.status(400).json({ error: safeError(err) });`,
-      'navigate validation settlement',
-    );
-  }
-  const navigateSslMarker = `    if (isSslError) {
-      return res.status(502).json({`;
-  if (patchedNavigateRoute.includes(navigateSslMarker)) {
-    patchedNavigateRoute = spartanReplaceReadinessOnce(
-      patchedNavigateRoute,
-      navigateSslMarker,
-      `    if (isSslError) {
-      spartanSettleNavigationFailure(spartanNavigateOutcome, err);
-      return res.status(502).json({`,
-      'navigate SSL settlement',
-    );
-  }
-  patchedNavigateRoute = spartanReplaceReadinessOnce(
-    patchedNavigateRoute,
-    '    handleRouteError(err, req, res);',
-    `    spartanApplyPublicFailure(err);
-    spartanSettleNavigationFailure(spartanNavigateOutcome, err);
-    handleRouteError(err, req, res);`,
-    'navigate failure settlement',
-  );
-
-  source = spartanReplaceReadinessOnce(source, 'const spartanGuardedBrowsers = new WeakSet();', `${spartanReadinessRuntimeBlock}
-const spartanGuardedBrowsers = new WeakSet();`, 'runtime insertion');
-  source = spartanReplaceReadinessOnce(source, publishMatches[0][0], publishMatches[0][1], 'browser publication');
-  source = spartanReplaceReadinessOnce(source, "  recoverBrowser: () => restartBrowser('spartan_deep_health'),\n  runExclusive: operation => {", "  recoverBrowser: () => restartBrowser('spartan_deep_health'),\n  getGeneration: () => spartanBrowserGeneration,\n  runExclusive: operation => {", 'deep generation');
-  source = spartanReplaceReadinessOnce(
-    source,
-    '  runExclusive: operation => {\n    const lifecycle = spartanBrowserLifecycle.snapshot();',
-    `  runExclusive: operation => {
-    const navigation = spartanNavigationReadiness.snapshot();
-    if (navigation.latched) {
-      const error = spartanBrowserLifecycleError(
-        'browser_navigation_degraded',
-        'browser navigation readiness requires recovery',
-      );
-      error.stage = 'lifecycle';
-      throw error;
-    }
-    const lifecycle = spartanBrowserLifecycle.snapshot();`,
-    'deep navigation latch',
-  );
-  source = spartanReplaceReadinessOnce(source, '  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  recoveryTimeoutMs:', '  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  cacheMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,\n  recoveryTimeoutMs:', 'deep cache TTL');
-  const publicFailureHandlerMarker = '  const action = actionFromReq(req);\n  failuresTotal.labels(failureType, action).inc();';
-  if (source.includes(publicFailureHandlerMarker)) {
-    source = spartanReplaceReadinessOnce(
-      source,
-      publicFailureHandlerMarker,
-      '  const action = actionFromReq(req);\n  spartanApplyPublicFailure(err);\n  failuresTotal.labels(failureType, action).inc();',
-      'public failure handler',
-    );
-  }
-  source = spartanReplaceReadinessOnce(source, createRoute.value, patchedCreateRoute, 'create route');
-  source = spartanReplaceReadinessOnce(source, navigateRoute.value, patchedNavigateRoute, 'navigate route');
-  source = spartanReplaceReadinessOnce(source, '  const result = await spartanDeepHealth.probe();\n  res.status(result.ok ? 200 : 503).json(result);', '  const result = await spartanDeepHealth.probe();\n  const payload = spartanDeepHealthPayload(result);\n  res.status(payload.ok ? 200 : 503).json(payload);', 'deep public payload');
-  if (source.includes('if (FLY_MACHINE_ID && err.statusCode === 503)')) {
-    source = spartanReplaceReadinessOnce(
-      source,
-      'if (FLY_MACHINE_ID && err.statusCode === 503)',
-      'if (FLY_MACHINE_ID && spartanIsCapacityFailure(err))',
-      'Fly capacity replay',
-    );
-  }
-  source = spartanReplaceReadinessOnce(source, healthRoute.value, spartanReadinessHealthRoutes, 'public health route');
-  source = spartanReplaceReadinessOnce(source, spartanLifecycleQueuedCreateMarker, `${spartanLifecycleQueuedCreateMarker}
-${spartanReadinessRevisionMarker}`, 'revision marker');
-} else {
-  for (const [marker, label] of [
-    [spartanHealthImport, 'navigation health import'],
-    ['let spartanBrowserGeneration = 0;', 'browser generation'],
-    ['function spartanPublishBrowser(', 'browser publication helper'],
-    ['spartanBrowserGeneration++;', 'browser generation increment'],
-    ['const spartanNavigationReadiness = createSpartanNavigationReadiness({', 'navigation readiness'],
-    ['spartanCreateNavigation = spartanNavigationReadiness.begin();', 'create outcome'],
-    ['spartanNavigateOutcome = spartanNavigationReadiness.begin();', 'navigate outcome'],
-    ['spartanMarkNavigationAttemptError(navErr);', 'terminal goto tagging'],
-    ['spartanSettleNavigationFailure(spartanCreateNavigation, err);', 'create settlement'],
-    ['spartanSettleNavigationFailure(spartanNavigateOutcome, err);', 'navigate settlement'],
-    ['getGeneration: () => spartanBrowserGeneration,', 'deep generation'],
-    ['cacheMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,', 'deep cache TTL'],
-    ["app.get('/live'", 'browser-independent liveness'],
-    ['const readiness = spartanPublicReadinessSnapshot();', 'passive public readiness'],
-    ['res.status(readiness.ok ? 200 : 503)', 'fail-closed public readiness'],
-    ['const payload = spartanDeepHealthPayload(result);', 'allowlisted deep payload'],
-    ['return { ok, code, stage, browserGeneration };', 'deep browser generation'],
-    ["failureClass: 'capacity_limit'", 'capacity classification'],
-    ["failureClass: 'internal_timeout'", 'timeout classification'],
-    ["failureClass: 'browser_state'", 'browser-state classification'],
-  ]) {
-    if (!source.includes(marker)) {
-      throw new Error(`Camofox readiness revision 2 marker is incomplete: ${label}`);
-    }
-  }
-  if (source.includes('browser = candidateBrowser; // publish AFTER PID is captured') || source.includes('browser = value;') || source.includes("app.get('/health', (_req, res) => res.json({ ok: true }))")) {
-    throw new Error('Camofox readiness revision 2 marker retains a legacy implementation');
-  }
-}
-
-// Release settled deadline timers promptly and keep upstream per-user
-// admission queues bounded and self-cleaning. This migration is deliberately
-// separate from the browser lifecycle coordinator so already-patched images
-// can converge without widening the global lifecycle lane.
-const spartanRetentionRevisionCount = source.split(spartanRetentionRevisionMarker).length - 1;
-if (spartanRetentionRevisionCount > 1) {
-  throw new Error('duplicate Camofox retention cleanup revision marker');
-}
-if (spartanRetentionRevisionCount === 0) {
-  for (const [marker, label] of [
-    [spartanLifecycleRevisionMarker, 'lifecycle revision prerequisite'],
-    [spartanReadinessRevisionMarker, 'readiness revision prerequisite'],
-  ]) {
-    if ((source.split(marker).length - 1) !== 1) {
-      throw new Error(`expected one Camofox retention ${label}`);
-    }
-  }
-
-  const oldTimeout = [
-    'function withTimeout(promise, ms, label) {',
-    '  return Promise.race([',
-    '    spartanTrackLifecyclePromise(promise),',
-    '    new Promise((_, reject) =>',
-    '      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)',
-    '    )',
-    '  ]);',
-    '}',
-  ].join('\n');
-  const retainedTimeout = [
-    'async function withTimeout(promise, ms, label) {',
-    '  let timer;',
-    '  try {',
-    '    return await Promise.race([',
-    '      spartanTrackLifecyclePromise(promise),',
-    '      new Promise((_, reject) => {',
-    '        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);',
-    '        timer.unref?.();',
-    '      }),',
-    '    ]);',
-    '  } finally {',
-    '    if (timer) clearTimeout(timer);',
-    '  }',
-    '}',
-  ].join('\n');
-
-  const oldUserLimit = `async function withUserLimit(userId, operation) {
-  const key = normalizeUserId(userId);
-  let state = userConcurrency.get(key);
-  if (!state) {
-    state = { active: 0, queue: [] };
-    userConcurrency.set(key, state);
-  }
-  if (state.active >= MAX_CONCURRENT_PER_USER) {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('User concurrency limit reached, try again')), 30000);
-      state.queue.push(() => { clearTimeout(timer); resolve(); });
-    });
-  }
-  state.active++;
-  healthState.activeOps++;
-  try {
-    const result = await operation();
-    healthState.lastSuccessfulNav = Date.now();
-    return result;
+    return await operation();
   } finally {
-    healthState.activeOps--;
-    state.active--;
-    if (state.queue.length > 0) {
-      const next = state.queue.shift();
-      next();
-    }
-    if (state.active === 0 && state.queue.length === 0) {
-      userConcurrency.delete(key);
-    }
+    if (pending.delete(token)) spartanPendingUserCreateCount--;
+    if (pending.size === 0 && spartanPendingUserCreates.get(key) === pending) spartanPendingUserCreates.delete(key);
+  }
+}
+const spartanNavigationReadiness = createSpartanNavigationReadiness({
+  getGeneration: () => spartanBrowserGeneration,
+  markDegraded: code => spartanBrowserLifecycle.markDegraded(code),
+});
+function spartanSettleNavigationFailure(ticket, error) {
+  ticket?.failure({ qualifying: isTimeoutError(error) });
+}`;
+  modernReplaceOnce(modernRuntimeAnchor, modernRuntime, 'runtime insertion');
+
+  const timeoutRangeStart = source.indexOf('function withTimeout(promise, ms, label) {');
+  const timeoutRangeEnd = source.indexOf('\n}\n\nfunction requestTimeoutMs(', timeoutRangeStart);
+  if (timeoutRangeStart === -1 || timeoutRangeEnd === -1) throw new Error('expected Camofox 1.14 timeout function');
+  const retainedTimeout = `async function withTimeout(promise, ms, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      spartanTrackLifecyclePromise(promise),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(\`\${label} timed out after \${ms}ms\`)), ms);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }`;
+  source = source.slice(0, timeoutRangeStart) + retainedTimeout + source.slice(timeoutRangeEnd + 2);
+
+  const userLimitStart = source.indexOf('async function withUserLimit(userId, operation) {');
+  const userLimitEnd = source.indexOf('\n}\n\nasync function safePageClose(', userLimitStart);
+  if (userLimitStart === -1 || userLimitEnd === -1) throw new Error('expected Camofox 1.14 per-user concurrency function');
+  const upstreamUserLimit = source.slice(userLimitStart, userLimitEnd + 2);
+  if (!upstreamUserLimit.includes('state.queue.push(() => { clearTimeout(timer); resolve(); });')) {
+    throw new Error('unsupported Camofox 1.14 per-user concurrency function');
+  }
   const retainedUserLimit = `async function withUserLimit(userId, operation) {
   const key = normalizeUserId(userId);
   let state = userConcurrency.get(key);
@@ -3152,62 +1257,347 @@ if (spartanRetentionRevisionCount === 0) {
     }
   }
 }`;
-  const passthroughUserLimit = `async function withUserLimit(userId, operation) {
-  void userId;
-  return await operation();
-}`;
+  source = source.slice(0, userLimitStart) + retainedUserLimit + source.slice(userLimitEnd + 2);
 
-  const upstreamUserLimitCount = source.split(oldUserLimit).length - 1;
-  const passthroughUserLimitCount = source.split(passthroughUserLimit).length - 1;
-  if (upstreamUserLimitCount + passthroughUserLimitCount !== 1) {
-    throw new Error('expected exactly one supported Camofox per-user concurrency variant');
+  modernReplaceOnce('      browser = candidateBrowser; // publish AFTER PID is captured', '      spartanPublishBrowser(candidateBrowser); // publish AFTER PID is captured', 'browser publication');
+  modernReplaceOnce(
+    'async function ensureBrowser() {\n  clearBrowserIdleTimer();',
+    `async function ensureBrowser() {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    return await spartanBrowserLifecycle.run('browser_ensure', () => ensureBrowser(), {
+      priority: 'foreground', waitTimeoutMs: Math.max(1, HANDLER_TIMEOUT_MS - 1000), deadlineAt: Date.now() + HANDLER_TIMEOUT_MS,
+    });
   }
-
-  spartanReplaceLifecycleOnce(oldTimeout, retainedTimeout, 'retention-safe timeout');
-  if (upstreamUserLimitCount === 1) {
-    spartanReplaceLifecycleOnce(oldUserLimit, retainedUserLimit, 'bounded per-user queue');
-  }
-  spartanReplaceLifecycleOnce(
-    spartanReadinessRevisionMarker,
-    `${spartanReadinessRevisionMarker}\n${spartanRetentionRevisionMarker}`,
-    'retention revision marker',
+  clearBrowserIdleTimer();`,
+    'ensure-browser guard',
   );
-} else {
-  for (const [marker, label] of [
-    ['async function withTimeout(promise, ms, label) {', 'async timeout helper'],
-    ['if (timer) clearTimeout(timer);', 'timeout cleanup'],
-  ]) {
-    if (!source.includes(marker)) {
-      throw new Error(`Camofox retention revision marker is incomplete: ${label}`);
-    }
+  modernReplaceOnce('  if (browser) return browser;\n  if (browserLaunchPromise) return browserLaunchPromise;', '  if (browser) return spartanGuardBrowser(browser);\n  if (browserLaunchPromise) return browserLaunchPromise.then(spartanGuardBrowser);', 'ensure-browser returns');
+  modernReplaceOnce('    launchBrowserInstance(),', '    spartanTrackLifecyclePromise(launchBrowserInstance()),', 'tracked browser launch');
+  modernReplaceOnce('  return browserLaunchPromise;\n}\n\n// Helper to normalize userId', '  return browserLaunchPromise.then(spartanGuardBrowser);\n}\n\n// Helper to normalize userId', 'guarded browser return');
+  modernReplaceOnce(
+    'async function closeBrowserFully(reason) {\n  if (_browserClosePromise)',
+    `async function closeBrowserFully(reason) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    return await spartanBrowserLifecycle.run('browser_close', () => closeBrowserFully(reason), { priority: 'background', waitTimeoutMs: null });
   }
-  const passthroughUserLimit = `async function withUserLimit(userId, operation) {
-  void userId;
-  return await operation();
-}`;
-  if (!source.includes(passthroughUserLimit)) {
-    for (const [marker, label] of [
-      ['if (state.queue.length >= MAX_SESSIONS)', 'bounded per-user queue'],
-      ['const index = state.queue.indexOf(waiter);', 'expired waiter cleanup'],
-      ['if (userConcurrency.get(key) === state) userConcurrency.delete(key);', 'generation-safe user cleanup'],
-    ]) {
-      if (!source.includes(marker)) {
-        throw new Error(`Camofox retention revision marker is incomplete: ${label}`);
+  if (_browserClosePromise)`,
+    'close-browser guard',
+  );
+  modernReplaceOnce(
+    'async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {\n  const openSessions',
+    `async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    return await spartanBrowserLifecycle.run('sessions_close_all', () => closeAllSessions(reason, { clearDownloads, clearLocks }), { priority: 'background', waitTimeoutMs: null });
+  }
+  const openSessions`,
+    'close-all guard',
+  );
+  modernReplaceOnce(
+    `async function closeSession(userId, session, {
+  reason = 'session_closed',
+  clearDownloads = true,
+  clearLocks = true,
+} = {}) {
+  if (!session) return;`,
+    `async function closeSession(userId, session, {
+  reason = 'session_closed',
+  clearDownloads = true,
+  clearLocks = true,
+} = {}) {
+  if (!session) return;
+  if (reason === 'api_delete_session' && spartanHasPendingUserCreate(userId)) {
+    throw spartanBrowserLifecycleError('session_create_pending', 'session has pending tab creation');
+  }
+  if (!spartanBrowserLifecycle.hasLease()) {
+    if (session._spartanClosePromise) return await session._spartanClosePromise;
+    session._closing = true;
+    const closing = spartanBrowserLifecycle.run('session_close', () => closeSession(userId, session, { reason, clearDownloads, clearLocks }), { priority: 'background', waitTimeoutMs: null });
+    session._spartanClosePromise = closing;
+    return await closing;
+  }`,
+    'close-session guard',
+  );
+  modernReplaceOnce('  await session.context.close().catch(() => {});', '  await session.context.close();', 'session context close propagation');
+  const legacyOpenStart = source.indexOf("app.post('/tabs/open', async (req, res) => {");
+  if (legacyOpenStart === -1) throw new Error('expected Camofox 1.14 legacy tabs-open route');
+  const legacyOpenEnd = spartanFindCallExpressionEnd(source, legacyOpenStart);
+  if (legacyOpenEnd === -1) throw new Error('expected Camofox 1.14 legacy tabs-open route end');
+  const disabledLegacyOpen = `app.post('/tabs/open', (_req, res) => {
+  return res.status(410).json({
+    error: 'Deprecated endpoint disabled; use POST /tabs',
+    code: 'legacy_tab_open_disabled',
+  });
+});`;
+  source = source.slice(0, legacyOpenStart) + disabledLegacyOpen + source.slice(legacyOpenEnd);
+
+  modernReplaceOnce(
+    'if (closeEmptySessions && session.tabGroups.size === 0 && !hasActivePageLeases(session)) {',
+    `// Spartan queued-create fence: pressure cleanup.
+      if (closeEmptySessions && session.tabGroups.size === 0 && !hasActivePageLeases(session) && !spartanHasPendingUserCreate(userId)) {`,
+    'pressure-cleanup pending-create guard',
+  );
+  modernReplaceOnce(
+    'if (session.tabGroups.size === 0 && !hasActivePageLeases(session)) {',
+    `// Spartan queued-create fence: tab reaper.
+    if (session.tabGroups.size === 0 && !hasActivePageLeases(session) && !spartanHasPendingUserCreate(userId)) {`,
+    'tab-reaper pending-create guard',
+  );
+
+  modernReplaceOnce("  sessions.delete(key);\n  await pluginEvents.emitAsync('session:destroyed'", "  if (sessions.get(key) === session) sessions.delete(key);\n  session._spartanCloseComplete = true;\n  await pluginEvents.emitAsync('session:destroyed'", 'session compare-and-delete');
+  modernReplaceOnce(
+    'async function getSession(userId, { trace = false } = {}) {\n  const key = normalizeUserId(userId);',
+    `async function getSession(userId, { trace = false } = {}) {
+  if (!spartanBrowserLifecycle.hasLease()) {
+    return await spartanBrowserLifecycle.run('session_get', () => getSession(userId, { trace }), {
+      priority: 'foreground', waitTimeoutMs: Math.max(1, HANDLER_TIMEOUT_MS - 1000), deadlineAt: Date.now() + HANDLER_TIMEOUT_MS,
+    });
+  }
+  const key = normalizeUserId(userId);`,
+    'get-session guard',
+  );
+  modernReplaceOnce(
+    'async function restartBrowser(reason) {\n  if (healthState.isRecovering) return;',
+    `async function restartBrowser(reason) {
+  if (!spartanBrowserLifecycle.isRecoveryLease()) {
+    if (spartanBrowserLifecycle.hasLease()) {
+      spartanBrowserLifecycle.markDegraded('browser_recovery_reentrant');
+      throw spartanBrowserLifecycleError('browser_recovery_reentrant', 'browser recovery requested by an active lifecycle operation');
+    }
+    return await spartanBrowserLifecycle.recover(() => restartBrowser(reason), { drainTimeoutMs: SPARTAN_RECOVERY_DRAIN_TIMEOUT_MS });
+  }
+  if (healthState.isRecovering) return;`,
+    'restart guard',
+  );
+
+  const popupStart = source.indexOf('function attachPopupHandler(page, userId, sessionKey) {');
+  const popupEnd = source.indexOf('\n}\n\nfunction pressureHash(', popupStart);
+  if (popupStart === -1 || popupEnd === -1) throw new Error('expected Camofox 1.14 popup handler');
+  let modernPopup = source.slice(popupStart, popupEnd + 2);
+  const popupOpening = `function attachPopupHandler(page, userId, sessionKey) {
+  page.on('popup', (popupPage) => {
+    const key = normalizeUserId(userId);
+    const currentSession = sessions.get(key);
+    if (!currentSession || currentSession._closing) return;`;
+  const popupFence = `function attachPopupHandler(page, userId, sessionKey) {
+  const key = normalizeUserId(userId);
+  const sourceSession = sessions.get(key);
+  page = spartanGuardPage(page);
+  page.on('popup', (popupPage) => {
+    const guardedPopupPage = spartanGuardPage(popupPage);
+    const currentSession = sessions.get(key);
+    if (!sourceSession || currentSession !== sourceSession || currentSession._closing) {
+      safePageClose(guardedPopupPage).catch(() => {});
+      return;
+    }`;
+  if ((modernPopup.split(popupOpening).length - 1) !== 1) throw new Error('expected Camofox 1.14 popup opening');
+  modernPopup = modernPopup.replace(popupOpening, popupFence)
+    .replace('createTabState(popupPage)', 'createTabState(guardedPopupPage)')
+    .replaceAll('safePageUrl(popupPage)', 'safePageUrl(guardedPopupPage)')
+    .replace('page: popupPage', 'page: guardedPopupPage')
+    .replace('attachPopupHandler(popupPage, userId, sessionKey)', 'attachPopupHandler(guardedPopupPage, userId, sessionKey)');
+  if (!modernPopup.includes('currentSession !== sourceSession')) throw new Error('popup generation fence failed');
+  source = source.slice(0, popupStart) + modernPopup + source.slice(popupEnd + 2);
+
+  const createStart = source.indexOf("app.post('/tabs', async (req, res) => {");
+  const createEnd = source.indexOf("app.post('/tabs/:tabId/navigate', async (req, res) => {", createStart);
+  if (createStart === -1 || createEnd === -1) throw new Error('expected Camofox 1.14 create route');
+  let modernCreate = source.slice(createStart, createEnd);
+  function replaceCreate(marker, replacement, label) {
+    const count = modernCreate.split(marker).length - 1;
+    if (count !== 1) throw new Error(`expected one Camofox 1.14 create ${label}, found ${count}`);
+    modernCreate = modernCreate.replace(marker, replacement);
+  }
+  replaceCreate("app.post('/tabs', async (req, res) => {\n  try {", `app.post('/tabs', async (req, res) => {
+  const spartanCreateFence = { active: true, stage: 'validate', startedAt: Date.now(), session: null, page: null, group: null, tabId: null, userKey: null };
+  let spartanCreateNavigation = null;
+  try {`, 'fence start');
+  replaceCreate('    const result = await withTimeout((async () => {', `    const spartanCreateTimeoutMs = requestTimeoutMs();
+    const spartanCreateDeadlineAt = Date.now() + spartanCreateTimeoutMs;
+    const result = await withTimeout(spartanWithPendingUserCreate(userId, spartanCreateFence, () => spartanBrowserLifecycle.run('tab_create', async () => {`, 'admission start');
+  replaceCreate('      let session = await getSession(userId, { trace: !!trace });', `      spartanCreateFence.stage = 'get_session';
+      let session = await getSession(userId, { trace: !!trace });
+      spartanBindPendingCreateSession(userId, spartanCreateFence, session);`, 'session bind');
+  replaceCreate('      const createdPage = await createPageWithRecoveryForUser(userId, session, { trace: !!trace });', `      spartanCreateFence.stage = 'new_page';
+      const spartanCreatedPagePromise = createPageWithRecoveryForUser(userId, session, { trace: !!trace });
+      spartanCreatedPagePromise.then(async late => {
+        if (!spartanCreateFence.active && late?.page) await closeLeasedPage(late.session, late.page, late.lease).catch(() => {});
+      }).catch(() => {});
+      const createdPage = await spartanCreatedPagePromise;`, 'leased page');
+  replaceCreate('      session = createdPage.session;', `      session = createdPage.session;
+      spartanBindPendingCreateSession(userId, spartanCreateFence, session);`, 'recovered session bind');
+  replaceCreate('      const page = createdPage.page;', `      const page = createdPage.page;
+      spartanCreateFence.page = page;`, 'page bind');
+  replaceCreate('      const group = getTabGroup(session, resolvedSessionKey);', `      const group = getTabGroup(session, resolvedSessionKey);
+      spartanCreateFence.group = group;`, 'group bind');
+  replaceCreate('      const tabId = fly.makeTabId();', `      const tabId = fly.makeTabId();
+      spartanCreateFence.tabId = tabId;`, 'tab bind');
+  replaceCreate('      if (url) {\n        const urlErr', `      if (url) {
+        spartanCreateFence.stage = 'navigate';
+        spartanCreateNavigation = spartanNavigationReadiness.begin();
+        const urlErr`, 'navigation start');
+  replaceCreate('        tabState.visitedUrls.add(url);\n      }', `        tabState.visitedUrls.add(url);
+        spartanCreateNavigation?.success();
+      }`, 'navigation success');
+  replaceCreate("    })(), requestTimeoutMs(), 'tab create');", `    }, {
+      priority: 'foreground', waitTimeoutMs: Math.max(1, spartanCreateDeadlineAt - Date.now() - 1000), deadlineAt: spartanCreateDeadlineAt,
+    }), spartanCreateDeadlineAt), spartanCreateTimeoutMs, 'tab create');`, 'admission end');
+  replaceCreate("  } catch (err) {\n    log('error', 'tab create failed'", `  } catch (err) {
+    spartanCreateFence.active = false;
+    spartanSettleNavigationFailure(spartanCreateNavigation, err);
+    if (spartanCreateFence.group && spartanCreateFence.tabId) spartanCreateFence.group.delete(spartanCreateFence.tabId);
+    if (spartanCreateFence.page && isTimeoutError(err)) await safePageClose(spartanCreateFence.page).catch(() => {});
+    log('error', 'tab create failed'`, 'failure cleanup');
+  source = source.slice(0, createStart) + modernCreate + source.slice(createEnd);
+
+  const navigateStart = source.indexOf("app.post('/tabs/:tabId/navigate', async (req, res) => {");
+  const navigateEnd = source.indexOf("\n});", navigateStart);
+  if (navigateStart === -1 || navigateEnd === -1) throw new Error('expected Camofox 1.14 navigate route');
+  let modernNavigate = source.slice(navigateStart, navigateEnd);
+  modernNavigate = modernNavigate.replace('  const tabId = req.params.tabId;\n  \n  try {', '  const tabId = req.params.tabId;\n  const spartanNavigateOutcome = spartanNavigationReadiness.begin();\n  \n  try {');
+  modernNavigate = modernNavigate.replace('    res.json(result);\n  } catch (err) {', '    spartanNavigateOutcome.success();\n    res.json(result);\n  } catch (err) {\n    spartanSettleNavigationFailure(spartanNavigateOutcome, err);');
+  if (!modernNavigate.includes('spartanNavigateOutcome.success()')) throw new Error('expected Camofox 1.14 navigate outcome anchors');
+  source = source.slice(0, navigateStart) + modernNavigate + source.slice(navigateEnd);
+
+  modernReplaceOnce(
+    `      // Memory admission control (Fly.io only) — reject new sessions when
+      // system memory is critically low. 503 tells Fly Proxy to try another machine.`,
+    `      if (process.env.SPARTAN_CAMOFOX_CGROUP_ADMISSION === 'true') {
+        const admission = spartanCgroupAdmissionAllowed({ threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.75) });
+        if (!admission.allowed) throw Object.assign(new Error('Camofox cgroup memory admission rejected'), { statusCode: 503, code: admission.code || 'memory_pressure' });
       }
-    }
-    if (source.includes('state.queue.push(() => { clearTimeout(timer); resolve(); });')) {
-      throw new Error('Camofox retention revision retains the unbounded upstream waiter');
-    }
+      // Memory admission control (Fly.io only) — reject new sessions when
+      // system memory is critically low. 503 tells Fly Proxy to try another machine.`,
+    'cgroup admission',
+  );
+  modernReplaceOnce(
+    "if (isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {",
+    "if (isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action) && proxyPool?.canRotateSessions) {",
+    'non-rotating navigation timeout guard',
+  );
+  modernReplaceOnce(
+    '    destroySession(userId).catch(() => {});\n  }\n  // Track consecutive timeouts per tab',
+    `    destroySession(userId).catch(() => {});
+  } else if (isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
+    const timedOutSession = sessions.get(normalizeUserId(userId));
+    const timedOutTabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
+    if (timedOutSession && timedOutTabId) destroyTab(timedOutSession, timedOutTabId, 'navigation_timeout', userId);
   }
+  // Track consecutive timeouts per tab`,
+    'targeted timeout retirement',
+  );
+  source = source.replaceAll("if (recordNavFailure(userId)) {\n              await recoverUserSession(userId, 'navigate_failure');\n            }", "if (!isTimeoutError(navErr) && recordNavFailure(userId)) {\n              await recoverUserSession(userId, 'navigate_failure');\n            }");
+  source = source.replaceAll("if (recordNavFailure(userId)) {\n              await recoverUserSession(userId, 'tab_create_nav_failure');\n            }", "if (!isTimeoutError(navErr) && recordNavFailure(userId)) {\n              await recoverUserSession(userId, 'tab_create_nav_failure');\n            }");
+
+  const periodicProfileCleanup = `  // Periodic temp profile cleanup every 10 minutes
+  setInterval(() => {
+    try {
+      const cleaned = cleanupStaleFirefoxProfiles();
+      if (cleaned.removed > 0) {
+        log('info', 'periodic firefox profile cleanup', cleaned);
+      }
+    } catch { /* best effort */ }
+  }, 10 * 60 * 1000).unref();
+`;
+  modernReplaceOnce(periodicProfileCleanup, `  // Spartan: never scan Firefox temp profiles while a browser is live.
+  // Startup and post-close cleanup remain enabled and ownership-scoped.
+`, 'live profile cleanup removal');
+
+  const healthRouteStart = source.indexOf("app.get('/health',");
+  if (healthRouteStart === -1) throw new Error('expected Camofox 1.14 health route');
+  const healthRouteEnd = spartanFindCallExpressionEnd(source, healthRouteStart);
+  if (healthRouteEnd === -1) throw new Error('expected Camofox 1.14 health route end');
+  const healthRoutes = `const spartanDeepHealthSecretPath = process.env.SPARTAN_CAMOFOX_INTERNAL_SECRET_FILE || '/run/spartan-camofox/internal.key';
+const SPARTAN_DEEP_PROBE_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS || 8000);
+const SPARTAN_DEEP_CLEANUP_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 1000);
+const SPARTAN_DEEP_BUSY_MAX_AGE_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_BUSY_MAX_AGE_MS || 45000);
+const spartanDeepHealth = createSpartanDeepHealthController({
+  getBrowser: ensureBrowser,
+  recoverBrowser: () => restartBrowser('spartan_deep_health'),
+  getGeneration: () => spartanBrowserGeneration,
+  probeTimeoutMs: SPARTAN_DEEP_PROBE_TIMEOUT_MS,
+  cleanupTimeoutMs: SPARTAN_DEEP_CLEANUP_TIMEOUT_MS,
+  busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,
+  cacheMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,
+  recoveryTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS || 20000),
+  runExclusive: operation => {
+    const lifecycle = spartanBrowserLifecycle.snapshot();
+    if (lifecycle.ownerKind || lifecycle.recovering) throw spartanBrowserLifecycleError('browser_lifecycle_busy', 'browser lifecycle is busy');
+    return spartanBrowserLifecycle.run('deep_probe', operation, {
+      priority: 'health', waitTimeoutMs: Math.max(1, SPARTAN_DEEP_PROBE_TIMEOUT_MS - 1000), deadlineAt: Date.now() + SPARTAN_DEEP_PROBE_TIMEOUT_MS, allowDegraded: true,
+    });
+  },
+});
+function spartanRequireInternalHealth(req, res) {
+  if (spartanInternalRequestAuthorized(req, spartanDeepHealthSecretPath)) return true;
+  res.status(403).json({ ok: false, code: 'forbidden' });
+  return false;
+}
+function spartanDeepHealthPayload(result) {
+  return { ok: Boolean(result?.ok), code: String(result?.code || 'deep_probe_failed'), stage: String(result?.stage || 'lifecycle'), browserGeneration: Number.isSafeInteger(result?.generation) ? result.generation : spartanBrowserGeneration };
+}
+app.get('/spartan/health/deep', async (req, res) => {
+  if (!spartanRequireInternalHealth(req, res)) return;
+  const lifecycle = spartanBrowserLifecycle.snapshot();
+  const pending = spartanPendingUserCreateSnapshot();
+  let result;
+  if (lifecycle.degradedCode === 'browser_navigation_degraded') result = { ok: false, code: 'browser_navigation_degraded', stage: 'lifecycle', generation: spartanBrowserGeneration };
+  else if (pending.deadlineExceeded || lifecycle.ownerDeadlineExceeded) result = { ok: false, code: 'browser_lifecycle_stuck', stage: 'lifecycle', generation: spartanBrowserGeneration };
+  else result = await spartanDeepHealth.probe();
+  const payload = spartanDeepHealthPayload(result);
+  res.status(payload.ok ? 200 : 503).json(payload);
+});
+app.post('/spartan/recover', async (req, res) => {
+  if (!spartanRequireInternalHealth(req, res)) return;
+  const result = await spartanDeepHealth.recover();
+  res.status(result.ok ? 200 : 503).json(spartanDeepHealthPayload(result));
+});
+app.get('/health', (_req, res) => {
+  const lifecycle = spartanBrowserLifecycle.snapshot();
+  const navigation = spartanNavigationReadiness.snapshot();
+  const readiness = spartanDeepHealth.snapshot();
+  const ok = readiness.ok && !lifecycle.degradedCode && !navigation.latched;
+  res.status(ok ? 200 : 503).json({
+    ok, engine: 'camoufox', browserGeneration: spartanBrowserGeneration,
+    browserRunning: browser !== null && (browser.isConnected?.() ?? false),
+    activeTabs: getTotalTabCount(), activeSessions: sessions.size,
+    consecutiveFailures: navigation.consecutiveFailures,
+    readiness: { code: readiness.code, stage: readiness.stage || null, ageMs: readiness.ageMs ?? null },
+  });
+});
+app.get('/live', (_req, res) => res.status(200).json({ ok: true, engine: 'camoufox', live: true }));`;
+  source = source.slice(0, healthRouteStart) + healthRoutes + source.slice(healthRouteEnd);
+
+  const activeHealthStart = '// Active health probe -- detect hung browser even when isConnected() lies\n';
+  const activeHealthEnd = '\n// Crash logging\n';
+  const activeHealthIndex = source.indexOf(activeHealthStart);
+  if (activeHealthIndex !== -1) {
+    const end = source.indexOf(activeHealthEnd, activeHealthIndex);
+    if (end === -1) throw new Error('expected Camofox 1.14 active health end');
+    source = source.slice(0, activeHealthIndex) + source.slice(end + 1);
+  }
+
+  for (const [marker, label] of [
+    ['SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1', 'upstream lease integration'],
+    ['spartanTrackLifecyclePromise(promise)', 'timeout retention'],
+    ['if (timer) clearTimeout(timer);', 'timeout timer cleanup'],
+    ['if (state.queue.length >= MAX_SESSIONS)', 'bounded per-user waiters'],
+    ['currentSession !== sourceSession', 'popup generation fence'],
+    ["code: 'legacy_tab_open_disabled'", 'legacy tabs-open disablement'],
+    ['await session.context.close();', 'context-close error propagation'],
+    ['Spartan queued-create fence: pressure cleanup.', 'pressure cleanup create fence'],
+    ['Spartan queued-create fence: tab reaper.', 'tab reaper create fence'],
+    ['spartanBindPendingCreateSession(userId, spartanCreateFence, session)', 'create generation bind'],
+    ['closeLeasedPage(late.session, late.page, late.lease)', 'late leased-page cleanup'],
+    ["app.get('/spartan/health/deep'", 'deep health'],
+    ["app.get('/live'", 'liveness'],
+    ['browser_navigation_degraded', 'navigation readiness'],
+    ['never scan Firefox temp profiles while a browser is live', 'live profile protection'],
+    ['NAVIGATION_TIMEOUT_ACTIONS.has(action) && proxyPool?.canRotateSessions', 'timeout proxy guard'],
+  ]) {
+    if (!source.includes(marker)) throw new Error(`Camofox 1.14 patch incomplete: ${label}`);
+  }
+  fs.writeFileSync(path, source);
+  process.exit(0);
 }
 
-const upstreamActiveHealthStart = '// Active health probe -- detect hung browser even when isConnected() lies\n';
-const upstreamActiveHealthEnd = '\n// Crash logging\n';
-const upstreamActiveHealthIndex = source.indexOf(upstreamActiveHealthStart);
-if (upstreamActiveHealthIndex !== -1) {
-  const end = source.indexOf(upstreamActiveHealthEnd, upstreamActiveHealthIndex);
-  if (end === -1) throw new Error('expected Camofox active health probe end marker not found');
-  source = source.slice(0, upstreamActiveHealthIndex) + source.slice(end + 1);
-}
-
-fs.writeFileSync(path, source);
+throw new Error('unsupported Camofox upstream source; expected the pinned 1.14 recovery and page-lease model');

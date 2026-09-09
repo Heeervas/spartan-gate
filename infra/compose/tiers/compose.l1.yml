@@ -93,8 +93,8 @@ services:
     build:
       context: ../../camofox
       args:
-        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137}
-    image: ${CAMOFOX_IMAGE:-spartan-gate-camofox:1.11.2}
+        CAMOFOX_BASE_IMAGE: ${CAMOFOX_BASE_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce}
+    image: ${CAMOFOX_IMAGE:-spartan-gate-camofox:1.14.0}
     restart: unless-stopped
     stop_grace_period: 60s
     mem_limit: 2g
@@ -111,6 +111,7 @@ services:
       CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-}
       CAMOFOX_CRASH_REPORT_ENABLED: "false"
       CAMOFOX_GEOIP: ${CAMOFOX_GEOIP:-false}
+      CAMOFOX_DISABLE_DEFAULT_ADDONS: ${CAMOFOX_DISABLE_DEFAULT_ADDONS:-false}
       CAMOFOX_PROFILE_DIR: /root/.camofox/profiles
       CAMOFOX_COOKIES_DIR: /root/.camofox/cookies
       CAMOFOX_TRACES_DIR: /root/.camofox/traces

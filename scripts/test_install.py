@@ -137,6 +137,25 @@ exit 2
                 self.assertEqual(values["CAMOFOX_SESSION_KEY"], "")
                 self.assertEqual(values["CAMOFOX_ADOPT_EXISTING_TAB"], "false")
 
+    def test_rerun_preserves_explicit_analytics_mode(self):
+        first = self.run_install("L2", "linux")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        env_file = self.private_dir / "env" / "local.env"
+        source = env_file.read_text(encoding="utf-8")
+        env_file.write_text(
+            source.replace("CAMOFOX_DISABLE_DEFAULT_ADDONS='false'", "CAMOFOX_DISABLE_DEFAULT_ADDONS='true'"),
+            encoding="utf-8",
+        )
+
+        second = self.run_install("L2", "linux")
+
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.read_env()["CAMOFOX_DISABLE_DEFAULT_ADDONS"], "true")
+        self.assertEqual(
+            env_file.read_text(encoding="utf-8").count("CAMOFOX_DISABLE_DEFAULT_ADDONS="),
+            1,
+        )
+
     def test_install_fails_if_private_env_chmod_fails(self):
         chmod = self.bin_dir / "chmod"
         chmod.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")

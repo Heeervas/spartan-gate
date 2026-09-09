@@ -239,7 +239,7 @@ quote_env() {
 }
 
 write_env_file() {
-    local tmp managed_keys key caddy_password caddy_hash camofox_edge_token websocket_edge_token
+    local tmp managed_keys key caddy_password caddy_hash camofox_edge_token websocket_edge_token camofox_disable_default_addons
     local browserless_image browserless_base_image
     mkdir -p "$(dirname "$env_file")"
     mkdir -p "$data_root/hermes" "$data_root/camofox" "$data_root/clawroute" "$data_root/spartan-route" "$data_root/browserless-profiles" "$data_root/gogcli"
@@ -268,7 +268,7 @@ write_env_file() {
         SPARTAN_CADDY_PASSWORD
         CLOUDFLARE_API_TOKEN
         CAMOFOX_URL CAMOFOX_API_KEY CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID
-        CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB CAMOFOX_ENABLE_VNC
+        CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB CAMOFOX_DISABLE_DEFAULT_ADDONS CAMOFOX_ENABLE_VNC
         CAMOFOX_VNC_PASSWORD CAMOFOX_IMAGE CAMOFOX_BASE_IMAGE
         BROWSERLESS_IMAGE BROWSERLESS_BASE_IMAGE HERMES_IMAGE
     )
@@ -370,10 +370,16 @@ write_env_file() {
     append_env CAMOFOX_USER_ID ""
     append_env CAMOFOX_SESSION_KEY ""
     append_env CAMOFOX_ADOPT_EXISTING_TAB "false"
+    camofox_disable_default_addons="$(env_value CAMOFOX_DISABLE_DEFAULT_ADDONS || true)"
+    case "$camofox_disable_default_addons" in
+        1|true) ;;
+        *) camofox_disable_default_addons="false" ;;
+    esac
+    append_env CAMOFOX_DISABLE_DEFAULT_ADDONS "$camofox_disable_default_addons"
     append_env CAMOFOX_ENABLE_VNC "1"
     append_env CAMOFOX_VNC_PASSWORD "$(get_or_generate CAMOFOX_VNC_PASSWORD 24)"
-    append_env CAMOFOX_IMAGE "spartan-gate-camofox:1.11.2"
-    append_env CAMOFOX_BASE_IMAGE "ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137"
+    append_env CAMOFOX_IMAGE "spartan-gate-camofox:1.14.0"
+    append_env CAMOFOX_BASE_IMAGE "ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce"
     browserless_image="$(env_value BROWSERLESS_IMAGE || true)"
     browserless_base_image="$(env_value BROWSERLESS_BASE_IMAGE || true)"
     if [[ "$browserless_image" == ghcr.io/browserless/chromium:* || "$browserless_image" == ghcr.io/browserless/chromium@* ]]; then

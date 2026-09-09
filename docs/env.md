@@ -254,9 +254,9 @@ unless `CAMOFOX_URL` is set.
   `http://camofox:9377` to opt in for generic Hermes browser tools and Google
   Meet transcribe mode.
 - `CAMOFOX_BASE_IMAGE`: pinned upstream Camofox base image, default
-  `ghcr.io/jo-inc/camofox-browser:1.11.2@sha256:826da04c4ec75b3eb450bc7cf2513176ba408f92b862b89f768ca30563171137`.
+  `ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce`.
 - `CAMOFOX_IMAGE`: local Spartan Gate Camofox wrapper image, default
-  `spartan-gate-camofox:1.11.2`. The wrapper pre-fetches Camofox's default
+  `spartan-gate-camofox:1.14.0`. The wrapper pre-fetches Camofox's default
   add-on at build time so the runtime service can stay internal-network only.
 - `CAMOFOX_ACCESS_KEY`: bearer token required by protected Camofox routes.
 - `CAMOFOX_API_KEY`: optional dedicated key for Camofox cookie/storage-related
@@ -291,6 +291,12 @@ unless `CAMOFOX_URL` is set.
   Camofox run public-IP geo probes for configured proxies, default `false`.
   Keep false for the local Tinyproxy path; only enable for a proxy provider
   where those probes are intended and whitelisted.
+- `CAMOFOX_DISABLE_DEFAULT_ADDONS`: native upstream switch for omitting the
+  default uBlock Origin add-on, default `false`. Set `true` and recreate only
+  Camofox when inspecting GA, GTM, Meta, or similar analytics requests. This
+  changes browser add-on blocking only; Tinyproxy and DNS allowlists remain in
+  force. Values other than upstream's exact `true` or `1` do not disable the
+  add-on.
 - `SPARTAN_CAMOFOX_DATA_PATH`: private host path mounted to `/root/.camofox`
   by `private/compose.local.yml`.
 - `SPARTAN_CAMOFOX_ADDONS_PATH`: private host directory mounted read-only at
@@ -298,6 +304,10 @@ unless `CAMOFOX_URL` is set.
 - `CAMOFOX_ADDONS`: comma-separated extracted Firefox add-on directories
   inside the container, normally below `/opt/camofox-addons`. Leave empty when
   no private add-ons are required.
+  Bundled Camoufox 135 cannot reliably keep UBO active alongside a custom
+  add-on, so Camofox fails closed if this is non-empty while
+  `CAMOFOX_DISABLE_DEFAULT_ADDONS` is false. Set the disable flag explicitly
+  when custom add-ons are required.
 - `CAMOFOX_ENABLE_VNC`: enable Camofox noVNC support, default `0`.
 - `CAMOFOX_VNC_PASSWORD`: password for VNC/noVNC when VNC is enabled.
 - `CAMOFOX_NOVNC_PORT`: private noVNC host port served through Caddy. The

@@ -19,12 +19,16 @@ function patchMemoryPressure(source) {
     "import { createSpartanDeepHealthController, createSpartanNavigationReadiness, readSpartanCgroupMemory, spartanInternalRequestAuthorized, spartanCgroupAdmissionAllowed } from './spartan-health.mjs';\n",
     'cgroup memory reader import',
   );
-  source = replaceOnce(
-    source,
-    'threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.90),',
-    'threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.75),',
-    'admission threshold',
-  );
+  if (source.includes('threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.90),')) {
+    source = replaceOnce(
+      source,
+      'threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.90),',
+      'threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.75),',
+      'admission threshold',
+    );
+  } else if (!source.includes('threshold: Number(process.env.SPARTAN_CAMOFOX_MEMORY_SOFT_RATIO || 0.75)')) {
+    throw new Error('admission threshold: supported anchor not found');
+  }
 
   const startMarker = '// Memory pressure eviction (Fly.io only) — evict oldest session when RAM is high.\n';
   const endMarker = '// Per-tab inactivity reaper — close tabs idle for TAB_INACTIVITY_MS\n';
@@ -66,7 +70,7 @@ setInterval(async () => {
   let oldestKey = null;
   let oldestAccess = Infinity;
   for (const [key, session] of sessions) {
-    if (session._closing || spartanHasPendingUserCreate(key)) continue;
+    if (session._closing || spartanHasPendingUserCreate(key) || hasActivePageLeases(session)) continue;
     if (spartanOperatorSessionLeaseActive(session)) continue;
     if (session.lastAccess < oldestAccess) {
       oldestAccess = session.lastAccess;

@@ -533,7 +533,7 @@ Usage:
   sg-browser camofox-smoke [url]
   sg-browser camofox-acceptance [url]
   sg-browser camofox-fault-test
-  sg-browser camofox-viewport-check [width height]
+  sg-browser camofox-viewport-check [width height [url]]
   sg-browser camofox-url
 
 Selection:
@@ -2523,23 +2523,22 @@ sg_camofox_deep_health_fault_test() {
         "$SPARTAN_GATE_DIR/scripts/camofox-deep-health-fault-test.sh"
 }
 sg_camofox_viewport_check() {
-    local key width height
+    local key width height url
     key="$(sg_env_value CAMOFOX_ACCESS_KEY change-me-camofox-access-key)"
     width="${1:-390}"
     height="${2:-844}"
+    url="${3:-https://example.com/}"
     sg_compose exec -T \
         -e CAMOFOX_VIEWPORT_KEY="$key" \
         -e CAMOFOX_VIEWPORT_WIDTH="$width" \
         -e CAMOFOX_VIEWPORT_HEIGHT="$height" \
+        -e CAMOFOX_VIEWPORT_URL="$url" \
         hermes python3 -c '
 import base64
-import http.server
 import json
 import os
-import socketserver
 import struct
 import sys
-import threading
 import time
 import urllib.error
 import urllib.parse
@@ -2551,9 +2550,7 @@ WIDTH = int(os.environ.get("CAMOFOX_VIEWPORT_WIDTH", "390"))
 HEIGHT = int(os.environ.get("CAMOFOX_VIEWPORT_HEIGHT", "844"))
 USER_ID = f"spartan-viewport-smoke-{int(time.time() * 1000)}"
 SESSION_KEY = "viewport-smoke"
-HTML = "<html><head><title>spartan viewport diagnostic</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head><body>viewport diagnostic</body></html>"
-DIAGNOSTIC_URL = None
-BOOT_URL = None
+DIAGNOSTIC_URL = os.environ["CAMOFOX_VIEWPORT_URL"]
 VIEWPORT_EXPR = """(() => ({
   href: String(location.href).slice(0, 160),
   title: document.title,
@@ -2575,30 +2572,6 @@ VIEWPORT_EXPR = """(() => ({
 
 tabs = []
 cleanup_errors = []
-diagnostic_server = None
-
-
-class DiagnosticHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        payload = HTML.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def log_message(self, _format, *args):
-        return
-
-
-def start_diagnostic_server():
-    global diagnostic_server, DIAGNOSTIC_URL, BOOT_URL
-    diagnostic_server = socketserver.ThreadingTCPServer(("0.0.0.0", 0), DiagnosticHandler)
-    diagnostic_server.daemon_threads = True
-    diagnostic_port = diagnostic_server.server_address[1]
-    DIAGNOSTIC_URL = f"http://hermes:{diagnostic_port}/diagnostic"
-    BOOT_URL = f"http://hermes:{diagnostic_port}/boot"
-    threading.Thread(target=diagnostic_server.serve_forever, daemon=True).start()
 
 
 def enc(value):
@@ -2658,8 +2631,10 @@ def extract_tab_id(payload):
     raise RuntimeError(f"Camofox did not return a tab id: {payload}")
 
 
-def create_tab(url, extra=None):
-    body = {"userId": USER_ID, "sessionKey": SESSION_KEY, "url": url}
+def create_tab(url=None, extra=None):
+    body = {"userId": USER_ID, "sessionKey": SESSION_KEY}
+    if url is not None:
+        body["url"] = url
     if extra:
         body.update(extra)
     tab_id = extract_tab_id(request("POST", "/tabs", body, timeout=60))
@@ -2687,7 +2662,8 @@ def matches(effective):
         isinstance(effective, dict)
         and abs(int(effective.get("innerWidth", -999999)) - WIDTH) <= 2
         and abs(int(effective.get("innerHeight", -999999)) - HEIGHT) <= 2
-        and effective.get("maxWidth767") is True
+        and effective.get("maxWidth767") == (WIDTH <= 767)
+        and effective.get("maxWidth430") == (WIDTH <= 430)
     )
 
 
@@ -2737,26 +2713,17 @@ def openapi_summary():
 
 
 def cleanup():
-    for tab_id in list(reversed(tabs)):
-        try:
-            request("DELETE", f"/tabs/{enc(tab_id)}", {"userId": USER_ID}, timeout=10)
-        except Exception as exc:
-            cleanup_errors.append(f"tab {tab_id}: {exc}")
     try:
         request("DELETE", f"/sessions/{enc(USER_ID)}", timeout=10)
     except Exception as exc:
         cleanup_errors.append(f"session {USER_ID}: {exc}")
-    if diagnostic_server is not None:
-        diagnostic_server.shutdown()
-        diagnostic_server.server_close()
 
 
 summary = {"ok": False, "base": BASE, "userId": USER_ID, "requested": {"width": WIDTH, "height": HEIGHT}, "diagnosticUrl": None, "openapi": None, "variants": []}
 try:
-    start_diagnostic_server()
     summary["diagnosticUrl"] = DIAGNOSTIC_URL
     summary["openapi"] = openapi_summary()
-    summary["variants"].append(run_variant("set-before-navigate", True, lambda: (lambda tab_id: (lambda viewport_response: (navigate(tab_id, DIAGNOSTIC_URL), collect(tab_id, viewport_response))[1])(set_viewport(tab_id)))(create_tab(BOOT_URL))))
+    summary["variants"].append(run_variant("set-before-navigate", True, lambda: (lambda tab_id: (lambda viewport_response: (navigate(tab_id, DIAGNOSTIC_URL), collect(tab_id, viewport_response))[1])(set_viewport(tab_id)))(create_tab(None))))
     summary["variants"].append(run_variant("set-after-navigate", True, lambda: (lambda tab_id: (lambda viewport_response: collect(tab_id, viewport_response))(set_viewport(tab_id)))(create_tab(DIAGNOSTIC_URL))))
     summary["variants"].append(run_variant("set-then-reload", True, lambda: (lambda tab_id: (lambda viewport_response: collect(tab_id, viewport_response))(set_viewport(tab_id, True)))(create_tab(DIAGNOSTIC_URL))))
     summary["variants"].append(run_variant("create-with-viewport-observed", False, lambda: collect(create_tab(DIAGNOSTIC_URL, {"viewport": {"width": WIDTH, "height": HEIGHT}}))))
@@ -2767,6 +2734,7 @@ finally:
     cleanup()
     if cleanup_errors:
         summary["cleanupErrors"] = cleanup_errors
+        summary["ok"] = False
 
 print(json.dumps(summary, indent=2, sort_keys=True))
 raise SystemExit(0 if summary.get("ok") else 1)
