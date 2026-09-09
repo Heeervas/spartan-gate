@@ -307,6 +307,31 @@ class Wire:
         self.report["checks"].append("tool_continuation_audio_completed")
 
 
+def websocket_proxy_kwargs() -> dict[str, Any]:
+    from aiohttp.helpers import get_env_proxy_for_url
+    from yarl import URL
+
+    # aiohttp does not apply HTTPS_PROXY to the wss scheme. Use the same
+    # operator-configured HTTPS tunnel as mint; never attempt direct egress.
+    try:
+        proxy, proxy_auth = get_env_proxy_for_url(URL(MINT_URL))
+    except LookupError:
+        raise ProbeFailure("realtime_https_proxy_required") from None
+    return {"proxy": proxy, "proxy_auth": proxy_auth}
+
+
+def transport_error_code(exc: Exception) -> str:
+    return {
+        "ClientConnectorDNSError": "transport_dns_failed",
+        "ClientConnectorError": "transport_connect_failed",
+        "ClientHttpProxyError": "proxy_connect_rejected",
+        "ClientProxyConnectionError": "proxy_connect_failed",
+        "ClientConnectorCertificateError": "transport_certificate_failed",
+        "ClientConnectorSSLError": "transport_tls_failed",
+        "ServerDisconnectedError": "transport_server_disconnected",
+    }.get(type(exc).__name__, "probe_internal_or_transport_error")
+
+
 async def live(slot_index: int, report: dict[str, Any]) -> None:
     from aiohttp import ClientSession, ClientTimeout, TraceConfig, WSServerHandshakeError
     from spartan_route import codex
@@ -317,6 +342,7 @@ async def live(slot_index: int, report: dict[str, Any]) -> None:
             or codex.CODEX_AUTH_STORE_ROOT != Path("/app/data/codex-auth")
             or os.environ.get("OPENAI_CODEX_TOKEN")):
         raise ProbeFailure("existing_route_runtime_required")
+    proxy_kwargs = websocket_proxy_kwargs()
     report["manager_source_sha256"] = hashlib.sha256(Path(codex.__file__).read_bytes()).hexdigest()
     token = os.environ.get("CLAWROUTE_TOKEN", "").strip()
     port = os.environ.get("CLAWROUTE_PORT", "18790")
@@ -361,7 +387,7 @@ async def live(slot_index: int, report: dict[str, Any]) -> None:
                 async with http.ws_connect(f"{WS_URL}?model={MODEL}",
                                            headers={"Authorization": f"Bearer {secret}"},
                                            heartbeat=20, max_msg_size=MAX_FRAME,
-                                           compress=0) as ws:
+                                           compress=0, **proxy_kwargs) as ws:
                     secret = None
                     report["handshake_ms"] = round((time.monotonic() - started) * 1000)
                     report["checks"].append("websocket_open")
@@ -400,10 +426,10 @@ async def run(slot: int) -> dict[str, Any]:
         report["limit"] = {"name": "operation_seconds", "configured": BUDGET_SECONDS,
                            "observed": round(time.monotonic() - started, 3),
                            "recovery": "stop_and_review_failed_stage"}
-    except Exception:
+    except Exception as exc:
         # Do not render exceptions: aiohttp exceptions may contain auth headers,
         # URLs, account-store paths or provider-controlled response text.
-        report["error"] = "probe_internal_or_transport_error"
+        report["error"] = transport_error_code(exc)
     if report["stage"] == "mint":
         report["endpoint"] = MINT_URL
     elif report["stage"] not in {"runtime_preflight", "local_slot_preflight", "oauth"}:

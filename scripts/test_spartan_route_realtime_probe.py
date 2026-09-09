@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -64,6 +65,21 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(value["operations"]["mint"], 1)
             else:
                 self.assertEqual(value["error"], "explicit_slot_and_approval_required")
+
+    @unittest.skipUnless(importlib.util.find_spec("aiohttp"), "requires Route aiohttp dependency")
+    def test_websocket_explicitly_reuses_https_proxy_and_never_goes_direct(self):
+        with patch.dict(os.environ, {"https_proxy": "http://proxy:8888", "HOME": "/nonexistent"}, clear=True):
+            kwargs = probe.websocket_proxy_kwargs()
+            self.assertEqual(str(kwargs["proxy"]), "http://proxy:8888")
+            self.assertIsNone(kwargs["proxy_auth"])
+        for env in ({}, {"https_proxy": "http://proxy:8888", "no_proxy": "api.openai.com"}):
+            with patch.dict(os.environ, env, clear=True), self.assertRaises(probe.ProbeFailure):
+                probe.websocket_proxy_kwargs()
+
+    def test_transport_categories_do_not_render_exception_contents(self):
+        exc = type("ClientConnectorError", (Exception,), {})("secret-url-and-headers")
+        self.assertEqual(probe.transport_error_code(exc), "transport_connect_failed")
+        self.assertEqual(probe.transport_error_code(RuntimeError("private")), "probe_internal_or_transport_error")
 
     def test_synthetic_audio_is_bounded_pcm(self):
         pcm = base64.b64decode(probe.synthetic_audio(), validate=True)

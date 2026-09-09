@@ -4,9 +4,10 @@
 
 The first implementation batch supplies an offline-by-default feasibility probe
 and its tests. **Route does not yet expose Realtime mint or WebSocket routes.**
-Subscription entitlement, voice round-trip and live tools remain unverified.
-The full transport implementation is gated on explicit account-use authorization
-and a successful real probe. No API-key fallback is permitted.
+One authorized subscription OAuth probe obtained a Realtime client secret, then
+failed during the WebSocket handshake. Voice round-trip and live tools remain
+unverified. The full transport implementation remains gated on a successful
+real probe; the original single-mint allowance has been consumed. No API-key fallback is permitted.
 
 The independently reviewed plan preserves the original objective: Hermes owns
 Discord, playback, memory, permissions, tool execution and delegation; Route
@@ -77,7 +78,11 @@ slot is passed to `load_auth()`. The probe does not initialize the telemetry
 store, run database maintenance, call `choose_slot()`, or refresh the pool.
 `OPENAI_API_KEY` and all other provider keys are ignored. Provider hosts are
 fixed, HTTP redirects are disabled, and WebSocket redirects are rejected before
-following them. Existing HTTP proxy configuration remains in force.
+following them. The probe resolves the fixed mint URL's HTTPS proxy before loading OAuth and
+passes that same proxy explicitly to `ws_connect`. Missing/bypassed HTTPS proxy
+configuration fails closed. aiohttp selects proxies by scheme, so `HTTPS_PROXY`
+alone does not configure `wss` requests; see its [proxy documentation](https://docs.aiohttp.org/en/v3.12.14/client_advanced.html#proxy-support).
+No Compose or live service environment change is needed.
 
 ## Evidence and failure interpretation
 
@@ -116,6 +121,38 @@ JSON, 1 MiB per WebSocket message, 4 MiB received in total, and 1,024 events.
 The 250 ms PCM input is 12,000 bytes before base64. These limits bound a tiny
 three-response experiment; they are not provider limits or production defaults.
 Limit failures report the bound, configured/observed values and recovery action.
+
+## First authorized probe result
+
+On 2026-09-09, the explicitly authorized account was tested once using the
+existing in-container OAuth manager. Redacted observations:
+
+| Stage | Observed result |
+| --- | --- |
+| Local policy and OAuth | Passed; usable subscription OAuth credential |
+| `POST https://api.openai.com/v1/realtime/client_secrets` | HTTP 200, valid expiring secret; 824 ms |
+| `wss://api.openai.com/v1/realtime` handshake | Failed with `probe_internal_or_transport_error` |
+| Session acceptance, audio, tools | Not reached |
+| Total reported elapsed time | 1,099 ms |
+| Subscription billing/quota attribution | Unknown |
+
+The initial report did not retain the exception class; it does not prove an
+upstream rejection, quota failure or entitlement denial. Subsequent read-only
+runtime inspection found aiohttp 3.12.14 resolves a proxy for the HTTPS endpoint
+but none for WSS: the service sets HTTPS proxy variables and no WSS proxy
+variables. This confirms a local transport defect consistent with the failure;
+its causal role still requires a corrected live retry to confirm.
+
+The corrected harness explicitly reuses the HTTPS proxy and includes fixed
+sanitized categories for connection, proxy, DNS and TLS failures. Offline tests
+cover that selection and denial when no permitted proxy exists. No production
+restart or network-policy change was made.
+
+The original ephemeral secret was not persisted and is no longer available.
+A new real attempt therefore needs another mint under applicable authorization;
+no automatic retry or alternative account was attempted. The successful mint
+proves that this OAuth credential was accepted for secret issuance at that time,
+not that a working speech session or subscription coverage has been demonstrated.
 
 ## Reviewed implementation sequence after a successful probe
 
@@ -179,14 +216,16 @@ partial disconnects, shutdown cleanup, and existing text/Responses/image routes.
 
 ## Preparation validation
 
-The preparation batch passes 15 focused offline tests for default/approval
+The preparation and transport-fix batches pass 17 focused offline tests for default/approval
 behavior, slot filtering and account identity, PCM and tool evidence, malformed
 expirations, session acknowledgements, redaction, receive limits and timeout.
 The pre-existing baseline passed 227 Route tests, 197 Hermes Python tests,
 18 Hermes JavaScript tests, 24 Camofox Python tests, the 302-test scripts suite
 (one skip), Camofox JavaScript tests (12 pass, one skip), and Compose rendering.
 The pristine upstream Camofox fixture and live browser acceptance were not run.
-No live Realtime test or OAuth refresh has been performed for this batch.
+An authorized live attempt is recorded below. The harness does not record whether
+the existing OAuth manager refreshed its grant, so refresh activity is not claimed
+either way.
 
 ## Enablement and rollback
 
