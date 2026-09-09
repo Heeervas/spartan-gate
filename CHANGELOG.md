@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Documented profile-local Hermes Talk API routing and acceptance: named gateways must use their own API port while retaining existing credentials. Distinguishes effective gateway environment, actual API delegation and spoken Discord acceptance from connectivity-only checks.
+
 - Preserve Realtime sessions across the provider's benign inactive-response cancellation, with a content-free counter and fail-closed regressions. Add an opt-in Hermes plugin that starts Talk with `/voice join` and stops the matching session with `/voice leave`, preserving existing tool authority.
 
 - Enabled the local Discord voice relay prototype for all Hermes profiles with one shared session, preserving internal-only Hermes networking. Verified real upstream voice signaling; channel audio acceptance remains pending the operator test.

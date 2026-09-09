@@ -89,6 +89,38 @@ Recreate Hermes after the profile has its own token and port, then start
 `HERMES_AUTOSTART_PROFILES=coach` may be used once to seed missing s6 gateway
 state, but it will not override an existing stopped state.
 
+## Hermes Talk delegation
+
+For a gateway profile using Hermes Talk, set `TALK_API_SERVER_URL` in that
+profile's `.env` to `http://127.0.0.1:<API_SERVER_PORT>`, using its existing
+literal API port. Talk otherwise defaults to port 8642, which belongs to the
+default gateway. A named profile can then receive 401, or reach the wrong
+profile if credentials happen to match.
+
+Leave `TALK_API_SERVER_KEY` unset when the profile already has a working
+`API_SERVER_KEY`; Talk inherits it after Hermes loads the profile's `.env`.
+A plain `docker exec` Python process does not reproduce that loading, so its
+credential result alone is not a gateway diagnosis. Do not copy keys between
+profiles or replace their existing credentials to fix an endpoint mismatch.
+
+Preflight the effective endpoint, authentication and `run_submission` capability
+for every affected gateway before updating any file. Back up the private config,
+preserve all other values, then restart only the changed gateways through the
+normal `sg exec` / `hermes -p <profile> gateway restart` commands. Existing
+profile `.env` changes need no image rebuild or container recreation. Keep
+manual profiles and stopped gateways in their existing state.
+
+Acceptance must include an actual delegated tool operation and its spoken result
+in Discord. The plugin's `hermes talk check` requests no tools and can pass via a
+detached process; inspect `details.lane` and require `api-server` when validating
+this API configuration. If its API availability check fails, the installed Talk
+plugin may use its existing detached Hermes backend. Verify the effective
+profile there too; there is no API-only fallback switch in this plugin revision.
+
+This config enables the plugin's existing background delegation and result
+watchers. It does not add the optional host execution attachment or merge the
+voice transcript into the text channel's conversation history.
+
 ## Manual Profile `.env`
 
 ```env
