@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Enabled the local Discord voice relay prototype for all Hermes profiles with one shared session, preserving internal-only Hermes networking. Verified real upstream voice signaling; channel audio acceptance remains pending the operator test.
+
 - Added an opt-in Discord voice relay proof of concept and a narrow Hermes adapter, with authenticated signaling, provider-derived UDP destinations, bounded opaque packet forwarding and local security/transport tests. Real Discord acceptance remains pending; the relay is not enabled by default.
 
 - Recorded operator-authorized local Realtime activation and successful live synthetic acceptance through the installed Hermes Talk native transport. All profiles have Talk available; real Discord playback and delegation acceptance remain pending.

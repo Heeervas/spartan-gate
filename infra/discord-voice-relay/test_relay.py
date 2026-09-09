@@ -62,6 +62,10 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
    async with ClientSession() as client:
     async with client.get(url) as r:self.assertEqual(r.status,401)
     async with client.get(url,headers={'Authorization':'Bearer '+'x'*48,'X-Discord-Voice-Endpoint':'wss://evil.test/?v=8'}) as r:self.assertEqual(r.status,403)
+    sentinel=object();runner.app['sessions'].add(sentinel)
+    try:
+     async with client.get(url,headers={'Authorization':'Bearer '+'x'*48,'X-Discord-Voice-Endpoint':'wss://c-mad06-test.discord.media:2096/?v=8'}) as r:self.assertEqual(r.status,429)
+    finally:runner.app['sessions'].discard(sentinel)
    self.assertEqual(len(runner.app['sessions']),0)
   finally:await runner.cleanup()
 

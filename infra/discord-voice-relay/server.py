@@ -13,7 +13,7 @@ from aiohttp import ClientSession, ClientTimeout, WSMsgType, TraceConfig, web
 
 MAX_FRAME = 1024 * 1024
 MAX_PACKET = 4096
-MAX_SESSIONS = 4
+MAX_SESSIONS = 1
 
 
 def endpoint(value):

@@ -5,8 +5,12 @@
 Implemented an opt-in signaling/UDP relay and narrow Discord client adapter.
 Local tests cover destination rejection, authenticated signaling, actual
 bidirectional loopback UDP, opaque binary signaling, and cleanup. Hermes
-networking has not changed and the prototype is not deployed. A real Discord
-channel/profile selection and live bidirectional/DAVE proof remain pending.
+networking has not changed. The operator requested activation across all 11
+profiles with one simultaneous session; the relay is now running and healthy
+using the existing Route runtime image. Only Hermes was recreated for its new
+mounts and credential injection. A real upstream WebSocket returned Discord
+Hello and unauthenticated access returns 401. Operator-run channel join and
+live bidirectional/DAVE proof remain pending.
 See `docs/discord-voice-relay.md`.
 
 ## Hermes Talk activated (2026-09-09)

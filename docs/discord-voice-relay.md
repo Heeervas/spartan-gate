@@ -1,8 +1,10 @@
 # Discord voice relay proof of concept
 
-Status: local protocol and bidirectional UDP tests pass. A real Discord join,
-DAVE negotiation, listening/speaking and disconnect still require a selected
-voice channel and profile. This is not production-ready Discord acceptance.
+Status: local protocol and bidirectional UDP tests pass. The local relay and
+all-profile adapter are now enabled for an operator-run test, with one
+simultaneous session. The real upstream voice WebSocket returned Discord Hello;
+a real channel join, DAVE negotiation and listening/speaking are still unverified.
+This is not completed Discord acceptance.
 
 Hermes remains internal-network only. The optional `discord-voice-relay` service
 has external connectivity for UDP and uses the existing HTTP proxy for upstream
@@ -27,7 +29,7 @@ to the provider-supplied destination. The client source is pinned after a valid
 74-byte discovery packet with the expected SSRC. Other source addresses/ports
 are dropped. UDP payloads and binary DAVE signaling remain opaque.
 
-Limits: four sessions, ten-minute lifetime, 1 MiB WebSocket frames, 4096-byte
+Limits: one simultaneous session shared across profiles, ten-minute lifetime, 1 MiB WebSocket frames, 4096-byte
 UDP packets, 256 packets/second per session, bounded datagram write buffering,
 and five-second WebSocket writes. Sessions close when either signaling side
 closes. Prototype resume is deliberately rejected: start a fresh voice join
