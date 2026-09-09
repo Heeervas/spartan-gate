@@ -13,12 +13,21 @@ inert function output, audio continuation, cancellation during output, playback
 truncation, a valid next audio turn, normal client close and zero remaining
 reservations/tickets. No Discord channel or human recording was used.
 
-Measured passing gateway run: 6,003 ms total, first audio 1,237 ms after socket
-exercise began, cancellation terminal response in 165 ms, 189,600 decoded PCM
-bytes and 359,471 received event bytes. Route separately measured mint at 387 ms
-and upstream handshake at 670 ms. First-packet timings are transport arrival
-measurements, not perceived playback latency. These are real upstream results,
-not fixtures or performance percentiles.
+Final committed-code acceptance (`fb856a0`): 6,708 ms total, first audio 1,456 ms
+after socket exercise began, cancellation terminal response in 174 ms, 280,800
+decoded PCM bytes and 508,746 received event bytes. Route separately measured
+mint at 700 ms and upstream handshake at 719 ms, and recorded a normal close.
+All eleven acceptance checks passed with zero tickets and reservations remaining.
+First-packet timings are transport arrival measurements, not perceived playback
+latency. These are real upstream results, not fixtures or performance percentiles.
+
+Final offline validation passed 249 Route tests and 321 script tests (one existing
+skip), plus Compose rendering and the diff/credential-pattern checks. The doctor
+preflight stopped on pre-existing workstation-plugin `/home/hermes-worker/...`
+path matches in its public-path scanner; those files were not changed by this
+integration. Independent review approved the plan and probe corrections; a later
+reviewer turn was unavailable due to its usage limit, so final gateway validation
+consists of the local regression suites, implementation audit and real staging.
 
 This proves current OAuth access for the tested model, voice and protocol. It
 **does not prove free usage, shared Codex quota, permanent entitlement or how the
