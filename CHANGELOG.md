@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Added disabled-by-default subscription-only Realtime mint/WS handlers with independent voice authentication, pinned-account tickets, bounded duplex forwarding, redacted lifecycle diagnostics, private capability observations and shutdown cleanup. Added fake-provider regressions and a loopback-only real-Route acceptance harness; production activation remains separate.
+
 - Added independently scoped Realtime client policy, strict voice-session validation and bounded one-use ticket/account reservation primitives. This slice is offline-tested and does not yet register live endpoints.
 
 - Verified a real subscription OAuth Realtime session with synthetic PCM audio, inert function output and audio continuation. The probe now reports redacted completion reasons and gives the tool response a bounded 1,024-token allowance after an observed 128-token truncation. Quota/billing attribution remains unknown.

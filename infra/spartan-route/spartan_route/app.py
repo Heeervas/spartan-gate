@@ -22,6 +22,7 @@ from aiohttp.web_request import FileField
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
 from .native_responses import annotate_realm, execute_codex_responses, response_event_name, usage_values
+from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realtime_model, register as register_realtime, voice_dispatch
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import (
     json_error,
@@ -1868,6 +1869,7 @@ async def models(request: web.Request) -> web.Response:
             {**auto, "id": "custom-1/clawroute/auto"},
             {**auto, "id": "spartan-route/clawroute/auto"},
             *[model_payload(m) for m in state.config.models.values() if m.enabled],
+            *([realtime_model()] if request.app[RT_KEY].config.enabled else []),
         ],
     })
 
@@ -1875,6 +1877,8 @@ async def models(request: web.Request) -> web.Response:
 async def model_detail(request: web.Request) -> web.Response:
     state = get_state(request)
     model_id = normalize_model_id(request.match_info["model_id"])
+    if model_id == request.app[RT_KEY].config.model and request.app[RT_KEY].config.enabled:
+        return web.json_response(realtime_model())
     if model_id in {"clawroute/auto", "auto"}:
         return web.json_response({"id": request.match_info["model_id"], "object": "model", "owned_by": "spartan-route", "max_context": 1_000_000, "tool_capable": True, "multimodal": True})
     entry = state.config.models.get(model_id)
@@ -2801,6 +2805,8 @@ async def unsupported(request: web.Request) -> web.Response:
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
+    if request.path in VOICE_PATHS:
+        return await voice_dispatch(request, handler)
     state = get_state(request)
     token = state.config.token
     path = request.path
@@ -2826,7 +2832,12 @@ async def startup(app: web.Application) -> None:
     state: SpartanRouteState = app[STATE_KEY]
     state.session = ClientSession(trust_env=True)
     state.codex = CodexRouter(state.session, state.telemetry)
+    await app[RT_KEY].start(state.codex)
     state.queue.start()
+
+
+async def shutdown_realtime(app: web.Application) -> None:
+    await app[RT_KEY].shutdown()
 
 
 async def cleanup(app: web.Application) -> None:
@@ -2860,7 +2871,9 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
         ),
         routing_policy=build_routing_policy_snapshot(config, telemetry),
     )
+    register_realtime(app, RealtimeConfig.from_env(config.token))
     app.on_startup.append(startup)
+    app.on_shutdown.append(shutdown_realtime)
     app.on_cleanup.append(cleanup)
     app.router.add_get("/health", health)
     app.router.add_get("/stats", stats)
