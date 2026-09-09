@@ -268,3 +268,58 @@ Hermes/Camofox/Route checkpoint commits preserve unrelated work. Never roll back
 or copy an OAuth refresh grant as part of source rollback: the old generation may
 already be invalid. Real Discord playback, interruption timing and delegation
 acceptance belong to the Hermes implementer and require a real approved call.
+
+## Optional all-profile Hermes activation
+
+`scripts/hermes_talk_profiles.py` prepares the existing root and named Hermes
+profiles for a separately reviewed `hermes-talk` plugin. This helper is opt-in;
+it is not mounted or activated by the public baseline. An operator can mount it
+read-only and invoke it from an s6 `cont-init.d` hook after runtime ownership
+setup and before profile reconciliation. It needs the Hermes Python environment
+with PyYAML and must run as the configured numeric Hermes runtime UID/GID.
+No Hermes image rebuild is needed for this arrangement.
+
+The reviewed plugin directory is mounted read-only at
+`/opt/data/plugins/hermes-talk`. On startup the helper enables that plugin in
+existing profile configurations and creates narrow links from named profiles to
+the shared directory. New profiles are included on their next container start.
+It preflights every profile before writing, rejects conflicting installations,
+explicit disablement, symlinked configuration and malformed policy, preserves
+other plugin entries, and rolls back completed changes if a write fails.
+`--check` validates without changing profiles. YAML serialization can normalize
+formatting in changed configuration files.
+
+For activation, the container receives `SPARTAN_HERMES_TALK_ENABLED=true` and:
+
+```dotenv
+TALK_OPENAI_TRANSPORT=spartan
+TALK_SPARTAN_BASE_URL=http://spartan-route:18790
+TALK_SPARTAN_TRUSTED_HTTP=true
+TALK_PROVIDER=openai
+TALK_MODEL=gpt-realtime-2.1
+TALK_VOICE=cedar
+TALK_VOICE_MODE=native
+```
+
+Supply only `TALK_SPARTAN_TOKEN` through an ignored, owner-only Compose
+`env_file`. Compose injects it into the container environment and s6's existing
+`with-contenv` gateway launchers inherit it across profiles. This mechanism does
+not require a token file inside Hermes, an interactive shell `source`, or a
+credential in command arguments. Docker administrators and processes permitted
+to inspect container environments remain trusted. Do not print rendered Compose
+configuration or process environments. Set `S6_BEHAVIOUR_IF_STAGE2_FAIL=2` so a
+failed provisioning hook stops startup.
+
+Sharing one voice-client credential makes the current one-session-per-client
+limit shared across all profiles. It does not permit concurrent calls from each
+profile, create Discord integrations, or grant channel permissions. The gateway
+still pins the operator-selected account and performs no provider fallback.
+
+For rollback, set `SPARTAN_HERMES_TALK_ENABLED=false` and
+`SPARTAN_ROUTE_REALTIME_ENABLED=false`, then recreate the affected services. The
+boot helper removes Talk from enabled plugin lists and removes its managed named
+profile links. Keep the transport set to `spartan`; rollback does not authorize
+switching to direct OpenAI. No OAuth grant is copied or restored. A host-specific
+activation bundle should retain the previous private Compose configuration,
+reviewed source revision and original Route image identity separately from
+public source control.

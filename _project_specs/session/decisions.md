@@ -102,3 +102,18 @@
   explicit activation. Isolated loopback staging may reuse the existing local
   credential in a voice-only test server without generating credentials. It
   does not change the production requirement for an independent voice key.
+
+## 2026-09-09 — All-profile Talk activation preparation
+
+- The operator requested Talk availability across Hermes profiles and will own
+  the later Route-only rebuild and whole-stack recreation. Preparation must not
+  restart the running stack or rebuild Hermes.
+- Share a dedicated voice credential through private Compose env-file injection
+  and existing s6 environment inheritance. Do not copy provider OAuth or use the
+  global text token. The current single-client concurrency limit remains shared.
+- Mount the reviewed Talk snapshot read-only and enable it with a numeric-user
+  boot helper before profile gateway reconciliation. Apply to existing profiles
+  at startup; newly created profiles receive it at their next container start.
+- Rollback disables Talk plugin enablement and Route Realtime admission while
+  preserving the Spartan transport setting. No direct-provider fallback is
+  implied. Live Hermes and Discord acceptance remains a separate next step.
