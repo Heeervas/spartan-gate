@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Added an offline-by-default, explicitly authorized single-slot Realtime feasibility probe with synthetic PCM/tool checks, existing Route OAuth custody, sanitized diagnostics and a reviewed implementation/runbook. Live subscription access remains unverified; this batch does not enable voice endpoints.
+
 - Checkpointed existing Spartan Route GPT-6 Astra catalog/reasoning support and batched telemetry-retention deletes. The full Route regression suite passes; no production service was restarted.
 
 - Checkpointed existing Camofox 1.14 adapter, addon protection, persistence and operator changes. Local browser/script suites and Compose rendering pass; the pristine upstream patch-chain fixture and live browser acceptance were not run, so this checkpoint is not deployment validation.
