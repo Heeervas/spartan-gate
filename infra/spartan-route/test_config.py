@@ -19,6 +19,16 @@ GPT56_MODELS = {
 
 
 class ConfigTests(unittest.TestCase):
+    def test_astra_is_selectable_without_changing_defaults(self) -> None:
+        config = load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing"})
+        astra = config.models["codex/gpt-6-astra"]
+        self.assertEqual(astra.provider, "codex")
+        self.assertEqual(astra.max_context, 872_000)
+        self.assertTrue(astra.tool_capable)
+        self.assertTrue(astra.multimodal)
+        self.assertNotEqual(config.baseline_model, astra.id)
+        self.assertFalse(any(astra.id in tier.values() for tier in config.tier_models.values()))
+
     def test_auto_routing_tiers_match_the_classifier_surface(self) -> None:
         self.assertEqual(AUTO_ROUTING_TIERS, ("heartbeat", "simple", "moderate", "complex"))
 

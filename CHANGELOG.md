@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Checkpointed existing Spartan Route GPT-6 Astra catalog/reasoning support and batched telemetry-retention deletes. The full Route regression suite passes; no production service was restarted.
+
 - Checkpointed existing Camofox 1.14 adapter, addon protection, persistence and operator changes. Local browser/script suites and Compose rendering pass; the pristine upstream patch-chain fixture and live browser acceptance were not run, so this checkpoint is not deployment validation.
 
 - Checkpointed existing Hermes main compatibility updates and runtime-overlay import precedence before Realtime work. Local Python and JavaScript patch suites pass; this checkpoint does not deploy or rebuild Hermes.

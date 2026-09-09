@@ -411,6 +411,64 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         for model_id in ("codex/gpt-5.6", "codex/gpt-5.6-sol", "codex/gpt-5.6-terra", "codex/gpt-5.6-luna"):
             self.assertIn(model_id, model_ids)
 
+    async def test_astra_discovery_exposes_subscription_metadata(self) -> None:
+        from spartan_route.config import load_config
+
+        model_id = "codex/gpt-6-astra"
+        self.app[STATE_KEY].config.models.update(load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing"}).models)
+        response = await self.client.get("/v1/models")
+        self.assertEqual(response.status, 200)
+        entries = {entry["id"]: entry for entry in (await response.json())["data"]}
+        self.assertIn(model_id, entries)
+        astra = entries[model_id]
+        for field in ("max_context", "context_length", "max_model_len"):
+            self.assertEqual(astra[field], 872_000)
+        response = await self.client.get(f"/v1/models/{model_id}")
+        self.assertEqual(response.status, 200)
+        for entry in (astra, await response.json()):
+            self.assertEqual(entry["owned_by"], "codex")
+            self.assertTrue(entry["tool_capable"])
+            self.assertTrue(entry["multimodal"])
+            self.assertEqual(entry["max_context"], 872_000)
+
+    async def test_astra_reasoning_for_both_apis_and_stream_modes(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        auth = {"Authorization": "Bearer secret"}
+        for stream in (False, True):
+            for endpoint, input_body in (
+                ("/v1/chat/completions", {"messages": [{"role": "user", "content": "solve"}]}),
+                ("/v1/responses", {"input": "solve"}),
+            ):
+                for effort in ("low", "medium", "high", "xhigh", "max", "ultra"):
+                    with self.subTest(endpoint=endpoint, stream=stream, effort=effort):
+                        fake_codex.calls.clear()
+                        with patch("spartan_route.app.execute_codex_responses", return_value=CodexCallResult(
+                            status=200, body={"id": "resp_test", "object": "response", "status": "completed", "output": []}, completed=True,
+                        )) as native:
+                            response = await self.client.post(endpoint, headers=auth, json={
+                                "model": "codex/gpt-6-astra", "stream": stream, **input_body,
+                                **({"reasoning": {"effort": effort}} if endpoint.endswith("responses") else {"reasoning_effort": effort}),
+                            })
+                        await response.read()
+                        if effort == "ultra":
+                            self.assertEqual(response.status, 400)
+                            self.assertEqual((await response.json())["error"]["code"], "codex_ultra_requires_app_server")
+                            self.assertEqual(fake_codex.calls, [])
+                            native.assert_not_called()
+                        else:
+                            self.assertEqual(response.status, 200)
+                            if endpoint.endswith("responses"):
+                                native.assert_called_once()
+                                self.assertEqual(native.call_args.args[1]["reasoning"]["effort"], effort)
+                                self.assertEqual(native.call_args.args[2:4], ("codex/gpt-6-astra", stream))
+                            else:
+                                self.assertEqual(len(fake_codex.calls), 1)
+                                self.assertEqual(fake_codex.calls[0]["model_id"], "codex/gpt-6-astra")
+                                self.assertEqual(fake_codex.calls[0]["wants_stream"], stream)
+                                self.assertEqual(fake_codex.calls[0]["request"]["reasoning_effort"], effort)
+
     async def test_api_requires_bearer_token(self) -> None:
         missing = await self.client.get("/api/routing/live")
         self.assertEqual(missing.status, 401)

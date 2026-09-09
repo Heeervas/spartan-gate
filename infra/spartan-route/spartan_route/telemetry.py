@@ -40,6 +40,7 @@ ROUTING_DAILY_ROLLUP_COLUMNS = {
 DEFAULT_ROUTING_ROW_CAP = 50_000
 DEFAULT_QUEUE_CAPACITY = 1024
 DEFAULT_RETENTION_BATCH_SIZE = 256
+ROUTING_RETENTION_DELETE_BATCH_SIZE = 256
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
@@ -449,6 +450,41 @@ class TelemetryStore:
             )
         return True
 
+    def _delete_routing_rows_in_batches_unlocked(
+        self,
+        *,
+        predicate: str,
+        parameters: tuple[Any, ...],
+    ) -> int:
+        last_seen_id = 0
+        deleted = 0
+
+        while True:
+            rows = self._conn.execute(
+                f"""
+                SELECT id
+                FROM routing_log
+                WHERE id > ?
+                  AND ({predicate})
+                ORDER BY id
+                LIMIT ?
+                """,
+                (last_seen_id, *parameters, ROUTING_RETENTION_DELETE_BATCH_SIZE),
+            ).fetchall()
+            if not rows:
+                break
+
+            ids = [int(row["id"]) for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+            cursor = self._conn.execute(
+                f"DELETE FROM routing_log WHERE id IN ({placeholders})",
+                ids,
+            )
+            deleted += max(0, int(cursor.rowcount))
+            last_seen_id = ids[-1]
+
+        return deleted
+
     def enforce_routing_retention(
         self,
         *,
@@ -469,15 +505,13 @@ class TelemetryStore:
                 rows_before = int(
                     self._conn.execute("SELECT count(*) FROM routing_log").fetchone()[0]
                 )
-                age_cursor = self._conn.execute(
-                    """
-                    DELETE FROM routing_log
-                    WHERE julianday(timestamp) IS NULL
-                       OR julianday(timestamp) < julianday(?)
-                    """,
-                    (cutoff_text,),
+                age_pruned = self._delete_routing_rows_in_batches_unlocked(
+                    predicate=(
+                        "julianday(timestamp) IS NULL OR "
+                        "julianday(timestamp) < julianday(?)"
+                    ),
+                    parameters=(cutoff_text,),
                 )
-                age_pruned = max(0, int(age_cursor.rowcount))
 
                 threshold = self._conn.execute(
                     """
@@ -490,11 +524,10 @@ class TelemetryStore:
                 ).fetchone()
                 row_cap_pruned = 0
                 if threshold is not None:
-                    cap_cursor = self._conn.execute(
-                        "DELETE FROM routing_log WHERE id < ?",
-                        (int(threshold["id"]),),
+                    row_cap_pruned = self._delete_routing_rows_in_batches_unlocked(
+                        predicate="id < ?",
+                        parameters=(int(threshold["id"]),),
                     )
-                    row_cap_pruned = max(0, int(cap_cursor.rowcount))
 
                 rows_after = int(
                     self._conn.execute("SELECT count(*) FROM routing_log").fetchone()[0]

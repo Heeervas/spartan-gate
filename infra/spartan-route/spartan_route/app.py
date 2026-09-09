@@ -687,9 +687,13 @@ def codex_reasoning_validation_error(body: Mapping[str, Any], model_id: str) -> 
             "Ultra requires the stateful Codex app-server bridge; "
             "Spartan Route will not silently downgrade it to max."
         )
-    elif effort == "max" and "gpt-5.6" not in model_id.lower():
+    elif (
+        effort == "max"
+        and "gpt-5.6" not in model_id.lower()
+        and model_id.lower().removeprefix("codex/") != "gpt-6-astra"
+    ):
         code = CODEX_MAX_REQUIRES_GPT56_CODE
-        message = "Codex reasoning effort max is supported only for GPT-5.6 models."
+        message = "Codex reasoning effort max is supported only for GPT-5.6 models and GPT-6 Astra."
     else:
         return None
     return ExecutionResult(

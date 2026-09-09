@@ -510,6 +510,9 @@ class TelemetryTests(unittest.TestCase):
             initial = TelemetryStore(db_path)
             initial.close()
 
+            retained_at = datetime.now(timezone.utc).replace(microsecond=0)
+            retained_timestamp = retained_at.isoformat().replace("+00:00", "Z")
+            retained_day = retained_at.date().isoformat()
             conn = sqlite3.connect(db_path)
             try:
                 conn.execute(
@@ -522,7 +525,7 @@ class TelemetryTests(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        "2026-07-19T08:00:00Z",
+                        retained_timestamp,
                         "clawroute/auto",
                         "codex/gpt-5.5",
                         "codex/gpt-5.5",
@@ -564,7 +567,7 @@ class TelemetryTests(unittest.TestCase):
                 raw = dict(migrated._conn.execute(
                     "SELECT * FROM routing_daily_rollups"
                 ).fetchone())
-                self.assertEqual(raw["day"], "2026-07-19")
+                self.assertEqual(raw["day"], retained_day)
                 self.assertEqual(raw["requests"], 1)
                 self.assertEqual(raw["usage_requests"], 1)
                 self.assertEqual(raw["usage_input_tokens"], 1200)
@@ -896,6 +899,37 @@ class TelemetryTests(unittest.TestCase):
 
 
 class TelemetryRetentionTests(unittest.TestCase):
+    def test_age_pruning_deletes_in_bounded_statements(self) -> None:
+        store = TelemetryStore(":memory:", retention_days=30, routing_row_cap=10_000)
+        try:
+            for index in range(600):
+                store.log_routing(
+                    routing_entry("2026-05-01T00:00:00Z", f"old-{index}")
+                )
+            store.log_routing(routing_entry("2026-07-01T00:00:00Z", "retained"))
+
+            traced: list[str] = []
+            store._conn.set_trace_callback(traced.append)
+            report = store.enforce_routing_retention(
+                now=datetime(2026, 7, 18, tzinfo=timezone.utc),
+                force_rebuild=True,
+            )
+            store._conn.set_trace_callback(None)
+
+            delete_statements = [
+                statement
+                for statement in traced
+                if statement.lstrip().upper().startswith("DELETE FROM ROUTING_LOG")
+            ]
+            self.assertGreater(len(delete_statements), 1)
+            self.assertTrue(
+                all("WHERE ID IN" in statement.upper() for statement in delete_statements)
+            )
+            self.assertEqual(report["agePrunedRows"], 600)
+            self.assertEqual(report["rowsAfter"], 1)
+        finally:
+            store.close()
+
     def test_oldest_retained_timestamp_preserves_timezone_order_without_sorting(self) -> None:
         store = TelemetryStore(":memory:", retention_days=30, routing_row_cap=10)
         try:

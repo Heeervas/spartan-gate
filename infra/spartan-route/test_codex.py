@@ -1414,6 +1414,20 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(normalize_tool_choice(request["tool_choice"]), {"type": "function", "name": "lookup"})
         self.assertEqual(body["tool_choice"], {"type": "function", "name": "lookup"})
 
+    def test_astra_builders_preserve_model_and_max_reasoning(self) -> None:
+        chat = build_codex_request_body(
+            {"messages": [{"role": "user", "content": "solve"}], "reasoning_effort": "max"},
+            "gpt-6-astra", None,
+        )
+        native = build_codex_responses_body(
+            {"input": "solve", "reasoning": {"effort": "max"}}, "gpt-6-astra", None,
+        )
+        for body in (chat, native):
+            self.assertEqual(body["model"], "gpt-6-astra")
+            self.assertEqual(body["reasoning"]["effort"], "max")
+            self.assertFalse(body["store"])
+        self.assertEqual(native["reasoning"]["context"], "all_turns")
+
     def test_gpt56_max_is_sent_as_exact_reasoning_effort(self) -> None:
         body = build_codex_request_body(
             {
@@ -1879,23 +1893,19 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(result.error, "server_error")
         self.assertGreater(slot.transient_until, time.time())
 
-    def test_execute_chat_strips_codex_prefix_for_gpt56_variant(self) -> None:
-        router = CaptureModelNameRouter()
-
-        result = asyncio_run(router.execute_chat(
-            {"messages": [{"role": "user", "content": "hi"}]},
-            "codex/gpt-5.6-luna",
-            False,
-            "session",
-            None,
-            "request",
-        ))
-
-        self.assertEqual(result.status, 200)
-        self.assertIsNotNone(router.captured)
-        self.assertEqual(router.captured["model_id"], "codex/gpt-5.6-luna")
-        self.assertEqual(router.captured["model_name"], "gpt-5.6-luna")
-        self.assertEqual(router.captured["body"]["model"], "gpt-5.6-luna")
+    def test_execute_chat_strips_codex_prefix_for_selectable_models(self) -> None:
+        for model in ("gpt-5.6-luna", "gpt-6-astra"):
+            with self.subTest(model=model):
+                router = CaptureModelNameRouter()
+                result = asyncio_run(router.execute_chat(
+                    {"messages": [{"role": "user", "content": "hi"}]},
+                    f"codex/{model}", False, "session", None, "request",
+                ))
+                self.assertEqual(result.status, 200)
+                self.assertIsNotNone(router.captured)
+                self.assertEqual(router.captured["model_id"], f"codex/{model}")
+                self.assertEqual(router.captured["model_name"], model)
+                self.assertEqual(router.captured["body"]["model"], model)
 
     def test_single_chat_call_uses_header_timeout_without_body_total_timeout(self) -> None:
         response = FakeResponse([
@@ -3580,6 +3590,38 @@ class NativeResponsesTests(unittest.TestCase):
         }])
         self.assertEqual(string_body["reasoning"], {"effort": "max", "context": "all_turns"})
         self.assertNotIn("max_output_tokens", string_body)
+
+    def test_astra_native_transport_preserves_slug_and_max_for_both_stream_modes(self) -> None:
+        from spartan_route.native_responses import execute_codex_responses
+
+        terminal = {"type": "response.completed", "response": {
+            "id": "resp_astra", "object": "response", "status": "completed",
+            "output": [{"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "done"},
+            ]}],
+        }}
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                router = self.router([FakeResponse(events=[("response.completed", terminal)])])
+
+                async def run():
+                    result = await execute_codex_responses(
+                        router, {"input": "hello", "reasoning": {"effort": "max"}},
+                        "codex/gpt-6-astra", stream, "astra-session", None,
+                    )
+                    if stream:
+                        self.assertIsNotNone(result.stream)
+                        chunks = [chunk async for chunk in result.stream]
+                        self.assertIn(b"response.completed", b"".join(chunks))
+                    else:
+                        self.assertEqual(result.body["output"][0]["content"][0]["text"], "done")
+                    self.assertEqual(result.status, 200)
+
+                asyncio_run(run())
+                body = router.session.calls[0]["json"]
+                self.assertEqual(body["model"], "gpt-6-astra")
+                self.assertEqual(body["reasoning"], {"effort": "max", "context": "all_turns"})
+                self.assertFalse(body["store"])
 
     def test_nonstream_preserves_opaque_output_and_reasoning_usage_is_subset(self) -> None:
         from spartan_route.native_responses import execute_codex_responses

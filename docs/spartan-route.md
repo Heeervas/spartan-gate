@@ -84,13 +84,20 @@ Kept in v1:
   container environment key. References to unrelated keys remain literal and
   are never expanded.
 - `clawroute/auto`, `custom-1/clawroute/auto`, and `spartan-route/clawroute/auto` model aliases for Hermes compatibility.
+- GPT-6 Astra is selectable as `codex/gpt-6-astra` through the existing
+  Spartan Route `openai-api` provider in Hermes. Use `api_mode: codex_responses`
+  for native Responses sessions. It supports tools and image input, with an
+  advertised maximum context of 872,000 tokens from the Codex Subscription
+  catalog (distinct from the public API context limit). Adding it does not
+  change active Hermes profiles or auto-routing defaults.
 - Selectable Codex GPT-5.6 catalog entries for manual Hermes sessions:
   `codex/gpt-5.6`, `codex/gpt-5.6-sol`, `codex/gpt-5.6-terra`, and
   `codex/gpt-5.6-luna`. The Codex provider profile still defaults to
   `codex/gpt-5.5` until these variants are promoted explicitly.
-- `reasoning_effort=max` is accepted only for GPT-5.6 variants and is sent to
+- `reasoning_effort=max` is accepted for GPT-5.6 variants and GPT-6 Astra and is sent to
   Codex exactly as `reasoning.effort=max`. Other Codex model families receive
-  `400 codex_max_requires_gpt_5_6` before slot selection.
+  `400 codex_max_requires_gpt_5_6` before slot selection; the legacy error code
+  is retained for compatibility.
 - `reasoning_effort=ultra` is never silently downgraded to `max`. Chat
   Completions and Responses, streaming or non-streaming, return
   `400 codex_ultra_requires_app_server`, log the attempt, and do not select a
