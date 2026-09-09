@@ -46,7 +46,7 @@ def describe() -> dict[str, Any]:
     return {"mode": "offline", "authorization_required": True, "hermes_talk_revision": REVISION,
             "model_candidate": MODEL, "voice_candidate": VOICE, "subscription_access": "unverified",
             "operations": {"mint": 1, "websocket": 1, "response_creates": 3,
-                           "synthetic_audio_ms": 250, "max_output_tokens_per_response": 128},
+                           "synthetic_audio_ms": 250, "response_output_token_caps": [128, 1024, 128]},
             "budget_seconds": BUDGET_SECONDS, "quota_and_cost_attribution": "unknown",
             "refresh": "existing Route manager, identical paths/store/UID only",
             "fallback": "none"}
@@ -236,6 +236,11 @@ class Wire:
                 response = event.get("response", {})
                 if (not response_id or response.get("id") != response_id
                         or response.get("status") != "completed"):
+                    status = response.get("status")
+                    self.report["response_status"] = status if status in {"completed", "cancelled", "failed", "incomplete"} else "unknown"
+                    details = response.get("status_details") or {}
+                    reason = details.get("reason") if isinstance(details, dict) else None
+                    self.report["response_incomplete_reason"] = reason if reason in {"max_output_tokens", "content_filter", "turn_detected", "client_cancelled"} else "unknown"
                     raise ProbeFailure("response_not_completed")
                 if tool and call_id is None:
                     raise ProbeFailure("tool_call_not_observed")
@@ -294,7 +299,7 @@ class Wire:
         self.report["checks"].append("audio_round_trip_completed")
         self.report["stage"] = "inert_tool"
         await self.ws.send_json({"type": "response.create", "response": {
-            "tool_choice": {"type": "function", "name": TOOL["name"]}, "max_output_tokens": 128}})
+            "tool_choice": {"type": "function", "name": TOOL["name"]}, "max_output_tokens": 1024}})
         call_id = await self.response(tool=True)
         # Fixed output only; no dispatch, shell, external tool or delegation runs.
         await self.ws.send_json({"type": "conversation.item.create", "item": {

@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Verified a real subscription OAuth Realtime session with synthetic PCM audio, inert function output and audio continuation. The probe now reports redacted completion reasons and gives the tool response a bounded 1,024-token allowance after an observed 128-token truncation. Quota/billing attribution remains unknown.
+
 - Corrected the Realtime probe to explicitly reuse Route's HTTPS proxy for WSS and fail closed without it. The first authorized OAuth mint returned 200, but its WebSocket connection failed before audio/tools; recorded that partial evidence without claiming voice or subscription billing support.
 
 - Added an offline-by-default, explicitly authorized single-slot Realtime feasibility probe with synthetic PCM/tool checks, existing Route OAuth custody, sanitized diagnostics and a reviewed implementation/runbook. Live subscription access remains unverified; this batch does not enable voice endpoints.

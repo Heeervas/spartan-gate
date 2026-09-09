@@ -4,10 +4,10 @@
 
 The first implementation batch supplies an offline-by-default feasibility probe
 and its tests. **Route does not yet expose Realtime mint or WebSocket routes.**
-One authorized subscription OAuth probe obtained a Realtime client secret, then
-failed during the WebSocket handshake. Voice round-trip and live tools remain
-unverified. The full transport implementation remains gated on a successful
-real probe; the original single-mint allowance has been consumed. No API-key fallback is permitted.
+The authorized subscription OAuth feasibility probe now passes mint, WebSocket,
+session configuration, bidirectional synthetic audio, inert tool continuation and
+clean close. The evidence gate for local gateway implementation is satisfied.
+Subscription quota and billing attribution remain unknown. No API-key fallback is permitted.
 
 The independently reviewed plan preserves the original objective: Hermes owns
 Discord, playback, memory, permissions, tool execution and delegation; Route
@@ -40,8 +40,8 @@ python3 -m unittest discover -s scripts -p 'test_spartan_route_realtime_probe.py
 
 Before live execution, obtain explicit authorization naming **one existing
 zero-based slot reference**, one mint and one WebSocket session. State that the
-probe sends 250 ms of synthetic PCM audio, requests up to three responses capped
-at 128 output tokens each, returns one fixed inert function result, and may use
+probe sends 250 ms of synthetic PCM audio, requests three responses with output-token caps
+of 128, 1,024 (inert tool), and 128, returns one fixed inert function result, and may use
 Realtime audio/transcription quota with unknown subscription attribution. OAuth
 refresh is permitted only through the existing Route manager and lock domain.
 A CLI flag records that approval; it is not itself user authorization.
@@ -149,10 +149,27 @@ cover that selection and denial when no permitted proxy exists. No production
 restart or network-policy change was made.
 
 The original ephemeral secret was not persisted and is no longer available.
-A new real attempt therefore needs another mint under applicable authorization;
-no automatic retry or alternative account was attempted. The successful mint
+Further attempts use the same authorized account under the operator's subsequent
+permission for necessary bounded retries; no alternative account is used. The successful mint
 proves that this OAuth credential was accepted for secret issuance at that time,
 not that a working speech session or subscription coverage has been demonstrated.
+
+## Successful feasibility gate
+
+After operator authorization for necessary bounded retries on the same account,
+the corrected WSS transport opened and returned actual PCM audio. The inert-tool
+response initially ended `incomplete` with `max_output_tokens`. Raising only that
+response cap from 128 to 1,024 produced a complete passing sequence.
+
+The passing probe reported mint HTTP 200 in 492 ms, WebSocket handshake in 921 ms,
+first audio 1,204 ms after the socket exercise began, 134,400 decoded PCM bytes,
+201,973 received event bytes and 5,809 ms total elapsed. All nine checks passed,
+including tool output, audio continuation and normal close. These are measured
+provider interactions, not fixture results. No Discord/playback test occurred.
+
+This establishes current OAuth-based access for the tested model and voice only.
+It does not establish free usage, shared Codex quota, future entitlement or
+subscription billing treatment.
 
 ## Reviewed implementation sequence after a successful probe
 
