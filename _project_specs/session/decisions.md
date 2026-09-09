@@ -85,3 +85,20 @@
   to the Hermes image.
 - Automatic private migration sets `api_mode: codex_responses` only for
   explicit `codex/*` models. Auto aliases do not prove a subscription realm.
+
+
+## 2026-09-09
+
+- Realtime uses native aiohttp mint/ticket plus WebSocket relay in Spartan Route.
+  Hermes retains playback, tool execution, permission checks and delegation.
+- OAuth custody and refresh locks stay in the existing Codex manager. Realtime
+  reserves a configured authorized account per session and never falls back to
+  API keys or another account. A successful live voice/tool probe is required
+  before implementation is considered supported; billing remains unknown.
+- Voice credentials are independent of the legacy global text token; bearer-only
+  tickets prove possession, not the identity of someone holding a stolen ticket.
+  Public discovery exposes protocol capability, not private account observations.
+- Realtime remains disabled in production pending credential provisioning and
+  explicit activation. Isolated loopback staging may reuse the existing local
+  credential in a voice-only test server without generating credentials. It
+  does not change the production requirement for an independent voice key.

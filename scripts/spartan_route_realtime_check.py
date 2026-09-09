@@ -137,6 +137,11 @@ async def inside(slot_index, report):
                 address = runner.addresses[0]
                 await check('http://127.0.0.1:' + str(address[1]), token, report)
             finally:
+                # Allow the normal close handler to finish before shutdown;
+                # otherwise staging itself would cancel a clean close in flight.
+                deadline = time.monotonic() + 2
+                while service.pool.entries and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
                 await service.shutdown()
                 await runner.cleanup()
                 report['reservations_remaining'] = len(service.pool.entries)

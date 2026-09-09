@@ -1,263 +1,261 @@
-# Subscription-only Realtime: gated implementation and probe
+# Subscription-only Realtime for Hermes Talk
 
-## Current status
+## Status and evidence
 
-The first implementation batch supplies an offline-by-default feasibility probe
-and its tests. **Route does not yet expose Realtime mint or WebSocket routes.**
-The authorized subscription OAuth feasibility probe now passes mint, WebSocket,
-session configuration, bidirectional synthetic audio, inert tool continuation and
-clean close. The evidence gate for local gateway implementation is satisfied.
-Subscription quota and billing attribution remain unknown. No API-key fallback is permitted.
+Spartan Route now implements native HTTP mint and WebSocket relay for Hermes
+Talk. The feature is **disabled by default and has not been enabled in
+production**. Hermes retains Discord, playback, memory, permissions, tool
+execution and delegation. Route only transports provider events and owns OAuth.
 
-The independently reviewed plan preserves the original objective: Hermes owns
-Discord, playback, memory, permissions, tool execution and delegation; Route
-owns provider transport and centralized OAuth custody. No Hermes client edits,
-Discord access, production restart or deployment belong to this batch.
+A real authorized account passed the complete isolated Route acceptance sequence:
+local invalid auth denied, mint, session configuration, synthetic PCM audio,
+inert function output, audio continuation, cancellation during output, playback
+truncation, a valid next audio turn, normal client close and zero remaining
+reservations/tickets. No Discord channel or human recording was used.
 
-Pinned client source: [hermes-talk at d23a8b2](https://github.com/TheSmokeDev/hermes-talk/tree/d23a8b257c6d6dcccb0c8af49884862adac7d17a).
-Its `main` matched the full revision at inspection. `talk_auth.py` supports
-Codex OAuth reuse; that is implementation evidence, not account entitlement.
-The pinned wire uses client-secret mint followed by a bearer-authenticated
-WebSocket. It requests `gpt-realtime-2.1`, voice `cedar`, and input transcription
-with `gpt-4o-mini-transcribe`. These are probe candidates, not advertised Route
-capabilities.
+Measured passing gateway run: 6,003 ms total, first audio 1,237 ms after socket
+exercise began, cancellation terminal response in 165 ms, 189,600 decoded PCM
+bytes and 359,471 received event bytes. Route separately measured mint at 387 ms
+and upstream handshake at 670 ms. First-packet timings are transport arrival
+measurements, not perceived playback latency. These are real upstream results,
+not fixtures or performance percentiles.
 
-Official references confirm the [model exists](https://developers.openai.com/api/docs/models/gpt-realtime-2.1)
-and describe [WebSocket transport](https://developers.openai.com/api/docs/guides/realtime-websocket)
-and [client-secret creation](https://developers.openai.com/api/reference/resources/realtime/subresources/client_secrets/methods/create).
-They do not establish that an existing ChatGPT/Codex subscription grants this
-account access, shares Codex limits, or covers this usage without additional
-billing. Successful authentication alone would not resolve those questions.
+This proves current OAuth access for the tested model, voice and protocol. It
+**does not prove free usage, shared Codex quota, permanent entitlement or how the
+subscription is billed**. Diagnostics report billing as `unknown`; usage counts
+are included only when supplied by upstream. No API-key/provider/account fallback
+exists in the Realtime path, even when API keys are present in the environment.
 
-## Prepare and authorize the probe
+The pinned Hermes Talk revision is
+[`d23a8b257c6d6dcccb0c8af49884862adac7d17a`](https://github.com/TheSmokeDev/hermes-talk/tree/d23a8b257c6d6dcccb0c8af49884862adac7d17a);
+its main matched at inspection. Its OAuth-reuse implementation is not itself
+entitlement evidence. Official references describe the
+[model](https://developers.openai.com/api/docs/models/gpt-realtime-2.1),
+[WebSocket protocol](https://developers.openai.com/api/docs/guides/realtime-websocket)
+and [client secrets](https://developers.openai.com/api/reference/resources/realtime/subresources/client_secrets/methods/create).
+The verified voice is `cedar`, using `gpt-realtime-2.1` and PCM16 mono at 24 kHz;
+input transcription with `gpt-4o-mini-transcribe` was also acknowledged.
 
-Read the no-network operation summary:
+## HTTP and WebSocket contract
+
+Internal trusted-network base: `http://spartan-route:18790`.
+
+| Endpoint | Authentication | Behavior |
+| --- | --- | --- |
+| `POST /v1/realtime/client_secrets` | Dedicated voice-client Bearer credential | Accepts `{"session": ...}`; returns `{"value": "<route-ticket>", "expires_at": <Unix seconds>}` |
+| `GET /v1/realtime?model=gpt-realtime-2.1` | `Authorization: Bearer <route-ticket>` plus WS upgrade | Opens a pinned upstream connection and relays duplex JSON events |
+| `GET /api/realtime/capabilities` | Dedicated voice-client Bearer credential | Protocol, configured limits and this client's timestamped observed stage; no live probe |
+| `GET /v1/models` and model detail | Existing discovery behavior | Additive public protocol/model capabilities when enabled; never account observations |
+
+Responses containing tickets or observations use `Cache-Control: no-store`.
+The public model catalog is not an entitlement check. Capabilities may initially
+have `observation: null`; a historical observation is not a future guarantee.
+
+Mint requires `session.type=realtime` and the explicit verified model ID. The
+voice defaults to `cedar`; output defaults to audio and 4,096 maximum output
+tokens. Session/response overrides must stay within the verified model, voice,
+PCM format and function-only tool policy. Textual models, auto routing, hosted
+prompts, provider-hosted tools, other transcription models, other voices and
+text-only output are rejected. Hermes can supply function definitions,
+instructions and function results, and can select manual commit or server VAD.
+
+Every ticket is a random 256-bit bearer capability; only its digest is indexed.
+It is bound server-side to the issuing client, model, actual account identity and
+session reservation. It expires within 30 seconds and never later than the
+upstream secret. Expiration uses a monotonic deadline internally and Unix seconds
+on the wire. Redemption is atomic and single use; a new connection needs a new
+mint. The upstream secret remains in Route memory and is never returned to Hermes.
+
+A ticket proves possession, not the presenter's identity: possession of a stolen
+ticket could redeem it. No caller can override its owner/account/model. Use the
+trusted internal network or correctly configured TLS; do not put credentials in
+query strings or share tickets between sessions.
+
+Reservations begin before OAuth/mint, count against bounded admission and pin
+one configured slot. OAuth uses the same `CodexRouter` instance as textual Route
+traffic, including existing refresh locks and managed storage. Disabled slots,
+cooldowns, identity changes and missing auth fail closed. No second pool, copied
+auth file or competing refresh algorithm is introduced. Upstream opens only at
+redemption, before downstream upgrade. Expiration, rejection, disconnect and
+shutdown release reservations; restarts invalidate tickets. Never replay old
+audio or tool output into a replacement session.
+
+Supported client events are `session.update`, `input_audio_buffer.append`,
+`input_audio_buffer.commit`, `input_audio_buffer.clear`, `response.create`,
+`response.cancel`, `conversation.item.create`, `conversation.item.delete` and
+`conversation.item.truncate`. Ordinary valid JSON strings preserve wire order,
+IDs and payloads. Policy is checked again on session updates and response
+creation, so an initially safe session cannot later enable hosted tools.
+Provider session/audio/transcription/function-call/completion events are relayed.
+Route never executes a function or delegates an agent.
+
+Hermes stops playback and sends cancellation/truncation commands with actual
+played-audio timing. Route forwards them once; it does not reconstruct playback,
+automatically retry a response or manufacture a continuation. Function results
+are `conversation.item.create` items of type `function_call_output`, followed by
+an explicit client `response.create` when appropriate.
+
+Errors before upgrade are JSON with `error.type`, fixed `error.code` and a
+sanitized message. Missing/invalid voice auth and invalid/expired/reused tickets
+return 401; policy/configuration errors return 400/403; account identity changes
+409; limits 413/429; unavailable auth/transport 503/502; deadlines 504. A plain
+HTTP request to the WS route receives 426. Disabled Realtime returns 503 even
+when the legacy global token is absent.
+
+Provider error bodies are never copied verbatim. Known codes distinguish quota,
+rate limits, model and authentication failures. A generic upstream 403 remains
+`realtime_upstream_forbidden_unclassified`, not proof of entitlement denial.
+After upgrade, Route sends at most one sanitized `type:error` event when the
+socket permits, preserving an upstream event ID, then closes. Policy errors use
+1008, oversize 1009 and internal/upstream failures 1011; normal close is 1000.
+The frame reader may close an oversized connection before an error event fits.
+There is no silent reconnect or fallback.
+
+## Configuration and operator boundaries
+
+Public defaults leave all three settings disabled/unset:
+
+```dotenv
+SPARTAN_ROUTE_REALTIME_ENABLED=false
+SPARTAN_ROUTE_REALTIME_MODEL=
+SPARTAN_ROUTE_REALTIME_CLIENTS_FILE=
+```
+
+For a later approved activation, set the model explicitly and point the file
+setting to a private registry under the existing Route data mount, for example
+`/app/data/realtime-clients.json`. The JSON shape is:
+
+```json
+{
+  "clients": [
+    {"id": "hermes-talk", "token_sha256": "<64 lowercase hex characters>", "slot": 0}
+  ]
+}
+```
+
+The slot above is a schema example, not an account selection. Use only an
+explicitly authorized existing slot. Provision a dedicated unpredictable client
+credential through the operator's secret-management process; Hermes receives
+that credential, while Route stores its SHA-256 digest. Credentials must be
+32–512 characters without whitespace, distinct from `CLAWROUTE_TOKEN` and
+provider credentials. No credential creation, migration or token export is
+performed automatically. Real digests/account mappings belong in private files,
+never the public baseline. The registry must be regular, non-symlinked, no more
+than 64 KiB and not group/world writable. IDs/digests must be unique; at most
+64 clients are accepted. Invalid enabled configuration fails startup.
+
+No additional ingress is exposed. The existing Caddy listener replaces
+Authorization and is **not a supported voice ingress**. External TLS ingress
+preserving voice authentication requires a separate operator change. Realtime
+uses the existing HTTPS proxy for both mint and WSS; missing or bypassed proxy
+configuration fails before OAuth. This explicit WSS mapping is necessary because
+[aiohttp selects environment proxies by scheme](https://docs.aiohttp.org/en/v3.12.14/client_advanced.html#proxy-support).
+Tinyproxy/DNS policy stays in force; no allowlist change was needed.
+
+The v1 operational bounds are fixed and exposed by authenticated capabilities:
+
+| Bound | Value and rationale |
+| --- | --- |
+| Reservations/sessions | 4 total, 1/client, 2/account; bounded in-flight memory and isolated sessions |
+| Mint JSON / WS message | 256 KiB / 1 MiB; permits tool schemas and chunks well above the measured 12,000-byte synthetic PCM input |
+| Ticket / mint / handshake | 30 s / 25 s / 25 s; fit the pinned client's 30 s mint/connect budgets with margin over sub-second observed upstream operations |
+| Write deadline | 5 s; terminate a stalled consumer rather than accumulate audio |
+| Idle / session lifetime | 1,800 s / 3,600 s; bounded lifecycle with room for the pinned client's long tool/delegation work |
+| Heartbeat / shutdown | 20 s / 5 s; client heartbeat baseline and existing Route shutdown budget |
+| Output tokens | 4,096 maximum per response; bounded output with room above the observed 128-token tool truncation |
+
+These are conservative operational bounds, not measured capacity guarantees or
+provider entitlement limits. Limits report names, configured/observed values and
+recovery hints where observable; aiohttp oversize errors identify that the bound
+was exceeded without inventing an exact byte count. Each direction awaits writes
+and uses bounded transport buffers; there is no unbounded application queue or
+full-conversation buffer. Slow writes and idle/lifetime deadlines close both
+sides. Forwarding tasks are cancelled and awaited before releasing resources.
+
+Content-free stderr records include an opaque correlation ID, subscription route,
+model, timings, byte counts, fixed close reason and upstream token totals when
+available. They never use the text logger's content-retention setting. No audio,
+transcript, prompt, tool arguments, credentials, slot path or account ID is logged.
+
+## Reproduction, tests and Hermes handoff
+
+Both harnesses default to offline descriptions:
 
 ```sh
 python3 scripts/spartan_route_realtime_probe.py
-python3 -m unittest discover -s scripts -p 'test_spartan_route_realtime_probe.py'
+python3 scripts/spartan_route_realtime_check.py
 ```
 
-Before live execution, obtain explicit authorization naming **one existing
-zero-based slot reference**, one mint and one WebSocket session. State that the
-probe sends 250 ms of synthetic PCM audio, requests three responses with output-token caps
-of 128, 1,024 (inert tool), and 128, returns one fixed inert function result, and may use
-Realtime audio/transcription quota with unknown subscription attribution. OAuth
-refresh is permitted only through the existing Route manager and lock domain.
-A CLI flag records that approval; it is not itself user authorization.
-
-The operation budget is 60 seconds, with cancellation/connection cleanup allowed
-to finish afterward. This is not a strict process wall-clock cap or a measured
-production timeout. No automatic retry, alternative account, paid API key,
-provider or model fallback occurs. Slot cooldowns and disabled routing are
-respected. A blocked slot requires a later authorized attempt, not pool rotation.
-
-After approval, set only the non-secret reference and run through the main-stack
-alias from the repository root:
+After applicable account-use authorization, the raw feasibility probe runs inside
+the existing service using its exact auth paths, managed store and UID:
 
 ```sh
 source scripts/aliases.sh
-# Set APPROVED_REALTIME_SLOT to the exact slot explicitly approved for this run.
-: "${APPROVED_REALTIME_SLOT:?Set the approved non-secret slot reference}"
+: "${APPROVED_REALTIME_SLOT:?Set the explicitly approved slot}"
 sg exec -T spartan-route python3 - \
   --live --slot "$APPROVED_REALTIME_SLOT" --approved-account-use \
   < scripts/spartan_route_realtime_probe.py
 ```
 
-This streams **code only** into a short-lived process in the existing container;
-it does not replace the service or copy credentials. It imports the service's
-own `/app/spartan_route/codex.py`, uses unchanged configured bootstrap paths and
-`/app/data/codex-auth`, and runs with the container's configured ownership.
-Source-path hashing and managed-store locks must remain identical to production.
-Do not translate source paths to host paths or inject a temporary auth store.
-The probe refuses a host invocation or static `OPENAI_CODEX_TOKEN` mode.
+The complete implemented-Route acceptance runs a temporary loopback-only service
+inside that same container, streams source code only, uses existing OAuth locks,
+checks cached slot policy and leaves production serving unchanged:
 
-A passive authenticated loopback balancer read supplies current slot policy,
-cooldown and identity information without refreshing usage. Only the selected
-slot is passed to `load_auth()`. The probe does not initialize the telemetry
-store, run database maintenance, call `choose_slot()`, or refresh the pool.
-`OPENAI_API_KEY` and all other provider keys are ignored. Provider hosts are
-fixed, HTTP redirects are disabled, and WebSocket redirects are rejected before
-following them. The probe resolves the fixed mint URL's HTTPS proxy before loading OAuth and
-passes that same proxy explicitly to `ws_connect`. Missing/bypassed HTTPS proxy
-configuration fails closed. aiohttp selects proxies by scheme, so `HTTPS_PROXY`
-alone does not configure `wss` requests; see its [proxy documentation](https://docs.aiohttp.org/en/v3.12.14/client_advanced.html#proxy-support).
-No Compose or live service environment change is needed.
+```sh
+python3 scripts/spartan_route_realtime_check.py \
+  --stage --slot "$APPROVED_REALTIME_SLOT" --approved-account-use
+```
 
-## Evidence and failure interpretation
+Staging reuses the existing Route client credential only within this temporary
+voice-only server; it exposes no text/admin routes and creates no credentials.
+This is an explicit testing arrangement. Production configuration rejects using
+the global text credential as a voice credential.
 
-A live report records independent checks in order:
+For the Hermes implementer, use the dedicated provisioned voice credential and
+configurable Route mint/WS endpoints. Bypass Hermes Talk's local OAuth lookup and
+refresh. Do not interpret the Route credential as an OpenAI API key or send it
+directly to OpenAI. The flat mint response matches `parse_client_secret`; its
+expiry is seconds, while the pinned client converts to milliseconds internally.
 
-1. Existing-manager OAuth credential usable.
-2. Upstream mint accepted with a valid expiring secret kept in memory.
-3. WebSocket opened.
-4. Session created; requested model, voice, PCM format, audio output modality,
-   transcription model, noise reduction, token cap and VAD configuration acknowledged.
-5. VAD disabled for deterministic manual commit; synthetic audio committed;
-   correlated, decodable PCM output and completed response received.
-6. Exactly one inert `route_probe_ping` call with empty arguments received;
-   its fixed `{"ok":true}` result returned without tool dispatch.
-7. Continuation produces correlated PCM audio and response completion.
-8. Socket closes normally and resources are released.
+Once a Route instance is enabled, run the same acceptance client using environment
+variables without embedding or printing credentials:
 
-A 200, a 101, or a text-only response does not satisfy the later checks. The
-probe does not measure speech comprehension, playback latency, Discord behavior
-or interruption recovery. Those remain final staging/client acceptance items.
+```sh
+# Set SPARTAN_REALTIME_BASE_URL and SPARTAN_REALTIME_TOKEN via secret management.
+python3 scripts/spartan_route_realtime_check.py --check --approved-account-use
+```
 
-Reports contain fixed error categories, numeric HTTP statuses where available,
-phase, fixed endpoint, source-code hash, aggregate byte counts and timings. Raw
-provider errors, headers, credentials, transcripts, tool arguments, account IDs,
-paths and audio are omitted. First-audio time starts at socket exercise; it is
-transport arrival time, not perceived playback latency. Mint and handshake are
-measured separately. Quota and cost attribution always remain `unknown` here.
+The checks use 250 ms of synthetic PCM and an inert function, not human audio.
+The operation budget is 60 seconds plus bounded cancellation cleanup. The inert
+tool response uses an explicit no-speech instruction and a 1,024-token cap after
+observed 128-token truncation; ordinary short audio turns stay at 128. Staging
+adds a bounded long-output cancellation and next-turn check. Never treat fixture
+results as account-access evidence or claim Discord validation from these tests.
 
-Known provider codes distinguish authentication, model, quota and rate limiting.
-A generic 403 is `upstream_forbidden_unclassified`, not proof of entitlement
-denial. A 429 without a specific code remains unclassified. Record the failing
-stage and stop; do not implement the large gateway while real access is blocked.
+Local regressions cover scope/missing auth, config isolation, model/tool policy,
+expiry/reuse/capacity, actual app middleware ordering and shared OAuth ownership,
+raw event order, same-account sessions, provider errors/redaction, oversized data,
+slow writers and shutdown. The complete existing Route suite retains textual,
+Responses, image and concurrent managed-OAuth refresh coverage. Run with the
+repository's pinned aiohttp dependency:
 
-Probe ceilings are deliberately conservative local safety bounds: 64 KiB HTTP
-JSON, 1 MiB per WebSocket message, 4 MiB received in total, and 1,024 events.
-The 250 ms PCM input is 12,000 bytes before base64. These limits bound a tiny
-three-response experiment; they are not provider limits or production defaults.
-Limit failures report the bound, configured/observed values and recovery action.
+```sh
+python3 -m unittest discover -s infra/spartan-route -p 'test_*.py'
+python3 -m unittest discover -s scripts -p 'test_spartan_route_realtime*.py'
+docker compose -f infra/compose/compose.yml config --quiet
+```
 
-## First authorized probe result
+## Activation and rollback
 
-On 2026-09-09, the explicitly authorized account was tested once using the
-existing in-container OAuth manager. Redacted observations:
+Production activation and credential provisioning remain pending operator action.
+Keep the feature disabled until dedicated credentials and private registry are
+ready. Validate configuration with `sg config --quiet`; an approved deployment
+may then update only Route. This work does not restart production or enter Discord.
 
-| Stage | Observed result |
-| --- | --- |
-| Local policy and OAuth | Passed; usable subscription OAuth credential |
-| `POST https://api.openai.com/v1/realtime/client_secrets` | HTTP 200, valid expiring secret; 824 ms |
-| `wss://api.openai.com/v1/realtime` handshake | Failed with `probe_internal_or_transport_error` |
-| Session acceptance, audio, tools | Not reached |
-| Total reported elapsed time | 1,099 ms |
-| Subscription billing/quota attribution | Unknown |
-
-The initial report did not retain the exception class; it does not prove an
-upstream rejection, quota failure or entitlement denial. Subsequent read-only
-runtime inspection found aiohttp 3.12.14 resolves a proxy for the HTTPS endpoint
-but none for WSS: the service sets HTTPS proxy variables and no WSS proxy
-variables. This confirms a local transport defect consistent with the failure;
-its causal role still requires a corrected live retry to confirm.
-
-The corrected harness explicitly reuses the HTTPS proxy and includes fixed
-sanitized categories for connection, proxy, DNS and TLS failures. Offline tests
-cover that selection and denial when no permitted proxy exists. No production
-restart or network-policy change was made.
-
-The original ephemeral secret was not persisted and is no longer available.
-Further attempts use the same authorized account under the operator's subsequent
-permission for necessary bounded retries; no alternative account is used. The successful mint
-proves that this OAuth credential was accepted for secret issuance at that time,
-not that a working speech session or subscription coverage has been demonstrated.
-
-## Successful feasibility gate
-
-After operator authorization for necessary bounded retries on the same account,
-the corrected WSS transport opened and returned actual PCM audio. The inert-tool
-response initially ended `incomplete` with `max_output_tokens`. Raising only that
-response cap from 128 to 1,024 produced a complete passing sequence.
-
-The passing probe reported mint HTTP 200 in 492 ms, WebSocket handshake in 921 ms,
-first audio 1,204 ms after the socket exercise began, 134,400 decoded PCM bytes,
-201,973 received event bytes and 5,809 ms total elapsed. All nine checks passed,
-including tool output, audio continuation and normal close. These are measured
-provider interactions, not fixture results. No Discord/playback test occurred.
-
-This establishes current OAuth-based access for the tested model and voice only.
-It does not establish free usage, shared Codex quota, future entitlement or
-subscription billing treatment.
-
-## Reviewed implementation sequence after a successful probe
-
-Use local verified commit batches and keep the worktree clean at batch boundaries.
-Do not push or activate production as part of implementation.
-
-1. **Contract and authorization.** Add `POST /v1/realtime/client_secrets` with
-   `{"session": ...}` and `{"value": "<route-ticket>", "expires_at": <unix-seconds>}`.
-   Add `GET /v1/realtime?model=<verified-id>` for WebSocket upgrade with bearer
-   ticket. Dispatch independent voice authentication before the legacy middleware's
-   missing-token/public-discovery bypass. Global text tokens do not grant voice.
-   Voice credentials map to client identity, permission and an authorized slot;
-   provisioning credentials remains a separate operator action.
-2. **Account reservations and tickets.** Reuse the existing OAuth manager; add
-   bounded Realtime reservations separate from textual cache leases. Pin the
-   actual account identity after auth loading; never fail over. Reserve before
-   upstream mint and open upstream on ticket redemption, before downstream
-   upgrade. Keep upstream secrets private. Store Route ticket digests, consume
-   atomically once, use monotonic expiry no later than upstream expiry, and
-   release exactly once on expiry, failure, disconnect or shutdown. Restart
-   invalidates tickets. Bearer possession permits redemption; stored client
-   identity does not prove the presenter owns a stolen ticket.
-3. **Duplex transport.** Preserve event order, IDs, audio deltas, tool calls/results,
-   configuration and completion. Support append/commit/clear, VAD, response
-   create/cancel, item create/delete/truncate and continuation. Enforce subscription,
-   model and function-only tool policy at mint and later session updates.
-   Hermes owns playback cancellation; Route does not invent actions or replay
-   audio/results. Bound reads/writes, own and await forwarding tasks, and close
-   sessions before shared HTTP/OAuth resources. Freeze production limits only
-   after documented measurements and focused regressions.
-4. **Discovery and diagnostics.** Add public protocol/model capabilities through
-   existing discovery, but keep timestamped account-access observations behind
-   voice authentication. Never label historical success as permanent entitlement.
-   Redact HTTP/WS errors and emit content-free lifecycle telemetry. Preserve
-   verified upstream usage without assigning invented subscription prices.
-5. **Acceptance and handoff.** Run full Route regressions plus affected Compose
-   and operator checks. With applicable explicit authorization, run isolated
-   staging through implemented Route: mint, session, synthetic audio, inert tool,
-   continuation, cancellation during output, next-turn recovery and closure.
-   Test local invalid auth without provider calls. Deliver exact verified
-   model/voice, endpoint/auth/ticket contract, harness, limits and redacted evidence
-   to the Hermes implementer. Its Route mode must bypass local OAuth resolution
-   and make mint/WebSocket endpoints configurable.
-
-Architecture A (mint plus ticket plus native aiohttp WS) preserves the pinned
-client's wire contract. Direct Route auth on WS adds no demonstrated advantage;
-direct provider voice bypasses custody, and STT/LLM/TTS changes the objective.
-WebRTC, dashboards, other providers and provider-executed tools remain outside
-this implementation.
-
-Supported future internal endpoints use `http://spartan-route:18790` and
-`ws://spartan-route:18790` on the trusted Compose network. The current Caddy
-listener overwrites Authorization and is **not a voice ingress**. External
-exposure requires separately approved TLS configuration preserving voice auth.
-
-Required regressions cover absent/invalid/scoped auth, expired/reused/mismatched
-tickets, atomic redemption races, zero API-key fallback, concurrent OAuth
-refresh, account/session isolation, denied models, classified provider failures,
-ordered audio/tools/cancellation, slow consumers, malformed/oversized frames,
-partial disconnects, shutdown cleanup, and existing text/Responses/image routes.
-
-## Preparation validation
-
-The preparation and transport-fix batches pass 17 focused offline tests for default/approval
-behavior, slot filtering and account identity, PCM and tool evidence, malformed
-expirations, session acknowledgements, redaction, receive limits and timeout.
-The pre-existing baseline passed 227 Route tests, 197 Hermes Python tests,
-18 Hermes JavaScript tests, 24 Camofox Python tests, the 302-test scripts suite
-(one skip), Camofox JavaScript tests (12 pass, one skip), and Compose rendering.
-The pristine upstream Camofox fixture and live browser acceptance were not run.
-An authorized live attempt is recorded below. The harness does not record whether
-the existing OAuth manager refreshed its grant, so refresh activity is not claimed
-either way.
-
-## Enablement and rollback
-
-Nothing in the probe batch enables Realtime endpoints or changes production.
-Stop a running probe with interruption; allow its connection cleanup to finish.
-Do not undo a successfully persisted OAuth refresh: the existing manager owns
-that state and the previous grant may already be invalid.
-
-Before future enablement, require successful gated evidence, scoped credentials,
-verified model configuration, measured limits and explicit activation approval.
-Default the feature to disabled. Disable admission before draining active sessions;
-all remaining sessions/tickets must be closed or invalidated on service shutdown.
-
-Revert only Realtime commits when reverting this work. The three preceding
-checkpoint commits preserve pre-existing Hermes, Camofox and Route changes;
-they are independent of voice and are not deployment approval. Never revert
-credential-store state as part of source rollback. Production rollback/restarts
-and real Discord acceptance remain separately authorized operator actions.
+Disable admission by setting `SPARTAN_ROUTE_REALTIME_ENABLED=false` for the next
+approved Route replacement. Shutdown closes sessions and invalidates tickets.
+Revert Realtime commits to return to the preceding source checkpoint; the earlier
+Hermes/Camofox/Route checkpoint commits preserve unrelated work. Never roll back
+or copy an OAuth refresh grant as part of source rollback: the old generation may
+already be invalid. Real Discord playback, interruption timing and delegation
+acceptance belong to the Hermes implementer and require a real approved call.

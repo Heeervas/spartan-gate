@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Passed real isolated Route acceptance for audio, inert tools, cancellation, truncation and next-turn recovery with no remaining reservations/tickets. Added disabled-by-default Compose settings, the HTTP/WS operator/Hermes contract, malformed/oversize/race regressions and a credential-free source-bundle check. Production and Discord activation remain pending.
+
 - Added disabled-by-default subscription-only Realtime mint/WS handlers with independent voice authentication, pinned-account tickets, bounded duplex forwarding, redacted lifecycle diagnostics, private capability observations and shutdown cleanup. Added fake-provider regressions and a loopback-only real-Route acceptance harness; production activation remains separate.
 
 - Added independently scoped Realtime client policy, strict voice-session validation and bounded one-use ticket/account reservation primitives. This slice is offline-tested and does not yet register live endpoints.

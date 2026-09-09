@@ -299,7 +299,9 @@ class Wire:
         self.report["checks"].append("audio_round_trip_completed")
         self.report["stage"] = "inert_tool"
         await self.ws.send_json({"type": "response.create", "response": {
-            "tool_choice": {"type": "function", "name": TOOL["name"]}, "max_output_tokens": 1024}})
+            "tool_choice": {"type": "function", "name": TOOL["name"]},
+            "instructions": "Call route_probe_ping exactly once with empty arguments now. Do not speak.",
+            "max_output_tokens": 1024}})
         call_id = await self.response(tool=True)
         # Fixed output only; no dispatch, shell, external tool or delegation runs.
         await self.ws.send_json({"type": "conversation.item.create", "item": {

@@ -1,5 +1,21 @@
 # Current State
 
+## Subscription Realtime Gateway (2026-09-09)
+
+Spartan Route now has disabled-by-default subscription-only Realtime mint and
+WebSocket endpoints with scoped client authentication, one-use tickets, pinned
+account reservations and bounded bidirectional transport. The real isolated
+acceptance passed synthetic audio, inert tools, cancellation, truncation and
+next-turn recovery with zero remaining tickets/reservations. The verified model
+is `gpt-realtime-2.1`, voice `cedar`, PCM16 mono 24 kHz. Billing/quota attribution
+remains unknown; no API-key or alternate-account fallback exists.
+
+See `docs/spartan-route-realtime.md` for the exact contract and reproducible
+harness. Production remains unchanged and disabled; dedicated client credential
+provisioning, activation and the Hermes/Discord integration are separate operator
+work. The existing Caddy listener is not a voice ingress. Full Route and script
+suites pass; doctor stops on pre-existing workstation-plugin path-scan matches.
+
 ## Native Responses Update (2026-07-30)
 
 Spartan Route now transports `/v1/responses` natively for Codex Subscription

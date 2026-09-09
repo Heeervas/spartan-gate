@@ -71,7 +71,7 @@ class PolicyTests(unittest.TestCase):
                      'response.cancel', 'conversation.item.create', 'conversation.item.delete', 'conversation.item.truncate'):
             value = {'type': kind, 'event_id': 'fixture-id', 'item_id': 'item', 'audio': 'AQACAA=='}
             self.assertEqual(client_event(json.dumps(value)), value)
-        for raw in ('[]', 'null', '{"type":"response.create","response":{"max_output_tokens":NaN}}'):
+        for raw in ('[]', 'null', '{"type":[]}', '{"type":"response.cancel","type":"response.create"}', '{"type":"response.create","response":{"max_output_tokens":1e999}}', '{"type":"response.create","response":{"max_output_tokens":NaN}}'):
             with self.assertRaises(RealtimeError):
                 client_event(raw)
 
@@ -240,6 +240,17 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.02)
         self.assertEqual(self.service.pool.entries, {})
 
+    async def test_racing_ticket_redemptions_open_only_one_upstream(self):
+        ticket = (await (await self.mint()).json())['value']
+        outcomes = await asyncio.gather(self.connect(ticket), self.connect(ticket), return_exceptions=True)
+        sockets = [result for result in outcomes if not isinstance(result, Exception)]
+        errors = [result for result in outcomes if isinstance(result, Exception)]
+        self.assertEqual(len(sockets), 1)
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].status, 401)
+        self.assertEqual(len(self.upstream_auth), 2)  # one mint, one WS
+        await sockets[0].close()
+
     async def test_audio_tools_cancellation_raw_order_and_ids(self):
         value = await (await self.mint()).json()
         ws = await self.connect(value['value'])
@@ -327,6 +338,30 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((await ws.receive()).type, {WSMsgType.CLOSE, WSMsgType.CLOSED})
         await ws.close()
 
+    async def test_provider_error_is_redacted_and_forwarded_once(self):
+        ticket = (await (await self.mint()).json())['value']
+        ws = await self.connect(ticket)
+        await ws.send_json({'type': 'response.create', 'event_id': 'provider-error'})
+        value = await ws.receive_json()
+        self.assertEqual(value['event_id'], 'provider-error')
+        self.assertNotIn('private-upstream-message', json.dumps(value))
+        self.assertIn((await ws.receive()).type, {WSMsgType.CLOSE, WSMsgType.CLOSED})
+        await ws.close()
+
+    async def test_oversized_frame_and_http_body_are_bounded(self):
+        response = await self.mint(payload={'session': {**session(), 'instructions': 'x' * (self.service.config.mint_bytes + 1)}})
+        self.assertEqual(response.status, 413)
+        self.assertEqual(self.mints, [])
+        ticket = (await (await self.mint()).json())['value']
+        ws = await self.connect(ticket)
+        await ws.send_str('x' * (self.service.config.frame_bytes + 1))
+        # aiohttp may close its reader at 1009 before the owner can send JSON.
+        message = await ws.receive()
+        self.assertIn(message.type, {WSMsgType.TEXT, WSMsgType.CLOSE, WSMsgType.CLOSED})
+        if message.type == WSMsgType.TEXT:
+            self.assertEqual(json.loads(message.data)['error']['code'], 'realtime_limit_exceeded')
+        await ws.close()
+
     async def test_slow_writer_has_bounded_lifecycle(self):
         cfg = dataclasses.replace(self.service.config, send_seconds=0.01)
         self.service.config = cfg
@@ -351,7 +386,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
 class AppBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_voice_auth_precedes_legacy_unconfigured_token_bypass(self):
-        from spartan_route.app import create_app
+        from spartan_route.app import create_app, STATE_KEY
         from spartan_route.config import load_config
         from spartan_route.telemetry import TelemetryStore
         with patch.dict(os.environ, {}, clear=True):
@@ -362,6 +397,7 @@ class AppBoundaryTests(unittest.IsolatedAsyncioTestCase):
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
+            self.assertIs(app[rt.RT_KEY].codex, app[STATE_KEY].codex)
             self.assertEqual((await client.post('/v1/realtime/client_secrets', json={'session': session()})).status, 401)
             response = await client.get('/v1/models')
             data = await response.json()

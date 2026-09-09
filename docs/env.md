@@ -636,3 +636,19 @@ same fail-closed startup path. Set
 `sg-whitelist-domain` should recreate a running `proxy` or `dns` service
 after the helper cannot deliver its outer reload request; the default leaves
 the previous runtime policy active and exits non-zero.
+
+## Subscription-only Realtime
+
+`SPARTAN_ROUTE_REALTIME_ENABLED` defaults to `false`. Only exact `true`/`false`
+(case-insensitive) are accepted. Enabling requires both
+`SPARTAN_ROUTE_REALTIME_MODEL=gpt-realtime-2.1` and
+`SPARTAN_ROUTE_REALTIME_CLIENTS_FILE` pointing to a private JSON registry inside
+Route's existing data mount (for example `/app/data/realtime-clients.json`).
+The registry contains client IDs, credential SHA-256 digests and explicitly
+approved slot indices; never put real entries in public configuration. A regular
+file without group/world write permission is required; symlinks are rejected.
+
+Voice credentials must differ from `CLAWROUTE_TOKEN` and provider credentials.
+No credentials are generated or migrated automatically. Missing or malformed
+configuration fails closed. See [the Realtime contract](spartan-route-realtime.md)
+for provisioning, internal endpoints, verified transport evidence and rollback.

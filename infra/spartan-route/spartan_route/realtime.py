@@ -94,7 +94,8 @@ class RealtimeConfig:
             raise ValueError("realtime_clients_required")
         ids, hashes = set(), set()
         for client in self.clients:
-            if (not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", client.id)
+            if (not isinstance(client.id, str) or not isinstance(client.token_sha256, str)
+                    or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", client.id)
                     or not re.fullmatch(r"[a-f0-9]{64}", client.token_sha256)
                     or type(client.slot) is not int or not 0 <= client.slot <= 1023
                     or client.id in ids or client.token_sha256 in hashes):
@@ -127,13 +128,19 @@ class RealtimeConfig:
         path = env.get("SPARTAN_ROUTE_REALTIME_CLIENTS_FILE", "")
         if not path:
             raise ValueError("realtime_clients_file_required")
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            raise ValueError("realtime_clients_file_unavailable") from None
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or info.st_size > 65536:
                 raise ValueError("unsafe_realtime_clients_file")
             with os.fdopen(os.dup(fd), encoding="utf-8") as handle:
-                body = json.loads(handle.read(65537))
+                try:
+                    body = strict_loads(handle.read(65537))
+                except (ValueError, UnicodeError):
+                    raise ValueError("invalid_realtime_clients_file") from None
         finally:
             os.close(fd)
         if not isinstance(body, dict) or set(body) != {"clients"} or not isinstance(body["clients"], list):
@@ -159,7 +166,7 @@ def bearer(value: str) -> str:
     if not value.lower().startswith("bearer "):
         raise RealtimeError("voice_credential_required", 401)
     token = value[7:]
-    if not 32 <= len(token) <= 512 or any(c.isspace() for c in token):
+    if not 32 <= len(token) <= 512 or not token.isascii() or any(c.isspace() for c in token):
         raise RealtimeError("voice_credential_required", 401)
     return token
 
@@ -223,7 +230,7 @@ def validate_session(value: Any, *, mint: bool = False, response: bool = False) 
                     raise RealtimeError("unverified_transcription_model")
             if inp.get("noise_reduction") is not None:
                 noise = object_keys(inp["noise_reduction"], {"type"})
-                if noise.get("type") not in {"near_field", "far_field"}:
+                if noise.get("type") not in ("near_field", "far_field"):
                     raise RealtimeError("unsupported_noise_reduction")
             if inp.get("turn_detection") is not None:
                 vad = object_keys(inp["turn_detection"], {"type", "threshold", "prefix_padding_ms", "silence_duration_ms", "create_response", "interrupt_response", "idle_timeout_ms"})
@@ -237,7 +244,7 @@ def validate_session(value: Any, *, mint: bool = False, response: bool = False) 
                 raise RealtimeError("unverified_realtime_voice")
     if "reasoning" in obj:
         reasoning = object_keys(obj["reasoning"], {"effort"})
-        if reasoning.get("effort") not in {"low", "medium", "high"}:
+        if reasoning.get("effort") not in ("low", "medium", "high"):
             raise RealtimeError("invalid_realtime_reasoning")
 
 
@@ -246,12 +253,30 @@ CLIENT_EVENTS = {"session.update", "input_audio_buffer.append", "input_audio_buf
                  "conversation.item.create", "conversation.item.delete", "conversation.item.truncate"}
 
 
+def strict_loads(raw: str | bytes | bytearray) -> Any:
+    def reject_constant(_value: str) -> Any:
+        raise ValueError("nonfinite_json")
+    def number(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("nonfinite_json")
+        return parsed
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate_json_key")
+            result[key] = value
+        return result
+    return json.loads(raw, parse_constant=reject_constant, parse_float=number, object_pairs_hook=unique)
+
+
 def client_event(raw: str) -> dict[str, Any]:
     try:
-        event = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        event = strict_loads(raw)
     except (ValueError, RecursionError):
         raise RealtimeError("invalid_realtime_json") from None
-    if not isinstance(event, dict) or event.get("type") not in CLIENT_EVENTS:
+    if not isinstance(event, dict) or not isinstance(event.get("type"), str) or event["type"] not in CLIENT_EVENTS:
         raise RealtimeError("unsupported_realtime_event")
     if event["type"] == "session.update":
         validate_session(event.get("session"))
@@ -368,7 +393,7 @@ async def read_json(stream: Any, maximum: int) -> dict[str, Any]:
         bound("json_bytes", len(data) + len(chunk), maximum)
         data.extend(chunk)
     try:
-        body = json.loads(data, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        body = strict_loads(data)
     except (ValueError, UnicodeError, RecursionError):
         raise RealtimeError("invalid_realtime_json") from None
     if not isinstance(body, dict):
@@ -520,6 +545,7 @@ class RealtimeService:
         reservation = self.pool.redeem(bearer(request.headers.get("Authorization", "")), request.query["model"])
         upstream = None
         close_reason = "normal"
+        close_code = 1000
         try:
             slot = self.slot_ready(reservation.client)
             if slot is not reservation.slot or slot.account_key() != reservation.account:
@@ -547,6 +573,7 @@ class RealtimeService:
             if isinstance(exc, asyncio.CancelledError):
                 raise
             failure = self.failure(exc)
+            close_code = 1009 if failure.status == 413 else 1008 if failure.status in {400, 401, 403, 409} else 1011
             self.observe(reservation, "connection_failed", failure.code)
             if not downstream.prepared:
                 raise failure from None
@@ -562,7 +589,7 @@ class RealtimeService:
         finally:
             try:
                 async with asyncio.timeout(2):
-                    sockets = [s.close(code=1000 if close_reason == "normal" else 1011) for s in (upstream, downstream) if s is not None]
+                    sockets = [s.close(code=1000 if close_reason == "normal" else (close_code if close_code != 1000 else 1011)) for s in (upstream, downstream) if s is not None]
                     if sockets:
                         await asyncio.gather(*sockets, return_exceptions=True)
             except (TimeoutError, asyncio.CancelledError):
@@ -580,6 +607,10 @@ class RealtimeService:
                 message = await source.receive()
                 if message.type in {WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED}:
                     return "normal" if source.close_code in {1000, 1001} else "realtime_peer_disconnected"
+                if message.type == WSMsgType.ERROR and getattr(message.data, "code", None) == 1009:
+                    raise RealtimeError("realtime_limit_exceeded", 413, limit={
+                        "name": "frame_bytes", "configured": self.config.frame_bytes,
+                        "observed": "exceeds_configured_limit", "recovery": "send_smaller_frames"})
                 if message.type != WSMsgType.TEXT:
                     raise RealtimeError("realtime_invalid_frame")
                 size = len(message.data.encode("utf-8"))
@@ -588,7 +619,7 @@ class RealtimeService:
                     event = client_event(message.data)
                 else:
                     try:
-                        event = json.loads(message.data)
+                        event = strict_loads(message.data)
                     except (ValueError, RecursionError):
                         raise RealtimeError("realtime_upstream_invalid_event", 502) from None
                     if not isinstance(event, dict) or not isinstance(event.get("type"), str):
