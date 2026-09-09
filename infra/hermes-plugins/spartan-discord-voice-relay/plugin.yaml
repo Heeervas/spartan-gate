@@ -1,0 +1,4 @@
+name: spartan-discord-voice-relay
+version: "0.1.0"
+kind: standalone
+description: Route Discord voice handshakes through the restricted local UDP relay.

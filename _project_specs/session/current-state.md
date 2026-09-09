@@ -1,5 +1,14 @@
 # Current State
 
+## Discord voice UDP proof (2026-09-09)
+
+Implemented an opt-in signaling/UDP relay and narrow Discord client adapter.
+Local tests cover destination rejection, authenticated signaling, actual
+bidirectional loopback UDP, opaque binary signaling, and cleanup. Hermes
+networking has not changed and the prototype is not deployed. A real Discord
+channel/profile selection and live bidirectional/DAVE proof remain pending.
+See `docs/discord-voice-relay.md`.
+
 ## Hermes Talk activated (2026-09-09)
 
 The operator authorized activation and a one-time exception to the local disk

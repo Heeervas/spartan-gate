@@ -1,0 +1,36 @@
+# Opt-in proof of concept. Supply a reviewed image containing Python + aiohttp;
+# the existing local Spartan Route runtime image can be reused without a build.
+services:
+  discord-voice-relay:
+    image: ${SPARTAN_DISCORD_VOICE_RELAY_IMAGE:?set a pinned Python/aiohttp image}
+    command: ["python3", "/opt/voice-relay/server.py"]
+    user: "1000:1000"
+    read_only: true
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    pids_limit: 32
+    restart: "no"
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      DISCORD_VOICE_RELAY_BIND_IP: ${SPARTAN_DISCORD_VOICE_RELAY_IP:?set an unused internal IPv4 address}
+      DISCORD_VOICE_RELAY_NETWORK: ${SPARTAN_INTERNAL_SUBNET:?set the internal subnet}
+    env_file:
+      - ${SPARTAN_DISCORD_VOICE_RELAY_ENV_FILE:?set a private relay credential env file}
+    volumes:
+      - ../discord-voice-relay/server.py:/opt/voice-relay/server.py:ro
+    networks:
+      spartan_internal:
+        ipv4_address: ${SPARTAN_DISCORD_VOICE_RELAY_IP:?set an unused internal IPv4 address}
+      spartan_external: {}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request; urllib.request.urlopen('http://'+os.environ['DISCORD_VOICE_RELAY_BIND_IP']+':8791/health',timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
