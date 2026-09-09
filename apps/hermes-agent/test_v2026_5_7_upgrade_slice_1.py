@@ -31,11 +31,11 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn(
             'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:77cb88a70d4912eb90f02af924ca4b96246faf010ab419e2c31ada00d890c1b3',
+            'sha256:5baa3af502537ef938daf920890dfc0f420057689de819cbae6748c61b8f0213',
             dockerfile,
         )
         self.assertIn(
-            'Upstream main revision: d1afa16053a3777849c2b5465d59a0147b2172f9',
+            'Upstream main revision: 13ce0c5c675e843af70d19c9e5144249cd51c8d1',
             dockerfile,
         )
 
@@ -56,6 +56,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('RUN python3 /opt/hermes/patches/patch_s6_service_permissions.py', dockerfile)
         self.assertIn('RUN python3 /opt/hermes/patches/patch_runtime_identity_drop.py', dockerfile)
         self.assertIn('RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py', dockerfile)
+        self.assertIn('RUN python3 /opt/hermes/patches/patch_startup_overlay_precedence.py', dockerfile)
         self.assertLess(
             dockerfile.index('patch_stage2_runtime_owner.py'),
             dockerfile.index('patch_s6_service_permissions.py'),

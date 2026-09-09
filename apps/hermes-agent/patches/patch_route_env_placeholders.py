@@ -68,14 +68,14 @@ def patch_credential_pool_source(source: str) -> str:
     if CREDENTIAL_POOL_MARKER in source:
         return source
 
-    helper_anchor = "def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:\n"
+    helper_anchor = "def get_env_prefer_dotenv(key: str) -> str:\n"
     helper = reference_helper("key", CREDENTIAL_POOL_MARKER)
     if helper_anchor not in source:
-        raise ValueError("_seed_from_env anchor not found")
+        raise ValueError("get_env_prefer_dotenv anchor not found")
     patched = source.replace(helper_anchor, helper + helper_anchor, 1)
 
-    old = '''    def _get_env_prefer_dotenv(key: str) -> str:\n        env_file = load_env()\n        raw = env_file.get(key, "").strip()\n        scoped_value = (_get_secret(key, "") or "").strip()\n'''
-    new = '''    def _get_env_prefer_dotenv(key: str) -> str:\n        env_file = load_env()\n        raw = env_file.get(key, "").strip()\n        scoped_value = (_get_secret(key, "") or "").strip()\n        reference = _spartan_route_env_reference(raw, key)\n        if reference:\n            raw = str(_get_secret(reference, "") or "").strip()\n'''
+    old = '''def get_env_prefer_dotenv(key: str) -> str:\n    env_file = load_env()\n    raw = env_file.get(key, "").strip()\n    scoped_value = (_get_secret(key, "") or "").strip()\n'''
+    new = '''def get_env_prefer_dotenv(key: str) -> str:\n    env_file = load_env()\n    raw = env_file.get(key, "").strip()\n    scoped_value = (_get_secret(key, "") or "").strip()\n    reference = _spartan_route_env_reference(raw, key)\n    if reference:\n        raw = str(_get_secret(reference, "") or "").strip()\n'''
     if old not in patched:
         raise ValueError("credential pool dotenv lookup block not found")
     return patched.replace(old, new, 1)

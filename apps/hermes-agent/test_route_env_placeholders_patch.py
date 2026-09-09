@@ -22,26 +22,15 @@ class RouteEnvPlaceholdersPatchTests(unittest.TestCase):
     @staticmethod
     def credential_pool_source():
         return """
-def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
-    def _get_env_prefer_dotenv(key: str) -> str:
-        env_file = load_env()
-        raw = env_file.get(key, "").strip()
-        scoped_value = (_get_secret(key, "") or "").strip()
-        # If .env contains an unresolved op:// reference, prefer the
-        # already-resolved value supplied by the active secret scope (or by
-        # os.environ in legacy single-profile mode), set by
-        # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
-        # "op://Vault/Item/field" string would otherwise win and every
-        # provider auth attempt would receive a URL instead of a key.  This
-        # happens during a partial migration, or when the user wrote op://
-        # references straight into .env rather than the secrets.onepassword
-        # config block.  For every non-op:// value the original
-        # .env-takes-precedence behaviour is preserved unchanged.
-        if raw.startswith("op://") and scoped_value:
-            return scoped_value
-        return raw or scoped_value
-
-    return _get_env_prefer_dotenv(provider)
+def get_env_prefer_dotenv(key: str) -> str:
+    env_file = load_env()
+    raw = env_file.get(key, "").strip()
+    scoped_value = (_get_secret(key, "") or "").strip()
+    # If .env contains an unresolved op:// reference, prefer the
+    # already-resolved value supplied by the active secret scope.
+    if raw.startswith("op://") and scoped_value:
+        return scoped_value
+    return raw or scoped_value
 """
 
     def assert_reference_contract(self, patched, argument_name):
@@ -136,7 +125,7 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             "_get_secret": lambda key, default="": secrets.get(key, default),
         }
         exec(patched, namespace)
-        return module, patched, namespace["_seed_from_env"]("OPENAI_API_KEY", [])
+        return module, patched, namespace["get_env_prefer_dotenv"]("OPENAI_API_KEY")
 
     def test_credential_pool_resolves_route_alias_before_seeding(self):
         module, patched, result = self.execute_credential_pool(

@@ -1,9 +1,9 @@
-# Upstream main revision: d1afa16053a3777849c2b5465d59a0147b2172f9
-FROM docker.io/nousresearch/hermes-agent:main@sha256:77cb88a70d4912eb90f02af924ca4b96246faf010ab419e2c31ada00d890c1b3
+# Upstream main revision: 13ce0c5c675e843af70d19c9e5144249cd51c8d1
+FROM docker.io/nousresearch/hermes-agent:main@sha256:5baa3af502537ef938daf920890dfc0f420057689de819cbae6748c61b8f0213
 
 USER root
 
-# Keep the Hermes venv first; upstream provides Node 22 under /usr/local/bin.
+# Keep the Hermes venv first; upstream provides Node under /usr/local/bin.
 ENV PATH="/opt/hermes/.venv/bin:$PATH"
 
 # Ensure venv PATH survives login shells (bash -l, su -, SSH, sh)
@@ -177,6 +177,7 @@ RUN python3 /opt/hermes/patches/patch_google_meet_cdp.py
 RUN python3 /opt/hermes/patches/patch_google_meet_transcript.py
 RUN python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py
 RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py
+RUN python3 /opt/hermes/patches/patch_startup_overlay_precedence.py
 RUN python3 /opt/hermes/patches/patch_codex_429_fail_fast.py
 RUN python3 /opt/hermes/patches/patch_workstation_approval_scope.py
 
