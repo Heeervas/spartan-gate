@@ -21,6 +21,10 @@ must be reviewed before they can be supported.
 
 The relay validates the upstream hostname, port and TLS certificate, rejects
 redirects, and reads the actual UDP destination from the upstream Ready event.
+The post-handshake destination check compares canonical URLs: an explicit TLS
+port `:443` and its omitted default form are equivalent. Changes to the host,
+port, scheme, path, query or credentials still fail before the downstream
+WebSocket opens.
 A client-supplied Ready event never authorizes forwarding. Non-public, multicast
 and non-IPv4 destinations are rejected. The provider Ready event is rewritten
 with an internal relay socket; the unmodified Discord UDP implementation then

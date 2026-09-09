@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Fixed Discord voice joins using an explicit `:443` endpoint: the relay now compares canonical upstream URLs, preserving redirect and changed-destination rejection.
+
 - Validated real Talk-to-Hermes API tool delegation after correcting named profile URLs. Documented the plugin's existing polling timeout after repeated default-profile timeouts passed with a bounded 20-second request budget. Credentials and the installed plugin remain unchanged.
 
 - Documented profile-local Hermes Talk API routing and acceptance: named gateways must use their own API port while retaining existing credentials. Distinguishes effective gateway environment, actual API delegation and spoken Discord acceptance from connectivity-only checks.

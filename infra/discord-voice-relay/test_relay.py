@@ -8,7 +8,8 @@ import struct
 import unittest
 from unittest.mock import patch, AsyncMock
 
-from aiohttp import web, ClientSession
+from aiohttp import web, ClientSession, WSServerHandshakeError
+from yarl import URL
 from server import endpoint, ready_peer, application, Session, Packets
 
 
@@ -68,6 +69,53 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
     finally:runner.app['sessions'].discard(sentinel)
    self.assertEqual(len(runner.app['sessions']),0)
   finally:await runner.cleanup()
+
+ async def _check_upstream_response_url(self, response_url, accepted):
+  target='wss://voice-test.discord.media:443/?v=8'
+  class Upstream:
+   def __init__(self):self._response=SimpleNamespace(url=URL(response_url))
+   async def __aenter__(self):return self
+   async def __aexit__(self,*args):pass
+   def __aiter__(self):return self
+   async def __anext__(self):await asyncio.Future()
+  class HTTP:
+   def __init__(self,*args,**kwargs):pass
+   async def __aenter__(self):return self
+   async def __aexit__(self,*args):pass
+   def ws_connect(self,url,**kwargs):
+    assert url==target and kwargs['proxy']=='http://proxy:8888'
+    return Upstream()
+  cfg={'token':'x'*48,'network':ipaddress.ip_network('127.0.0.0/8'),'bind_ip':'127.0.0.1','proxy':'http://proxy:8888'}
+  runner=web.AppRunner(application(cfg));await runner.setup()
+  site=web.TCPSite(runner,'127.0.0.1',0);await site.start()
+  local='http://127.0.0.1:'+str(site._server.sockets[0].getsockname()[1])+'/voice'
+  try:
+   with patch('server.ClientSession',HTTP),patch.object(Session,'open',new_callable=AsyncMock) as opened:
+    async with ClientSession() as client:
+     headers={'Authorization':'Bearer '+'x'*48,'X-Discord-Voice-Endpoint':target}
+     if accepted:
+      async with client.ws_connect(local,headers=headers):pass
+     else:
+      with self.assertRaises(WSServerHandshakeError) as caught:
+       await client.ws_connect(local,headers=headers)
+      self.assertEqual(caught.exception.status,502)
+     opened.assert_not_awaited()
+    await asyncio.sleep(.02)
+    self.assertEqual(len(runner.app['sessions']),0)
+  finally:await runner.cleanup()
+
+ async def test_explicit_default_tls_port_accepts_normalized_upstream_url(self):
+  for response in ['wss://voice-test.discord.media:443/?v=8','wss://voice-test.discord.media/?v=8']:
+   with self.subTest(response=response):
+    await self._check_upstream_response_url(response,True)
+
+ async def test_changed_upstream_url_fails_before_downstream_or_udp(self):
+  for response in ['wss://other.discord.media/?v=8','wss://voice-test.discord.media:2096/?v=8',
+                   'ws://voice-test.discord.media/?v=8','wss://voice-test.discord.media/other?v=8',
+                   'wss://voice-test.discord.media/?v=9','wss://voice-test.discord.media/?v=8#fragment',
+                   'wss://user@voice-test.discord.media/?v=8']:
+   with self.subTest(response=response):
+    await self._check_upstream_response_url(response,False)
 
  async def test_signaling_rewrites_only_provider_ready_and_preserves_binary(self):
   target='wss://c-mad06-test.discord.media:2096/?v=8'

@@ -10,6 +10,7 @@ import time
 from urllib.parse import urlsplit
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, TraceConfig, web
+from yarl import URL
 
 MAX_FRAME = 1024 * 1024
 MAX_PACKET = 4096
@@ -144,7 +145,9 @@ async def voice(request):
                 # TLS validation stays enabled. No upstream headers or client credentials copied.
                 async with http.ws_connect(upstream_url, proxy=config["proxy"],
                                            max_msg_size=MAX_FRAME, heartbeat=20) as upstream:
-                    if str(upstream._response.url) != upstream_url:
+                    # aiohttp normalizes explicit :443 in the response URL. Compare
+                    # canonical URLs while retaining the no-redirect destination guard.
+                    if str(URL(upstream._response.url)) != str(URL(upstream_url)):
                         raise ValueError("Unexpected upstream URL")
                     await downstream.prepare(request)
                     async def copy(source, target, from_provider):
