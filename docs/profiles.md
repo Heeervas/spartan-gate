@@ -106,9 +106,13 @@ profiles or replace their existing credentials to fix an endpoint mismatch.
 Preflight the effective endpoint, authentication and `run_submission` capability
 for every affected gateway before updating any file. Back up the private config,
 preserve all other values, then restart only the changed gateways through the
-normal `sg exec` / `hermes -p <profile> gateway restart` commands. Existing
-profile `.env` changes need no image rebuild or container recreation. Keep
-manual profiles and stopped gateways in their existing state.
+normal `sg exec` / `hermes -p <profile> gateway restart` commands. Verify a
+new gateway process and readiness afterward; command success alone is not proof
+that configuration was reloaded. If the supervisor does not deliver the restart,
+Hermes also supports a drain-aware `SIGUSR1` to its verified gateway PID as the
+runtime user; supervision starts its replacement. Existing profile `.env`
+changes need no image rebuild or container recreation. Keep manual profiles
+and stopped gateways in their existing state.
 
 Acceptance must include an actual delegated tool operation and its spoken result
 in Discord. The plugin's `hermes talk check` requests no tools and can pass via a
@@ -116,6 +120,13 @@ detached process; inspect `details.lane` and require `api-server` when validatin
 this API configuration. If its API availability check fails, the installed Talk
 plugin may use its existing detached Hermes backend. Verify the effective
 profile there too; there is no API-only fallback switch in this plugin revision.
+
+The installed plugin uses `TALK_API_SERVER_PROBE_TIMEOUT_S` (default 1.5) for
+its capability probe, and four times that value for run submission and polling.
+A slow local API can accept a task and still trigger `ReadTimeout` while Talk
+polls it. If repeated live checks demonstrate this, configure a measured,
+bounded value in the affected profile. A value of `5` gives run requests a
+20-second timeout; it does not change tool authority or the overall job deadline.
 
 This config enables the plugin's existing background delegation and result
 watchers. It does not add the optional host execution attachment or merge the

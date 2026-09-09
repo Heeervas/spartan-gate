@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Validated real Talk-to-Hermes API tool delegation after correcting named profile URLs. Documented the plugin's existing polling timeout after repeated default-profile timeouts passed with a bounded 20-second request budget. Credentials and the installed plugin remain unchanged.
+
 - Documented profile-local Hermes Talk API routing and acceptance: named gateways must use their own API port while retaining existing credentials. Distinguishes effective gateway environment, actual API delegation and spoken Discord acceptance from connectivity-only checks.
 
 - Preserve Realtime sessions across the provider's benign inactive-response cancellation, with a content-free counter and fail-closed regressions. Add an opt-in Hermes plugin that starts Talk with `/voice join` and stops the matching session with `/voice leave`, preserving existing tool authority.

@@ -1,5 +1,22 @@
 # Current State
 
+## Hermes Talk API delegation (2026-09-09)
+
+The independently reviewed repair uses the installed Talk plugin's existing
+Hermes API backend. Named gateways now target their own authenticated API;
+credentials and manual gateway start choices are preserved. Repeated default
+poll timeouts were resolved in live tests with the plugin's existing probe
+setting at five seconds (twenty seconds for task requests).
+
+Real tool checks read unpredictable fixture contents through the API in both
+the default and a named profile. The named profile also passed the installed
+plugin check after warming API readiness. Native stop requested cancellation
+and the API confirmed a cancelled task. Operator-auth/approval regressions
+passed (100 passed, 2 expected failures). These checks do not establish spoken
+Discord delivery; operator acceptance remains pending. No new execution bridge,
+plugin source edits, credential changes, image builds or services were needed.
+See `docs/profiles.md` for the configuration and acceptance contract.
+
 ## Discord voice UDP proof (2026-09-09)
 
 Implemented an opt-in signaling/UDP relay and narrow Discord client adapter.
@@ -32,7 +49,8 @@ truncated; the successful checks used a bounded 512-token audio budget without
 changing production limits. Billing remains unknown. Private redacted evidence
 and rollback scripts are retained in the activation bundle.
 
-Discord playback/interruptions and real tool delegation remain untested. Startup
+At that activation stage, Discord playback/interruptions and real tool
+delegation were untested; see the later API delegation results above. Startup
 reported command-discovery/sync warnings involving other configured plugins;
 this is recorded for the Hermes-side Discord follow-up. No Discord call or chat
 message was initiated by this activation.

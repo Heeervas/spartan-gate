@@ -1,5 +1,15 @@
 # Decisions
 
+## 2026-09-09 — Hermes Talk delegation
+
+- Retain the installed Talk plugin's API execution, result watchers and existing
+  authorization/stop handling. Missing optional host attachment is not a reason
+  to build a second executor or weaken authority checks.
+- Fix profile-local endpoint selection while preserving credentials; tune the
+  existing bounded API timeout only where repeated live tests justify it.
+- Require actual tool execution through the intended API and operator-confirmed
+  spoken delivery. A provider probe or no-tools `talk check` alone is insufficient.
+
 ## 2026-06-06
 
 - Browserless-specific findings are deferred to a local gitignored plan.
