@@ -22,6 +22,7 @@ from aiohttp.web_request import FileField
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
 from .native_responses import annotate_realm, capture_telemetry, execute_codex_responses, response_event_name, usage_values
+from .native_cache import NativeCacheDiagnostics, Observation, request_diagnostics
 from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realtime_model, register as register_realtime, voice_dispatch
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import (
@@ -66,6 +67,8 @@ class ExecutionResult:
     actual_tool_call_count: int | None = None
     actual_tool_names: list[str] | None = None
     tool_telemetry_complete: bool | None = None
+    native_cache: dict[str, Any] | None = None
+    stream_cleanup: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
     _responses_telemetry: CodexCallResult | None = field(default=None, repr=False)
     _actual_tool_call_keys: set[str] = field(default_factory=set, repr=False)
     usage_seen: bool = False
@@ -95,6 +98,7 @@ class SpartanRouteState:
     routing_policy: RoutingPolicySnapshot | None = None
     routing_policy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cache_guard: dict[str, dict[str, Any]] = field(default_factory=dict)
+    native_cache: NativeCacheDiagnostics = field(default_factory=NativeCacheDiagnostics)
 
 
 STATE_KEY = web.AppKey("spartan_route_state", SpartanRouteState)
@@ -509,13 +513,29 @@ def apply_responses_telemetry(result: ExecutionResult, payload: dict[str, Any], 
     result.tool_telemetry_complete = observed.tool_telemetry_complete
     result.usage_seen = observed.usage_seen
     result.usage_event_type = observed.usage_event_type
+    if observed.usage_seen:
+        result.cached_input_tokens = observed.cached_input_tokens
+
+
+def finish_provider_cache(result: ExecutionResult, diagnostics: NativeCacheDiagnostics, observation: Observation, delivered: bool) -> None:
+    observed = result._responses_telemetry
+    result.native_cache = request_diagnostics([diagnostics.finish(
+        observation, success=bool(delivered and observed and observed.completed and not result.error),
+        cache_write_tokens=observed.cache_write_tokens if observed else None,
+        cache_read_known=bool(observed and observed.cache_read_known), status=result.status, error=result.error,
+        first_output_at=observed.first_output_at if observed else None,
+        provider_diagnostics=observed.cache_provider_diagnostics if observed else None,
+    )])
 
 
 async def provider_responses_stream(
     response: Any,
     result: ExecutionResult,
     realm: str,
+    diagnostics: NativeCacheDiagnostics | None = None,
+    observation: Observation | None = None,
 ) -> AsyncIterator[bytes]:
+    drained = False
     try:
         async for event, data, _raw in iter_sse_payloads(response.content.iter_chunked(8192)):
             if not data or data == "[DONE]":
@@ -530,11 +550,16 @@ async def provider_responses_stream(
             updated = annotate_realm(parsed, realm)
             apply_usage(result, updated)
             apply_responses_telemetry(result, updated, event_name)
+            if observation is not None and diagnostics is not None:
+                observation.output(updated, event_name, diagnostics.clock())
             if updated.get("error") and not result.error:
                 result.error = stable_json(updated.get("error"))
             yield sse(updated, event_name)
+        drained = True
     finally:
         response.release()
+        if diagnostics is not None and observation is not None:
+            finish_provider_cache(result, diagnostics, observation, drained)
 
 
 async def execute_provider_responses(
@@ -568,6 +593,12 @@ async def execute_provider_responses(
     upstream_body["include"] = include
     timeout_ms = int(os.environ.get("SPARTAN_ROUTE_PROVIDER_TIMEOUT_MS") or "180000")
     started = time.monotonic()
+    observation = state.native_cache.begin(
+        upstream_body, endpoint=f"{base_url}/responses", realm="openai_api", model=upstream_body["model"],
+        account=None, credential_scope=state.native_cache.digest(api_key),
+        chain=str(body.get("spartan_chain_id") or session_id_from_request(body, prompt_cache_key) or "") or None,
+        cache_key=upstream_body.get("prompt_cache_key"),
+    )
     try:
         response = await state.session.post(
             f"{base_url}/responses",
@@ -576,14 +607,29 @@ async def execute_provider_responses(
             timeout=ClientTimeout(total=timeout_ms / 1000),
         )
     except Exception:
-        return ExecutionResult(502, body=json_error("Provider Responses request failed", 502, "provider_request_failed", "upstream_error")[0], error="provider_request_failed")
+        return ExecutionResult(502, body=json_error("Provider Responses request failed", 502, "provider_request_failed", "upstream_error")[0], error="provider_request_failed",
+                               native_cache=request_diagnostics([state.native_cache.finish(observation, success=False, status=502, error="provider_request_failed")]))
+    except BaseException:
+        state.native_cache.finish(observation, success=False, error="request_aborted")
+        raise
     elapsed = max(0, int((time.monotonic() - started) * 1000))
     if wants_stream and 200 <= response.status < 300:
         result = ExecutionResult(response.status, headers={"Content-Type": "text/event-stream"}, upstream_response_time_ms=elapsed)
-        result.stream = provider_responses_stream(response, result, "openai_api")
+        result.stream = provider_responses_stream(response, result, "openai_api", state.native_cache, observation)
+
+        async def cleanup_api_stream() -> None:
+            response.release()
+            finish_provider_cache(result, state.native_cache, observation, False)
+
+        result.stream_cleanup = cleanup_api_stream
         return result
-    data = await response.read()
-    response.release()
+    try:
+        data = await response.read()
+    except BaseException:
+        state.native_cache.finish(observation, success=False, error="request_aborted")
+        raise
+    finally:
+        response.release()
     parsed = parse_json_bytes(data)
     if isinstance(parsed, dict) and response.status < 300:
         parsed = annotate_realm(parsed, "openai_api")
@@ -594,6 +640,14 @@ async def execute_provider_responses(
         apply_responses_telemetry(result, parsed, f"response.{parsed.get('status', 'unknown')}")
     if response.status >= 400:
         result.error = sanitize_preview(data.decode("utf-8", errors="replace"))
+    observed = result._responses_telemetry
+    result.native_cache = request_diagnostics([state.native_cache.finish(
+        observation, success=bool(observed and observed.completed and not result.error),
+        cache_write_tokens=observed.cache_write_tokens if observed else None,
+        cache_read_known=bool(observed and observed.cache_read_known), status=result.status, error=result.error,
+        first_output_at=observed.first_output_at if observed else None,
+        provider_diagnostics=observed.cache_provider_diagnostics if observed else None,
+    )])
     return result
 
 
@@ -761,6 +815,7 @@ async def execute_chat(
             actual_tool_call_count=codex_result.actual_tool_call_count,
             actual_tool_names=codex_result.actual_tool_names,
             tool_telemetry_complete=codex_result.tool_telemetry_complete,
+            native_cache=codex_result.native_cache,
             usage_seen=codex_result.usage_seen,
             usage_event_type=codex_result.usage_event_type,
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
@@ -768,6 +823,13 @@ async def execute_chat(
         )
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
+
+            async def cleanup_native_stream() -> None:
+                if codex_result.stream_cleanup is not None:
+                    await codex_result.stream_cleanup()
+                copy_codex_telemetry(codex_result, execution)
+
+            execution.stream_cleanup = cleanup_native_stream
         return execution
     return await execute_provider_chat(state, upstream_body, route, wants_stream, prompt_cache_key)
 
@@ -790,7 +852,7 @@ async def execute_responses(
         if state.codex is None:
             return ExecutionResult(503, body=json_error("Codex router is not ready", 503, "codex_unavailable")[0], error="codex_unavailable")
         codex_result = await execute_codex_responses(
-            state.codex, body, route.actual_model, wants_stream, session_id, prompt_cache_key
+            state.codex, body, route.actual_model, wants_stream, session_id, prompt_cache_key, state.native_cache
         )
         execution = ExecutionResult(
             status=codex_result.status,
@@ -806,6 +868,7 @@ async def execute_responses(
             actual_tool_call_count=codex_result.actual_tool_call_count,
             actual_tool_names=codex_result.actual_tool_names,
             tool_telemetry_complete=codex_result.tool_telemetry_complete,
+            native_cache=codex_result.native_cache,
             usage_seen=codex_result.usage_seen,
             usage_event_type=codex_result.usage_event_type,
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
@@ -813,8 +876,24 @@ async def execute_responses(
         )
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
+
+            async def cleanup_native_stream() -> None:
+                if codex_result.stream_cleanup is not None:
+                    await codex_result.stream_cleanup()
+                copy_codex_telemetry(codex_result, execution)
+
+            execution.stream_cleanup = cleanup_native_stream
         return execution
     return await execute_provider_responses(state, body, route, wants_stream, prompt_cache_key)
+
+
+def copy_codex_telemetry(source_result: CodexCallResult, target: ExecutionResult) -> None:
+    for name in (
+        "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "error",
+        "actual_tool_call_count", "actual_tool_names", "tool_telemetry_complete", "native_cache",
+        "usage_seen", "usage_event_type", "upstream_response_time_ms", "total_response_time_ms",
+    ):
+        setattr(target, name, getattr(source_result, name))
 
 
 async def sync_codex_stream_result(source_result: CodexCallResult, target: ExecutionResult) -> AsyncIterator[bytes]:
@@ -831,18 +910,7 @@ async def sync_codex_stream_result(source_result: CodexCallResult, target: Execu
         close = getattr(source, "aclose", None)
         if callable(close):
             await close()
-        target.input_tokens = source_result.input_tokens
-        target.cached_input_tokens = source_result.cached_input_tokens
-        target.output_tokens = source_result.output_tokens
-        target.reasoning_tokens = source_result.reasoning_tokens
-        target.error = source_result.error
-        target.actual_tool_call_count = source_result.actual_tool_call_count
-        target.actual_tool_names = source_result.actual_tool_names
-        target.tool_telemetry_complete = source_result.tool_telemetry_complete
-        target.usage_seen = source_result.usage_seen
-        target.usage_event_type = source_result.usage_event_type
-        target.upstream_response_time_ms = source_result.upstream_response_time_ms
-        target.total_response_time_ms = source_result.total_response_time_ms
+        copy_codex_telemetry(source_result, target)
 
 
 def request_prompt_cache_key(body: dict[str, Any]) -> str | None:
@@ -1292,16 +1360,26 @@ def log_request(
     effective_cache_key_hash = sha(upstream_cache_key, 12) if upstream_cache_key else None
     cache_key_source = request_prompt_cache_key_source(body, session_id)
     message_chars, tool_schema_chars = estimate_shape_sizes(body)
-    shape_snapshot = request_shape_snapshot(body)
+    native_cache = (result.native_cache or {"version": 2, "comparison": "unknown", "reason": "not_observed"}) if api_kind == "responses" else None
+    if native_cache is not None:
+        hashes = native_cache.get("hashes") or {}
+        shape_snapshot = {"requestFingerprint": sha(stable_json(hashes), 16) if hashes else None,
+                          "toolSchemaFingerprint": hashes.get("tools")}
+        same_session_trace = None
+    else:
+        shape_snapshot = request_shape_snapshot(body)
+        trace_key = f"{session_id or 'none'}:{effective_cache_key_hash or 'none'}"
+        previous_trace = state.recent_session_traces.get(trace_key)
+        same_session_trace = compare_session_trace(shape_snapshot, previous_trace)
+        state.recent_session_traces[trace_key] = shape_snapshot
+        if len(state.recent_session_traces) > 512:
+            oldest_key = next(iter(state.recent_session_traces))
+            state.recent_session_traces.pop(oldest_key, None)
     tool_schema_fp = shape_snapshot.get("toolSchemaFingerprint")
     request_trace = request_trace_from_request(body, shape_snapshot, state.config.log_content)
-    trace_key = f"{session_id or 'none'}:{effective_cache_key_hash or 'none'}"
-    previous_trace = state.recent_session_traces.get(trace_key)
-    same_session_trace = compare_session_trace(shape_snapshot, previous_trace)
-    state.recent_session_traces[trace_key] = shape_snapshot
-    if len(state.recent_session_traces) > 512:
-        oldest_key = next(iter(state.recent_session_traces))
-        state.recent_session_traces.pop(oldest_key, None)
+    if native_cache is not None:
+        request_trace.update(version=2, messageCount=len(messages))
+        request_trace["delta"]["comparison"] = "native_diagnostics"
     tool_schema_rough_tokens = max(0, tool_schema_chars // 4)
     non_tool_input_tokens = max(0, input_tokens - tool_schema_rough_tokens)
     cache_expectation = classify_cache_expectation(
@@ -1310,7 +1388,9 @@ def log_request(
         non_tool_input_tokens,
         same_session_trace,
         result,
-    )
+    ) if native_cache is None else {
+        "cache_prefix_candidate": False, "cache_likely": False, "cache_expectation_reason": "native_v2",
+    }
     expected_cache_hit = bool(cache_expectation["cache_prefix_candidate"])
     cache_likely = bool(cache_expectation["cache_likely"])
     cache_hit_ratio = (result.cached_input_tokens / input_tokens) if input_tokens > 0 else 0.0
@@ -1324,7 +1404,7 @@ def log_request(
         expected_cache_hit,
         cache_likely,
         cache_hit_ratio,
-    )
+    ) if native_cache is None else False
     guard_entry = (
         state.cache_guard.get(cache_guard_key(
             route.actual_model,
@@ -1365,6 +1445,8 @@ def log_request(
         "cache_low": cache_low,
         "cache_stall_diagnostic": cache_guard_diagnostic_context(guard_entry),
         "request_api_kind": api_kind,
+        "native_cache": native_cache,
+        "cache_diagnostic_version": 2 if native_cache is not None else 1,
         "requested_reasoning_effort": requested_reasoning_effort(body),
         "reasoning_tokens": result.reasoning_tokens,
         "message_chars": message_chars,
@@ -1434,9 +1516,11 @@ async def write_execution_response(
                 "Connection": "keep-alive",
             },
         )
-        await response.prepare(request)
         client_disconnected = False
+        prepared = False
         try:
+            await response.prepare(request)
+            prepared = True
             async for chunk in source:
                 try:
                     await response.write(chunk)
@@ -1446,10 +1530,22 @@ async def write_execution_response(
                     if callable(close):
                         await close()
                     break
+        except BaseException:
+            client_disconnected = True
+            raise
         finally:
-            if on_done:
-                on_done()
-            if not client_disconnected:
+            try:
+                close = getattr(source, "aclose", None)
+                if callable(close):
+                    await close()
+            finally:
+                try:
+                    if result.stream_cleanup is not None:
+                        await result.stream_cleanup()
+                finally:
+                    if on_done:
+                        on_done()
+            if prepared and not client_disconnected:
                 try:
                     await response.write_eof()
                 except (BrokenPipeError, ClientConnectionResetError, ConnectionResetError, RuntimeError):
@@ -2415,6 +2511,7 @@ async def api_routing_live(request: web.Request) -> web.Response:
         record_telemetry_failure(state, "read", "routing_live", exc)
         return telemetry_unavailable_response()
     state.telemetry.record_health_success("read", "routing_live")
+    payload["cacheDiagnostics"] = {"version": 2, "epoch": state.native_cache.epoch, "startedAt": state.native_cache.started_at}
     attach_routing_usage_units(state, payload)
     return web.json_response(payload)
 

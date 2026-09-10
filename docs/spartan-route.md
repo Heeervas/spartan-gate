@@ -321,24 +321,37 @@ Reliability contract:
   an upstream stream that later becomes incomplete.
 - Spartan Route does not implement Hermes gateway silence markers such as
   `[SILENT]` or `NO_REPLY`; those are delivery semantics above the router.
-- Cache diagnostics in `context_info` are metadata-only by default: cache-key
-  hash, cache key source, usage-event visibility, broad prefix-candidate and
-  expected-hit flags, stricter cache-likely/low-cache flags, expectation reason,
-  non-tool input token estimate, message/tool counts, request-shape hashes,
-  tool-schema fingerprint, and same-session prefix comparison. Raw tool schemas,
-  raw cache keys, and auth values are not added to these diagnostics.
-- Low-cache warnings use the stricter `cache_likely` subset, not every broad
-  prefix candidate. By default a request is cache-likely only when it has an
-  upstream cache key, extends the previous same-session request as a prefix,
-  has usage metadata and no request error, shares at least 50 prefix messages,
-  and has at least 50000 non-tool input tokens. Tune those last two thresholds
-  with `SPARTAN_ROUTE_CACHE_LIKELY_MIN_PREFIX_MESSAGES` and
-  `SPARTAN_ROUTE_CACHE_LIKELY_MIN_NON_TOOL_TOKENS`.
-- Dashboard `usage cache` percentages are aggregate usage-visible rows for the
-  selected day, session, or turn. Dashboard `likely cache` percentages are the
-  mature cache-likely subset only. Individual expanded request rows show their
-  own cached-token percentage, which can be much higher or lower than the
-  aggregate.
+- Native Responses use version 2 cache observations in `context_info.native_cache`,
+  captured after request normalization and account selection. Structured hashes
+  include instructions, ordered tools, settings, and complete native input,
+  including opaque reasoning and IDs. They describe local request compatibility,
+  not provider token-prefix equality or proof of a retained cache entry.
+- Comparisons are isolated by endpoint, realm, actual model, account or API
+  credential scope, chain/session, and effective cache key. Only completed
+  predecessors captured before dispatch are compared; failed or cancelled
+  requests do not establish a completed baseline. Overlap affects both requests.
+  Each bounded attempt records its status and a sanitized error code.
+- Content hashes use an ephemeral process-local HMAC key. A restart starts a
+  fresh comparison epoch. The ledger retains at most 512 scopes / 8 MiB and
+  expires idle scopes after 30 minutes. Each observation processes at most
+  8 MiB, 65,536 nodes and 64 nesting levels; the new persisted diagnostic
+  object is capped at 8 KiB. Limits produce unknown observations. No additional
+  raw prompts, schemas, keys, credentials or reasoning are persisted.
+- Cache-read and cache-write coverage are explicit; missing counters are not
+  known zeros. Native percentages use only rows with known cache readings,
+  while total observed input remains available. Time to first output measures
+  arrival of a meaningful provider delta, including buffered and collected SSE.
+  Plain JSON responses without observable deltas have unknown first-output time.
+- Corrected native aggregates live in a separate incremental table and appear
+  as `nativeCache` in daily/session/turn metrics. Rebuild and retention use the
+  same projection. Historical chat-derived classifications remain labelled
+  legacy; they cannot be reconstructed as native comparisons. Legacy
+  `cache_likely` / stall thresholds apply only to the older chat diagnostics.
+  Existing usage totals remain available; the dashboard excludes missing
+  native cache readings from its percentage and labels partial coverage.
+- Authenticated `/api/routing/live` includes `cacheDiagnostics` with the
+  current process epoch and start time. No cache optimization or extra provider
+  request is enabled by collecting these observations.
 - Large low-cache stream failures also update a diagnostic-only stall guard in
   `context_info.cache_stall_diagnostic`. It records consecutive stream-failure
   counts and stable error codes for the selected model/cache/slot/account/tool
@@ -351,9 +364,9 @@ Reliability contract:
   over the system prompt, strips common Hermes metadata preambles, redacts
   secret-looking tokens, and records tool calls as function name plus argument
   keys/size rather than raw arguments.
-- Prior assistant reasoning is not replayed into the next upstream Codex
-  request by default, which keeps the stable prefix smaller and less volatile.
-  Set `SPARTAN_ROUTE_REPLAY_ASSISTANT_REASONING=1` only as a rollback switch.
+- Native Responses preserve encrypted reasoning and full replay with
+  `store=false`. The legacy Chat Completions assistant-reasoning switch does
+  not describe native Responses behavior.
 
 ## Dashboard Runtime Routing Overrides
 

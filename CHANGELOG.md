@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Corrected native cache diagnostics to observe final Responses payloads with account/realm isolation, bounded private hashes, completed-predecessor timing, cancellation-safe cleanup and explicit cache-read/write coverage. Added separate incremental v2 aggregates and labelled historical cache heuristics as legacy.
+
 - Fixed native Responses tool telemetry across streamed items and final output, including custom and built-in tools. Routing sessions now distinguish complete counts, partial observations and unverified historical zeros. Added a read-only model-isolated quota report and labelled dashboard quota values as pool estimates.
 
 - Fixed Discord voice joins using an explicit `:443` endpoint: the relay now compares canonical upstream URLs, preserving redirect and changed-destination rejection.

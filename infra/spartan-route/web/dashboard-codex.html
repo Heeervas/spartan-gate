@@ -454,14 +454,27 @@
     function pct(cached, input) {
       return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : '0.0%';
     }
+    function cacheUsagePercent(input, cached, native = {}) {
+      const missing = Number(native.cacheReadMissingRequests || 0);
+      const denominator = Number(input || 0) - (missing ? Number(native.inputTokens || 0) - Number(native.cacheReadInputTokens || 0) : 0);
+      if (denominator <= 0) return 'unknown';
+      return `${(100 * Number(cached || 0) / denominator).toFixed(1)}%${missing ? ' · partial' : ''}`;
+    }
+    function nativeCacheSummary(native = {}) {
+      if (!native.requests) return 'no native comparisons yet';
+      const comparisons = native.comparisons || {};
+      const compatible = Number(comparisons.replay || 0) + Number(comparisons.append || 0);
+      const unknown = Number(comparisons.unknown || 0) + Number(comparisons.unattributed || 0);
+      return `${native.requests} native checks · ${compatible} compatible · ${Number(comparisons.changed || 0)} changed · ${unknown} unknown · cache data ${Number(native.cacheReadKnownRequests || 0)}/${Number(native.usageRequests || 0)}`;
+    }
     function likelyUsageCacheText(row = {}) {
       const likely = Number(row.cache_likely_requests || row.cacheLikelyRequests || 0);
       const input = Number(row.cache_likely_input_tokens || row.cacheLikelyInputTokens || 0);
       if (!likely && !input) return '';
-      if (row.cache_likely_hit_percent !== undefined) return `${Number(row.cache_likely_hit_percent || 0).toFixed(1)}% likely cache`;
-      if (row.cacheLikelyHitPercent !== undefined) return `${Number(row.cacheLikelyHitPercent || 0).toFixed(1)}% likely cache`;
+      if (row.cache_likely_hit_percent !== undefined) return `${Number(row.cache_likely_hit_percent || 0).toFixed(1)}% legacy likely cache`;
+      if (row.cacheLikelyHitPercent !== undefined) return `${Number(row.cacheLikelyHitPercent || 0).toFixed(1)}% legacy likely cache`;
       const cached = Number(row.cache_likely_cached_input_tokens || row.cacheLikelyCachedInputTokens || 0);
-      return `${pct(cached, input)} likely cache`;
+      return `${pct(cached, input)} legacy likely cache`;
     }
     function balanceTone(value) {
       if (value >= 90) return 'var(--bad)';
@@ -745,14 +758,15 @@
         const low = Number(row.cache_low_requests || 0);
         const cacheDetails = [
           likelyUsageCacheText(row),
-          likely ? `${num(low)}/${num(likely)} low likely` : '',
+          nativeCacheSummary(row.nativeCache),
+          likely ? `${num(low)}/${num(likely)} low in legacy estimate` : '',
         ].filter(Boolean).map(item => `<br><span class="muted">${esc(item)}</span>`).join('');
         return `<tr>
         <td>${esc(row.day)}</td>
         <td>${esc(row.logged_requests && Number(row.logged_requests) !== Number(row.requests || 0) ? `${row.requests || 0}/${row.logged_requests}` : (row.requests || 0))}</td>
         <td>${esc(num(row.input_tokens))}</td>
         <td>${esc(num(row.cached_input_tokens))}</td>
-        <td>${esc(pct(Number(row.cached_input_tokens || 0), Number(row.input_tokens || 0)))}${cacheDetails}</td>
+        <td>${esc(cacheUsagePercent(row.input_tokens, row.cached_input_tokens, row.nativeCache))}${cacheDetails}</td>
         <td>${latencyCell(row)}</td>
         <td class="${Number(row.errors || 0) ? 'bad' : ''}">${esc(row.errors || 0)}</td>
       </tr>`;

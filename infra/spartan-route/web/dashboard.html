@@ -493,8 +493,34 @@
     function metric(label, value, extra = '') {
       return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(extra)}</div></div>`;
     }
+    function cacheUsagePercent(input, cached, native = {}) {
+      const missing = Number(native.cacheReadMissingRequests || 0);
+      const denominator = Number(input || 0) - (missing ? Number(native.inputTokens || 0) - Number(native.cacheReadInputTokens || 0) : 0);
+      if (denominator <= 0) return 'unknown';
+      return `${(100 * Number(cached || 0) / denominator).toFixed(1)}%${missing ? ' · partial' : ''}`;
+    }
+    function nativeCacheSummary(native = {}) {
+      if (!native.requests) return 'no native comparisons yet';
+      const comparisons = native.comparisons || {};
+      const compatible = Number(comparisons.replay || 0) + Number(comparisons.append || 0);
+      const unknown = Number(comparisons.unknown || 0) + Number(comparisons.unattributed || 0);
+      return `${native.requests} native checks · ${compatible} compatible · ${Number(comparisons.changed || 0)} changed · ${unknown} unknown · cache data ${Number(native.cacheReadKnownRequests || 0)}/${Number(native.usageRequests || 0)}`;
+    }
+    function nativeCacheDetail(native) {
+      if (!native || native.version !== 2) return 'Legacy cache heuristic; native request comparison unavailable';
+      const labels = {replay: 'same structured request', append: 'history extended', changed: 'request changed',
+        no_predecessor: 'no completed predecessor', unattributed: 'comparison scope unavailable', unknown: 'comparison unknown'};
+      const parts = [labels[native.comparison] || labels.unknown];
+      if (native.changed_components?.length) parts.push(native.changed_components.join(', '));
+      if (native.overlap) parts.push('overlapping requests');
+      if (native.predecessor_gap_ms != null) parts.push(`predecessor completed ${Math.round(native.predecessor_gap_ms / 1000)}s before send`);
+      parts.push(native.cache_write_tokens == null ? 'cache writes unknown' : `${native.cache_write_tokens} cache-write tokens`);
+      if (native.ttft_ms != null) parts.push(`${native.ttft_ms}ms to first output`);
+      if (native.provider?.type) parts.push(`provider: ${native.provider.type}`);
+      return parts.join(' · ');
+    }
     function cacheLowSummary(low, likely) {
-      return likely ? `${num(low)}/${num(likely)} low likely` : 'no cache-likely rows';
+      return likely ? `${num(low)}/${num(likely)} low in legacy estimate` : '';
     }
     function likelyUsageCacheText(metrics = {}) {
       const likely = Number(metrics.cacheLikelyRequests || 0);
@@ -503,7 +529,7 @@
       const percent = metrics.cacheLikelyHitPercent !== undefined
         ? pct(metrics.cacheLikelyHitPercent)
         : tokenCachePercent(metrics.cacheLikelyCachedInputTokens, input);
-      return `${percent} likely cache`;
+      return `${percent} legacy likely cache`;
     }
     function fact(label, value, tone = '') {
       return `<span class="fact ${tone}"><span class="fact-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
@@ -531,11 +557,12 @@
       return `~${value}u · pool est.`;
     }
     function metricLine(metrics = {}, models = []) {
-      const cache = Number(metrics.usageSeenRequests || 0) ? pct(metrics.cacheHitPercent) : 'unknown';
+      const cache = Number(metrics.usageSeenRequests || 0) ? cacheUsagePercent(metrics.inputTokens, metrics.cachedInputTokens, metrics.nativeCache) : 'unknown';
       const errors = Number(metrics.errors || 0);
       return [
         fact('Model', models.join(', ') || 'unknown'),
         fact('Cache', cache),
+        fact('Cache checks', nativeCacheSummary(metrics.nativeCache)),
         fact('Est. usage', usageUnitSummary(metrics)),
         fact('Reasoning', reasoningSummary(metrics)),
         fact('Tools', toolSummary(metrics)),
@@ -583,7 +610,7 @@
       const account = row.selectedCodexAccountKey || '';
       const total = row.totalResponseTimeMs || 0;
       const latencyKind = row.latencySource === 'legacy_response_time' ? 'legacy' : 'first';
-      const cachePercent = tokenCachePercent(row.cachedInputTokens, row.inputTokens);
+      const cachePercent = row.context?.native_cache?.version === 2 && !row.context.native_cache.cache_read_known ? 'unknown' : tokenCachePercent(row.cachedInputTokens, row.inputTokens);
       const reasoning = row.requestedReasoningEffort || row.context?.requested_reasoning_effort || 'default';
       const tools = row.actualToolCallCount == null ? 'unknown'
         : `${row.actualToolCallCount}${row.toolTelemetryComplete === false ? '+ calls · partial' : ' calls'}`;
@@ -607,6 +634,7 @@
             ${toolNames.length ? `<span class="meta-pill">called ${esc(toolNames.join(', '))}</span>` : ''}
             ${row.context?.request_trace?.delta?.phase ? `<span class="meta-pill">${esc(row.context.request_trace.delta.phase)}</span>` : ''}
           </div>
+          <p class="muted">${esc(nativeCacheDetail(row.context?.native_cache))}</p>
           ${renderTraceItems(row)}
           <details class="diagnostics">
             <summary>Technical identifiers</summary>
@@ -666,20 +694,22 @@
       const todayCacheDetail = [
         `${num(today.cachedInputTokens)} cached`,
         likelyUsageCacheText(today),
+        nativeCacheSummary(today.nativeCache),
         cacheLowSummary(todayLow, todayLikely),
       ].filter(Boolean).join(' · ');
       const allCacheDetail = [
         `${num(totals.requests)} usage rows`,
         likelyUsageCacheText(totals),
+        nativeCacheSummary(totals.nativeCache),
         cacheLowSummary(allLow, allLikely),
       ].filter(Boolean).join(' · ');
       metricsEl.innerHTML = [
         metric('Today requests', today.loggedRequests || 0, `${today.usageSeenRequests || 0} with usage`),
-        metric('Today usage cache', pct(today.cacheHitPercent), todayCacheDetail),
+        metric('Today usage cache', today.usageSeenRequests ? cacheUsagePercent(today.inputTokens, today.cachedInputTokens, today.nativeCache) : 'unknown', todayCacheDetail),
         metric(firstLabel, latency.avg == null ? '-' : `${latency.avg}ms`, latencyExtra),
         metric('Total duration', totalLatency.avg == null ? '-' : `${totalLatency.avg}ms`, `p90 ${totalLatency.p90 == null ? '-' : `${totalLatency.p90}ms`}`),
         metric('Today errors', today.errors || 0, `${today.usageMissingRequests || 0} missing usage`),
-        metric('All usage cache', pct(totals.cacheHitPercent), allCacheDetail),
+        metric('All usage cache', totals.usageSeenRequests ? cacheUsagePercent(totals.inputTokens, totals.cachedInputTokens, totals.nativeCache) : 'unknown', allCacheDetail),
       ].join('');
     }
     function populateFilter(select, values, allLabel, pending = '') {

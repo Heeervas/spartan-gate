@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .util import now_iso
+from .cache_metrics import empty_metrics as empty_native_metrics, add_request as add_native_request, merge_metrics as merge_native_metrics, public_metrics as public_native_metrics
 
 DEFAULT_RETENTION_DAYS = 30
 ROUTING_DAILY_ROLLUP_COLUMNS = {
@@ -179,6 +180,12 @@ class TelemetryStore:
                     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
                     output_tokens INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(day, actual_model, tier, request_api_kind, requested_reasoning_effort)
+                );
+                CREATE TABLE IF NOT EXISTS native_cache_daily_rollups (
+                    day TEXT NOT NULL, actual_model TEXT NOT NULL, account_key TEXT NOT NULL,
+                    diagnostic_version INTEGER NOT NULL CHECK(diagnostic_version = 2),
+                    metrics_json TEXT NOT NULL,
+                    PRIMARY KEY(day, actual_model, account_key, diagnostic_version)
                 );
                 CREATE TABLE IF NOT EXISTS codex_usage_snapshots (
                     account_key TEXT NOT NULL,
@@ -421,7 +428,33 @@ class TelemetryStore:
                     int(upstream != 0), int(legacy_latency),
                 ),
             )
+            self._increment_native_cache_unlocked(day, entry.actual_model, entry.selected_codex_account_key or "",
+                                                   context, entry.input_tokens, entry.cached_input_tokens)
             self._conn.commit()
+
+    def _increment_native_cache_unlocked(self, day: str, model: str, account: str, context: dict[str, Any],
+                                        input_tokens: int, cached_tokens: int) -> None:
+        native = context.get("native_cache")
+        if not isinstance(native, dict) or native.get("version") != 2:
+            return
+        row = self._conn.execute(
+            "SELECT metrics_json FROM native_cache_daily_rollups WHERE day=? AND actual_model=? AND account_key=? AND diagnostic_version=2",
+            (day, model, account),
+        ).fetchone()
+        metrics = json.loads(row[0]) if row else empty_native_metrics()
+        add_native_request(metrics, context, input_tokens, cached_tokens)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO native_cache_daily_rollups VALUES (?, ?, ?, 2, ?)",
+            (day, model, account, json.dumps(metrics, separators=(",", ":"))),
+        )
+
+    def native_cache_daily_rows(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT day, actual_model, account_key, metrics_json FROM native_cache_daily_rollups WHERE diagnostic_version=2 ORDER BY day, actual_model, account_key"
+            ).fetchall()
+        return [{"day": row["day"], "actualModel": row["actual_model"], "accountKey": row["account_key"] or None,
+                 "metrics": public_native_metrics(json.loads(row["metrics_json"]))} for row in rows]
 
     def reasoning_realm_for_chain(self, chain_id: str) -> str | None:
         with self._lock:
@@ -612,6 +645,7 @@ class TelemetryStore:
             }
 
     def _rebuild_rollups_unlocked(self) -> None:
+        native_rollups: dict[tuple[str, str, str], dict[str, Any]] = {}
         rollups: dict[tuple[str, str, str, str, str], list[Any]] = {}
         cursor = self._conn.execute(
             """
@@ -627,7 +661,8 @@ class TelemetryStore:
                    upstream_response_time_ms,
                    total_response_time_ms,
                    error,
-                   context_info
+                   context_info,
+                   selected_codex_account_key
             FROM routing_log
             """
         )
@@ -652,6 +687,11 @@ class TelemetryStore:
             upstream = int(upstream_raw or 0)
             total = int(total_raw or 0) or response
             context = self._row_context(row)
+            native = context.get("native_cache")
+            if isinstance(native, dict) and native.get("version") == 2:
+                native_key = (str(row["day"]), str(row["actual_model"]), row["selected_codex_account_key"] or "")
+                native_metrics = native_rollups.setdefault(native_key, empty_native_metrics())
+                add_native_request(native_metrics, context, input_tokens, cached_tokens)
             usage_seen = self._sqlite_json_flag(context.get("usage_seen"))
             cache_likely = self._sqlite_json_flag(context.get("cache_likely"))
             cache_low = self._sqlite_json_flag(context.get("cache_low"))
@@ -681,6 +721,11 @@ class TelemetryStore:
             aggregate[27] += int(upstream != 0)
             aggregate[28] += int(upstream_raw is None and total_raw is None)
 
+        self._conn.execute("DELETE FROM native_cache_daily_rollups")
+        self._conn.executemany(
+            "INSERT INTO native_cache_daily_rollups VALUES (?, ?, ?, 2, ?)",
+            [(*key, json.dumps(metrics, separators=(",", ":"))) for key, metrics in native_rollups.items()],
+        )
         self._conn.execute("DELETE FROM routing_daily_rollups")
         if rollups:
             self._conn.executemany(
@@ -791,9 +836,16 @@ class TelemetryStore:
                             maximum,
                         )
 
+        native_by_day: dict[str, dict[str, Any]] = {}
+        for native_row in self.native_cache_daily_rows():
+            if native_row["actualModel"].startswith("codex/"):
+                target = native_by_day.setdefault(native_row["day"], empty_native_metrics())
+                merge_native_metrics(target, native_row["metrics"])
         rows = []
         for day in sorted(by_day, key=lambda value: (value is not None, value or "")):
             aggregate = by_day[day]
+            aggregate["nativeCache"] = public_native_metrics(native_by_day.get(day, empty_native_metrics()))
+            aggregate["legacyCacheHeuristics"] = True
             likely_input = int(aggregate["cache_likely_input_tokens"])
             aggregate["cache_likely_hit_percent"] = (
                 aggregate["cache_likely_cached_input_tokens"] / likely_input * 100
@@ -834,6 +886,7 @@ class TelemetryStore:
                 (current_day,),
             ).fetchall()
         items = [dict(row) for row in rows]
+        native_metrics = empty_native_metrics()
         usage_seen = 0
         errors = 0
         input_tokens = cached_tokens = output_tokens = 0
@@ -849,6 +902,7 @@ class TelemetryStore:
         split_latency_requests = 0
         for item in items:
             context = self._row_context(item)
+            add_native_request(native_metrics, context, int(item.get("input_tokens") or 0), int(item.get("cached_input_tokens") or 0))
             seen = bool(context.get("usage_seen"))
             if seen:
                 usage_seen += 1
@@ -877,6 +931,8 @@ class TelemetryStore:
         return {
             "day": current_day,
             "loggedRequests": len(items),
+            "nativeCache": public_native_metrics(native_metrics),
+            "legacyCacheHeuristics": True,
             "usageSeenRequests": usage_seen,
             "usageMissingRequests": len(items) - usage_seen,
             "inputTokens": input_tokens,
@@ -1892,6 +1948,8 @@ class TelemetryStore:
             "usageSeenRequests": 0,
             "usageMissingRequests": 0,
             "cacheLikelyRequests": 0,
+            "nativeCache": empty_native_metrics(),
+            "legacyCacheHeuristics": True,
             "cacheLikelyInputTokens": 0,
             "cacheLikelyCachedInputTokens": 0,
             "cacheLikelyHitPercent": 0,
@@ -1914,6 +1972,7 @@ class TelemetryStore:
     def _add_metrics(self, metrics: dict[str, Any], row: dict[str, Any]) -> None:
         metrics["requests"] += 1
         context = self._row_context(row)
+        add_native_request(metrics["nativeCache"], context, int(row.get("input_tokens") or 0), int(row.get("cached_input_tokens") or 0))
         if row.get("had_tool_calls"):
             metrics["toolEnabledRequests"] += 1
         actual_tool_call_count, tool_complete = self._tool_telemetry(row)
@@ -1967,6 +2026,7 @@ class TelemetryStore:
             metrics["legacyLatencyRequests"] += 1
 
     def _finalize_metrics(self, metrics: dict[str, Any]) -> None:
+        metrics["nativeCache"] = public_native_metrics(metrics["nativeCache"])
         input_tokens = int(metrics.get("inputTokens") or 0)
         metrics["cacheHitPercent"] = (int(metrics.get("cachedInputTokens") or 0) / input_tokens * 100) if input_tokens else 0
         likely_input_tokens = int(metrics.get("cacheLikelyInputTokens") or 0)

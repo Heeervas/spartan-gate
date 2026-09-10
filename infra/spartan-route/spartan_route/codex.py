@@ -172,6 +172,12 @@ class CodexCallResult:
     actual_tool_call_count: int | None = None
     actual_tool_names: list[str] | None = None
     tool_telemetry_complete: bool | None = None
+    native_cache: dict[str, Any] | None = None
+    cache_write_tokens: int | None = None
+    cache_read_known: bool = False
+    first_output_at: float | None = None
+    stream_cleanup: Any = field(default=None, repr=False)
+    cache_provider_diagnostics: dict[str, Any] | None = None
     _native_tool_aliases: dict[str, str] = field(default_factory=dict, repr=False)
     _native_tool_names: dict[str, str] = field(default_factory=dict, repr=False)
     _native_tool_invalid: bool = False

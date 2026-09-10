@@ -442,7 +442,7 @@ class TelemetryTests(unittest.TestCase):
                 any("FROM ROUTING_LOG" in statement.upper() for statement in traced),
                 traced,
             )
-            self.assertEqual(rows, [{
+            self.assertEqual([{k: v for k, v in row.items() if k not in {"nativeCache", "legacyCacheHeuristics"}} for row in rows], [{
                 "day": "2026-07-19",
                 "requests": 2,
                 "logged_requests": 3,

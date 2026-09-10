@@ -26,6 +26,7 @@ from .codex import (
     sse,
 )
 from .util import stable_json, token_count_estimate
+from .native_cache import NativeCacheDiagnostics, observe_output_chunk, provider_cache_fields, request_diagnostics, cache_read_known
 
 CODEX_RESPONSES_REALM = "codex_subscription"
 CODEX_RESPONSES_MAX_ATTEMPTS = 3
@@ -123,6 +124,8 @@ def capture_tool_item(result: CodexCallResult, item: Any, index: Any = None) -> 
 
 
 def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_name: str) -> None:
+    if result.first_output_at is None and event_name in {"response.output_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta"} and isinstance(payload.get("delta"), str) and payload["delta"]:
+        result.first_output_at = time.monotonic()
     if result.tool_telemetry_complete is None:
         result.tool_telemetry_complete = False
     usage = usage_from_payload(payload)
@@ -134,6 +137,9 @@ def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_na
             result.reasoning_tokens,
         ) = usage_values(usage)
         result.usage_seen = True
+        result.cache_read_known = cache_read_known(usage)
+        if not result.cache_read_known:
+            result.cached_input_tokens = 0  # Compatibility counter; v2 marks this unknown.
         result.usage_event_type = event_name
     response = response_object(payload)
     output = response.get("output") if response is not None else None
@@ -145,6 +151,11 @@ def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_na
     if event_name in {"response.output_item.added", "response.output_item.done"}:
         capture_tool_item(result, payload.get("item"), payload.get("output_index"))
     if event_name in TERMINAL_CODEX_EVENTS:
+        result.completed = bool(event_name == "response.completed" and response is not None and response.get("status") == "completed")
+        try:
+            result.cache_write_tokens, result.cache_provider_diagnostics = provider_cache_fields(payload)
+        except Exception:
+            pass
         result.tool_telemetry_complete = bool(
             event_name == "response.completed" and response is not None
             and response.get("status") == "completed" and not result._native_tool_invalid
@@ -363,11 +374,15 @@ async def execute_codex_responses(
     wants_stream: bool,
     session_id: str | None,
     prompt_cache_key: str | None,
+    diagnostics: NativeCacheDiagnostics | None = None,
 ) -> CodexCallResult:
     model_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
     upstream_cache_key = resolve_prompt_cache_key(request, session_id, prompt_cache_key)
     affinity_key = str(request.get("spartan_chain_id") or "").strip() or resolve_affinity_key(request, session_id, prompt_cache_key)
     body = build_codex_responses_body(request, model_name, upstream_cache_key)
+    diagnostics = diagnostics or getattr(router, "native_cache", None) or NativeCacheDiagnostics()
+    router.native_cache = diagnostics
+    attempts: list[dict[str, Any]] = []
     max_attempts = min(CODEX_RESPONSES_MAX_ATTEMPTS, max(1, len(router.slots)))
     excluded_slots: set[int] = set()
     excluded_accounts: set[str] = set()
@@ -378,13 +393,39 @@ async def execute_codex_responses(
         if not chosen:
             break
         slot, auth = chosen
+        observation = diagnostics.begin(
+            body, endpoint=CODEX_RESPONSES_URL, realm=CODEX_RESPONSES_REALM,
+            model=model_name, account=auth.account_key, slot=slot.index,
+            chain=str(request.get("spartan_chain_id") or session_id or "") or None,
+            cache_key=upstream_cache_key,
+        )
+
+        def finish_cache(current: CodexCallResult, *, delivered: bool = True) -> None:
+            # Only result objects carry usage. OpenedResponse is never accepted.
+            if not isinstance(current, CodexCallResult):
+                return
+            attempts.append(diagnostics.finish(
+                observation, success=delivered and current.completed and not current.error,
+                cache_write_tokens=current.cache_write_tokens,
+                cache_read_known=current.cache_read_known, status=current.status, error=current.error,
+                first_output_at=current.first_output_at,
+                provider_diagnostics=current.cache_provider_diagnostics,
+            ))
+            current.native_cache = request_diagnostics(attempts)
+
         slot.in_flight += 1
         slot.last_selected_at = time.time()
-        opened = await open_response(router, body, auth)
+        try:
+            opened = await open_response(router, body, auth)
+        except BaseException:
+            diagnostics.finish(observation, success=False, error="request_aborted")
+            slot.in_flight = max(0, slot.in_flight - 1)
+            raise
         if isinstance(opened, CodexCallResult):
             slot.in_flight = max(0, slot.in_flight - 1)
             opened.slot_index = slot.index
             opened.account_key = auth.account_key
+            finish_cache(opened)
             last_result = opened
             text = opened.body.decode("utf-8", errors="replace") if isinstance(opened.body, bytes) else stable_json(opened.body)
             if not should_retry(opened.status, text):
@@ -408,20 +449,44 @@ async def execute_codex_responses(
             upstream_response_time_ms=opened.response_time_ms,
         )
         if wants_stream:
-            committed = await prepare_stream(router, opened, result, slot, CODEX_RESPONSES_REALM)
+            try:
+                committed = await prepare_stream(router, opened, result, slot, CODEX_RESPONSES_REALM)
+            except BaseException:
+                diagnostics.finish(observation, success=False, error="request_aborted")
+                slot.in_flight = max(0, slot.in_flight - 1)
+                opened.response.release()
+                raise
             if committed:
                 source = result.stream
+                drained = False
+                cleaned = False
+
+                async def cleanup_stream() -> None:
+                    nonlocal cleaned
+                    if cleaned:
+                        return
+                    cleaned = True
+                    try:
+                        if source is not None:
+                            await source.aclose()
+                    finally:
+                        opened.response.release()
+                        finish_cache(result, delivered=drained)
+                        slot.in_flight = max(0, slot.in_flight - 1)
 
                 async def guarded_stream() -> AsyncIterator[bytes]:
+                    nonlocal drained
                     try:
                         if source is not None:
                             async for chunk in source:
                                 yield chunk
+                        drained = True
                     finally:
+                        await cleanup_stream()
                         if result.completed and not result.error and affinity_key:
                             router._remember_lease(affinity_key, slot)
-                        slot.in_flight = max(0, slot.in_flight - 1)
 
+                result.stream_cleanup = cleanup_stream
                 result.stream = guarded_stream()
                 return result
             slot.in_flight = max(0, slot.in_flight - 1)
@@ -433,13 +498,22 @@ async def execute_codex_responses(
                 status=502,
                 body={"error": {"message": "Codex Responses stream ended before commit", "type": "upstream_error", "code": "codex_stream_error"}},
                 error="codex_stream_error",
+                slot_index=slot.index,
+                account_key=auth.account_key,
             )
+            finish_cache(last_result)
             continue
 
-        collected = await collect_response(router, opened, slot, CODEX_RESPONSES_REALM)
-        slot.in_flight = max(0, slot.in_flight - 1)
+        try:
+            collected = await collect_response(router, opened, slot, CODEX_RESPONSES_REALM)
+        except BaseException:
+            diagnostics.finish(observation, success=False, error="request_aborted")
+            raise
+        finally:
+            slot.in_flight = max(0, slot.in_flight - 1)
         collected.slot_index = slot.index
         collected.account_key = auth.account_key
+        finish_cache(collected)
         if collected.status < 400 or not should_retry(collected.status, stable_json(collected.body)):
             if collected.completed and not collected.error and affinity_key:
                 router._remember_lease(affinity_key, slot)
