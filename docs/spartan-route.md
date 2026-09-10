@@ -218,6 +218,16 @@ Kept in v1:
   distinct recorded session IDs for average M tokens per session. Its
   account-weighted differences are observational, not direct per-request quota
   measurements from the provider.
+- For an offline, model-isolated observation report, run
+  `python3 scripts/spartan-route-quota-report.py --model codex/gpt-6-astra --since <ISO-timestamp-with-timezone>`.
+  It reads the private Route database in read-only mode (`--db` overrides the
+  default), joins requests by stable account identity, and uses signed endpoint
+  changes across contiguous model-only spans. Mixed models, missing usage,
+  unattributed requests, retention gaps, quota resets and saturated readings
+  are excluded. Small movements remain separately reported below resolution.
+  Rates describe the observed cache/output mix; separate token-category prices
+  remain unavailable. External account use and historical capacity changes can
+  still contaminate the observations. Keep generated reports private.
 - To import legacy ClawRoute x5 overrides, pass each currently active
   16-character account key shown by the Spartan Route Codex dashboard. The
   migration copies only the intersection of explicit current keys and legacy
@@ -246,10 +256,18 @@ Kept in v1:
   turns. Session and turn summaries show estimated Codex quota units using the
   same current weekly calibration as the Codex model table; only usage-seen
   `codex/*` tokens contribute, and unavailable calibration is shown as unknown.
+  These values are labelled `pool est.` because they are not isolated model prices.
   Tool names move into expanded details. Session, turn, request,
   account, slot, and cache identifiers remain available in disclosed
   diagnostics. Actual tool counts/names are recorded without arguments when
-  observable; older or unobservable rows report unknown rather than zero.
+  observable. Native Responses accumulates function, custom and built-in call
+  items across streamed events and final output, deduplicating by identity.
+  Counts describe emitted calls, not confirmed execution. Completed responses
+  can report zero; interrupted or malformed streams expose observed lower
+  bounds (`N+ calls · partial`). Historical native zeros remain unknown and
+  historical positive counts remain partial, without rewriting stored records.
+  Session totals retain those coverage distinctions, including mixed old/new
+  requests. Both subscription and API-key Responses use this capture logic.
 
 With `CLAWROUTE_DEBUG=true`, Spartan Route logs a redacted summary of outbound
 image passthrough payloads. The summary includes fields such as `model`, `size`,

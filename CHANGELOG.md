@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Fixed native Responses tool telemetry across streamed items and final output, including custom and built-in tools. Routing sessions now distinguish complete counts, partial observations and unverified historical zeros. Added a read-only model-isolated quota report and labelled dashboard quota values as pool estimates.
+
 - Fixed Discord voice joins using an explicit `:443` endpoint: the relay now compares canonical upstream URLs, preserving redirect and changed-destination rejection.
 
 - Validated real Talk-to-Hermes API tool delegation after correcting named profile URLs. Documented the plugin's existing polling timeout after repeated default-profile timeouts passed with a bounded 20-second request budget. Credentials and the installed plugin remain unchanged.

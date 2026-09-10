@@ -515,6 +515,12 @@
     }
     function toolSummary(metrics = {}) {
       const known = Number(metrics.toolTelemetryKnownRequests || 0);
+      const partial = Number(metrics.toolTelemetryPartialRequests || 0);
+      const unknown = Number(metrics.toolTelemetryUnknownRequests || 0);
+      if (partial || unknown) {
+        const calls = Number(metrics.actualToolCalls || 0);
+        return calls > 0 ? `${calls}+ calls · partial` : 'unknown';
+      }
       return known ? `${Number(metrics.actualToolCalls || 0)} calls` : 'unknown';
     }
     function usageUnitSummary(metrics = {}) {
@@ -522,7 +528,7 @@
       const units = Number(metrics.estimatedUsageUnits);
       if (!Number.isFinite(units)) return 'unknown';
       const value = units < 0.1 ? units.toFixed(3) : (units < 10 ? units.toFixed(2) : units.toFixed(1));
-      return `~${value}u`;
+      return `~${value}u · pool est.`;
     }
     function metricLine(metrics = {}, models = []) {
       const cache = Number(metrics.usageSeenRequests || 0) ? pct(metrics.cacheHitPercent) : 'unknown';
@@ -579,7 +585,8 @@
       const latencyKind = row.latencySource === 'legacy_response_time' ? 'legacy' : 'first';
       const cachePercent = tokenCachePercent(row.cachedInputTokens, row.inputTokens);
       const reasoning = row.requestedReasoningEffort || row.context?.requested_reasoning_effort || 'default';
-      const tools = row.actualToolCallCount == null ? 'unknown' : `${row.actualToolCallCount} calls`;
+      const tools = row.actualToolCallCount == null ? 'unknown'
+        : `${row.actualToolCallCount}${row.toolTelemetryComplete === false ? '+ calls · partial' : ' calls'}`;
       const toolNames = Array.isArray(row.actualToolNames) ? row.actualToolNames : [];
       return `<details class="request${row.error ? ' error' : ''}">
         <summary title="${esc(preview)}">

@@ -171,6 +171,10 @@ class CodexCallResult:
     error: str | None = None
     actual_tool_call_count: int | None = None
     actual_tool_names: list[str] | None = None
+    tool_telemetry_complete: bool | None = None
+    _native_tool_aliases: dict[str, str] = field(default_factory=dict, repr=False)
+    _native_tool_names: dict[str, str] = field(default_factory=dict, repr=False)
+    _native_tool_invalid: bool = False
     completed: bool = False
     usage_seen: bool = False
     usage_event_type: str | None = None

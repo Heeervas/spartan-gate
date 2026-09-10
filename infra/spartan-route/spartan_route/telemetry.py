@@ -1902,6 +1902,7 @@ class TelemetryStore:
             "toolEnabledRequests": 0,
             "actualToolCalls": 0,
             "toolTelemetryKnownRequests": 0,
+            "toolTelemetryPartialRequests": 0,
             "toolTelemetryUnknownRequests": 0,
             "_toolNames": set(),
             "_reasoningEfforts": {},
@@ -1915,11 +1916,11 @@ class TelemetryStore:
         context = self._row_context(row)
         if row.get("had_tool_calls"):
             metrics["toolEnabledRequests"] += 1
-        actual_tool_call_count = row.get("actual_tool_call_count")
+        actual_tool_call_count, tool_complete = self._tool_telemetry(row)
         if actual_tool_call_count is None:
             metrics["toolTelemetryUnknownRequests"] += 1
         else:
-            metrics["toolTelemetryKnownRequests"] += 1
+            metrics["toolTelemetryKnownRequests" if tool_complete else "toolTelemetryPartialRequests"] += 1
             metrics["actualToolCalls"] += int(actual_tool_call_count or 0)
         raw_tool_names = row.get("actual_tool_names")
         if raw_tool_names:
@@ -2047,11 +2048,24 @@ class TelemetryStore:
             "selectedCodexSlotIndex": row["selected_codex_slot_index"],
             "selectedCodexAccountKey": row["selected_codex_account_key"],
             "toolsAvailable": bool(row.get("had_tool_calls")),
-            "actualToolCallCount": row.get("actual_tool_call_count"),
+            "actualToolCallCount": self._tool_telemetry(row)[0],
+            "toolTelemetryComplete": self._tool_telemetry(row)[1],
             "actualToolNames": self._tool_names_from_row(row),
             "requestedReasoningEffort": row.get("requested_reasoning_effort"),
             "context": context,
         }
+
+    def _tool_telemetry(self, row: dict[str, Any]) -> tuple[int | None, bool]:
+        count = row.get("actual_tool_call_count")
+        context = self._row_context(row)
+        if context.get("tool_telemetry_version") == 2:
+            complete = context.get("tool_telemetry_complete") is True
+            return (count if complete or count else None), complete
+        if row.get("request_api_kind") == "responses" and str(row.get("actual_model", "")).startswith("codex/"):
+            # Old native telemetry ignored item events. Retain stored evidence,
+            # but never display its unverified zeros as factual counts.
+            return (count if count else None), False
+        return count, count is not None
 
     def _tool_names_from_row(self, row: dict[str, Any]) -> list[str] | None:
         raw = row.get("actual_tool_names")

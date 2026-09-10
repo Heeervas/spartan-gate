@@ -21,7 +21,7 @@ from aiohttp.web_request import FileField
 
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
-from .native_responses import annotate_realm, execute_codex_responses, response_event_name, usage_values
+from .native_responses import annotate_realm, capture_telemetry, execute_codex_responses, response_event_name, usage_values
 from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realtime_model, register as register_realtime, voice_dispatch
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import (
@@ -65,6 +65,8 @@ class ExecutionResult:
     error: str | None = None
     actual_tool_call_count: int | None = None
     actual_tool_names: list[str] | None = None
+    tool_telemetry_complete: bool | None = None
+    _responses_telemetry: CodexCallResult | None = field(default=None, repr=False)
     _actual_tool_call_keys: set[str] = field(default_factory=set, repr=False)
     usage_seen: bool = False
     usage_event_type: str | None = None
@@ -497,6 +499,18 @@ async def execute_provider_chat(
     return result
 
 
+def apply_responses_telemetry(result: ExecutionResult, payload: dict[str, Any], event: str) -> None:
+    if result._responses_telemetry is None:
+        result._responses_telemetry = CodexCallResult(status=result.status)
+    observed = result._responses_telemetry
+    capture_telemetry(observed, payload, event)
+    result.actual_tool_call_count = observed.actual_tool_call_count
+    result.actual_tool_names = observed.actual_tool_names
+    result.tool_telemetry_complete = observed.tool_telemetry_complete
+    result.usage_seen = observed.usage_seen
+    result.usage_event_type = observed.usage_event_type
+
+
 async def provider_responses_stream(
     response: Any,
     result: ExecutionResult,
@@ -508,10 +522,14 @@ async def provider_responses_stream(
                 continue
             parsed = parse_json_bytes(data.encode("utf-8"))
             if not isinstance(parsed, dict):
+                if result._responses_telemetry is None:
+                    result._responses_telemetry = CodexCallResult(status=result.status)
+                result._responses_telemetry._native_tool_invalid = True
                 continue
             event_name = response_event_name(event, parsed)
             updated = annotate_realm(parsed, realm)
             apply_usage(result, updated)
+            apply_responses_telemetry(result, updated, event_name)
             if updated.get("error") and not result.error:
                 result.error = stable_json(updated.get("error"))
             yield sse(updated, event_name)
@@ -572,6 +590,8 @@ async def execute_provider_responses(
         data = stable_json(parsed).encode("utf-8")
     result = ExecutionResult(response.status, body=data, headers={"Content-Type": response.headers.get("Content-Type", "application/json")}, upstream_response_time_ms=elapsed)
     apply_usage(result, parsed)
+    if isinstance(parsed, dict):
+        apply_responses_telemetry(result, parsed, f"response.{parsed.get('status', 'unknown')}")
     if response.status >= 400:
         result.error = sanitize_preview(data.decode("utf-8", errors="replace"))
     return result
@@ -740,6 +760,7 @@ async def execute_chat(
             error=codex_result.error,
             actual_tool_call_count=codex_result.actual_tool_call_count,
             actual_tool_names=codex_result.actual_tool_names,
+            tool_telemetry_complete=codex_result.tool_telemetry_complete,
             usage_seen=codex_result.usage_seen,
             usage_event_type=codex_result.usage_event_type,
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
@@ -784,6 +805,7 @@ async def execute_responses(
             error=codex_result.error,
             actual_tool_call_count=codex_result.actual_tool_call_count,
             actual_tool_names=codex_result.actual_tool_names,
+            tool_telemetry_complete=codex_result.tool_telemetry_complete,
             usage_seen=codex_result.usage_seen,
             usage_event_type=codex_result.usage_event_type,
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
@@ -816,6 +838,7 @@ async def sync_codex_stream_result(source_result: CodexCallResult, target: Execu
         target.error = source_result.error
         target.actual_tool_call_count = source_result.actual_tool_call_count
         target.actual_tool_names = source_result.actual_tool_names
+        target.tool_telemetry_complete = source_result.tool_telemetry_complete
         target.usage_seen = source_result.usage_seen
         target.usage_event_type = source_result.usage_event_type
         target.upstream_response_time_ms = source_result.upstream_response_time_ms
@@ -1330,6 +1353,8 @@ def log_request(
         "cache_lineage_reason": body.get(SPARTAN_CACHE_LINEAGE_REASON_FIELD)
         if isinstance(body.get(SPARTAN_CACHE_LINEAGE_REASON_FIELD), str)
         else None,
+        "tool_telemetry_version": 2 if result.tool_telemetry_complete is not None else None,
+        "tool_telemetry_complete": result.tool_telemetry_complete,
         "usage_seen": result.usage_seen,
         "usage_event_type": result.usage_event_type,
         "expected_cache_hit": expected_cache_hit,

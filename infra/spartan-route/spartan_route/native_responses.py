@@ -86,7 +86,45 @@ def usage_values(usage: dict[str, Any] | None) -> tuple[int, int, int, int | Non
     return input_tokens, cached_tokens, output_tokens, reasoning_tokens
 
 
+def capture_tool_item(result: CodexCallResult, item: Any, index: Any = None) -> None:
+    if not isinstance(item, dict):
+        result._native_tool_invalid = True
+        return
+    kind = item.get("type")
+    if not isinstance(kind, str):
+        result._native_tool_invalid = True
+        return
+    if not kind.endswith("_call"):
+        return
+    aliases = [f"{key}:{item[key]}" for key in ("id", "call_id") if isinstance(item.get(key), str) and item[key]]
+    if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+        aliases.append(f"index:{index}")
+    if not aliases:
+        # A name is not an identity: two invocations can share a name.
+        result._native_tool_invalid = True
+        return
+    existing = {result._native_tool_aliases[a] for a in aliases if a in result._native_tool_aliases}
+    key = sorted(existing)[0] if existing else aliases[0]
+    for other in existing - {key}:
+        previous_name = result._native_tool_names.pop(other, "")
+        if previous_name:
+            result._native_tool_names[key] = previous_name
+        for alias, target in list(result._native_tool_aliases.items()):
+            if target == other:
+                result._native_tool_aliases[alias] = key
+    for alias in aliases:
+        result._native_tool_aliases[alias] = key
+    name = item.get("name")
+    if not isinstance(name, str) or not name:
+        name = result._native_tool_names.get(key) or kind.removesuffix("_call")
+    result._native_tool_names[key] = name
+    result.actual_tool_call_count = len(result._native_tool_names)
+    result.actual_tool_names = sorted(set(result._native_tool_names.values()))
+
+
 def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_name: str) -> None:
+    if result.tool_telemetry_complete is None:
+        result.tool_telemetry_complete = False
     usage = usage_from_payload(payload)
     if usage is not None:
         (
@@ -99,10 +137,21 @@ def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_na
         result.usage_event_type = event_name
     response = response_object(payload)
     output = response.get("output") if response is not None else None
+    if response is not None and "output" in response and not isinstance(output, list):
+        result._native_tool_invalid = True
     if isinstance(output, list):
-        calls = [item for item in output if isinstance(item, dict) and item.get("type") == "function_call"]
-        result.actual_tool_call_count = len(calls)
-        result.actual_tool_names = sorted({str(item.get("name")) for item in calls if item.get("name")})
+        for index, item in enumerate(output):
+            capture_tool_item(result, item, index)
+    if event_name in {"response.output_item.added", "response.output_item.done"}:
+        capture_tool_item(result, payload.get("item"), payload.get("output_index"))
+    if event_name in TERMINAL_CODEX_EVENTS:
+        result.tool_telemetry_complete = bool(
+            event_name == "response.completed" and response is not None
+            and response.get("status") == "completed" and not result._native_tool_invalid
+        )
+        if result.tool_telemetry_complete:
+            result.actual_tool_call_count = len(result._native_tool_names)
+            result.actual_tool_names = sorted(set(result._native_tool_names.values()))
 
 
 def sanitized_error_code(text: str) -> str:
@@ -177,8 +226,10 @@ async def collect_response(
             try:
                 payload = json.loads(data)
             except Exception:
+                result._native_tool_invalid = True
                 continue
             if not isinstance(payload, dict):
+                result._native_tool_invalid = True
                 continue
             event_name = response_event_name(event, payload)
             capture_telemetry(result, payload, event_name)
@@ -245,8 +296,10 @@ async def prepare_stream(
             try:
                 payload = json.loads(data)
             except Exception:
+                result._native_tool_invalid = True
                 continue
             if not isinstance(payload, dict):
+                result._native_tool_invalid = True
                 continue
             event_name = response_event_name(event, payload)
             encoded = sse(annotate_realm(payload, realm), event_name)
@@ -273,8 +326,10 @@ async def prepare_stream(
                 try:
                     payload = json.loads(data)
                 except Exception:
+                    result._native_tool_invalid = True
                     continue
                 if not isinstance(payload, dict):
+                    result._native_tool_invalid = True
                     continue
                 event_name = response_event_name(event, payload)
                 capture_telemetry(result, payload, event_name)
