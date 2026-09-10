@@ -64,6 +64,66 @@ class QuotaReportTests(unittest.TestCase):
         self.conn.execute("UPDATE routing_log SET input_tokens=0,cached_input_tokens=0,output_tokens=0")
         self.assertIsNone(self.report()["units_per_million_tokens"])
 
+    def test_experiment_excludes_entire_quota_span_and_intermediate_account(self):
+        import json
+        context = {"usage_seen": True, "native_cache": {"experiment": {"kind": "probe", "run_id": "run"},
+                   "attempts": [{"account_key": "account", "sent_at": module.timestamp("2026-09-07T00:30:00Z").timestamp()}]}}
+        self.conn.execute("UPDATE routing_log SET selected_codex_account_key='other',context_info=? WHERE timestamp='2026-09-07T01:00:00Z'", (json.dumps(context),))
+        report = self.report()
+        self.assertEqual(report["excluded_experiment_intervals"], 2)
+        self.assertEqual(report["totals"]["units"], 6)
+        self.assertEqual(report["total_tokens"], 101000)
+
+    def test_unresolved_reservation_excludes_future_spans_without_fake_usage(self):
+        self.conn.execute("CREATE TABLE cache_probe_reservations(run_id TEXT, account_key TEXT, reserved_at REAL, finished_at REAL, outcome TEXT)")
+        self.conn.execute("INSERT INTO cache_probe_reservations VALUES ('run','account',?,NULL,'unresolved')",
+                          (module.timestamp("2026-09-07T00:30:00Z").timestamp(),))
+        self.assertIsNone(self.report()["tokens_per_unit"])
+        self.conn.execute("UPDATE cache_probe_reservations SET outcome='not_sent'")
+        self.assertEqual(self.report()["totals"]["units"], 10)
+
+    def test_cohort_quota_requires_arm_only_intervals(self):
+        import json
+        context = json.dumps({"usage_seen": True, "native_cache": {"completed": True, "account_key": "account", "cache_read_known": True, "experiment": {"kind": "cohort", "run_id": "run", "arm": "control"}}})
+        self.conn.execute("UPDATE routing_log SET context_info=?", (context,))
+        self.assertIsNone(self.report()["tokens_per_unit"])
+        report = module.quota_report(self.conn, "codex/gpt-6-astra", "2026-09-07T00:00:00Z", cohort=("run", "control"))
+        self.assertEqual(report["totals"]["units"], 10)
+        self.conn.execute("UPDATE routing_log SET context_info='{\"usage_seen\":true}' WHERE timestamp='2026-09-07T01:00:00Z'")
+        report = module.quota_report(self.conn, "codex/gpt-6-astra", "2026-09-07T00:00:00Z", cohort=("run", "control"))
+        self.assertEqual(report["totals"]["units"], 5)
+
+    def test_unlogged_or_unresolved_cohort_reservation_contaminates_own_arm(self):
+        import json
+        self.conn.execute("CREATE TABLE cache_experiment_reservations(attempt_id TEXT, run_id TEXT, arm TEXT, account_key TEXT, reserved_at REAL, finished_at REAL, outcome TEXT)")
+        self.conn.execute("INSERT INTO cache_experiment_reservations VALUES ('attempt','run','control','account',?,NULL,'unresolved')",
+                          (module.timestamp("2026-09-07T00:30:00Z").timestamp(),))
+        native = {"completed": True, "cache_read_known": True, "account_key": "account",
+                  "experiment": {"kind": "cohort", "run_id": "run", "arm": "control"}}
+        self.conn.execute("UPDATE routing_log SET context_info=?", (json.dumps({"usage_seen": True, "native_cache": native}),))
+        own = lambda: module.quota_report(self.conn, "codex/gpt-6-astra", "2026-09-07T00:00:00Z", cohort=("run", "control"))
+        self.assertIsNone(own()["tokens_per_unit"])
+        # A completed reservation still needs the corresponding measured row.
+        self.conn.execute("UPDATE cache_experiment_reservations SET outcome='completed', finished_at=?",
+                          (module.timestamp("2026-09-07T03:30:00Z").timestamp(),))
+        self.assertIsNone(own()["tokens_per_unit"])
+        native["experiment"]["attempt_id"] = "attempt"
+        self.conn.execute("UPDATE routing_log SET context_info=? WHERE timestamp='2026-09-07T01:00:00Z'",
+                          (json.dumps({"usage_seen": True, "native_cache": native}),))
+        self.assertEqual(own()["totals"]["units"], 10)
+
+    def test_experiment_on_middle_retry_is_not_lost(self):
+        import json
+        native = {"attempts": [
+            {"account_key": "unrelated"},
+            {"account_key": "account", "sent_at": module.timestamp("2026-09-07T00:30:00Z").timestamp(),
+             "experiment": {"kind": "cohort", "run_id": "run", "arm": "control"}},
+            {"account_key": "other"}]}
+        self.conn.execute("UPDATE routing_log SET selected_codex_account_key='other',context_info=? WHERE timestamp='2026-09-07T01:00:00Z'",
+                          (json.dumps({"usage_seen": True, "native_cache": native}),))
+        self.assertEqual(self.report()["excluded_experiment_intervals"], 2)
+        self.assertEqual(self.report()["totals"]["units"], 6)
+
     def test_naive_timestamp_rejected(self):
         with self.assertRaises(ValueError):
             module.quota_report(self.conn, "codex/gpt-6-astra", "2026-09-07")

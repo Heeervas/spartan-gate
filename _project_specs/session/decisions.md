@@ -97,6 +97,21 @@
   explicit `codex/*` models. Auto aliases do not prove a subscription realm.
 
 
+## 2026-09-10 — Cache measurement and experiments
+
+- Observe the final native payload with bounded process-local hashes and keep
+  missing cache counters distinct from zero. Historical chat heuristics are
+  not a native baseline and are not backfilled.
+- Probe only after a 24–48-hour v2 baseline identifies a recurring stable
+  developer prefix under the same key. One fixed run permits at most twelve
+  physical requests and 100,000 estimated input tokens, without retries.
+- Production cohorts are explicit, session-stable, candidate-bound and expire
+  within seven days. Preserve normal routing, full encrypted replay and tools;
+  only add one verified developer-block marker. Stop treatment on failures.
+- Exclude whole experimental quota intervals, including failed/unlogged
+  attempts. Cache or quota uncertainty cannot justify expansion. Numerical
+  gates supplement a separate task, tool-argument and replay quality review.
+
 ## 2026-09-09
 
 - Realtime uses native aiohttp mint/ticket plus WebSocket relay in Spartan Route.

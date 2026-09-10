@@ -173,6 +173,7 @@ class CodexCallResult:
     actual_tool_names: list[str] | None = None
     tool_telemetry_complete: bool | None = None
     native_cache: dict[str, Any] | None = None
+    cache_response_id: str | None = field(default=None, repr=False)
     cache_write_tokens: int | None = None
     cache_read_known: bool = False
     first_output_at: float | None = None

@@ -123,6 +123,37 @@ class TelemetryStore:
             self._conn.close()
             raise
 
+    def reserve_cache_experiment(self, attempt_id: str, experiment: dict[str, Any], account: str, now: float) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO cache_experiment_reservations(attempt_id,run_id,arm,account_key,reserved_at) VALUES (?,?,?,?,?)",
+                (attempt_id, experiment["run_id"], experiment["arm"], account, now),
+            )
+
+    def finish_cache_experiment(self, attempt_id: str, now: float, success: bool) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE cache_experiment_reservations SET finished_at=?,outcome=? WHERE attempt_id=? AND outcome='unresolved'",
+                (now if success else None, "completed" if success else "unresolved", attempt_id),
+            )
+
+    def reserve_cache_probe(self, run_id: str, case: int, account: str, now: float, estimated: int) -> None:
+        # Reservations are durable before egress and separate from measured usage.
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO cache_probe_reservations(run_id,case_index,account_key,reserved_at,estimated_input_tokens) VALUES (?,?,?,?,?)",
+                (run_id, case, account, now, estimated),
+            )
+
+    def finish_cache_probe(self, run_id: str, case: int, now: float, success: bool, sent: bool) -> None:
+        # A failed/aborted upstream call may still consume delayed quota. Its
+        # reservation remains open; never invent a completion or zero usage.
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE cache_probe_reservations SET finished_at=?, outcome=? WHERE run_id=? AND case_index=? AND outcome='unresolved'",
+                (now if success or not sent else None, "completed" if success else "not_sent" if not sent else "unresolved", run_id, case),
+            )
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -180,6 +211,18 @@ class TelemetryStore:
                     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
                     output_tokens INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(day, actual_model, tier, request_api_kind, requested_reasoning_effort)
+                );
+                CREATE TABLE IF NOT EXISTS cache_experiment_reservations (
+                    attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, arm TEXT NOT NULL,
+                    account_key TEXT NOT NULL, reserved_at REAL NOT NULL,
+                    finished_at REAL, outcome TEXT NOT NULL DEFAULT 'unresolved'
+                );
+                CREATE TABLE IF NOT EXISTS cache_probe_reservations (
+                    run_id TEXT NOT NULL, case_index INTEGER NOT NULL CHECK(case_index BETWEEN 1 AND 12),
+                    account_key TEXT NOT NULL, reserved_at REAL NOT NULL,
+                    estimated_input_tokens INTEGER NOT NULL CHECK(estimated_input_tokens > 0),
+                    finished_at REAL, outcome TEXT NOT NULL DEFAULT 'unresolved',
+                    PRIMARY KEY(run_id, case_index)
                 );
                 CREATE TABLE IF NOT EXISTS native_cache_daily_rollups (
                     day TEXT NOT NULL, actual_model TEXT NOT NULL, account_key TEXT NOT NULL,

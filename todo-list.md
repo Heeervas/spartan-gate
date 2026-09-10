@@ -1,10 +1,17 @@
 # Task List
 
-Last updated: 2026-07-22
+Last updated: 2026-09-10
 
 Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
 ## Blocked
+
+- [ ] Activate the reviewed Route cache diagnostics and collect a 24–48-hour
+  baseline before running the bounded Astra experiment.
+  - Code and offline validation are complete. Automatic approval review rejected
+    the Route-only rebuild under its free-space rule despite the operator's
+    explicit exception. No baseline or probe has run. See
+    `docs/spartan-route-cache-experiments.md` for timing and evidence gates.
 
 - [ ] Complete the privileged Tailscale hostname and certificate cutover.
   - Blocked on interactive `sudo`. Keep the current hostname and certificate

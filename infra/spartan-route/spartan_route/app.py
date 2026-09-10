@@ -23,6 +23,7 @@ from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key,
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
 from .native_responses import annotate_realm, capture_telemetry, execute_codex_responses, response_event_name, usage_values
 from .native_cache import NativeCacheDiagnostics, Observation, request_diagnostics
+from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected, PROBE_HEADER
 from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realtime_model, register as register_realtime, voice_dispatch
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .util import (
@@ -99,6 +100,10 @@ class SpartanRouteState:
     routing_policy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cache_guard: dict[str, dict[str, Any]] = field(default_factory=dict)
     native_cache: NativeCacheDiagnostics = field(default_factory=NativeCacheDiagnostics)
+    cache_experiments: CacheExperiments = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.cache_experiments = CacheExperiments(Path(self.config.db_path).parent, self.native_cache.epoch, self.telemetry)
 
 
 STATE_KEY = web.AppKey("spartan_route_state", SpartanRouteState)
@@ -841,6 +846,7 @@ async def execute_responses(
     wants_stream: bool,
     session_id: str | None,
     prompt_cache_key: str | None,
+    probe: ProbeTicket | None = None,
 ) -> ExecutionResult:
     if route.provider == "codex":
         capability_error = codex_responses_capability_error(body)
@@ -852,7 +858,8 @@ async def execute_responses(
         if state.codex is None:
             return ExecutionResult(503, body=json_error("Codex router is not ready", 503, "codex_unavailable")[0], error="codex_unavailable")
         codex_result = await execute_codex_responses(
-            state.codex, body, route.actual_model, wants_stream, session_id, prompt_cache_key, state.native_cache
+            state.codex, body, route.actual_model, wants_stream, session_id, prompt_cache_key, state.native_cache,
+            state.cache_experiments, probe,
         )
         execution = ExecutionResult(
             status=codex_result.status,
@@ -1742,9 +1749,25 @@ async def responses(request: web.Request) -> web.StreamResponse:
     binding_error = None if preflight_error is not None else reasoning_binding_error(
         state, body, reasoning_realm_for_route(route)
     )
-    result = preflight_error or binding_error or await execute_responses(
-        state, body, route, wants_stream, session_id, effective_prompt_cache_key
-    )
+    probe = None
+    probe_header = request.headers.get(PROBE_HEADER)
+    if probe_header is not None:
+        try:
+            if preflight_error or binding_error or route.provider != "codex" or state.codex is None:
+                raise ProbeRejected("probe_unavailable")
+            probe = state.cache_experiments.admit(probe_header, body, route.actual_model)
+        except ProbeRejected:
+            return response_json_error("Cache probe rejected; inspect the private run report", 409, "cache_probe_rejected")
+    try:
+        result = preflight_error or binding_error or await execute_responses(
+            state, body, route, wants_stream, session_id, effective_prompt_cache_key, probe
+        )
+    except BaseException:
+        if probe is not None:
+            state.cache_experiments.finish(probe, success=False)
+        raise
+    if probe is not None and result.stream is None:
+        state.cache_experiments.finish(probe, success=False, sent=False)
 
     def done() -> None:
         log_request(state, chat_body, route, result, started, request_id, session_id, turn_id, "responses")

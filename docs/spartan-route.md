@@ -352,6 +352,9 @@ Reliability contract:
 - Authenticated `/api/routing/live` includes `cacheDiagnostics` with the
   current process epoch and start time. No cache optimization or extra provider
   request is enabled by collecting these observations.
+- Optional bounded probes and expiring cache cohorts use private file authority;
+  they are disabled by default. See [the cache experiment runbook](spartan-route-cache-experiments.md)
+  for baseline, budget, quota-isolation and review gates.
 - Large low-cache stream failures also update a diagnostic-only stall guard in
   `context_info.cache_stall_diagnostic`. It records consecutive stream-failure
   counts and stable error codes for the selected model/cache/slot/account/tool

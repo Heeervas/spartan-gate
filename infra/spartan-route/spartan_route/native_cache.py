@@ -179,6 +179,21 @@ class NativeCacheDiagnostics:
                      boundary=boundary_digest, boundary_items=boundary)
         return shape
 
+    def candidate_signature(self, body: dict[str, Any], cache_key: str | None, shape: dict[str, Any] | None = None) -> str | None:
+        try:
+            shape = self._shape(body, None) if shape is None else shape
+            if not shape.get("boundary") or not cache_key:
+                return None
+            return self.digest([shape["instructions"], shape["tools"], shape["settings"], shape["boundary"], cache_key], Budget(16384))
+        except Exception:
+            return None
+
+    def session_scope(self, realm: str, chain: str | None) -> str | None:
+        try:
+            return self.digest([realm, chain], Budget(16384)) if chain else None
+        except Exception:
+            return None
+
     def begin(self, body: dict[str, Any], *, endpoint: str, realm: str, model: str,
               account: str | None, chain: str | None, cache_key: str | None,
               slot: int | None = None, credential_scope: str | None = None) -> Observation:
@@ -190,6 +205,8 @@ class NativeCacheDiagnostics:
             for key, entry in list(self._entries.items()):
                 if now - entry.touched >= self.idle_seconds:
                     self._entries.pop(key, None)
+            if chain:
+                observation.metadata["session_scope"] = self.session_scope(realm, chain)
             identity = account or credential_scope
             if not chain or not cache_key or not identity or self.max_scopes < 1:
                 observation.metadata["comparison"] = "unattributed"
@@ -213,6 +230,7 @@ class NativeCacheDiagnostics:
                 observed_chain_age_ms=max(0, int((now - entry.first_sent) * 1000)),
                 completed_predecessors=entry.success_count,
                 input_items=shape["items"],
+                candidate_signature=self.candidate_signature(body, cache_key, shape),
                 hashes={k: shape[k] for k in ("instructions", "tools", "settings", "input")},
                 provider_comparison_requested=bool(isinstance(body.get("prompt_cache_options"), dict) and body["prompt_cache_options"].get("comparison_response_id")),
             )

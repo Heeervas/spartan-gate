@@ -26,7 +26,8 @@ from .codex import (
     sse,
 )
 from .util import stable_json, token_count_estimate
-from .native_cache import NativeCacheDiagnostics, observe_output_chunk, provider_cache_fields, request_diagnostics, cache_read_known
+from .native_cache import NativeCacheDiagnostics, provider_cache_fields, request_diagnostics, cache_read_known
+from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected
 
 CODEX_RESPONSES_REALM = "codex_subscription"
 CODEX_RESPONSES_MAX_ATTEMPTS = 3
@@ -142,6 +143,8 @@ def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_na
             result.cached_input_tokens = 0  # Compatibility counter; v2 marks this unknown.
         result.usage_event_type = event_name
     response = response_object(payload)
+    if response is not None and isinstance(response.get("id"), str) and len(response["id"]) <= 256:
+        result.cache_response_id = response["id"]
     output = response.get("output") if response is not None else None
     if response is not None and "output" in response and not isinstance(output, list):
         result._native_tool_invalid = True
@@ -375,30 +378,66 @@ async def execute_codex_responses(
     session_id: str | None,
     prompt_cache_key: str | None,
     diagnostics: NativeCacheDiagnostics | None = None,
+    experiments: CacheExperiments | None = None,
+    probe: ProbeTicket | None = None,
 ) -> CodexCallResult:
     model_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
     upstream_cache_key = resolve_prompt_cache_key(request, session_id, prompt_cache_key)
     affinity_key = str(request.get("spartan_chain_id") or "").strip() or resolve_affinity_key(request, session_id, prompt_cache_key)
-    body = build_codex_responses_body(request, model_name, upstream_cache_key)
+    base_body = build_codex_responses_body(request, model_name, upstream_cache_key)
     diagnostics = diagnostics or getattr(router, "native_cache", None) or NativeCacheDiagnostics()
     router.native_cache = diagnostics
     attempts: list[dict[str, Any]] = []
-    max_attempts = min(CODEX_RESPONSES_MAX_ATTEMPTS, max(1, len(router.slots)))
+    max_attempts = 1 if probe is not None else min(CODEX_RESPONSES_MAX_ATTEMPTS, max(1, len(router.slots)))
     excluded_slots: set[int] = set()
     excluded_accounts: set[str] = set()
     last_result: CodexCallResult | None = None
 
     for _attempt in range(max_attempts):
-        chosen = await router.choose_slot(affinity_key, excluded_slots, excluded_accounts)
+        if probe is not None:
+            if experiments is None:
+                raise ProbeRejected("probe_unavailable")
+            try:
+                chosen = await experiments.choose(router, probe)
+            except BaseException as exc:
+                experiments.finish(probe, success=False, sent=False)
+                if not isinstance(exc, Exception):
+                    raise
+                return CodexCallResult(status=503, body={"error": {"code": "probe_account_unavailable"}}, error="probe_account_unavailable")
+        else:
+            chosen = await router.choose_slot(affinity_key, excluded_slots, excluded_accounts)
         if not chosen:
             break
         slot, auth = chosen
+        body, experiment = base_body, probe.metadata() if probe else None
+        if experiments is not None and probe is None:
+            body, experiment = experiments.cohort_body(
+                base_body, model=model_id, account=auth.account_key,
+                session_scope=diagnostics.session_scope(CODEX_RESPONSES_REALM, str(request.get("spartan_chain_id") or session_id or "") or None),
+                candidate_signature=lambda: diagnostics.candidate_signature(base_body, upstream_cache_key),
+            )
+        cohort_attempt_id = None
+        if experiment and experiment.get("kind") == "cohort" and not experiment.get("skipped"):
+            cohort_attempt_id = experiments.reserve_cohort(experiment, auth.account_key)
+            if cohort_attempt_id is None:
+                body, experiment = base_body, {**experiment, "skipped": True}
+            else:
+                experiment = {**experiment, "attempt_id": cohort_attempt_id}
         observation = diagnostics.begin(
             body, endpoint=CODEX_RESPONSES_URL, realm=CODEX_RESPONSES_REALM,
             model=model_name, account=auth.account_key, slot=slot.index,
             chain=str(request.get("spartan_chain_id") or session_id or "") or None,
             cache_key=upstream_cache_key,
         )
+
+        if experiment is not None:
+            observation.metadata["experiment"] = experiment
+
+        def finish_probe(success: bool, response_id: str | None = None) -> None:
+            if probe is not None and experiments is not None:
+                experiments.finish(probe, success=success, response_id=response_id)
+            if cohort_attempt_id is not None and experiments is not None:
+                experiments.finish_cohort(cohort_attempt_id, success)
 
         def finish_cache(current: CodexCallResult, *, delivered: bool = True) -> None:
             # Only result objects carry usage. OpenedResponse is never accepted.
@@ -412,6 +451,7 @@ async def execute_codex_responses(
                 provider_diagnostics=current.cache_provider_diagnostics,
             ))
             current.native_cache = request_diagnostics(attempts)
+            finish_probe(delivered and current.completed and not current.error and current.usage_seen, current.cache_response_id)
 
         slot.in_flight += 1
         slot.last_selected_at = time.time()
@@ -419,6 +459,7 @@ async def execute_codex_responses(
             opened = await open_response(router, body, auth)
         except BaseException:
             diagnostics.finish(observation, success=False, error="request_aborted")
+            finish_probe(False)
             slot.in_flight = max(0, slot.in_flight - 1)
             raise
         if isinstance(opened, CodexCallResult):
@@ -453,6 +494,7 @@ async def execute_codex_responses(
                 committed = await prepare_stream(router, opened, result, slot, CODEX_RESPONSES_REALM)
             except BaseException:
                 diagnostics.finish(observation, success=False, error="request_aborted")
+                finish_probe(False)
                 slot.in_flight = max(0, slot.in_flight - 1)
                 opened.response.release()
                 raise
@@ -508,6 +550,7 @@ async def execute_codex_responses(
             collected = await collect_response(router, opened, slot, CODEX_RESPONSES_REALM)
         except BaseException:
             diagnostics.finish(observation, success=False, error="request_aborted")
+            finish_probe(False)
             raise
         finally:
             slot.in_flight = max(0, slot.in_flight - 1)

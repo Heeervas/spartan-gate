@@ -1072,7 +1072,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         realm = "codex_subscription"
         binding_mac = hmac.new(bytes.fromhex(secret_hex), f"{chain_id}\0{realm}".encode(), hashlib.sha256).hexdigest()
 
-        async def fake_execute(_router, request, model_id, wants_stream, session_id, prompt_cache_key, diagnostics=None):
+        async def fake_execute(_router, request, model_id, wants_stream, session_id, prompt_cache_key, diagnostics=None, experiments=None, probe=None):
             captured.append({
                 "request": request,
                 "model_id": model_id,
