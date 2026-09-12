@@ -1,6 +1,6 @@
 # Current State
 
-## Astra cache diagnostics and gated experiments (2026-09-10)
+## Astra cache diagnostics and gated experiments (2026-09-12)
 
 Implemented and independently reviewed native payload diagnostics, explicit
 cache-counter coverage, completed-predecessor timing, private fixed-budget
@@ -10,11 +10,18 @@ Experiment attempts are durably reserved so failed retries or lost logs cannot
 improve normal quota calibration. See `docs/spartan-route-cache-experiments.md`.
 
 Validation: all 300 Route tests, 10 quota-report tests, the dashboard cache test,
-Compose rendering and diff checks pass. Production activation remains blocked:
-automatic approval review rejected the Route-only rebuild under its free-space
-rule despite the operator's explicit Route exception. No v2 baseline, synthetic
-probe or cohort has run. Deploy Route, then collect 24–48 hours before evaluating
-probe eligibility; do not bypass the timing or evidence gates.
+Compose rendering and diff checks pass. After the operator re-authorized the
+Route rebuild under the disk exception, Route alone was rebuilt and recreated
+on September 12. The built artifact passes import/schema checks; live telemetry
+is healthy, authenticated routing serves v2 and unauthenticated access is 401.
+All eight running services are healthy; the seven other containers, images and
+start times are unchanged. A rollback image is retained.
+
+The new baseline epoch began at 2026-09-12 08:40:20 UTC. Its first eligibility
+review is September 13 at 08:40 UTC, with the 48-hour review on September 14.
+The passive report is waiting for ordinary native traffic and elapsed time.
+No probe or cohort is enabled and no synthetic model calls were sent.
+A Route restart starts a new epoch and baseline window.
 
 ## Hermes Talk API delegation (2026-09-09)
 

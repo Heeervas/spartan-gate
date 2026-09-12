@@ -1,21 +1,24 @@
 # Task List
 
-Last updated: 2026-09-10
+Last updated: 2026-09-12
 
 Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
 ## Blocked
 
-- [ ] Activate the reviewed Route cache diagnostics and collect a 24–48-hour
-  baseline before running the bounded Astra experiment.
-  - Code and offline validation are complete. Automatic approval review rejected
-    the Route-only rebuild under its free-space rule despite the operator's
-    explicit exception. No baseline or probe has run. See
-    `docs/spartan-route-cache-experiments.md` for timing and evidence gates.
-
 - [ ] Complete the privileged Tailscale hostname and certificate cutover.
   - Blocked on interactive `sudo`. Keep the current hostname and certificate
     active until the replacement is issued, validated, and has a rollback path.
+
+## Monitoring — Astra Cache Baseline
+
+- [ ] Evaluate the deployed v2 baseline after September 13 at 08:40 UTC;
+  use September 14 at 08:40 UTC for the 48-hour check.
+  - Route-only activation and live health/authentication checks passed on
+    September 12. Other services are unchanged. Probes and cohorts remain off.
+  - Require real native traffic and the documented recurring-prefix pattern;
+    do not bypass the timing gate. A Route restart resets the baseline epoch.
+    See `docs/spartan-route-cache-experiments.md`.
 
 ## Priority 1 — Refresh Hermes Main And Complete Runtime Remediation
 

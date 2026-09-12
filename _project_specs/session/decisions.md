@@ -97,6 +97,15 @@
   explicit `codex/*` models. Auto aliases do not prove a subscription realm.
 
 
+## 2026-09-12 — Cache baseline activation
+
+- The operator re-authorized the Route-only rebuild under the disk exception.
+  Reused cached base/dependency layers and recreated only Route, retaining its
+  previous image for rollback. Other services were not rebuilt or recreated.
+- Activated passive v2 diagnostics. The 24–48-hour baseline begins at the new
+  process epoch; historical traffic does not satisfy that timing gate. No
+  synthetic probe or production cohort is enabled by this deployment.
+
 ## 2026-09-10 — Cache measurement and experiments
 
 - Observe the final native payload with bounded process-local hashes and keep

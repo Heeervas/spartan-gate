@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Activated the reviewed cache diagnostics with a Route-only rebuild/recreation. Live health, telemetry, dashboard authentication and v2 reporting pass; other running services are unchanged. Started the passive 24–48-hour baseline with probes and cohorts disabled.
+
 - Added opt-in Astra cache probes with a server-enforced 12-attempt/100k-estimated-input budget, private epoch-bound authority, expiring session cohorts and fail-closed experiment reservations. Added baseline and session-clustered evaluation gates; quota calibration excludes whole experiment-touched intervals, including unresolved and failed retries. No experiment or prompt mutation is enabled by default.
 
 - Corrected native cache diagnostics to observe final Responses payloads with account/realm isolation, bounded private hashes, completed-predecessor timing, cancellation-safe cleanup and explicit cache-read/write coverage. Added separate incremental v2 aggregates and labelled historical cache heuristics as legacy.
