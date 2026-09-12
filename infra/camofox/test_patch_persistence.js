@@ -68,6 +68,8 @@ function pluginFixture() {
 
 function serverFixture() {
   return `const SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1;
+const pluginCtx = {
+};
 async function closeSession(userId, session, { reason = 'session_closed', clearDownloads = true, clearLocks = true } = {}) {
   if (!session) return;
   if (!spartanBrowserLifecycle.hasLease()) {
@@ -150,6 +152,7 @@ test('checkpoint failure remains retryable and prevents session-map deletion', (
   assert.match(patched, /reason: 'plugin_unavailable'/);
   assert.match(patched, /reason: 'checkpoint_error'/);
   assert.match(patched, /typeof checkpointUser === 'function'/);
+  assert.match(patched, /persistence: Object\.seal\(\{ checkpointUser: null \}\)/);
   assert.match(patched, /session\._closing = false/);
   assert.match(patched, /session\._spartanClosePromise = null/);
   assert.match(patched, /await closeSession\(key, session/);

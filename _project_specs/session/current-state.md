@@ -1,19 +1,35 @@
 # Current State
 
-## Camofox 1.15 source refresh (2026-09-12)
+## Camofox 1.15 candidate — activation blocked (2026-09-12)
 
-Prepared and independently reviewed the immutable 1.15.0 image pin and patch
-adaptation. Upstream owns fixed-proxy session preservation; duplicate package
-installation is removed. Immediate timeout-tab retirement, launch-profile
-protection, durable checkpoints and operator leases remain local. The exact
-source patch chain, repeat application, 46 JS tests, 24 supervisor tests,
-3 Hermes isolation tests and 341 script tests pass (one optional dependency
-skip). All 13 Compose shapes render; doctor has unrelated public-path findings.
+Built and trialled the independently reviewed immutable 1.15.0 wrapper after
+disk headroom became available. Upstream owns fixed-proxy session preservation;
+duplicate OS/VNC apt work is removed. Retained timeout-tab retirement, live
+profile fences, durable checkpoints and operator leases. Runtime testing caught
+and fixed the scoped-plugin checkpoint callback and health-priority admission;
+upstream's pinned portable yt-dlp preserves the existing noexec `/tmp` policy.
 
-Build/deployment remains pending because only about 1.5 GB is free. The running
-1.14 image and private pins are unchanged. Do not treat source validation as
-Camoufox 152 runtime validation. See `docs/camofox-refresh.md` for the exact
-target, rollback identity, retained debt and remaining acceptance checks.
+The exact source patch chain, repeat application, 46 JS tests, 24 supervisor
+tests and 3 Hermes isolation tests pass. All 345 script tests pass with one
+optional aiohttp skip; all-tier Compose validation
+pass; doctor still reports unrelated pre-existing public paths. Live acceptance
+covers persistence, lease, forced checkpoint failure, 20 sequential/five
+concurrent tabs, 390x844 viewport, authenticated noVNC, watchdog recovery and the
+steady-state page-script tracker-protection matrix. Synthetic cookie/localStorage
+state survived 630 seconds of continuous checks and a final checkpoint.
+
+Final recovery exposed the activation blocker: generation 1→2 and deep health
+succeeded, but the first ordinary page-script tracker probe allowed GA/GTM/Meta
+before UBO became ready. Subsequent probes blocked them. Upstream window/add-on
+startup is not an adequate filter-readiness signal. The candidate is not accepted
+for deployment; the active service and private pins are restored to healthy 1.14.
+No experimental browser-engine patch is included. Further work requires a
+reviewed readiness fix or an upstream release with demonstrated parity.
+
+Only Camofox was rebuilt/recreated; the eight neighboring containers and start
+times are unchanged. At least 5 GB remained free throughout. The 1.14 rollback
+image is retained. The 24-hour log review and seven-day retention window start
+only after a future accepted activation. See `docs/camofox-refresh.md`.
 
 ## Astra cache diagnostics and gated experiments (2026-09-12)
 

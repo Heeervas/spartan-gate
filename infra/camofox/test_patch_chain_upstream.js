@@ -65,6 +65,60 @@ function verifyTimeoutIsolation(server) {
   }
 }
 
+function generatedDeepHealthExclusive(server, context) {
+  const start = server.indexOf('  runExclusive:');
+  const end = server.indexOf('\n  },\n});', start);
+  assert.ok(start >= 0 && end > start, 'generated deep-health runExclusive exists');
+  const property = server.slice(start, end + '\n  }'.length);
+  return vm.runInNewContext(`({${property}}).runExclusive`, context);
+}
+
+async function verifyDeepHealthReservation(server, lifecycleModule) {
+  const makeExclusive = coordinator => generatedDeepHealthExclusive(server, {
+    spartanBrowserLifecycle: coordinator,
+    spartanBrowserLifecycleError: lifecycleModule.spartanBrowserLifecycleError,
+    SPARTAN_DEEP_PROBE_TIMEOUT_MS: 1050,
+  });
+
+  const coordinator = lifecycleModule.createSpartanBrowserLifecycleCoordinator({ maxQueued: 2 });
+  let releaseOwner;
+  const ownerGate = new Promise(resolve => { releaseOwner = resolve; });
+  const owner = coordinator.run('tab_create', async () => { await ownerGate; });
+  await new Promise(resolve => setImmediate(resolve));
+  const order = [];
+  const foreground = coordinator.run('queued_create', async () => { order.push('foreground'); }, {
+    priority: 'foreground', waitTimeoutMs: null,
+  });
+  const health = makeExclusive(coordinator)(async () => {
+    assert.equal(coordinator.snapshot().ownerKind, 'deep_probe');
+    await coordinator.run('browser_ensure', async () => {
+      assert.equal(coordinator.snapshot().ownerKind, 'deep_probe', 'nested ensure reuses the health lease');
+      order.push('health');
+    });
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(coordinator.snapshot().queued.health, 1, 'health must use its reserved queue slot');
+  releaseOwner();
+  await Promise.all([owner, health, foreground]);
+  assert.deepEqual(order, ['health', 'foreground'], 'health runs before queued foreground work');
+
+  const blocked = lifecycleModule.createSpartanBrowserLifecycleCoordinator();
+  let releaseBlocked;
+  const blockedGate = new Promise(resolve => { releaseBlocked = resolve; });
+  const blockingOwner = blocked.run('tab_create', async () => { await blockedGate; });
+  await new Promise(resolve => setImmediate(resolve));
+  let probeRan = false;
+  await assert.rejects(
+    makeExclusive(blocked)(async () => { probeRan = true; }),
+    error => error?.code === 'browser_lifecycle_busy',
+    'an expired health admission maps to cached-busy semantics',
+  );
+  assert.equal(probeRan, false);
+  assert.equal(blocked.snapshot().queued.health, 0, 'expired health waiter is removed');
+  releaseBlocked();
+  await blockingOwner;
+}
+
 test('ordered patch chain transforms pristine pinned Camofox source idempotently', {
   skip: upstreamSource ? false : 'set CAMOFOX_UPSTREAM_SOURCE to an extracted pristine v1.15.0 tree',
 }, async () => {
@@ -124,6 +178,27 @@ test('ordered patch chain transforms pristine pinned Camofox source idempotently
     assert.equal(registry.create(), 'vnc');
     assert.throws(() => registry.register('other', () => 'other'), { code: 'plugin_capability_conflict' });
     assert.equal(registry.create(), 'vnc');
+    const lifecycleModule = await import(pathToFileURL(path.join(__dirname, 'spartan-lifecycle.mjs')));
+    await verifyDeepHealthReservation(server, lifecycleModule);
+    // Load the real patched plugin through upstream's Object.create(ctx) scope.
+    // A service assigned only to the child context is invisible to core closes.
+    const { loadPlugins, createPluginEvents } = await import(pathToFileURL(path.join(temp, 'lib/plugins.js')));
+    const configPath = path.join(temp, 'persistence-test-config.json');
+    fs.writeFileSync(configPath, JSON.stringify({ plugins: ['persistence'] }));
+    const events = createPluginEvents();
+    const shared = { config: { profileDir: path.join(temp, 'scratch-profiles') },
+      log() {}, events, auth: () => () => {}, persistence: Object.seal({ checkpointUser: null }) };
+    assert.match(server, /persistence: Object\.seal\(\{ checkpointUser: null \}\)/);
+    const app = { get() {}, post() {}, delete() {} };
+    assert.deepEqual(await loadPlugins(app, shared, { configPath, pluginsDir: path.join(temp, 'plugins') }), ['persistence']);
+    assert.equal(typeof shared.persistence.checkpointUser, 'function', 'core must see the plugin checkpoint service');
+    const context = { storageState: async () => ({ cookies: [], origins: [] }) };
+    await events.emitAsync('session:created', { userId: 'scratch', context });
+    assert.equal((await shared.persistence.checkpointUser('scratch')).persisted, true);
+    context.storageState = async () => { throw new Error('synthetic checkpoint failure'); };
+    assert.equal((await shared.persistence.checkpointUser('scratch')).persisted, false);
+    context.storageState = async () => ({ cookies: [], origins: [] });
+    assert.equal((await shared.persistence.checkpointUser('scratch')).persisted, true, 'failed checkpoints remain retryable');
     assert.match(server, /app\.get\('\/spartan\/health\/deep'/);
     assert.match(server, /app\.post\('\/spartan\/recover'/);
     assert.match(server, /app\.post\(\['\/tabs\/:tabId\/spartan\/viewport', '\/tabs\/:tabId\/viewport'\]/);

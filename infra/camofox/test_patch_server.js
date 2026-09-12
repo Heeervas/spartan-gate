@@ -44,6 +44,9 @@ test('unsupported pre-1.15 source fails closed without rewriting it', () => {
 
 test('Dockerfile pins 1.15 and asserts the modern patch markers', () => {
   const dockerfile = fs.readFileSync(path.join(__dirname, 'Dockerfile'), 'utf8');
+  assert.ok(dockerfile.includes('YT_DLP_VERSION=2026.08.19 YT_DLP_ASSET=yt-dlp \\'));
+  assert.ok(dockerfile.includes('YT_DLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6'));
+  assert.ok(dockerfile.includes('sh plugins/youtube/post-install.sh'));
   assert.match(dockerfile, /camofox-browser:1\.15\.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae/);
   assert.match(dockerfile, /SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1/);
   assert.doesNotMatch(dockerfile, /delete config\.plugins\.vnc\.enabled/);

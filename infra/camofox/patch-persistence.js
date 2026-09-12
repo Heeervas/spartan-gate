@@ -80,7 +80,8 @@ async function persistStorageState({ profileDir, userId, context, storageState, 
 
 function patchPlugin(source) {
   if (source.includes('SPARTAN_PERSISTENCE_CHECKPOINT_SERVICE_V2')) {
-    if (!source.includes('shutdown storage checkpoint failed') || source.includes('activeSessions.clear();')) {
+    if (!source.includes('shutdown storage checkpoint failed') || source.includes('activeSessions.clear();')
+        || !source.includes('ctx.persistence.checkpointUser = checkpointUser;')) {
       throw new Error('persistence checkpoint service is incomplete');
     }
     return source;
@@ -108,7 +109,9 @@ function patchPlugin(source) {
     }
   }
 
-  ctx.persistence = Object.freeze({ checkpointUser });
+  // The upstream loader gives each plugin Object.create(sharedContext).
+  // Mutate the core-owned holder; assigning ctx.persistence would shadow it.
+  ctx.persistence.checkpointUser = checkpointUser;
   app.post('/internal/persistence/:userId/checkpoint', ctx.auth(), async (req, res) => {
     const result = await checkpointUser(req.params.userId, 'operator_checkpoint', 8000);
     const payload = {
@@ -151,7 +154,7 @@ function patchPlugin(source) {
 
 function patchServer(source) {
   if (source.includes('SPARTAN_PERSISTENCE_CLOSE_FENCE_V2')) {
-    for (const marker of ["reason: 'plugin_unavailable'", "reason: 'checkpoint_error'", 'persistence_checkpoint_failed']) {
+    for (const marker of ["reason: 'plugin_unavailable'", "reason: 'checkpoint_error'", 'persistence_checkpoint_failed', 'persistence: Object.seal({ checkpointUser: null })']) {
       if (!source.includes(marker)) throw new Error(`persistence close fence is incomplete: ${marker}`);
     }
     return source;
@@ -159,6 +162,10 @@ function patchServer(source) {
   if (!source.includes('SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1')) {
     throw new Error('persistence close fence requires the pinned Camofox 1.15 server patch');
   }
+  source = replaceOnce(source, 'const pluginCtx = {\n', `const pluginCtx = {
+  // Shared through upstream's prototype-scoped plugin registration contexts.
+  persistence: Object.seal({ checkpointUser: null }),
+`, 'shared persistence service');
   source = replaceOnce(
     source,
     `    const closing = spartanBrowserLifecycle.run('session_close', () => closeSession(userId, session, { reason, clearDownloads, clearLocks }), { priority: 'background', waitTimeoutMs: null });

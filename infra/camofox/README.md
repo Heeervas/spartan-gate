@@ -223,6 +223,10 @@ browser is using the expected network path.
 
 Spartan Gate builds a thin local wrapper image:
 
+The 1.15 source candidate below is built but not approved for activation: its
+first page after recovery can precede UBO filter readiness. Keep the healthy
+1.14 deployment until the [refresh gate](../../docs/camofox-refresh.md) is resolved.
+
 ```env
 CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae
 CAMOFOX_IMAGE=spartan-gate-camofox:1.15.0
@@ -233,6 +237,10 @@ The v1.15.0 application tag resolves to commit
 as unsigned; the image is pinned to the verified registry index digest above.
 The release updates the bundled browser from Camoufox 135 to 152.0.4 beta.28.
 See [refresh validation and retained patches](../../docs/camofox-refresh.md).
+
+The wrapper uses upstream's checksum-pinned portable yt-dlp asset because the
+GHCR PyInstaller binary extracts executable libraries into `/tmp`, which remains
+`noexec` here. No duplicate apt upgrade or OS/VNC install layer is needed.
 
 The wrapper does not fork Camofox. It pre-fetches Camofox's default uBlock
 Origin add-on at build time. Upstream Camofox otherwise downloads that add-on
@@ -251,6 +259,10 @@ Origin add-on; `false` remains the privacy-preserving default. The switch does
 not bypass Spartan Gate's Tinyproxy or DNS allowlists, and Camofox still omits
 known analytics iframes from accessibility snapshots even though their network
 requests can load.
+
+Validate tracker protection with ordinary page scripts, not direct automation
+`evaluate(fetch(...))`: the latter can bypass extension interception on Camoufox
+152. The refresh guide describes the paired protected/analytics acceptance test.
 
 The previous Camoufox 135 image could not preserve default UBO blocking when
 custom add-ons were loaded. That combination has not yet been runtime-verified

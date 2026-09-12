@@ -3,7 +3,7 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
-- Prepared Camofox 1.15.0 with an immutable multi-architecture image pin, native fixed-proxy timeout handling, and no duplicate OS/VNC/yt-dlp installation. Preserved immediate timeout-tab retirement, launch-profile protection, durable checkpoints and operator leases; kept noVNC as the interactive path. Exact-source patch/idempotency tests cover the upgrade. Image build and runtime acceptance remain pending disk headroom.
+- Built the immutable Camofox 1.15.0 candidate and retired the duplicate fixed-proxy guard and OS/VNC apt layer. Adapted durable checkpoints to upstream's scoped plugin contexts, fixed reserved health-probe scheduling, and reused upstream's checksum-pinned portable yt-dlp to preserve noexec temporary storage. Added page-script tracker-protection acceptance. Activation remains blocked by an upstream uBlock startup gap after browser recovery; the healthy 1.14 service is retained.
 
 - Activated the reviewed cache diagnostics with a Route-only rebuild/recreation. Live health, telemetry, dashboard authentication and v2 reporting pass; other running services are unchanged. Started the passive 24–48-hour baseline with probes and cohorts disabled.
 

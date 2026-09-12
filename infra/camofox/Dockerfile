@@ -53,7 +53,13 @@ ENV CAMOFOX_INTERACTIVE=off
 ENV CAMOFOX_DISABLE_DEFAULT_ADDONS=false
 ENV CAMOFOX_ADDONS=
 
-RUN command -v yt-dlp >/dev/null && yt-dlp --version >/dev/null
+# GHCR's PyInstaller binary extracts shared libraries into /tmp and cannot
+# run with Spartan's noexec tmpfs. Reuse upstream's installer and pinned
+# portable Python zipapp instead; do not weaken the runtime mount policy.
+RUN YT_DLP_VERSION=2026.08.19 YT_DLP_ASSET=yt-dlp \
+    YT_DLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6 \
+    sh plugins/youtube/post-install.sh \
+    && yt-dlp --version
 RUN command -v python3 >/dev/null && python3 --version >/dev/null
 
 COPY spartan-health.mjs /app/spartan-health.mjs

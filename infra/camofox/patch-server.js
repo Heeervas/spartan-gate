@@ -1525,12 +1525,19 @@ const spartanDeepHealth = createSpartanDeepHealthController({
   busyMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,
   cacheMaxAgeMs: SPARTAN_DEEP_BUSY_MAX_AGE_MS,
   recoveryTimeoutMs: Number(process.env.SPARTAN_CAMOFOX_SERVER_RECOVERY_TIMEOUT_MS || 20000),
-  runExclusive: operation => {
-    const lifecycle = spartanBrowserLifecycle.snapshot();
-    if (lifecycle.ownerKind || lifecycle.recovering) throw spartanBrowserLifecycleError('browser_lifecycle_busy', 'browser lifecycle is busy');
-    return spartanBrowserLifecycle.run('deep_probe', operation, {
-      priority: 'health', waitTimeoutMs: Math.max(1, SPARTAN_DEEP_PROBE_TIMEOUT_MS - 1000), deadlineAt: Date.now() + SPARTAN_DEEP_PROBE_TIMEOUT_MS, allowDegraded: true,
-    });
+  runExclusive: async operation => {
+    try {
+      // Queue behind the active owner in the reserved health slot; checking
+      // ownerKind here would starve probes during sustained browser traffic.
+      return await spartanBrowserLifecycle.run('deep_probe', operation, {
+        priority: 'health', waitTimeoutMs: Math.max(1, SPARTAN_DEEP_PROBE_TIMEOUT_MS - 1000), deadlineAt: Date.now() + SPARTAN_DEEP_PROBE_TIMEOUT_MS, allowDegraded: true,
+      });
+    } catch (error) {
+      if (['browser_lifecycle_queue_timeout', 'browser_lifecycle_queue_full', 'browser_lifecycle_recovering'].includes(error?.code)) {
+        throw spartanBrowserLifecycleError('browser_lifecycle_busy', 'browser lifecycle is busy');
+      }
+      throw error;
+    }
   },
 });
 function spartanRequireInternalHealth(req, res) {

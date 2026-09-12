@@ -1,5 +1,22 @@
 # Decisions
 
+## 2026-09-12 — Camofox 1.15 candidate and activation gate
+
+- Retire upstream-owned fixed-proxy protection and duplicate OS/VNC apt work,
+  while retaining immediate timeout-tab retirement and launch-profile fences.
+- Share persistence callbacks through the core-owned holder required by 1.15's
+  prototype-scoped plugin loader. Deep health must use its reserved queue even
+  while another browser operation owns the lifecycle.
+- Preserve noexec `/tmp`: reuse upstream's pinned portable yt-dlp installer,
+  not the GHCR PyInstaller executable or a weaker runtime mount policy.
+- Test UBO using ordinary page-script requests and DOM result transport. Direct
+  automation evaluation has different interception behavior on Camoufox 152.
+  Exact true/1 alone enables analytics; custom add-ons remain denied otherwise.
+- Build/recreate only Camofox. Keep healthy 1.14 active while 152's first-page
+  protection after recovery lacks a verified readiness gate; do not accept
+  eventual UBO readiness as protection of the first page. Do not ship an
+  unvalidated browser-engine patch merely to finish the refresh.
+
 ## 2026-09-09 — Hermes Talk delegation
 
 - Retain the installed Talk plugin's API execution, result watchers and existing
