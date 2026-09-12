@@ -1116,6 +1116,130 @@ function spartanGuardBrowser(candidate) {
   spartanGuardLifecycleMethod(candidate, 'close', { prefix: 'browser', priority: 'background' });
   return candidate;
 }
+let spartanLaunchAttemptSequence = 0;
+let spartanCurrentLaunchAttempt = null;
+function spartanAssertLaunchAttempt(attempt, label) {
+  if (!attempt?.active || spartanCurrentLaunchAttempt !== attempt || Date.now() >= attempt.deadlineAt) {
+    if (attempt) attempt.active = false;
+    throw new Error('Browser launch expired during ' + label);
+  }
+}
+async function spartanLaunchStep(start, attempt, label) {
+  spartanAssertLaunchAttempt(attempt, label);
+  const underlying = Promise.resolve().then(start);
+  attempt.pending.add(underlying);
+  underlying.finally(() => attempt.pending.delete(underlying)).catch(() => {});
+  const result = await withTimeout(underlying, Math.max(1, attempt.deadlineAt - Date.now()), label);
+  spartanAssertLaunchAttempt(attempt, label);
+  return result;
+}
+async function spartanLaunchResource(start, attempt, label, dispose) {
+  spartanAssertLaunchAttempt(attempt, label);
+  const underlying = Promise.resolve().then(start);
+  attempt.pending.add(underlying);
+  underlying.finally(() => attempt.pending.delete(underlying)).catch(() => {});
+  underlying.then(resource => {
+    if (attempt.active && spartanCurrentLaunchAttempt === attempt && Date.now() < attempt.deadlineAt) return;
+    const cleanup = Promise.resolve().then(() => dispose(resource));
+    attempt.cleanups.add(cleanup);
+    cleanup.catch(error => attempt.cleanupErrors.push(error));
+    cleanup.finally(() => attempt.cleanups.delete(cleanup)).catch(() => {});
+  }).catch(() => {});
+  const result = await withTimeout(underlying, Math.max(1, attempt.deadlineAt - Date.now()), label);
+  spartanAssertLaunchAttempt(attempt, label);
+  return result;
+}
+async function spartanDrainLaunchAttempt(attempt) {
+  while (attempt.pending.size || attempt.cleanups.size) {
+    await Promise.allSettled([...attempt.pending, ...attempt.cleanups]);
+  }
+  if (attempt.cleanupErrors.length) {
+    throw new AggregateError(attempt.cleanupErrors, 'browser launch resource cleanup failed');
+  }
+}
+function spartanInvalidateCurrentLaunch() {
+  if (spartanCurrentLaunchAttempt) spartanCurrentLaunchAttempt.active = false;
+}
+function spartanCaptureLaunchIdentity(attempt, localVirtualDisplay, display, before) {
+  spartanAssertLaunchAttempt(attempt, 'process identity capture');
+  const beforeIds = new Set(before.map(proc => proc.pid + ':' + proc.startTime));
+  const created = snapshotOwnedBrowserProcesses(process.pid)
+    .filter(proc => !beforeIds.has(proc.pid + ':' + proc.startTime));
+  const browsers = created.filter(proc => /camoufox-bin/.test(proc.cmdline) && proc.ppid === process.pid);
+  const xvfbPid = Number(localVirtualDisplay?.proc?.pid);
+  const xvfb = created.find(proc => proc.pid === xvfbPid && proc.cmdline.startsWith('/usr/bin/Xvfb' + String.fromCharCode(0)));
+  if (browsers.length !== 1 || !xvfb || !/^:\\d+$/.test(String(display))) {
+    throw new Error('ambiguous or missing accepted browser/display identity');
+  }
+  return {
+    launchId: attempt.id,
+    generation: spartanBrowserGeneration + 1,
+    serverPid: process.pid,
+    browserPid: browsers[0].pid,
+    browserStartTime: browsers[0].startTime,
+    xvfbPid: xvfb.pid,
+    xvfbStartTime: xvfb.startTime,
+    display: String(display),
+  };
+}
+async function spartanWaitForDefaultAddonPage(page, attempt) {
+    await spartanLaunchStep(() => page.goto('https://example.com/', { waitUntil: 'domcontentloaded', timeout: Math.max(1, attempt.deadlineAt - Date.now()) }), attempt, 'addon neutral navigation');
+    const trackerUrls = [
+      'https://www.google-analytics.com/__spartan_refresh_probe__',
+      'https://www.googletagmanager.com/__spartan_refresh_probe__',
+      'https://www.facebook.com/tr/',
+    ];
+    const failures = new Map();
+    page.on('requestfailed', request => {
+      if (trackerUrls.includes(request.url())) failures.set(request.url(), request.failure()?.errorText || '');
+    });
+    let ready = false;
+    while (Date.now() < attempt.deadlineAt) {
+      failures.clear();
+      const attribute = 'data-spartan-addon-ready-' + crypto.randomUUID();
+      const result = await spartanLaunchStep(() => page.evaluate(async ({ urls, attribute }) => {
+        const source = '(async () => { const values = await Promise.all(' + JSON.stringify(urls)
+          + '.map(async url => { try { await fetch(url, { mode: "no-cors", cache: "no-store", credentials: "omit" }); return true; } catch { return false; } }));'
+          + 'document.documentElement.setAttribute(' + JSON.stringify(attribute) + ', JSON.stringify(values)); })()';
+        const script = document.createElement('script');
+        script.textContent = source;
+        document.documentElement.appendChild(script);
+        try {
+          for (let attempt = 0; attempt < 120; attempt++) {
+            const value = document.documentElement.getAttribute(attribute);
+            if (value) return JSON.parse(value);
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          throw new Error('page-world addon readiness probe timed out');
+        } finally {
+          script.remove();
+          document.documentElement.removeAttribute(attribute);
+        }
+      }, { urls: trackerUrls, attribute }), attempt, 'default addon readiness');
+      ready = Array.isArray(result) && result.length === trackerUrls.length && result.every(value => value === false)
+        && trackerUrls.every(url => failures.get(url) === 'NS_ERROR_ABORT');
+      if (ready) break;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    if (!ready) throw new Error('default addon did not block controlled page-world requests before launch deadline');
+}
+async function spartanWaitForDefaultAddon(candidate, attempt) {
+  const context = await spartanLaunchResource(() => candidate.newContext(), attempt, 'addon context creation', value => value.close());
+  let primaryError = null;
+  try {
+    const page = await spartanLaunchResource(() => context.newPage(), attempt, 'addon page creation', value => value.close());
+    await spartanWaitForDefaultAddonPage(page, attempt);
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try { await withTimeout(context.close(), 10000, 'addon context cleanup'); }
+    catch (cleanupError) {
+      attempt.cleanupErrors.push(cleanupError);
+      if (!primaryError) throw cleanupError;
+    }
+  }
+}
 function spartanPublishBrowser(candidate) {
   browser = spartanGuardBrowser(candidate);
   spartanBrowserGeneration++;
@@ -1261,7 +1385,56 @@ function spartanSettleNavigationFailure(ticket, error) {
 }`;
   source = source.slice(0, userLimitStart) + retainedUserLimit + source.slice(userLimitEnd + 2);
 
-  modernReplaceOnce('      browser = candidateBrowser; // publish AFTER PID is captured', '      spartanPublishBrowser(candidateBrowser); // publish AFTER PID is captured', 'browser publication');
+  modernReplaceOnce('async function buildLaunchOptionsWithGeoipFallback(baseOptions, attemptMeta) {', 'async function buildLaunchOptionsWithGeoipFallback(baseOptions, attemptMeta, spartanLaunchAttempt) {', 'launch options deadline argument');
+  modernReplaceOnce("    return await withTimeout(launchOptions(baseOptions), GEOIP_SETUP_TIMEOUT_MS, 'GeoIP setup');", "    return await spartanLaunchStep(() => launchOptions(baseOptions), spartanLaunchAttempt, 'GeoIP setup');", 'launch options primary deadline');
+  modernReplaceOnce('    return await launchOptions({ ...baseOptions, geoip: false });', "    return await spartanLaunchStep(() => launchOptions({ ...baseOptions, geoip: false }), spartanLaunchAttempt, 'GeoIP fallback setup');", 'launch options fallback deadline');
+  modernReplaceOnce('async function probeGoogleSearch(candidateBrowser) {', 'async function probeGoogleSearch(candidateBrowser, spartanLaunchAttempt) {', 'proxy probe deadline argument');
+  modernReplaceOnce('    context = await candidateBrowser.newContext({', '    context = await spartanLaunchResource(() => candidateBrowser.newContext({', 'proxy probe context deadline');
+  modernReplaceOnce("      permissions: ['geolocation'],\n    });", "      permissions: ['geolocation'],\n    }), spartanLaunchAttempt, 'proxy probe context creation', value => value.close());", 'proxy probe context deadline close');
+  modernReplaceOnce('    const page = await context.newPage();', "    const page = await spartanLaunchResource(() => context.newPage(), spartanLaunchAttempt, 'proxy probe page creation', value => value.close());", 'proxy probe page deadline');
+  modernReplaceOnce("    await page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });", "    await spartanLaunchStep(() => page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: Math.max(1, spartanLaunchAttempt.deadlineAt - Date.now()) }), spartanLaunchAttempt, 'proxy probe landing');", 'proxy probe landing deadline');
+  modernReplaceOnce("    await page.waitForTimeout(1200);", "    await spartanLaunchStep(() => page.waitForTimeout(1200), spartanLaunchAttempt, 'proxy probe landing settle');", 'proxy probe landing settle deadline');
+  modernReplaceOnce("    await page.goto('https://www.google.com/search?q=weather%20today', { waitUntil: 'domcontentloaded', timeout: 30000 });", "    await spartanLaunchStep(() => page.goto('https://www.google.com/search?q=weather%20today', { waitUntil: 'domcontentloaded', timeout: Math.max(1, spartanLaunchAttempt.deadlineAt - Date.now()) }), spartanLaunchAttempt, 'proxy probe search');", 'proxy probe search deadline');
+  modernReplaceOnce("    await page.waitForTimeout(4000);", "    await spartanLaunchStep(() => page.waitForTimeout(4000), spartanLaunchAttempt, 'proxy probe search settle');", 'proxy probe search settle deadline');
+  modernReplaceOnce('    await context?.close().catch(() => {});', "    await withTimeout(context?.close(), 10000, 'proxy probe context cleanup');", 'proxy probe cleanup bound');
+  modernReplaceOnce('async function launchBrowserInstance() {', 'async function launchBrowserInstance(spartanLaunchAttempt) {', 'browser launch attempt argument');
+  modernReplaceOnce('    let localVirtualDisplay = null;', `    const spartanOwnedBefore = snapshotOwnedBrowserProcesses(process.pid);
+    let localVirtualDisplay = null;`, 'browser launch process snapshot');
+  modernReplaceOnce('        vdDisplay = await localVirtualDisplay.get();', "        vdDisplay = await spartanLaunchResource(() => localVirtualDisplay.get(), spartanLaunchAttempt, 'virtual display creation', () => localVirtualDisplay.kill());", 'virtual display deadline');
+  modernReplaceOnce('      });\n      options.proxy = normalizePlaywrightProxy(options.proxy);', '      }, spartanLaunchAttempt);\n      options.proxy = normalizePlaywrightProxy(options.proxy);', 'launch options deadline call');
+  modernReplaceOnce("      await pluginEvents.emitAsync('browser:launching', { options });", "      await spartanLaunchStep(() => pluginEvents.emitAsync('browser:launching', { options }), spartanLaunchAttempt, 'browser launching event');", 'launching event deadline');
+  modernReplaceOnce('    let candidateBrowser = null;\n    try {', `    let candidateBrowser = null;
+    try {`, 'browser launch addon identity');
+  modernReplaceOnce('      candidateBrowser = await firefox.launch(options);', `      options.timeout = Math.max(1, spartanLaunchAttempt.deadlineAt - Date.now());
+      candidateBrowser = await spartanLaunchResource(() => firefox.launch(options), spartanLaunchAttempt, 'browser process launch', value => value.close());
+      if (!CONFIG.disableDefaultAddons) await spartanWaitForDefaultAddon(candidateBrowser, spartanLaunchAttempt);`, 'browser addon readiness gate');
+  modernReplaceOnce('        const probe = await probeGoogleSearch(candidateBrowser);', '        const probe = await probeGoogleSearch(candidateBrowser, spartanLaunchAttempt);', 'proxy probe deadline call');
+  modernReplaceOnce(`      virtualDisplay = localVirtualDisplay;
+      browserLaunchProxy = launchProxy;
+      _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
+      browser = candidateBrowser; // publish AFTER PID is captured`, `      const spartanAcceptedIdentity = spartanCaptureLaunchIdentity(spartanLaunchAttempt, localVirtualDisplay, vdDisplay, spartanOwnedBefore);
+      await spartanLaunchStep(() => pluginEvents.emitAsync('browser:accepted', spartanAcceptedIdentity), spartanLaunchAttempt, 'browser accepted event');
+      spartanAssertLaunchAttempt(spartanLaunchAttempt, 'browser publication');
+      virtualDisplay = localVirtualDisplay;
+      browserLaunchProxy = launchProxy;
+      _lastBrowserPid = spartanAcceptedIdentity.browserPid;
+      spartanPublishBrowser(candidateBrowser); // publish AFTER PID is captured`, 'identity-bound browser publication');
+  modernReplaceOnce('async function _closeBrowserFullyImpl(reason) {\n  const b = browser;', `async function _closeBrowserFullyImpl(reason) {
+  spartanInvalidateCurrentLaunch();
+  await pluginEvents.emitAsync('browser:closing', { reason });
+  const b = browser;`, 'VNC close barrier');
+  modernReplaceOnce('      await candidateBrowser?.close().catch(() => {});', `      let spartanBarrierError = null;
+      try { await withTimeout(pluginEvents.emitAsync('browser:closing', { reason: 'launch_failed', launchId: spartanLaunchAttempt.id }), 5000, 'VNC close barrier'); }
+      catch (cleanupError) { spartanBarrierError = cleanupError; }
+      let spartanCandidateCleanupError = null;
+      try { if (candidateBrowser) await withTimeout(candidateBrowser.close(), 10000, 'failed candidate cleanup'); }
+      catch (cleanupError) { spartanCandidateCleanupError = cleanupError; }
+      if (spartanBarrierError || spartanCandidateCleanupError) {
+        const cleanupErrors = [spartanBarrierError, spartanCandidateCleanupError].filter(Boolean);
+        spartanLaunchAttempt.cleanupErrors.push(...cleanupErrors);
+        spartanBrowserLifecycle.markDegraded('browser_launch_cleanup_failed');
+        throw new AggregateError([err, ...cleanupErrors], 'launch failed and teardown was not proven');
+      }`, 'failed launch VNC cleanup');
   modernReplaceOnce(
     'async function ensureBrowser() {\n  clearBrowserIdleTimer();',
     `async function ensureBrowser() {
@@ -1274,11 +1447,45 @@ function spartanSettleNavigationFailure(ticket, error) {
     'ensure-browser guard',
   );
   modernReplaceOnce('  if (browser) return browser;\n  if (browserLaunchPromise) return browserLaunchPromise;', '  if (browser) return spartanGuardBrowser(browser);\n  if (browserLaunchPromise) return browserLaunchPromise.then(spartanGuardBrowser);', 'ensure-browser returns');
-  modernReplaceOnce('    launchBrowserInstance(),', '    spartanTrackLifecyclePromise(launchBrowserInstance()),', 'tracked browser launch');
+  modernReplaceOnce(`  browserLaunchPromise = Promise.race([
+    launchBrowserInstance(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(\`Browser launch timeout (\${Math.round(launchTimeoutMs / 1000)}s)\`)), launchTimeoutMs)),
+  ]).finally(() => { browserLaunchPromise = null; });`, `  await withTimeout(pluginEvents.emitAsync('browser:closing', { reason: 'before_launch' }), 5000, 'VNC pre-launch barrier');
+  const spartanLaunchAttempt = { id: ++spartanLaunchAttemptSequence, deadlineAt: Date.now() + launchTimeoutMs, active: true, pending: new Set(), cleanups: new Set(), cleanupErrors: [] };
+  spartanCurrentLaunchAttempt = spartanLaunchAttempt;
+  const spartanUnderlyingLaunch = spartanTrackLifecyclePromise((async () => {
+    try { return await launchBrowserInstance(spartanLaunchAttempt); }
+    finally {
+      spartanLaunchAttempt.active = false;
+      try { await spartanDrainLaunchAttempt(spartanLaunchAttempt); }
+      catch (cleanupError) {
+        spartanBrowserLifecycle.markDegraded('browser_launch_cleanup_failed');
+        throw cleanupError;
+      }
+    }
+  })());
+  let spartanLaunchTimer;
+  const spartanPublishedLaunchPromise = Promise.race([
+    spartanUnderlyingLaunch,
+    new Promise((_, reject) => {
+      spartanLaunchTimer = setTimeout(() => {
+        spartanLaunchAttempt.active = false;
+        reject(new Error(\`Browser launch timeout (\${Math.round(launchTimeoutMs / 1000)}s)\`));
+      }, launchTimeoutMs);
+      spartanLaunchTimer.unref?.();
+    }),
+  ]).finally(() => { clearTimeout(spartanLaunchTimer); });
+  browserLaunchPromise = spartanPublishedLaunchPromise;
+  spartanUnderlyingLaunch.finally(() => {
+    spartanLaunchAttempt.active = false;
+    if (spartanCurrentLaunchAttempt === spartanLaunchAttempt) spartanCurrentLaunchAttempt = null;
+    if (browserLaunchPromise === spartanPublishedLaunchPromise) browserLaunchPromise = null;
+  }).catch(() => {});`, 'bounded tracked browser launch');
   modernReplaceOnce('  return browserLaunchPromise;\n}\n\n// Helper to normalize userId', '  return browserLaunchPromise.then(spartanGuardBrowser);\n}\n\n// Helper to normalize userId', 'guarded browser return');
   modernReplaceOnce(
     'async function closeBrowserFully(reason) {\n  if (_browserClosePromise)',
     `async function closeBrowserFully(reason) {
+  spartanInvalidateCurrentLaunch();
   if (!spartanBrowserLifecycle.hasLease()) {
     return await spartanBrowserLifecycle.run('browser_close', () => closeBrowserFully(reason), { priority: 'background', waitTimeoutMs: null });
   }
@@ -1288,9 +1495,11 @@ function spartanSettleNavigationFailure(ticket, error) {
   modernReplaceOnce(
     'async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {\n  const openSessions',
     `async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
+  spartanInvalidateCurrentLaunch();
   if (!spartanBrowserLifecycle.hasLease()) {
     return await spartanBrowserLifecycle.run('sessions_close_all', () => closeAllSessions(reason, { clearDownloads, clearLocks }), { priority: 'background', waitTimeoutMs: null });
   }
+  await withTimeout(pluginEvents.emitAsync('browser:closing', { reason }), 5000, 'VNC close barrier');
   const openSessions`,
     'close-all guard',
   );

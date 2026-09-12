@@ -3,7 +3,7 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
-- Built the immutable Camofox 1.15.0 candidate and retired the duplicate fixed-proxy guard and OS/VNC apt layer. Adapted durable checkpoints to upstream's scoped plugin contexts, fixed reserved health-probe scheduling, and reused upstream's checksum-pinned portable yt-dlp to preserve noexec temporary storage. Added page-script tracker-protection acceptance. Activation remains blocked by an upstream uBlock startup gap after browser recovery; the healthy 1.14 service is retained.
+- Activated immutable Camofox 1.15.0 and retired the duplicate fixed-proxy guard and OS/VNC apt layer. Adapted durable checkpoints to upstream scoped plugin contexts, fixed reserved health admission, and reused upstream's checksum-pinned portable yt-dlp under noexec temporary storage. Added an exact-hash once-per-profile add-on patch, page-world UBO admission, global launch deadline with late-resource cleanup, and identity-bound VNC teardown before recovery checkpointing. Independent review and cold-start/open-WebSocket recovery acceptance pass; superseded local Camofox images were pruned while rebuild coordinates remain documented.
 
 - Activated the reviewed cache diagnostics with a Route-only rebuild/recreation. Live health, telemetry, dashboard authentication and v2 reporting pass; other running services are unchanged. Started the passive 24–48-hour baseline with probes and cohorts disabled.
 

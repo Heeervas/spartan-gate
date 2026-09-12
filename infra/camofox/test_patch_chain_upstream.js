@@ -11,6 +11,7 @@ const { pathToFileURL } = require('node:url');
 const upstreamSource = process.env.CAMOFOX_UPSTREAM_SOURCE;
 const patchers = [
   ['patch-server.js'],
+  ['patch-vnc-readiness.js'],
   ['patch-log-redaction.js'],
   ['patch-persistence.js', 'lib/persistence.js', 'plugins/persistence/index.js', 'server.js'],
   ['patch-operator-lease.js'],
@@ -63,6 +64,59 @@ function verifyTimeoutIsolation(server) {
     assert.ok(server.includes("if (!isTimeoutError(navErr) && recordNavFailure(userId)) {\n              await recoverUserSession(userId, '" + reason + "');"),
       'route-level accounting must not count the timeout a second time');
   }
+}
+
+async function verifyLaunchLateCleanup(server) {
+  const start = server.indexOf('let spartanLaunchAttemptSequence = 0;');
+  const end = server.indexOf('function spartanCaptureLaunchIdentity(', start);
+  assert.ok(start >= 0 && end > start, 'generated launch attempt helpers exist');
+  const helpers = server.slice(start, end);
+  const context = {
+    Promise, Set, Date,
+    withTimeout: async (promise, ms, label) => await Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(label + ' timed out')), ms)),
+    ]),
+    setTimeout,
+  };
+  vm.runInNewContext(`${helpers}
+    this.runResource = (attempt, start, dispose) => {
+      spartanCurrentLaunchAttempt = attempt;
+      return spartanLaunchResource(start, attempt, 'synthetic late resource', dispose);
+    };
+    this.runStep = (attempt, start) => {
+      spartanCurrentLaunchAttempt = attempt;
+      return spartanLaunchStep(start, attempt, 'synthetic expired step');
+    };
+    this.drainAttempt = spartanDrainLaunchAttempt;`, context);
+  let started = 0;
+  const expired = { active: true, deadlineAt: Date.now() - 1, pending: new Set(), cleanups: new Set(), cleanupErrors: [] };
+  await assert.rejects(context.runStep(expired, () => { started++; }), /expired/);
+  assert.equal(started, 0, 'expired thunk must not start');
+
+  let disposed = 0;
+  const attempt = { active: true, deadlineAt: Date.now() + 10, pending: new Set(), cleanups: new Set(), cleanupErrors: [] };
+  await assert.rejects(context.runResource(attempt,
+    () => new Promise(resolve => setTimeout(() => resolve({ close: () => { disposed++; } }), 35)),
+    resource => resource.close()), /timed out/);
+  attempt.active = false;
+  await context.drainAttempt(attempt);
+  assert.equal(disposed, 1, 'late resource must be disposed exactly once before attempt drain settles');
+  assert.equal(attempt.pending.size, 0);
+  assert.equal(attempt.cleanups.size, 0);
+  const failedCleanup = { active: true, deadlineAt: Date.now() + 10, pending: new Set(), cleanups: new Set(), cleanupErrors: [] };
+  await assert.rejects(context.runResource(failedCleanup,
+    () => new Promise(resolve => setTimeout(() => resolve({}), 30)),
+    () => { throw new Error('synthetic disposer failure'); }), /timed out/);
+  failedCleanup.active = false;
+  await assert.rejects(context.drainAttempt(failedCleanup), /browser launch resource cleanup failed/);
+  assert.equal(failedCleanup.cleanupErrors.length, 1, 'cleanup rejection remains fail-closed after settlement');
+  assert.match(server, /if \(browserLaunchPromise === spartanPublishedLaunchPromise\) browserLaunchPromise = null/,
+    'single-flight remains published until the underlying attempt and disposer drain settle');
+  assert.match(server, /spartanBrowserLifecycle\.markDegraded\('browser_launch_cleanup_failed'\)/,
+    'unproven cleanup degrades lifecycle before single-flight can clear');
+  assert.doesNotMatch(server, /proxy probe context cleanup'\)\.catch/,
+    'proxy helper context cleanup failure prevents browser acceptance');
 }
 
 function generatedDeepHealthExclusive(server, context) {
@@ -167,11 +221,63 @@ test('ordered patch chain transforms pristine pinned Camofox source idempotently
     assert.match(server, /isNavigationTimeout && proxyPool\?\.canRotateSessions/);
     assert.match(server, /destroyTab\(timedOutSession, timedOutTabId, 'navigation_timeout'/);
     verifyTimeoutIsolation(server);
+    await verifyLaunchLateCleanup(server);
     assert.equal(server.split("geoip: process.env.CAMOFOX_GEOIP !== 'false' && !!launchProxy,").length - 1, 2);
     assert.doesNotMatch(server, /geoip: !!launchProxy,/);
     assert.match(server, /virtualDisplayRegistry\.create\(\)/);
     assert.match(server, /registerVirtualDisplayProvider:.*virtualDisplayRegistry\.register/);
-    assert.match(fs.readFileSync(path.join(temp, 'plugins/vnc/index.js'), 'utf8'), /ctx\.plugin\.registerVirtualDisplayProvider/);
+    const vncPlugin = fs.readFileSync(path.join(temp, 'plugins/vnc/index.js'), 'utf8');
+    const vncWatcher = fs.readFileSync(path.join(temp, 'plugins/vnc/vnc-watcher.sh'), 'utf8');
+    assert.match(vncPlugin, /ctx\.plugin\.registerVirtualDisplayProvider/);
+    assert.match(vncPlugin, /SPARTAN_VNC_READINESS_V2/);
+    assert.match(vncPlugin, /events\.on\('browser:accepted', startAcceptedWatcher\)/);
+    assert.match(vncPlugin, /events\.on\('browser:closing', stopAcceptedWatcher\)/);
+    assert.match(vncWatcher, /NOVNC_PID=\$!/);
+    assert.match(vncWatcher, /X11VNC_PID=\$!/);
+    assert.match(vncWatcher, /VNC_BROWSER_STARTTIME/);
+    assert.match(vncWatcher, /VNC_XVFB_STARTTIME/);
+    assert.match(vncWatcher, /\[ "\$1" != Z \]/);
+    assert.doesNotMatch(vncWatcher, /pgrep -f| -bg |find_owned_display/);
+    const watcherSyntax = spawnSync('sh', ['-n', path.join(temp, 'plugins/vnc/vnc-watcher.sh')], { encoding: 'utf8' });
+    assert.strictEqual(watcherSyntax.status, 0, `VNC watcher syntax failed:\n${watcherSyntax.stderr}`);
+    fs.writeFileSync(path.join(temp, 'plugins/vnc/vnc-launcher.js'), `
+      import { EventEmitter } from 'node:events';
+      export function resolveVncConfig() { return { enabled: true, resolution: '1x1x24', vncPassword: '', viewOnly: false, vncPort: '5900', novncPort: '6080' }; }
+      export function startWatcher(options) {
+        const child = new EventEmitter();
+        child.exitCode = null;
+        child.killed = false;
+        child.getVncStatus = () => ({ running: child.exitCode === null, display: options.identity.display });
+        child.kill = signal => {
+          assert.equal(signal, 'SIGTERM');
+          child.killed = true;
+          setTimeout(() => { child.exitCode = 0; child.emit('exit', 0, null); }, 20);
+        };
+        globalThis.__spartanVncStarts.push({ options, child });
+        return child;
+      }
+    `.replace('          assert.equal(signal, \'SIGTERM\');', "          if (signal !== 'SIGTERM') throw new Error('unexpected signal');"));
+    globalThis.__spartanVncStarts = [];
+    const { createPluginEvents: createVncEvents } = await import(pathToFileURL(path.join(temp, 'lib/plugins.js')));
+    const { register: registerVnc } = await import(pathToFileURL(path.join(temp, 'plugins/vnc/index.js')) + '?lifecycle-test=1');
+    const vncEvents = createVncEvents();
+    class FakeVirtualDisplay { get xvfb_args() { return ['-screen', '0', '1x1x24']; } kill() {} }
+    await registerVnc({ get() {} }, {
+      events: vncEvents, config: { accessKey: 'test' }, log() {}, sessions: new Map(),
+      VirtualDisplay: FakeVirtualDisplay, safeError: String, persistenceStorageStateOptions: {},
+      plugin: { settings: {}, registerVirtualDisplayProvider() {} },
+    });
+    assert.equal(globalThis.__spartanVncStarts.length, 0, 'VNC must not start before browser acceptance');
+    await assert.rejects(vncEvents.emitAsync('browser:accepted', { launchId: 1 }), /missing accepted VNC identity field/);
+    const identity = { launchId: 1, generation: 1, serverPid: 10, browserPid: 11, browserStartTime: '12', xvfbPid: 13, xvfbStartTime: '14', display: ':0' };
+    await vncEvents.emitAsync('browser:accepted', identity);
+    assert.equal(globalThis.__spartanVncStarts.length, 1);
+    assert.deepEqual(globalThis.__spartanVncStarts[0].options.identity, identity);
+    const closeStarted = Date.now();
+    await vncEvents.emitAsync('browser:closing', { reason: 'test' });
+    assert.ok(Date.now() - closeStarted >= 15, 'close barrier must await watcher exit');
+    assert.equal(globalThis.__spartanVncStarts[0].child.exitCode, 0);
+    delete globalThis.__spartanVncStarts;
     const { createVirtualDisplayRegistry } = await import(pathToFileURL(path.join(temp, 'lib/plugin-capabilities.js')));
     const registry = createVirtualDisplayRegistry(() => 'headless');
     registry.register('vnc', () => 'vnc');

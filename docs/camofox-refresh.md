@@ -10,11 +10,11 @@ and its SHA-256 independently recomputed:
 ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae
 ```
 
-This follows the already committed 1.14 refresh, which removed the old VNC
-override and much of the pre-1.12 lifecycle patching. The 1.15 wrapper was built
-and trialled on September 12 after disk headroom became available, then rolled
-back because immediate post-recovery tracker protection failed. Healthy 1.14
-remains active; **do not activate this candidate yet**.
+This follows the 1.14 refresh, which removed the old VNC override and much of
+the pre-1.12 lifecycle patching. The first 1.15 trial exposed an upstream
+temporary-addon startup race. The accepted wrapper closes that race before
+publication and was activated on September 12 after independent review and
+cold-start, recovery, protected-mode, analytics-mode, and VNC acceptance.
 
 ## Patch decisions
 
@@ -24,6 +24,8 @@ remains active; **do not activate this candidate yet**.
 | Periodic profile cleanup | Retain suppression. Upstream protects paths belonging to an established browser, but `browser` can be null during a launch. The outer launch timeout can settle before the underlying launch, so checking only `browserLaunchPromise` is insufficient. Startup and post-close cleanup remain upstream-owned. |
 | OS/VNC/yt-dlp installation | Remove the wrapper's duplicate apt upgrade/install layer. Keep assertions for upstream tools and noVNC, checksum-verified Onest and offline UBO. GHCR's PyInstaller yt-dlp cannot run under the existing noexec `/tmp`: reuse upstream's installer with its pinned, checksum-verified portable Python asset instead. Do not weaken the mount policy. |
 | VNC and display ownership | Use upstream's exclusive provider registry and VNC plugin. A conflicting display provider must fail startup. Set `CAMOFOX_INTERACTIVE=off` in the image and all tiers; noVNC remains controlled by `CAMOFOX_ENABLE_VNC`. |
+| Add-on admission | Retain upstream temporary-addon installation, but claim it once per launch profile in the pinned browser archive. Before publishing a protected browser, require ordinary page-world GA/GTM/Meta requests to fail with `NS_ERROR_ABORT`. Exact `true`/`1` analytics mode bypasses this gate. All launch steps share one deadline; late resources are disposed, and cleanup failure degrades lifecycle for PID-1 recovery. |
+| VNC admission | Start noVNC only after browser acceptance. Bind the watcher to the exact server, root browser and Xvfb PID/start-time/display identities. Stop and reap websockify before x11vnc before session checkpointing or recovery; identity mismatch, zombies and teardown failure fail closed. |
 | Operator lease | Adapt to upstream's `SESSION_TIMEOUT_MS > 0` condition, preserving disabled expiry, pending-create fences, renewable leases, and ordinary-close protection. |
 | Persistence | Retain private-mode, validated, fsynced atomic writes and fail-closed pre-close checkpoints. Publish the checkpoint callback through a core-owned holder: 1.15 gives plugins prototype-scoped contexts, so assigning a new service object in the plugin hides it from the core. Reuse upstream serialization and exact supplied snapshots. IndexedDB remains opt-in; identity hashes and filenames are unchanged. |
 | Lifecycle, readiness and pressure | Retain bounded admission, late-completion fences, generation-bound deep health, cgroup limits, and the PID-1 recovery ledger. Health probes must enter the reserved priority queue even while an owner is active; map admission failures to bounded cached-busy semantics. An early owner check starved probes during sustained traffic. Upstream page leases, per-user recovery, and owned process cleanup remain in use. |
@@ -43,7 +45,7 @@ to a temporary copy, syntax-checks output, reapplies the entire chain, and
 compares bytes. It also exercises transformed timeout isolation and native
 display ownership, and rejects missing/duplicate anchors without partial writes.
 
-September 12 validation: 46 Camofox JavaScript tests, 24 supervisor tests,
+September 12 validation: 46 Camofox JavaScript tests, 26 Python tests,
 3 Hermes isolation tests, and the full 345-test scripts suite pass (one optional
 Realtime probe test skips without aiohttp). The scripts suite renders all 13
 Compose shapes. Independent review found no remaining P0–P2 code issues.
@@ -64,15 +66,12 @@ python3 -m unittest discover -s apps/hermes-agent -p 'test_camofox_tab_isolation
 ## Deployment gate and rollback
 
 The initial disk blocker was cleared on September 12. Free space remained above
-5 GB during the Camofox-only build and activation (about 6.9 GB afterwards).
-Do not prune active or rollback images or inspect profile contents to make space.
-
-The observed healthy rollback image is `spartan-gate-camofox:1.14.0`, image ID
-`sha256:55f32a94be0be17a0c814631144adc4937836cc86fa7abc68d25622f3306aa82`.
-It is retained as `spartan-gate-camofox:rollback-1.14-20260912`.
-The private Camofox base/wrapper pins were restored to 1.14 after testing.
-The tested 1.15 candidate image is
-`sha256:ac44808e1ac3ef8f96a83ffab8a38d6ced6b1e52b49d177b2845435030066bb0`.
+5 GB during Camofox-only builds and activation. The accepted local 1.15 image is
+`sha256:dce311d851e7759a7ecd5107238ed9d2a5494dfa466eca2ebfa802ff9ad2a9c5`.
+After production acceptance, superseded local Camofox images, including 1.14,
+were pruned as requested. Rebuild coordinates remain commit `fb6e8f7` plus
+upstream 1.14 digest
+`sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce`.
 Use the main-stack helpers to build and recreate only Camofox, with no
 dependency recreation. To build while leaving the active private pins intact:
 
@@ -84,8 +83,9 @@ CAMOFOX_IMAGE=spartan-gate-camofox:1.15.0 sg build camofox
 sg up -d --no-deps --no-build camofox
 ```
 
-A rollback selects the retained 1.14 image and recreates
-only Camofox with `--no-build`; it does not restore, reset or delete profiles.
+A rollback rebuilds the immutable 1.14 coordinates above, selects that image,
+and recreates only Camofox with `--no-build`; it does not restore, reset or
+delete profiles.
 
 Runtime checks that passed on the built candidate:
 
@@ -128,21 +128,17 @@ with no container restart. The recovery ledger was not reset. Checkpoint failure
 injection and custom add-on tests used a disposable container with synthetic
 tmpfs profiles; real profile contents were not inspected or deleted.
 
-## Remaining activation blocker
+## Accepted readiness gate
 
-After authenticated recovery advanced browser generation 1→2, deep health and
-noVNC reattachment passed, but the immediately following ordinary page-script
-probe allowed all three inert tracker requests. Later probes blocked all three.
-This is distinct from the automation-evaluation test artifact described above.
-Camoufox's per-window temporary-addon installation is asynchronous, and UBO's
-filter initialization is also asynchronous: browser/page readiness does not
-prove that filtering is ready. Steady-state protection is not sufficient.
+The wrapper patches one hash-pinned `browser-init.js` entry inside `omni.ja` so
+temporary add-ons start once per launch profile, then delays publication until
+the page-world protection probe passes. The archive and VNC transformations are
+strictly hash-checked and idempotent. VNC transport is identity-bound and absent
+before acceptance. An open-WebSocket recovery test advanced generation 1→2,
+reaped all generation-1 VNC processes, created new identities, and the immediate
+ordinary page-script probe blocked all three inert tracker requests.
 
-Keep the 1.14 service and rollback image. A future activation needs an upstream
-fix or an independently reviewed readiness gate, followed by cold-start and
-immediate post-recovery protection tests. No experimental engine archive patch
-is shipped in this change. Real profile contents were not read or deleted, and
-all eight neighboring containers, images and start times remained unchanged.
-
-After an accepted activation, review logs over 24 hours and retain rollback for
-seven days. Browserless retirement and builds of other services are separate work.
+Independent closure review found no remaining P0/P1 production blocker. Real
+profile contents were not read or deleted, and neighboring services were not
+recreated. Review Camofox logs over the next 24 hours. Browserless retirement
+and builds of other services remain separate work.

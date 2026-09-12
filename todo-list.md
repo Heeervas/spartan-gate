@@ -4,14 +4,15 @@ Last updated: 2026-09-12
 
 Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
-## Blocked
+## Completed
 
-- [ ] Complete Camofox 1.15 activation after resolving upstream add-on readiness.
-  - Disk headroom is no longer the blocker. The image and reviewed compatibility
-    fixes are built and tested, but the first page after browser recovery can
-    load trackers before UBO is ready. Healthy 1.14 remains active.
-  - Require an independently reviewed engine/readiness fix or upstream release
-    that passes immediate post-recovery protection. See `docs/camofox-refresh.md`.
+- [x] Activate Camofox 1.15 with reviewed add-on and VNC readiness gates.
+  - Cold start, exact analytics mode, malformed-mode protection, open-WebSocket
+    recovery, immediate generation-2 protection and production health pass.
+  - Superseded local Camofox images are pruned after acceptance; immutable 1.14
+    rebuild coordinates remain in `docs/camofox-refresh.md`.
+
+## Blocked
 
 - [ ] Complete the privileged Tailscale hostname and certificate cutover.
   - Blocked on interactive `sudo`. Keep the current hostname and certificate

@@ -13,9 +13,14 @@
   automation evaluation has different interception behavior on Camoufox 152.
   Exact true/1 alone enables analytics; custom add-ons remain denied otherwise.
 - Build/recreate only Camofox. Keep healthy 1.14 active while 152's first-page
-  protection after recovery lacks a verified readiness gate; do not accept
-  eventual UBO readiness as protection of the first page. Do not ship an
-  unvalidated browser-engine patch merely to finish the refresh.
+  protection lacks a verified readiness gate; do not accept eventual UBO
+  readiness as protection of the first page.
+- Accept the exact-hash browser-init adapter only with a page-world protection
+  gate before publication, one global launch deadline, late-resource disposal,
+  and cleanup-failure degradation. Bind VNC to exact accepted process identities
+  and tear it down before checkpointing. Activate only after independent review
+  and immediate post-recovery acceptance; then prune superseded local Camofox
+  images while retaining immutable rebuild coordinates.
 
 ## 2026-09-09 — Hermes Talk delegation
 

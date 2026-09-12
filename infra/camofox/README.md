@@ -223,9 +223,9 @@ browser is using the expected network path.
 
 Spartan Gate builds a thin local wrapper image:
 
-The 1.15 source candidate below is built but not approved for activation: its
-first page after recovery can precede UBO filter readiness. Keep the healthy
-1.14 deployment until the [refresh gate](../../docs/camofox-refresh.md) is resolved.
+The reviewed 1.15 image is active. Its launch gate proves default UBO filtering
+before browser publication, and its VNC watcher is bound to the accepted
+browser/Xvfb identity and torn down before recovery checkpointing.
 
 ```env
 CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae
@@ -242,11 +242,17 @@ The wrapper uses upstream's checksum-pinned portable yt-dlp asset because the
 GHCR PyInstaller binary extracts executable libraries into `/tmp`, which remains
 `noexec` here. No duplicate apt upgrade or OS/VNC install layer is needed.
 
-The wrapper does not fork Camofox. It pre-fetches Camofox's default uBlock
+The wrapper remains a thin, hash-pinned Camofox adapter. It pre-fetches Camofox's default uBlock
 Origin add-on at build time. Upstream Camofox otherwise downloads that add-on
 on first browser launch with Node `fetch`, which does not follow Spartan Gate's
 runtime Tinyproxy path and fails while the service is correctly isolated on
 `spartan_internal`.
+
+The adapter also patches the exact pinned browser-init archive entry to make
+temporary-addon installation once-per-profile. The server admits protected
+browsers only after an ordinary page-world tracker probe is blocked, and starts
+identity-bound VNC transports only after that admission. See the refresh record
+for deadline, late-cleanup, analytics-mode and recovery contracts.
 
 The wrapper also makes upstream Camofox geo-IP proxy probing opt-in through
 `CAMOFOX_GEOIP`. The default is `false` because Spartan Gate's normal Camofox

@@ -64,8 +64,14 @@ RUN command -v python3 >/dev/null && python3 --version >/dev/null
 
 COPY spartan-health.mjs /app/spartan-health.mjs
 COPY spartan-lifecycle.mjs /app/spartan-lifecycle.mjs
+COPY patch-addon-readiness.py /tmp/spartan-camofox-patch-addon-readiness.py
+RUN python3 /tmp/spartan-camofox-patch-addon-readiness.py \
+    && rm /tmp/spartan-camofox-patch-addon-readiness.py
 COPY patch-server.js /tmp/spartan-camofox-patch-server.js
 RUN node /tmp/spartan-camofox-patch-server.js && rm /tmp/spartan-camofox-patch-server.js
+COPY patch-vnc-readiness.js /tmp/spartan-camofox-patch-vnc-readiness.js
+RUN node /tmp/spartan-camofox-patch-vnc-readiness.js \
+    && rm /tmp/spartan-camofox-patch-vnc-readiness.js
 COPY patch-log-redaction.js /tmp/spartan-camofox-patch-log-redaction.js
 RUN node /tmp/spartan-camofox-patch-log-redaction.js && rm /tmp/spartan-camofox-patch-log-redaction.js
 COPY patch-persistence.js /tmp/spartan-camofox-patch-persistence.js

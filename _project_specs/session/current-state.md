@@ -1,6 +1,6 @@
 # Current State
 
-## Camofox 1.15 candidate — activation blocked (2026-09-12)
+## Camofox 1.15 active — readiness and recovery accepted (2026-09-12)
 
 Built and trialled the independently reviewed immutable 1.15.0 wrapper after
 disk headroom became available. Upstream owns fixed-proxy session preservation;
@@ -18,18 +18,18 @@ concurrent tabs, 390x844 viewport, authenticated noVNC, watchdog recovery and th
 steady-state page-script tracker-protection matrix. Synthetic cookie/localStorage
 state survived 630 seconds of continuous checks and a final checkpoint.
 
-Final recovery exposed the activation blocker: generation 1→2 and deep health
-succeeded, but the first ordinary page-script tracker probe allowed GA/GTM/Meta
-before UBO became ready. Subsequent probes blocked them. Upstream window/add-on
-startup is not an adequate filter-readiness signal. The candidate is not accepted
-for deployment; the active service and private pins are restored to healthy 1.14.
-No experimental browser-engine patch is included. Further work requires a
-reviewed readiness fix or an upstream release with demonstrated parity.
+The accepted adapter claims temporary-addon installation once per launch
+profile and withholds browser publication until a page-world UBO probe passes.
+Launch attempts use one deadline, dispose late resources, and degrade on
+unproven cleanup. VNC starts only after acceptance, validates exact browser/Xvfb
+PID and start-time identities, and is reaped before session teardown.
 
-Only Camofox was rebuilt/recreated; the eight neighboring containers and start
-times are unchanged. At least 5 GB remained free throughout. The 1.14 rollback
-image is retained. The 24-hour log review and seven-day retention window start
-only after a future accepted activation. See `docs/camofox-refresh.md`.
+Independent closure review found no P0/P1 production blocker. Cold start,
+protected/analytics/malformed modes, open-WebSocket generation 1→2 recovery,
+immediate post-recovery protection and production health pass. Only Camofox was
+rebuilt/recreated; neighboring services were unchanged. Superseded Camofox
+images were pruned after acceptance while immutable rebuild coordinates remain.
+See `docs/camofox-refresh.md`.
 
 ## Astra cache diagnostics and gated experiments (2026-09-12)
 
