@@ -12,7 +12,7 @@ function replaceOnce(source, from, to, label) {
 function patchOperatorLease(source) {
   if (source.includes('SPARTAN_OPERATOR_LEASE_V2')) return source;
   if (!source.includes('SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1')) {
-    throw new Error('operator lease requires the pinned Camofox 1.14 server patch');
+    throw new Error('operator lease requires the pinned Camofox 1.15 server patch');
   }
   const helpers = `const SPARTAN_OPERATOR_GROUP = 'spartan-operator-login';
 const SPARTAN_OPERATOR_LEASE_MS = 30 * 60 * 1000;
@@ -73,8 +73,8 @@ function spartanHardCloseReason(reason) {
         const lockState = pressureLockState(tabId);`, `      for (const [tabId, tabState] of group) {
         if (spartanOperatorTabLeaseActive(tabState, now)) continue;
         const lockState = pressureLockState(tabId);`, 'pressure cleanup lease');
-  source = replaceOnce(source, '    if (now - session.lastAccess > SESSION_TIMEOUT_MS) {', `    if (
-      now - session.lastAccess > SESSION_TIMEOUT_MS
+  source = replaceOnce(source, '    if (SESSION_TIMEOUT_MS > 0 && now - session.lastAccess > SESSION_TIMEOUT_MS) {', `    if (
+      SESSION_TIMEOUT_MS > 0 && now - session.lastAccess > SESSION_TIMEOUT_MS
       && !spartanHasPendingUserCreate(userId)
       && !spartanOperatorSessionLeaseActive(session, now)
     ) {`, 'session timeout lease');

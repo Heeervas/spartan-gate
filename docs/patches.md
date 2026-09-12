@@ -77,7 +77,7 @@ These should be proposed upstream or deleted when upstream fixes the behavior.
 | Patch | Why it looks upstreamable |
 | --- | --- |
 | `patch_mcp_proxy_env.py` | Stdio MCP subprocesses need proxy variables in network-constrained containers, and the current MCP SDK requires legacy YAML boolean/number environment scalars to be normalized to strings. |
-| Camofox live-profile cleanup, fixed-proxy timeout handling, and bounded waiter retention in `infra/camofox/patch-server.js` | Upstream should avoid scanning active Firefox temp profiles, preserve fixed-proxy sessions on a single navigation timeout, and remove expired concurrency waiters. The former noVNC override was deleted after v1.14.0 gained the required native behavior. |
+| Camofox launch-profile cleanup, immediate timeout-tab retirement, and bounded waiter retention in `infra/camofox/patch-server.js` | v1.15 owns fixed-proxy session preservation. Spartan retains immediate retirement of the timed-out tab, de-duplicated failure accounting, and bounded waiters. Periodic profile scans remain disabled because upstream's established-browser protection does not cover unfinished launches. The noVNC override was removed in v1.14. See [Camofox refresh](camofox-refresh.md). |
 | Camofox runtime viewport route in `infra/camofox/patch-server.js` | Upstream should resize the page runtime viewport and report effective dimensions instead of returning `ok` for screenshot-only crops or no-ops. |
 
 ## Review Rule

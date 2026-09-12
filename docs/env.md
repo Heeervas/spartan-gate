@@ -254,9 +254,9 @@ unless `CAMOFOX_URL` is set.
   `http://camofox:9377` to opt in for generic Hermes browser tools and Google
   Meet transcribe mode.
 - `CAMOFOX_BASE_IMAGE`: pinned upstream Camofox base image, default
-  `ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce`.
+  `ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae`.
 - `CAMOFOX_IMAGE`: local Spartan Gate Camofox wrapper image, default
-  `spartan-gate-camofox:1.14.0`. The wrapper pre-fetches Camofox's default
+  `spartan-gate-camofox:1.15.0`. The wrapper pre-fetches Camofox's default
   add-on at build time so the runtime service can stay internal-network only.
 - `CAMOFOX_ACCESS_KEY`: bearer token required by protected Camofox routes.
 - `CAMOFOX_API_KEY`: optional dedicated key for Camofox cookie/storage-related
@@ -304,11 +304,14 @@ unless `CAMOFOX_URL` is set.
 - `CAMOFOX_ADDONS`: comma-separated extracted Firefox add-on directories
   inside the container, normally below `/opt/camofox-addons`. Leave empty when
   no private add-ons are required.
-  Bundled Camoufox 135 cannot reliably keep UBO active alongside a custom
-  add-on, so Camofox fails closed if this is non-empty while
+  UBO alongside custom add-ons failed on the previous Camoufox 135 image and
+  remains unverified on 152. Camofox therefore fails closed if this is non-empty while
   `CAMOFOX_DISABLE_DEFAULT_ADDONS` is false. Set the disable flag explicitly
   when custom add-ons are required.
 - `CAMOFOX_ENABLE_VNC`: enable Camofox noVNC support, default `0`.
+- `CAMOFOX_INTERACTIVE`: fixed to `off` in the image and public Compose tiers.
+  Use `CAMOFOX_ENABLE_VNC` for human interaction; host-desktop mode is not
+  exposed by this integration.
 - `CAMOFOX_VNC_PASSWORD`: password for VNC/noVNC when VNC is enabled.
 - `CAMOFOX_NOVNC_PORT`: private noVNC host port served through Caddy. The
   default Caddyfile listens on container port `26080`. In HTTPS setups,

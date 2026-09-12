@@ -1,5 +1,20 @@
 # Current State
 
+## Camofox 1.15 source refresh (2026-09-12)
+
+Prepared and independently reviewed the immutable 1.15.0 image pin and patch
+adaptation. Upstream owns fixed-proxy session preservation; duplicate package
+installation is removed. Immediate timeout-tab retirement, launch-profile
+protection, durable checkpoints and operator leases remain local. The exact
+source patch chain, repeat application, 46 JS tests, 24 supervisor tests,
+3 Hermes isolation tests and 341 script tests pass (one optional dependency
+skip). All 13 Compose shapes render; doctor has unrelated public-path findings.
+
+Build/deployment remains pending because only about 1.5 GB is free. The running
+1.14 image and private pins are unchanged. Do not treat source validation as
+Camoufox 152 runtime validation. See `docs/camofox-refresh.md` for the exact
+target, rollback identity, retained debt and remaining acceptance checks.
+
 ## Astra cache diagnostics and gated experiments (2026-09-12)
 
 Implemented and independently reviewed native payload diagnostics, explicit

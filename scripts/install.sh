@@ -378,8 +378,8 @@ write_env_file() {
     append_env CAMOFOX_DISABLE_DEFAULT_ADDONS "$camofox_disable_default_addons"
     append_env CAMOFOX_ENABLE_VNC "1"
     append_env CAMOFOX_VNC_PASSWORD "$(get_or_generate CAMOFOX_VNC_PASSWORD 24)"
-    append_env CAMOFOX_IMAGE "spartan-gate-camofox:1.14.0"
-    append_env CAMOFOX_BASE_IMAGE "ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce"
+    append_env CAMOFOX_IMAGE "spartan-gate-camofox:1.15.0"
+    append_env CAMOFOX_BASE_IMAGE "ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae"
     browserless_image="$(env_value BROWSERLESS_IMAGE || true)"
     browserless_base_image="$(env_value BROWSERLESS_BASE_IMAGE || true)"
     if [[ "$browserless_image" == ghcr.io/browserless/chromium:* || "$browserless_image" == ghcr.io/browserless/chromium@* ]]; then

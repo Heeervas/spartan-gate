@@ -6,6 +6,12 @@ Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
 ## Blocked
 
+- [ ] Build and deploy the reviewed Camofox 1.15 source refresh once disk
+  headroom permits keeping at least 5 GB free throughout operations.
+  - Source, full patch-chain idempotency, script/Compose validation and review
+    are complete. Retain the healthy 1.14 rollback image, build/recreate only
+    Camofox, and complete the runtime checks in `docs/camofox-refresh.md`.
+
 - [ ] Complete the privileged Tailscale hostname and certificate cutover.
   - Blocked on interactive `sudo`. Keep the current hostname and certificate
     active until the replacement is issued, validated, and has a rollback path.

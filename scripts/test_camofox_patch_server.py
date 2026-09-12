@@ -8,8 +8,8 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CAMOFOX = ROOT / "infra" / "camofox"
 PIN = (
-    "ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:"
-    "86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce"
+    "ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:"
+    "e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae"
 )
 
 
@@ -19,9 +19,9 @@ class CamofoxPatchServerTests(unittest.TestCase):
         self.assertIn("SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1", patch)
         self.assertIn("createPageWithRecoveryForUser", patch)
         self.assertIn("closeLeasedPage(late.session, late.page, late.lease)", patch)
-        self.assertIn("never scan Firefox temp profiles while a browser is live", patch)
+        self.assertIn("cleanupStaleFirefoxProfiles({ protectedPaths: profiles })", patch)
         self.assertIn(
-            "NAVIGATION_TIMEOUT_ACTIONS.has(action) && proxyPool?.canRotateSessions",
+            "isNavigationTimeout && proxyPool?.canRotateSessions",
             patch,
         )
         self.assertIn("unsupported Camofox upstream source", patch)
@@ -42,7 +42,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(server.read_text(), original)
 
-    def test_every_compose_shape_pins_1_14_and_wires_safe_default(self):
+    def test_every_compose_shape_pins_1_15_and_wires_safe_default(self):
         compose_files = [
             ROOT / "infra" / "compose" / "compose.yml",
             ROOT / "infra" / "compose" / "tiers" / "compose.l1.yml",
@@ -52,6 +52,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
             with self.subTest(compose=compose):
                 source = compose.read_text()
                 self.assertIn(PIN, source)
+                self.assertIn('CAMOFOX_INTERACTIVE: "off"', source)
                 self.assertIn(
                     "CAMOFOX_DISABLE_DEFAULT_ADDONS: "
                     "${CAMOFOX_DISABLE_DEFAULT_ADDONS:-false}",
@@ -62,6 +63,8 @@ class CamofoxPatchServerTests(unittest.TestCase):
         dockerfile = (CAMOFOX / "Dockerfile").read_text()
         self.assertIn(PIN, dockerfile)
         self.assertIn("ENV CAMOFOX_DISABLE_DEFAULT_ADDONS=false", dockerfile)
+        self.assertIn("ENV CAMOFOX_INTERACTIVE=off", dockerfile)
+        self.assertNotIn("apt-get", dockerfile)
         self.assertIn("SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1", dockerfile)
         self.assertIn("SPARTAN_PERSISTENCE_DURABILITY_V2", dockerfile)
         self.assertIn("SPARTAN_OPERATOR_LEASE_V2", dockerfile)
@@ -70,7 +73,7 @@ class CamofoxPatchServerTests(unittest.TestCase):
     def test_pristine_upstream_chain_when_source_is_supplied(self):
         source = os.environ.get("CAMOFOX_UPSTREAM_SOURCE")
         if not source:
-            self.skipTest("set CAMOFOX_UPSTREAM_SOURCE to pristine Camofox v1.14.0")
+            self.skipTest("set CAMOFOX_UPSTREAM_SOURCE to pristine Camofox v1.15.0")
         result = subprocess.run(
             ["node", "--test", str(CAMOFOX / "test_patch_chain_upstream.js")],
             cwd=ROOT,

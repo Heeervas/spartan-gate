@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const test = require('node:test');
+const vm = require('node:vm');
 const { patchOperatorLease } = require('./patch-operator-lease.js');
 
 const fixture = `const SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1;
@@ -46,7 +47,7 @@ app.post('/tabs', async (req, res) => {
 app.post('/tabs/:tabId/navigate', async (req, res) => {});
 function cleanupSessions(now) {
   for (const [userId, session] of Array.from(sessions.entries())) {
-    if (now - session.lastAccess > SESSION_TIMEOUT_MS) {}
+    if (SESSION_TIMEOUT_MS > 0 && now - session.lastAccess > SESSION_TIMEOUT_MS) {}
   }
 }
 function memoryEviction() {
@@ -87,4 +88,21 @@ test('operator lease is idempotent and guards every ordinary destructive class',
 test('Camofox image applies persistence before operator lease', () => {
   const dockerfile = fs.readFileSync(path.join(__dirname, 'Dockerfile'), 'utf8');
   assert.ok(dockerfile.indexOf('patch-persistence.js') < dockerfile.indexOf('patch-operator-lease.js'));
+});
+
+test('session expiry preserves disabled timeouts, pending creates and operator leases', () => {
+  const patched = patchOperatorLease(fixture);
+  const condition = patched.match(/if \(\n(\s+SESSION_TIMEOUT_MS > 0[\s\S]*?)\n    \) \{/);
+  assert.ok(condition, 'transformed expiry condition exists');
+  for (const [timeout, pending, leased, expired] of [
+    [0, false, false, false], [-1, false, false, false],
+    [100, true, false, false], [100, false, true, false],
+    [100, false, false, true], [10000, false, false, false],
+  ]) {
+    assert.equal(vm.runInNewContext(`(${condition[1]})`, {
+      SESSION_TIMEOUT_MS: timeout, now: 1000, session: { lastAccess: 0 }, userId: 'user',
+      spartanHasPendingUserCreate: () => pending,
+      spartanOperatorSessionLeaseActive: () => leased,
+    }), expired);
+  }
 });

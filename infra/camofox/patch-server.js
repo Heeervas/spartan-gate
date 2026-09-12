@@ -18,10 +18,12 @@ if (source.includes('SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1')) {
     ['closeLeasedPage(late.session, late.page, late.lease)', 'late leased-page cleanup'],
     ["app.get('/spartan/health/deep'", 'deep health'],
     ["app.get('/live'", 'liveness'],
-    ['never scan Firefox temp profiles while a browser is live', 'live profile protection'],
-    ['NAVIGATION_TIMEOUT_ACTIONS.has(action) && proxyPool?.canRotateSessions', 'timeout proxy guard'],
+    ['Spartan: periodic profile cleanup disabled during browser ownership transitions.', 'live profile protection'],
+    ['if (isNavigationTimeout && proxyPool?.canRotateSessions)', 'upstream timeout proxy guard'],
+    ["geoip: process.env.CAMOFOX_GEOIP !== 'false' && !!launchProxy,", 'proxy geoip policy'],
+    ["destroyTab(timedOutSession, timedOutTabId, 'navigation_timeout'", 'targeted timeout retirement'],
   ]) {
-    if (!source.includes(marker)) throw new Error(`Camofox 1.14 patch marker is incomplete: ${label}`);
+    if (!source.includes(marker)) throw new Error(`Camofox 1.15 patch marker is incomplete: ${label}`);
   }
   process.exit(0);
 }
@@ -1023,7 +1025,7 @@ if (closeTabRouteStartIndex !== -1) {
   }
 }
 
-// Camofox 1.14 ships targeted per-user recovery and page leases. Compose the
+// Camofox 1.15 ships targeted per-user recovery and page leases. Compose the
 // Spartan lifecycle boundary around those primitives instead of rewriting them
 // back to the pre-1.12 server shape.
 const spartanModernUpstream = source.includes('const sessionCreations = new Map();')
@@ -1031,7 +1033,7 @@ const spartanModernUpstream = source.includes('const sessionCreations = new Map(
 if (spartanModernUpstream) {
   function modernReplaceOnce(marker, replacement, label) {
     const count = source.split(marker).length - 1;
-    if (count !== 1) throw new Error(`expected one Camofox 1.14 ${label} marker, found ${count}`);
+    if (count !== 1) throw new Error(`expected one Camofox 1.15 ${label} marker, found ${count}`);
     source = source.replace(marker, replacement);
   }
 
@@ -1175,7 +1177,7 @@ function spartanSettleNavigationFailure(ticket, error) {
 
   const timeoutRangeStart = source.indexOf('function withTimeout(promise, ms, label) {');
   const timeoutRangeEnd = source.indexOf('\n}\n\nfunction requestTimeoutMs(', timeoutRangeStart);
-  if (timeoutRangeStart === -1 || timeoutRangeEnd === -1) throw new Error('expected Camofox 1.14 timeout function');
+  if (timeoutRangeStart === -1 || timeoutRangeEnd === -1) throw new Error('expected Camofox 1.15 timeout function');
   const retainedTimeout = `async function withTimeout(promise, ms, label) {
   let timer;
   try {
@@ -1194,10 +1196,10 @@ function spartanSettleNavigationFailure(ticket, error) {
 
   const userLimitStart = source.indexOf('async function withUserLimit(userId, operation) {');
   const userLimitEnd = source.indexOf('\n}\n\nasync function safePageClose(', userLimitStart);
-  if (userLimitStart === -1 || userLimitEnd === -1) throw new Error('expected Camofox 1.14 per-user concurrency function');
+  if (userLimitStart === -1 || userLimitEnd === -1) throw new Error('expected Camofox 1.15 per-user concurrency function');
   const upstreamUserLimit = source.slice(userLimitStart, userLimitEnd + 2);
   if (!upstreamUserLimit.includes('state.queue.push(() => { clearTimeout(timer); resolve(); });')) {
-    throw new Error('unsupported Camofox 1.14 per-user concurrency function');
+    throw new Error('unsupported Camofox 1.15 per-user concurrency function');
   }
   const retainedUserLimit = `async function withUserLimit(userId, operation) {
   const key = normalizeUserId(userId);
@@ -1319,9 +1321,9 @@ function spartanSettleNavigationFailure(ticket, error) {
   );
   modernReplaceOnce('  await session.context.close().catch(() => {});', '  await session.context.close();', 'session context close propagation');
   const legacyOpenStart = source.indexOf("app.post('/tabs/open', async (req, res) => {");
-  if (legacyOpenStart === -1) throw new Error('expected Camofox 1.14 legacy tabs-open route');
+  if (legacyOpenStart === -1) throw new Error('expected Camofox 1.15 legacy tabs-open route');
   const legacyOpenEnd = spartanFindCallExpressionEnd(source, legacyOpenStart);
-  if (legacyOpenEnd === -1) throw new Error('expected Camofox 1.14 legacy tabs-open route end');
+  if (legacyOpenEnd === -1) throw new Error('expected Camofox 1.15 legacy tabs-open route end');
   const disabledLegacyOpen = `app.post('/tabs/open', (_req, res) => {
   return res.status(410).json({
     error: 'Deprecated endpoint disabled; use POST /tabs',
@@ -1371,7 +1373,7 @@ function spartanSettleNavigationFailure(ticket, error) {
 
   const popupStart = source.indexOf('function attachPopupHandler(page, userId, sessionKey) {');
   const popupEnd = source.indexOf('\n}\n\nfunction pressureHash(', popupStart);
-  if (popupStart === -1 || popupEnd === -1) throw new Error('expected Camofox 1.14 popup handler');
+  if (popupStart === -1 || popupEnd === -1) throw new Error('expected Camofox 1.15 popup handler');
   let modernPopup = source.slice(popupStart, popupEnd + 2);
   const popupOpening = `function attachPopupHandler(page, userId, sessionKey) {
   page.on('popup', (popupPage) => {
@@ -1389,7 +1391,7 @@ function spartanSettleNavigationFailure(ticket, error) {
       safePageClose(guardedPopupPage).catch(() => {});
       return;
     }`;
-  if ((modernPopup.split(popupOpening).length - 1) !== 1) throw new Error('expected Camofox 1.14 popup opening');
+  if ((modernPopup.split(popupOpening).length - 1) !== 1) throw new Error('expected Camofox 1.15 popup opening');
   modernPopup = modernPopup.replace(popupOpening, popupFence)
     .replace('createTabState(popupPage)', 'createTabState(guardedPopupPage)')
     .replaceAll('safePageUrl(popupPage)', 'safePageUrl(guardedPopupPage)')
@@ -1400,11 +1402,11 @@ function spartanSettleNavigationFailure(ticket, error) {
 
   const createStart = source.indexOf("app.post('/tabs', async (req, res) => {");
   const createEnd = source.indexOf("app.post('/tabs/:tabId/navigate', async (req, res) => {", createStart);
-  if (createStart === -1 || createEnd === -1) throw new Error('expected Camofox 1.14 create route');
+  if (createStart === -1 || createEnd === -1) throw new Error('expected Camofox 1.15 create route');
   let modernCreate = source.slice(createStart, createEnd);
   function replaceCreate(marker, replacement, label) {
     const count = modernCreate.split(marker).length - 1;
-    if (count !== 1) throw new Error(`expected one Camofox 1.14 create ${label}, found ${count}`);
+    if (count !== 1) throw new Error(`expected one Camofox 1.15 create ${label}, found ${count}`);
     modernCreate = modernCreate.replace(marker, replacement);
   }
   replaceCreate("app.post('/tabs', async (req, res) => {\n  try {", `app.post('/tabs', async (req, res) => {
@@ -1451,11 +1453,11 @@ function spartanSettleNavigationFailure(ticket, error) {
 
   const navigateStart = source.indexOf("app.post('/tabs/:tabId/navigate', async (req, res) => {");
   const navigateEnd = source.indexOf("\n});", navigateStart);
-  if (navigateStart === -1 || navigateEnd === -1) throw new Error('expected Camofox 1.14 navigate route');
+  if (navigateStart === -1 || navigateEnd === -1) throw new Error('expected Camofox 1.15 navigate route');
   let modernNavigate = source.slice(navigateStart, navigateEnd);
   modernNavigate = modernNavigate.replace('  const tabId = req.params.tabId;\n  \n  try {', '  const tabId = req.params.tabId;\n  const spartanNavigateOutcome = spartanNavigationReadiness.begin();\n  \n  try {');
   modernNavigate = modernNavigate.replace('    res.json(result);\n  } catch (err) {', '    spartanNavigateOutcome.success();\n    res.json(result);\n  } catch (err) {\n    spartanSettleNavigationFailure(spartanNavigateOutcome, err);');
-  if (!modernNavigate.includes('spartanNavigateOutcome.success()')) throw new Error('expected Camofox 1.14 navigate outcome anchors');
+  if (!modernNavigate.includes('spartanNavigateOutcome.success()')) throw new Error('expected Camofox 1.15 navigate outcome anchors');
   source = source.slice(0, navigateStart) + modernNavigate + source.slice(navigateEnd);
 
   modernReplaceOnce(
@@ -1469,15 +1471,13 @@ function spartanSettleNavigationFailure(ticket, error) {
       // system memory is critically low. 503 tells Fly Proxy to try another machine.`,
     'cgroup admission',
   );
+  // Upstream now preserves fixed-proxy sessions. Retain our immediate tab
+  // retirement: upstream's non-navigation reaper does not cover this branch.
   modernReplaceOnce(
-    "if (isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {",
-    "if (isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action) && proxyPool?.canRotateSessions) {",
-    'non-rotating navigation timeout guard',
-  );
-  modernReplaceOnce(
-    '    destroySession(userId).catch(() => {});\n  }\n  // Track consecutive timeouts per tab',
-    `    destroySession(userId).catch(() => {});
-  } else if (isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
+    `    recordNavFailure(userId);
+  }
+  // Track consecutive timeouts per tab`,
+    `    recordNavFailure(userId);
     const timedOutSession = sessions.get(normalizeUserId(userId));
     const timedOutTabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
     if (timedOutSession && timedOutTabId) destroyTab(timedOutSession, timedOutTabId, 'navigation_timeout', userId);
@@ -1488,24 +1488,30 @@ function spartanSettleNavigationFailure(ticket, error) {
   source = source.replaceAll("if (recordNavFailure(userId)) {\n              await recoverUserSession(userId, 'navigate_failure');\n            }", "if (!isTimeoutError(navErr) && recordNavFailure(userId)) {\n              await recoverUserSession(userId, 'navigate_failure');\n            }");
   source = source.replaceAll("if (recordNavFailure(userId)) {\n              await recoverUserSession(userId, 'tab_create_nav_failure');\n            }", "if (!isTimeoutError(navErr) && recordNavFailure(userId)) {\n              await recoverUserSession(userId, 'tab_create_nav_failure');\n            }");
 
-  const periodicProfileCleanup = `  // Periodic temp profile cleanup every 10 minutes
-  setInterval(() => {
-    try {
-      const cleaned = cleanupStaleFirefoxProfiles();
-      if (cleaned.removed > 0) {
-        log('info', 'periodic firefox profile cleanup', cleaned);
-      }
-    } catch { /* best effort */ }
-  }, 10 * 60 * 1000).unref();
-`;
-  modernReplaceOnce(periodicProfileCleanup, `  // Spartan: never scan Firefox temp profiles while a browser is live.
-  // Startup and post-close cleanup remain enabled and ownership-scoped.
-`, 'live profile cleanup removal');
+  // Both launch diagnostics and options obey the local Tinyproxy policy.
+  if (source.split('geoip: !!launchProxy,').length - 1 !== 2) {
+    throw new Error('expected two Camofox proxy geoip anchors');
+  }
+  source = source.replaceAll('geoip: !!launchProxy,', "geoip: process.env.CAMOFOX_GEOIP !== 'false' && !!launchProxy,");
+
+  // Upstream protects established browsers, but browser is null during launch.
+  // The outer launch timeout can also clear browserLaunchPromise before the
+  // underlying launch settles. Preserve our no-periodic-scan contract until
+  // upstream protects those owned profiles too. Startup/post-close remain native.
+  const profileCleanupStart = source.indexOf('  // Periodic cleanup is liveness-aware:');
+  const profileCleanupEnd = source.indexOf('  const traceSweep = sweepOldTraces({', profileCleanupStart);
+  if (profileCleanupStart === -1 || profileCleanupEnd === -1
+      || !source.slice(profileCleanupStart, profileCleanupEnd).includes('cleanupStaleFirefoxProfiles({ protectedPaths: profiles })')) {
+    throw new Error('expected upstream periodic profile cleanup boundary');
+  }
+  source = source.slice(0, profileCleanupStart)
+    + '  // Spartan: periodic profile cleanup disabled during browser ownership transitions.\n'
+    + source.slice(profileCleanupEnd);
 
   const healthRouteStart = source.indexOf("app.get('/health',");
-  if (healthRouteStart === -1) throw new Error('expected Camofox 1.14 health route');
+  if (healthRouteStart === -1) throw new Error('expected Camofox 1.15 health route');
   const healthRouteEnd = spartanFindCallExpressionEnd(source, healthRouteStart);
-  if (healthRouteEnd === -1) throw new Error('expected Camofox 1.14 health route end');
+  if (healthRouteEnd === -1) throw new Error('expected Camofox 1.15 health route end');
   const healthRoutes = `const spartanDeepHealthSecretPath = process.env.SPARTAN_CAMOFOX_INTERNAL_SECRET_FILE || '/run/spartan-camofox/internal.key';
 const SPARTAN_DEEP_PROBE_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_TIMEOUT_MS || 8000);
 const SPARTAN_DEEP_CLEANUP_TIMEOUT_MS = Number(process.env.SPARTAN_CAMOFOX_DEEP_CLEANUP_TIMEOUT_MS || 1000);
@@ -1572,7 +1578,7 @@ app.get('/live', (_req, res) => res.status(200).json({ ok: true, engine: 'camouf
   const activeHealthIndex = source.indexOf(activeHealthStart);
   if (activeHealthIndex !== -1) {
     const end = source.indexOf(activeHealthEnd, activeHealthIndex);
-    if (end === -1) throw new Error('expected Camofox 1.14 active health end');
+    if (end === -1) throw new Error('expected Camofox 1.15 active health end');
     source = source.slice(0, activeHealthIndex) + source.slice(end + 1);
   }
 
@@ -1591,13 +1597,14 @@ app.get('/live', (_req, res) => res.status(200).json({ ok: true, engine: 'camouf
     ["app.get('/spartan/health/deep'", 'deep health'],
     ["app.get('/live'", 'liveness'],
     ['browser_navigation_degraded', 'navigation readiness'],
-    ['never scan Firefox temp profiles while a browser is live', 'live profile protection'],
-    ['NAVIGATION_TIMEOUT_ACTIONS.has(action) && proxyPool?.canRotateSessions', 'timeout proxy guard'],
+    ['Spartan: periodic profile cleanup disabled during browser ownership transitions.', 'live profile protection'],
+    ['if (isNavigationTimeout && proxyPool?.canRotateSessions)', 'upstream timeout proxy guard'],
+    ["destroyTab(timedOutSession, timedOutTabId, 'navigation_timeout'", 'targeted timeout retirement'],
   ]) {
-    if (!source.includes(marker)) throw new Error(`Camofox 1.14 patch incomplete: ${label}`);
+    if (!source.includes(marker)) throw new Error(`Camofox 1.15 patch incomplete: ${label}`);
   }
   fs.writeFileSync(path, source);
   process.exit(0);
 }
 
-throw new Error('unsupported Camofox upstream source; expected the pinned 1.14 recovery and page-lease model');
+throw new Error('unsupported Camofox upstream source; expected the pinned 1.15 recovery and page-lease model');

@@ -19,7 +19,7 @@ function patchPersistence(source) {
     return source;
   }
   if (!source.includes('  storageState,') || !source.includes('  indexedDB = false,')) {
-    throw new Error('unsupported Camofox persistence source; expected pinned 1.14 storageState/indexedDB support');
+    throw new Error('unsupported Camofox persistence source; expected pinned 1.15 storageState/indexedDB support');
   }
   const start = source.indexOf('async function persistStorageState({');
   const end = source.indexOf('\n}\n\nexport {', start);
@@ -86,7 +86,7 @@ function patchPlugin(source) {
     return source;
   }
   if (!source.includes('const checkpointPromises = new Map();') || !source.includes('resettingUsers')) {
-    throw new Error('unsupported Camofox persistence plugin; expected pinned 1.14 checkpoint serialization');
+    throw new Error('unsupported Camofox persistence plugin; expected pinned 1.15 checkpoint serialization');
   }
   const lifecycleMarker = '  // --- Lifecycle hooks ---';
   const service = `  // SPARTAN_PERSISTENCE_CHECKPOINT_SERVICE_V2
@@ -157,7 +157,7 @@ function patchServer(source) {
     return source;
   }
   if (!source.includes('SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1')) {
-    throw new Error('persistence close fence requires the pinned Camofox 1.14 server patch');
+    throw new Error('persistence close fence requires the pinned Camofox 1.15 server patch');
   }
   source = replaceOnce(
     source,

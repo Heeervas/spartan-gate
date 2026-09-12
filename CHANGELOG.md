@@ -3,6 +3,8 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Prepared Camofox 1.15.0 with an immutable multi-architecture image pin, native fixed-proxy timeout handling, and no duplicate OS/VNC/yt-dlp installation. Preserved immediate timeout-tab retirement, launch-profile protection, durable checkpoints and operator leases; kept noVNC as the interactive path. Exact-source patch/idempotency tests cover the upgrade. Image build and runtime acceptance remain pending disk headroom.
+
 - Activated the reviewed cache diagnostics with a Route-only rebuild/recreation. Live health, telemetry, dashboard authentication and v2 reporting pass; other running services are unchanged. Started the passive 24–48-hour baseline with probes and cohorts disabled.
 
 - Added opt-in Astra cache probes with a server-enforced 12-attempt/100k-estimated-input budget, private epoch-bound authority, expiring session cohorts and fail-closed experiment reservations. Added baseline and session-clustered evaluation gates; quota calibration excludes whole experiment-touched intervals, including unresolved and failed retries. No experiment or prompt mutation is enabled by default.

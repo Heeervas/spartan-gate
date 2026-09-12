@@ -1,10 +1,11 @@
-ARG CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce
+ARG CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae
 FROM ${CAMOFOX_BASE_IMAGE}
 
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates curl fontconfig unzip x11vnc novnc websockify yt-dlp \
-    && rm -rf /var/lib/apt/lists/*
+# Upstream installs the browser, font tools, VNC stack and verified yt-dlp.
+# Assert that contract instead of upgrading/reinstalling those packages here.
+RUN command -v curl && command -v unzip && command -v fc-cache \
+    && command -v x11vnc && command -v websockify \
+    && test -f /usr/share/novnc/vnc_lite.html
 
 # Install the complete static Onest 1.000 release for Firefox and capture tools.
 RUN set -eux; \
@@ -48,6 +49,7 @@ RUN set -eux; \
 
 ENV CAMOFOX_CRASH_REPORT_ENABLED=false
 ENV CAMOFOX_GEOIP=false
+ENV CAMOFOX_INTERACTIVE=off
 ENV CAMOFOX_DISABLE_DEFAULT_ADDONS=false
 ENV CAMOFOX_ADDONS=
 
@@ -74,13 +76,6 @@ RUN grep -q "SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1" server.js \
     && node --check server.js \
     && node --check lib/persistence.js \
     && node --check plugins/persistence/index.js
-
-
-# Upstream enables camoufox-js geoip whenever a proxy is configured. Spartan
-# Gate's default proxy is local Tinyproxy, not a residential proxy with a useful
-# geolocation target, and the geoip public-IP probes do not follow the runtime
-# proxy path. Keep browser proxying enabled while making geoip opt-in.
-RUN node -e "const fs=require('fs'); const path='server.js'; let s=fs.readFileSync(path,'utf8'); const from='geoip: !!launchProxy,'; const to=\"geoip: process.env.CAMOFOX_GEOIP !== 'false' && !!launchProxy,\"; if(!s.includes(from)) throw new Error('expected Camofox geoip launch marker not found'); s=s.replaceAll(from,to); fs.writeFileSync(path,s);"
 
 # Keep the browser API under an independent PID-1 watchdog. The supervisor
 # receives its internal loopback credential through a 0600 file, not argv.

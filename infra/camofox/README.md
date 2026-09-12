@@ -224,9 +224,15 @@ browser is using the expected network path.
 Spartan Gate builds a thin local wrapper image:
 
 ```env
-CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.14.0@sha256:86c79eed8a6b3a78859f73bc70d6003c5566b85e969354ec454524b28197ffce
-CAMOFOX_IMAGE=spartan-gate-camofox:1.14.0
+CAMOFOX_BASE_IMAGE=ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae
+CAMOFOX_IMAGE=spartan-gate-camofox:1.15.0
 ```
+
+The v1.15.0 application tag resolves to commit
+`771b610a7b5994759c138b912741de58b0edd588`. GitHub reports the tag and commit
+as unsigned; the image is pinned to the verified registry index digest above.
+The release updates the bundled browser from Camoufox 135 to 152.0.4 beta.28.
+See [refresh validation and retained patches](../../docs/camofox-refresh.md).
 
 The wrapper does not fork Camofox. It pre-fetches Camofox's default uBlock
 Origin add-on at build time. Upstream Camofox otherwise downloads that add-on
@@ -246,11 +252,12 @@ not bypass Spartan Gate's Tinyproxy or DNS allowlists, and Camofox still omits
 known analytics iframes from accessibility snapshots even though their network
 requests can load.
 
-Bundled Camoufox 135 cannot preserve default UBO blocking when any custom
-add-on is also loaded. To avoid silently weakening the protected default, the
-wrapper fails closed when `CAMOFOX_ADDONS` is non-empty unless
+The previous Camoufox 135 image could not preserve default UBO blocking when
+custom add-ons were loaded. That combination has not yet been runtime-verified
+on Camoufox 152, so the wrapper retains the protection: it fails closed when
+`CAMOFOX_ADDONS` is non-empty unless
 `CAMOFOX_DISABLE_DEFAULT_ADDONS` is exactly `true` or `1`. Custom add-ons are
-therefore an explicit analytics/inspection-mode choice for this bundled browser.
+therefore an explicit analytics/inspection-mode choice until parity is proven.
 
 ## Add-ons
 
@@ -358,6 +365,10 @@ matches the effective viewport, records viewport strategy and before/effective
 dimensions, and deletes the scratch session.
 
 ## noVNC
+
+The image and all Camofox Compose tiers set `CAMOFOX_INTERACTIVE=off`.
+Human interaction uses the upstream VNC plugin; host-desktop mode is not part
+of this Docker integration. The setting does not disable `ENABLE_VNC`.
 
 The Camofox VNC plugin is disabled by default:
 
