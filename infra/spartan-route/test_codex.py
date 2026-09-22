@@ -31,6 +31,7 @@ from spartan_route.codex import (
     derive_account_id,
     normalize_tool_choice,
     normalize_reset_credits,
+    read_auth_file,
     resolve_auth_paths,
     resolve_prompt_cache_key,
 )
@@ -1114,6 +1115,102 @@ class CodexTests(unittest.TestCase):
             self.assertIsNotNone(recovered)
             self.assertEqual(recovered_session.calls, 1)
             self.assertIsNone(slot.failed_auth_fingerprint)
+
+    def test_changed_bootstrap_recovers_quota_cooled_slot_without_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            old_access = self.jwt(time.time() + 7200)
+            self.write_auth(source, old_access, account_id="old-account")
+            snapshot = read_auth_file(str(source))
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            slot = CodexSlot(
+                0,
+                path=str(source),
+                auth=CodexAuth(old_access, account_id="old-account"),
+                auth_fingerprint=snapshot[1],
+                auth_source_fingerprint=snapshot[1],
+                rate_limited_until=time.time() + 3600,
+            )
+            other_slot = CodexSlot(
+                1,
+                auth=CodexAuth("other-token", account_id="other-account"),
+                rate_limited_until=time.time() + 1800,
+            )
+            router.slots = [slot, other_slot]
+            router._remember_lease("stale-session", slot)
+            self.assertTrue(router.leases)
+
+            new_access = self.jwt(time.time() + 10800)
+            self.write_auth(source, new_access, account_id="new-account")
+
+            selected = asyncio.run(router.choose_slot(None, set(), set()))
+
+            self.assertIsNotNone(selected)
+            assert selected is not None
+            self.assertEqual(selected[1].account_id, "new-account")
+            self.assertFalse(router.leases)
+            self.assertEqual(slot.rate_limited_until, 0)
+            self.assertEqual(other_slot.auth.account_id, "other-account")
+            self.assertGreater(other_slot.rate_limited_until, time.time())
+
+    def test_unchanged_or_touched_bootstrap_keeps_quota_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            access = self.jwt(time.time() + 7200)
+            self.write_auth(source, access, account_id="account")
+            snapshot = read_auth_file(str(source))
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            cooldown = time.time() + 3600
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            slot = CodexSlot(
+                0,
+                path=str(source),
+                auth=CodexAuth(access, account_id="account"),
+                auth_fingerprint=snapshot[1],
+                auth_source_fingerprint=snapshot[1],
+                rate_limited_until=cooldown,
+            )
+            router.slots = [slot]
+
+            os.utime(source, None)
+            selected = asyncio.run(router.choose_slot(None, set(), set()))
+
+            self.assertIsNone(selected)
+            self.assertEqual(slot.rate_limited_until, cooldown)
+            self.assertEqual(slot.auth.account_id, "account")
+
+    def test_invalid_bootstrap_does_not_reuse_quota_cooled_auth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "auth.json"
+            access = self.jwt(time.time() + 7200)
+            self.write_auth(source, access, account_id="old-account")
+            snapshot = read_auth_file(str(source))
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            router = self.auth_router(NoCallOAuthSession(), root / "codex-auth")
+            slot = CodexSlot(
+                0,
+                path=str(source),
+                auth=CodexAuth(access, account_id="old-account"),
+                auth_fingerprint=snapshot[1],
+                auth_source_fingerprint=snapshot[1],
+                rate_limited_until=time.time() + 3600,
+            )
+            router.slots = [slot]
+            source.write_text("not json", encoding="utf-8")
+
+            selected = asyncio.run(router.choose_slot(None, set(), set()))
+
+            self.assertIsNone(selected)
+            self.assertIsNone(slot.auth)
+            self.assertEqual(slot.auth_unavailable_reason, "missing")
 
     def test_parent_and_read_fsync_failures_remain_retryable_until_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

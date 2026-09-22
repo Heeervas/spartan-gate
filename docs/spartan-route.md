@@ -84,18 +84,32 @@ Kept in v1:
   container environment key. References to unrelated keys remain literal and
   are never expanded.
 - `clawroute/auto`, `custom-1/clawroute/auto`, and `spartan-route/clawroute/auto` model aliases for Hermes compatibility.
-- GPT-6 Astra is selectable as `codex/gpt-6-astra` through the existing
-  Spartan Route `openai-api` provider in Hermes. Use `api_mode: codex_responses`
-  for native Responses sessions. It supports tools and image input, with an
-  advertised maximum context of 872,000 tokens from the Codex Subscription
-  catalog (distinct from the public API context limit). Adding it does not
-  change active Hermes profiles or auto-routing defaults.
+- GPT-6 Astra, Sol, and Luna are selectable as `codex/gpt-6-astra`,
+  `codex/gpt-6-sol`, and `codex/gpt-6-luna` through the existing Spartan Route
+  `openai-api` provider in Hermes. Use `api_mode: codex_responses` for native
+  Responses sessions. The bundled entries advertise 872,000 tokens of maximum
+  context from the Codex Subscription catalog, distinct from public API limits.
+  Active Hermes profiles and automatic tier defaults do not change.
+- Spartan Route refreshes the visible Codex Subscription model catalog in the
+  background at startup and hourly. It uses each enabled slot's existing OAuth
+  credential, lists a model when at least one account offers it, and selects only
+  offering accounts for its requests. Sol and Luna wait for a successful account
+  catalog before routing. Hidden, malformed, and models requiring a
+  newer validated Codex client protocol are excluded. The catalog is an observed
+  Codex backend interface, not a public OpenAI API contract. A failed refresh
+  keeps the last valid account catalog for at most 24 hours; credential changes
+  revoke that account's old eligibility immediately. Unknown explicit Codex
+  model IDs return `404 model_not_found`; a listed model without an eligible
+  account returns `503 codex_model_unavailable`. Saved auto-tier overrides are
+  revalidated after refresh and fall back to file defaults with a warning when
+  their model is unavailable.
 - Selectable Codex GPT-5.6 catalog entries for manual Hermes sessions:
   `codex/gpt-5.6`, `codex/gpt-5.6-sol`, `codex/gpt-5.6-terra`, and
   `codex/gpt-5.6-luna`. The Codex provider profile still defaults to
   `codex/gpt-5.5` until these variants are promoted explicitly.
-- `reasoning_effort=max` is accepted for GPT-5.6 variants and GPT-6 Astra and is sent to
-  Codex exactly as `reasoning.effort=max`. Other Codex model families receive
+- `reasoning_effort=max` is accepted for GPT-5.6 variants, GPT-6 Astra/Sol/Luna,
+  and discovered models that advertise it, and is sent to Codex exactly as
+  `reasoning.effort=max`. Other Codex model families receive
   `400 codex_max_requires_gpt_5_6` before slot selection; the legacy error code
   is retained for compatibility.
 - `reasoning_effort=ultra` is never silently downgraded to `max`. Chat
@@ -411,7 +425,8 @@ conflicting managed state only after a successful refresh. A terminal rejection
 of that intended grant never falls back to another managed account and requires
 a new login; quota, network, lock, and local persistence failures remain
 retryable and do not imply that the user should reauthenticate. A changed
-bootstrap credential generation clears only its matching terminal quarantine.
+bootstrap credential generation clears its matching terminal quarantine and
+stale quota cooldown without a Route restart; unchanged grants keep cooldowns.
 Do not copy one refresh grant between slots: every slot needs an independent
 local login. Treat backups of `/app/data/codex-auth` as credentials, not
 ordinary telemetry.

@@ -385,6 +385,8 @@ async def execute_codex_responses(
     upstream_cache_key = resolve_prompt_cache_key(request, session_id, prompt_cache_key)
     affinity_key = str(request.get("spartan_chain_id") or "").strip() or resolve_affinity_key(request, session_id, prompt_cache_key)
     base_body = build_codex_responses_body(request, model_name, upstream_cache_key)
+    reasoning = base_body.get("reasoning")
+    reasoning_effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
     diagnostics = diagnostics or getattr(router, "native_cache", None) or NativeCacheDiagnostics()
     router.native_cache = diagnostics
     attempts: list[dict[str, Any]] = []
@@ -405,10 +407,17 @@ async def execute_codex_responses(
                     raise
                 return CodexCallResult(status=503, body={"error": {"code": "probe_account_unavailable"}}, error="probe_account_unavailable")
         else:
-            chosen = await router.choose_slot(affinity_key, excluded_slots, excluded_accounts)
+            if getattr(router, "model_catalog", None) is None:
+                chosen = await router.choose_slot(affinity_key, excluded_slots, excluded_accounts)
+            else:
+                chosen = await router.choose_slot(affinity_key, excluded_slots, excluded_accounts, model_id, reasoning_effort)
         if not chosen:
             break
         slot, auth = chosen
+        catalog = getattr(router, "model_catalog", None)
+        if probe is not None and catalog is not None and not catalog.supports(slot, auth, model_id, reasoning_effort):
+            experiments.finish(probe, success=False, sent=False)
+            return CodexCallResult(status=503, body={"error": {"code": "probe_account_unavailable"}}, error="probe_account_unavailable")
         body, experiment = base_body, probe.metadata() if probe else None
         if experiments is not None and probe is None:
             body, experiment = experiments.cohort_body(

@@ -10,7 +10,7 @@ import re
 import sys
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
@@ -20,6 +20,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.web_request import FileField
 
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
+from .codex_catalog import CodexModelDiscovery, SlotCatalog
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
 from .native_responses import annotate_realm, capture_telemetry, execute_codex_responses, response_event_name, usage_values
 from .native_cache import NativeCacheDiagnostics, Observation, request_diagnostics
@@ -95,6 +96,7 @@ class SpartanRouteState:
     queue: TelemetryQueue
     session: ClientSession | None = None
     codex: CodexRouter | None = None
+    codex_catalog: CodexModelDiscovery | None = None
     recent_session_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
     routing_policy: RoutingPolicySnapshot | None = None
     routing_policy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -759,7 +761,23 @@ def codex_responses_capability_error(body: Mapping[str, Any]) -> ExecutionResult
     )
 
 
-def codex_reasoning_validation_error(body: Mapping[str, Any], model_id: str) -> ExecutionResult | None:
+def codex_model_admission_error(state: SpartanRouteState, model_id: str, effort: str | None) -> ExecutionResult | None:
+    if model_id not in state.config.models:
+        return ExecutionResult(
+            404,
+            body={"error": {"message": "Codex model is not in the Route catalog.", "type": "invalid_request_error", "code": "model_not_found"}},
+            error="model_not_found",
+        )
+    if state.codex_catalog is not None and state.codex_catalog.known_unavailable(model_id, effort):
+        return ExecutionResult(
+            503,
+            body={"error": {"message": "No enabled Codex account currently offers this model.", "type": "upstream_error", "code": "codex_model_unavailable"}},
+            error="codex_model_unavailable",
+        )
+    return None
+
+
+def codex_reasoning_validation_error(body: Mapping[str, Any], model_id: str, catalog: CodexModelDiscovery | None = None) -> ExecutionResult | None:
     effort = requested_reasoning_effort(body) or ""
     if effort == "ultra":
         code = CODEX_ULTRA_REQUIRES_APP_SERVER_CODE
@@ -770,10 +788,11 @@ def codex_reasoning_validation_error(body: Mapping[str, Any], model_id: str) -> 
     elif (
         effort == "max"
         and "gpt-5.6" not in model_id.lower()
-        and model_id.lower().removeprefix("codex/") != "gpt-6-astra"
+        and model_id.lower().removeprefix("codex/") not in {"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}
+        and not (catalog and catalog.supports_effort(model_id, "max"))
     ):
         code = CODEX_MAX_REQUIRES_GPT56_CODE
-        message = "Codex reasoning effort max is supported only for GPT-5.6 models and GPT-6 Astra."
+        message = "Codex reasoning effort max is supported only for GPT-5.6 and GPT-6 models."
     else:
         return None
     return ExecutionResult(
@@ -794,9 +813,12 @@ async def execute_chat(
 ) -> ExecutionResult:
     upstream_body = strip_private_spartan_fields(body)
     if route.provider == "codex":
-        reasoning_error = codex_reasoning_validation_error(upstream_body, route.actual_model)
+        reasoning_error = codex_reasoning_validation_error(upstream_body, route.actual_model, state.codex_catalog)
         if reasoning_error is not None:
             return reasoning_error
+        model_error = codex_model_admission_error(state, route.actual_model, requested_reasoning_effort(upstream_body))
+        if model_error is not None:
+            return model_error
         if state.codex is None:
             return ExecutionResult(503, body=json_error("Codex router is not ready", 503, "codex_unavailable")[0], error="codex_unavailable")
         codex_result: CodexCallResult = await state.codex.execute_chat(
@@ -852,9 +874,12 @@ async def execute_responses(
         capability_error = codex_responses_capability_error(body)
         if capability_error is not None:
             return capability_error
-        reasoning_error = codex_reasoning_validation_error(body, route.actual_model)
+        reasoning_error = codex_reasoning_validation_error(body, route.actual_model, state.codex_catalog)
         if reasoning_error is not None:
             return reasoning_error
+        model_error = codex_model_admission_error(state, route.actual_model, requested_reasoning_effort(body))
+        if model_error is not None:
+            return model_error
         if state.codex is None:
             return ExecutionResult(503, body=json_error("Codex router is not ready", 503, "codex_unavailable")[0], error="codex_unavailable")
         codex_result = await execute_codex_responses(
@@ -2049,7 +2074,11 @@ def effective_routing_policy(state: SpartanRouteState) -> RoutingPolicySnapshot:
 
 def model_readiness(state: SpartanRouteState, entry: ModelEntry) -> str:
     if entry.provider == "codex":
-        return "configured" if state.codex and getattr(state.codex, "slots", []) else "no_codex_slots"
+        if not state.codex or not getattr(state.codex, "slots", []):
+            return "no_codex_slots"
+        if state.codex_catalog is not None and state.codex_catalog.known_unavailable(entry.id):
+            return "model_unavailable"
+        return "configured"
     if entry.provider == "ollama":
         return "configured"
     if entry.provider in {"openai", "openrouter"}:
@@ -2977,6 +3006,22 @@ async def startup(app: web.Application) -> None:
     state: SpartanRouteState = app[STATE_KEY]
     state.session = ClientSession(trust_env=True)
     state.codex = CodexRouter(state.session, state.telemetry)
+    bundled_models = dict(state.config.models)
+
+    async def publish_catalog(slots: dict[int, SlotCatalog], discovered: dict[str, ModelEntry]) -> None:
+        # Publish the catalog and its persisted-override validation together.
+        async with state.routing_policy_lock:
+            candidate = replace(state.config, models={**bundled_models, **discovered})
+            policy = build_routing_policy_snapshot(candidate, state.telemetry)
+            catalog = state.codex_catalog
+            if catalog is not None:
+                catalog.install_snapshot(slots, discovered)
+            state.config = candidate
+            state.routing_policy = policy
+
+    state.codex_catalog = CodexModelDiscovery(state.codex, publish_catalog, set(bundled_models))
+    state.codex.model_catalog = state.codex_catalog
+    state.codex_catalog.start()
     await app[RT_KEY].start(state.codex)
     state.queue.start()
 
@@ -2987,6 +3032,8 @@ async def shutdown_realtime(app: web.Application) -> None:
 
 async def cleanup(app: web.Application) -> None:
     state: SpartanRouteState = app[STATE_KEY]
+    if state.codex_catalog is not None:
+        await state.codex_catalog.stop()
     codex_cleanup = getattr(state.codex, "cleanup", None)
     if codex_cleanup:
         await codex_cleanup()

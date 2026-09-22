@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
@@ -141,6 +141,9 @@ def test_config() -> SpartanRouteConfig:
     models = {
         "anthropic/test": ModelEntry("anthropic/test", "anthropic"),
         "openai/gpt-test": ModelEntry("openai/gpt-test", "openai"),
+        "codex/gpt-6-astra": ModelEntry("codex/gpt-6-astra", "codex", max_context=872_000, multimodal=True),
+        "codex/gpt-6-sol": ModelEntry("codex/gpt-6-sol", "codex", max_context=872_000, multimodal=True),
+        "codex/gpt-6-luna": ModelEntry("codex/gpt-6-luna", "codex", max_context=872_000, multimodal=True),
         "codex/gpt-5.6": ModelEntry("codex/gpt-5.6", "codex", max_context=1_050_000, multimodal=True),
         "codex/gpt-5.6-sol": ModelEntry("codex/gpt-5.6-sol", "codex", max_context=1_050_000, multimodal=True),
         "codex/gpt-5.6-terra": ModelEntry("codex/gpt-5.6-terra", "codex", max_context=1_050_000, multimodal=True),
@@ -430,6 +433,88 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(entry["tool_capable"])
             self.assertTrue(entry["multimodal"])
             self.assertEqual(entry["max_context"], 872_000)
+
+    async def test_gpt6_sol_and_luna_are_selectable_with_max_but_not_ultra(self) -> None:
+        from spartan_route.codex_catalog import parse_catalog
+
+        state = self.app[STATE_KEY]
+        await state.codex_catalog.stop()
+        state.codex.slots = [CodexSlot(0, token="token", auth=CodexAuth("token", account_id="account"))]
+        state.codex_catalog._fetch = AsyncMock(return_value=parse_catalog({"models": [
+            {
+                "slug": slug, "visibility": "list", "supported_in_api": True,
+                "minimal_client_version": "0.155.0", "input_modalities": ["text", "image"],
+                "max_context_window": 872000, "supported_reasoning_levels": [{"effort": "max"}],
+                "tool_mode": "code_mode_only",
+            }
+            for slug in ("gpt-6-sol", "gpt-6-luna")
+        ]}))
+        await state.codex_catalog.refresh()
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        entries = {item["id"]: item for item in (await (await self.client.get("/v1/models")).json())["data"]}
+        for model_id in ("codex/gpt-6-sol", "codex/gpt-6-luna"):
+            self.assertEqual(entries[model_id]["max_context"], 872_000)
+            for endpoint, request_body in (
+                ("/v1/chat/completions", {"messages": [{"role": "user", "content": "solve"}], "reasoning_effort": "max"}),
+                ("/v1/responses", {"input": "solve", "reasoning": {"effort": "max"}}),
+            ):
+                with self.subTest(model=model_id, endpoint=endpoint):
+                    with patch("spartan_route.app.execute_codex_responses", return_value=CodexCallResult(status=200, body={"status": "completed", "output": []})):
+                        response = await self.client.post(endpoint, headers={"Authorization": "Bearer secret"}, json={"model": model_id, **request_body})
+                    self.assertEqual(response.status, 200)
+            rejected = await self.client.post("/v1/responses", headers={"Authorization": "Bearer secret"}, json={"model": model_id, "input": "solve", "reasoning": {"effort": "ultra"}})
+            self.assertEqual(rejected.status, 400)
+            self.assertEqual((await rejected.json())["error"]["code"], "codex_ultra_requires_app_server")
+
+    async def test_discovered_model_updates_listing_and_saved_override(self) -> None:
+        from spartan_route.codex_catalog import parse_catalog
+
+        state = self.app[STATE_KEY]
+        state.codex.slots = [CodexSlot(0, token="token", auth=CodexAuth("token", account_id="account"))]
+        model_id = "codex/gpt-6-future"
+        row = {
+            "slug": "gpt-6-future", "visibility": "list", "supported_in_api": True,
+            "minimal_client_version": "0.155.0", "input_modalities": ["text", "image"],
+            "max_context_window": 872000, "supported_reasoning_levels": [{"effort": "max"}],
+            "tool_mode": "code_mode_only",
+        }
+        catalog = state.codex_catalog
+        catalog._fetch = AsyncMock(return_value=parse_catalog({"models": [row]}))
+        await catalog.refresh()
+        await catalog.stop()  # Keep publication deterministic during slot-state assertions.
+        listed = {item["id"] for item in (await (await self.client.get("/v1/models")).json())["data"]}
+        self.assertIn(model_id, listed)
+        config_response = await self.client.get("/api/config/routing", headers={"Authorization": "Bearer secret"})
+        config = await config_response.json()
+        self.assertTrue(next(item for item in config["models"] if item["id"] == model_id)["eligible"])
+        await state.codex.set_slot_routing_enabled(0, False)
+        denied = await self.client.post("/v1/responses", headers={"Authorization": "Bearer secret"}, json={"model": model_id, "input": "solve"})
+        self.assertEqual(denied.status, 503)
+        self.assertEqual((await denied.json())["error"]["code"], "codex_model_unavailable")
+        await state.codex.set_slot_routing_enabled(0, True)
+        await catalog.refresh()
+        mapping = {tier["id"]: model_id for tier in config["editableTiers"]}
+        saved = await self.client.put("/api/config/routing", headers={"Authorization": "Bearer secret", "If-Match": config_response.headers["ETag"]}, json={"tiers": mapping})
+        self.assertEqual(saved.status, 200)
+        catalog._fetch = AsyncMock(return_value={})
+        await catalog.refresh()
+        unavailable = await self.client.get("/api/config/routing", headers={"Authorization": "Bearer secret"})
+        unavailable_doc = await unavailable.json()
+        self.assertEqual(unavailable_doc["effective"], unavailable_doc["fileDefaults"])
+        self.assertTrue(unavailable_doc["warning"])
+        catalog._fetch = AsyncMock(return_value=parse_catalog({"models": [row]}))
+        await catalog.refresh()
+        restored = await self.client.get("/api/config/routing", headers={"Authorization": "Bearer secret"})
+        self.assertEqual((await restored.json())["effective"], mapping)
+
+    async def test_unknown_codex_model_fails_before_upstream(self) -> None:
+        response = await self.client.post(
+            "/v1/responses", headers={"Authorization": "Bearer secret"},
+            json={"model": "codex/gpt-6-unlisted", "input": "solve"},
+        )
+        self.assertEqual(response.status, 404)
+        self.assertEqual((await response.json())["error"]["code"], "model_not_found")
 
     async def test_astra_reasoning_for_both_apis_and_stream_modes(self) -> None:
         state = self.app[STATE_KEY]

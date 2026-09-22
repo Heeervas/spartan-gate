@@ -128,6 +128,7 @@ class CodexSlot:
     token: str | None = None
     auth: CodexAuth | None = None
     auth_fingerprint: str | None = None
+    auth_source_fingerprint: str | None = None
     auth_unavailable_reason: str | None = None
     auth_retry_at: float = 0
     auth_state_source: str | None = None
@@ -611,6 +612,7 @@ class CodexRouter:
         self.session = session
         self.telemetry = telemetry
         self.slots: list[CodexSlot] = []
+        self.model_catalog: Any = None
         self.leases: dict[str, CacheLease] = {}
         self.refresh_locks: dict[str, asyncio.Lock] = {}
         self._availability_event: asyncio.Event | None = None
@@ -638,6 +640,8 @@ class CodexRouter:
         self.slots = [CodexSlot(index, path=path) for index, path in enumerate(resolve_auth_paths())]
 
     def reset_state(self) -> None:
+        if getattr(self, "model_catalog", None) is not None:
+            self.model_catalog.reset()
         self._last_recovery_probe_at = 0.0
         self._usage_generation = int(getattr(self, "_usage_generation", 0)) + 1
         task = getattr(self, "_usage_refresh_task", None)
@@ -770,6 +774,9 @@ class CodexRouter:
         if not routing_enabled:
             self._invalidate_slot_leases(slot)
         self._usage_cache = None
+        if getattr(self, "model_catalog", None) is not None:
+            self.model_catalog.invalidate_slot(slot.index)
+            self.model_catalog.schedule_refresh()
         self._notify_availability_changed()
         return next(status for status in self.slot_status(include_paths=True) if status["slotIndex"] == slot.index)
 
@@ -1035,9 +1042,44 @@ class CodexRouter:
         slot.failed_auth_fingerprint = None
         return auth
 
+    def _invalidate_changed_auth_candidate(self, slot: CodexSlot) -> bool:
+        if not slot.path:
+            return False
+        snapshot = read_auth_file(slot.path)
+        source_fingerprint = snapshot[1] if snapshot else ""
+        if slot.auth_source_fingerprint is None:
+            slot.auth_source_fingerprint = source_fingerprint
+            return False
+        if source_fingerprint == slot.auth_source_fingerprint:
+            return False
+
+        self._invalidate_slot_leases(slot)
+        slot.auth_source_fingerprint = source_fingerprint
+        slot.auth = None
+        slot.auth_fingerprint = None
+        slot.auth_unavailable_reason = None
+        slot.auth_retry_at = 0
+        slot.auth_state_source = None
+        slot.auth_expires_at = None
+        slot.auth_last_refresh_at = None
+        slot.auth_persistence_healthy = True
+        slot.auth_error_code = None
+        slot.failed_auth_fingerprint = None
+        slot.rate_limited_until = 0
+        self._usage_cache = None
+        if getattr(self, "model_catalog", None) is not None:
+            self.model_catalog.invalidate_slot(slot.index)
+        self._notify_availability_changed()
+        return True
+
     async def load_auth(self, slot: CodexSlot) -> CodexAuth | None:
         if slot.token:
             return slot.auth
+        if slot.path and slot.auth_source_fingerprint is None:
+            snapshot = read_auth_file(slot.path)
+            slot.auth_source_fingerprint = snapshot[1] if snapshot else ""
+        if slot.rate_limited_until > 0 or slot.auth_error_code or slot.auth_unavailable_reason:
+            self._invalidate_changed_auth_candidate(slot)
         if slot.auth_retry_at > time.time():
             return None
         if slot.auth and not is_jwt_expired(slot.auth.access_token):
@@ -1351,14 +1393,17 @@ class CodexRouter:
             if lease.slot_index == slot.index or (account_key and lease.account_key == account_key):
                 self.leases.pop(key, None)
 
-    async def choose_slot(self, affinity_key: str | None, excluded: set[int], excluded_accounts: set[str]) -> tuple[CodexSlot, CodexAuth] | None:
+    async def choose_slot(self, affinity_key: str | None, excluded: set[int], excluded_accounts: set[str], model_id: str | None = None, reasoning_effort: str | None = None) -> tuple[CodexSlot, CodexAuth] | None:
         self._clear_expired_leases()
         now = time.time()
         candidates: list[tuple[CodexSlot, CodexAuth]] = []
         for slot in self.slots:
             if slot.index in excluded:
                 continue
-            if slot.rate_limited_until > now or slot.transient_until > now:
+            if slot.rate_limited_until > now:
+                if not self._invalidate_changed_auth_candidate(slot):
+                    continue
+            if slot.transient_until > now:
                 continue
             auth = await self.load_auth(slot)
             if not auth:
@@ -1366,6 +1411,8 @@ class CodexRouter:
             if auth.account_key and auth.account_key in excluded_accounts:
                 continue
             if not self.slot_routing_status(slot)["routingEnabled"]:
+                continue
+            if model_id and getattr(self, "model_catalog", None) is not None and not self.model_catalog.supports(slot, auth, model_id, reasoning_effort):
                 continue
             candidates.append((slot, auth))
         if not candidates:
@@ -1388,10 +1435,11 @@ class CodexRouter:
                 state.disabled += 1
                 continue
             if slot.rate_limited_until > now:
-                state.rate_limited += 1
-                if state.earliest_rate_limit_until is None or slot.rate_limited_until < state.earliest_rate_limit_until:
-                    state.earliest_rate_limit_until = slot.rate_limited_until
-                continue
+                if not self._invalidate_changed_auth_candidate(slot):
+                    state.rate_limited += 1
+                    if state.earliest_rate_limit_until is None or slot.rate_limited_until < state.earliest_rate_limit_until:
+                        state.earliest_rate_limit_until = slot.rate_limited_until
+                    continue
             if slot.transient_until > now:
                 state.transient_5xx += 1
                 if state.earliest_transient_until is None or slot.transient_until < state.earliest_transient_until:
@@ -1565,8 +1613,12 @@ class CodexRouter:
         session_id: str | None,
         prompt_cache_key: str | None,
         request_id: str,
+        reasoning_effort: str | None = None,
     ) -> CodexCallResult:
         model_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        if reasoning_effort is None:
+            reasoning = request.get("reasoning")
+            reasoning_effort = request.get("reasoning_effort") or (reasoning.get("effort") if isinstance(reasoning, dict) else None)
         upstream_cache_key = resolve_prompt_cache_key(request, session_id, prompt_cache_key)
         affinity_key = resolve_affinity_key(request, session_id, prompt_cache_key)
         body = build_codex_request_body(request, model_name, upstream_cache_key)
@@ -1579,7 +1631,10 @@ class CodexRouter:
         deadline = time.time() + (self._recovery_wait_ms() / 1000)
         while True:
             for _attempt in range(slot_count):
-                chosen = await self.choose_slot(affinity_key, excluded_slots, excluded_accounts)
+                if getattr(self, "model_catalog", None) is None:
+                    chosen = await self.choose_slot(affinity_key, excluded_slots, excluded_accounts)
+                else:
+                    chosen = await self.choose_slot(affinity_key, excluded_slots, excluded_accounts, model_id, reasoning_effort)
                 if not chosen:
                     break
                 slot, auth = chosen
