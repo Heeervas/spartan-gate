@@ -3399,6 +3399,71 @@ class CodexTests(unittest.TestCase):
                 },
             }), "full"),
             (PayloadUsageSession({"unexpected": "shape"}), "malformed"),
+            (PayloadUsageSession({"secondary_window": {
+                "limit_window_seconds": 604800,
+                "reset_at": "2026-07-30T10:00:00Z",
+            }}), "missing_percent"),
+            (PayloadUsageSession({"secondary_window": {
+                "limit_window_seconds": 604800,
+                "used_percent": "invalid",
+                "reset_at": "2026-07-30T10:00:00Z",
+            }}), "invalid_percent"),
+            (PayloadUsageSession({"secondary_window": {
+                "limit_window_seconds": 604800,
+                "used_percent": 0,
+                "reset_at": "invalid",
+            }}), "invalid_reset_at"),
+            (PayloadUsageSession({"secondary_window": {
+                "limit_window_seconds": 604800,
+                "used_percent": float("nan"),
+                "reset_at": "2026-07-30T10:00:00Z",
+            }}), "nonfinite_percent"),
+            (PayloadUsageSession({"secondary_window": {
+                "limit_window_seconds": 604800,
+                "used_percent": -1,
+                "reset_at": "2026-07-30T10:00:00Z",
+            }}), "negative_percent"),
+            (PayloadUsageSession({"secondary_window": {
+                "limit_window_seconds": 604800,
+                "used_percent": 10 ** 1000,
+                "reset_at": "2026-07-30T10:00:00Z",
+            }}), "overflow_percent"),
+            (PayloadUsageSession({
+                "primary_window": {
+                    "limit_window_seconds": 18000,
+                    "used_percent": "invalid",
+                    "reset_at": "2026-07-30T10:00:00Z",
+                },
+                "secondary_window": {
+                    "limit_window_seconds": 604800,
+                    "used_percent": 0,
+                    "reset_at": "2026-07-30T10:00:00Z",
+                },
+            }), "invalid_five_hour"),
+            (PayloadUsageSession({
+                "primary_window": {
+                    "limit_window_seconds": 3600,
+                    "used_percent": 100,
+                    "reset_at": "2026-07-30T10:00:00Z",
+                },
+                "secondary_window": {
+                    "limit_window_seconds": 604800,
+                    "used_percent": 0,
+                    "reset_at": "2026-07-30T10:00:00Z",
+                },
+            }), "unknown_full_window"),
+            (PayloadUsageSession({
+                "secondary_window": {
+                    "limit_window_seconds": 604800,
+                    "used_percent": 0,
+                    "reset_at": "2026-07-30T10:00:00Z",
+                },
+                "rate_limit": {"secondary_window": {
+                    "limit_window_seconds": 604800,
+                    "used_percent": 100,
+                    "reset_at": "2026-07-30T10:00:00Z",
+                }},
+            }), "conflicting_full_window"),
             (FailedUsageSession(), "failed"),
         )
         for session, label in cases:
@@ -3648,6 +3713,105 @@ class NativeResponsesTests(unittest.TestCase):
         router._availability_event = None
         router._availability_event_loop = None
         return router
+
+    def test_cooled_native_request_probes_live_usage_before_routing(self) -> None:
+        from spartan_route.native_responses import execute_codex_responses
+        from spartan_route.telemetry import TelemetryStore
+
+        terminal = {"type": "response.completed", "response": {
+            "id": "resp_recovered", "object": "response", "status": "completed",
+            "output": [{"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "recovered"},
+            ]}],
+        }}
+
+        class RecoverySession(PayloadUsageSession):
+            def __init__(self):
+                super().__init__({"secondary_window": {
+                    "limit_window_seconds": 604800,
+                    "used_percent": 0,
+                    "reset_at": "2026-09-30T14:22:11Z",
+                }})
+                self.post_calls = 0
+
+            async def post(self, _url, **_kwargs):
+                self.post_calls += 1
+                return FakeResponse(events=[("response.completed", terminal)])
+
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                store = TelemetryStore(":memory:")
+                self.addCleanup(store.close)
+                session = RecoverySession()
+                router = CodexRouter(session, store)
+                slot = CodexSlot(1, auth=CodexAuth("token", account_id="acct"))
+                slot.rate_limited_until = time.time() + 3600
+                router.slots = [slot]
+
+                async def run():
+                    result = await execute_codex_responses(
+                        router, {"input": "continue"}, "codex/gpt-5.6-sol",
+                        stream, "session", None,
+                    )
+                    if result.stream:
+                        async for _ in result.stream:
+                            pass
+                    return result
+
+                result = asyncio_run(run())
+                self.assertEqual(result.status, 200)
+                self.assertEqual(result.slot_index, 1)
+                self.assertEqual(slot.rate_limited_until, 0)
+                self.assertEqual(session.post_calls, 1)
+                self.assertEqual(len(session.urls), 2)
+
+    def test_cooled_native_request_keeps_cooldown_without_valid_live_usage(self) -> None:
+        from spartan_route.native_responses import execute_codex_responses
+        from spartan_route.telemetry import TelemetryStore
+
+        class RecoverySession(PayloadUsageSession):
+            def __init__(self, payload, fail_usage=False):
+                super().__init__(payload)
+                self.fail_usage = fail_usage
+                self.post_calls = 0
+
+            def get(self, url, **kwargs):
+                if self.fail_usage and "rate-limit-reset-credits" not in url:
+                    self.urls.append(url)
+                    raise RuntimeError("usage unavailable")
+                return super().get(url, **kwargs)
+
+            async def post(self, _url, **_kwargs):
+                self.post_calls += 1
+                raise AssertionError("cooled account must not reach upstream model")
+
+        reset_at = "2026-09-30T14:22:11Z"
+        cases = (
+            ("full", {"secondary_window": {"limit_window_seconds": 604800, "used_percent": 100, "reset_at": reset_at}}, False),
+            ("malformed", {"secondary_window": {"limit_window_seconds": 604800, "reset_at": reset_at}}, False),
+            ("failed", {}, True),
+        )
+        for label, payload, fail_usage in cases:
+            with self.subTest(label=label):
+                store = TelemetryStore(":memory:")
+                try:
+                    session = RecoverySession(payload, fail_usage)
+                    router = CodexRouter(session, store)
+                    slot = CodexSlot(1, auth=CodexAuth("token", account_id="acct"))
+                    slot.rate_limited_until = time.time() + 3600
+                    router.slots = [slot]
+
+                    result = asyncio_run(execute_codex_responses(
+                        router, {"input": "continue"}, "codex/gpt-5.6-sol",
+                        False, "session", None,
+                    ))
+                    self.assertEqual(result.status, 429)
+                    self.assertEqual(result.body["error"]["code"], "codex_429")
+                    self.assertGreater(slot.rate_limited_until, time.time())
+                    self.assertEqual(session.post_calls, 0)
+                    self.assertTrue(any("/wham/usage" in url for url in session.urls))
+                finally:
+                    store.close()
 
     def test_builder_preserves_reasoning_items_and_requests_encrypted_content(self) -> None:
         reasoning_item = {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"}

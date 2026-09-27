@@ -3,6 +3,17 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Added selectable `-282kcontext` Spartan Route model variants for eligible
+  text models. Hermes sees a 282,000-token context window while Route forwards
+  the base model ID; unknown or ineligible variants return 404.
+
+- Let quota-cooled native Codex Responses requests retry after a coalesced live
+  usage check, and keep cooldowns in place when reported usage is missing,
+  malformed, or still full.
+
+- Deferred the Hermes Talk voice-command gateway patch until dispatch so
+  plugin discovery cannot deadlock while the gateway module imports.
+
 - Added GPT-6 Sol/Luna to Spartan Route and automatic, account-aware discovery of compatible Codex Subscription models. Model selection respects per-account availability, keeps existing auto tiers, and fails closed for unknown or unavailable models. Preserved the deployed credential-reload fix for reauthenticated quota-cooled slots in the new Route image.
 
 - Activated immutable Camofox 1.15.0 and retired the duplicate fixed-proxy guard and OS/VNC apt layer. Adapted durable checkpoints to upstream scoped plugin contexts, fixed reserved health admission, and reused upstream's checksum-pinned portable yt-dlp under noexec temporary storage. Added an exact-hash once-per-profile add-on patch, page-world UBO admission, global launch deadline with late-resource cleanup, and identity-bound VNC teardown before recovery checkpointing. Independent review and cold-start/open-WebSocket recovery acceptance pass; superseded local Camofox images were pruned while rebuild coordinates remain documented.

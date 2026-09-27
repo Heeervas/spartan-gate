@@ -13,6 +13,7 @@ import stat
 import struct
 import sys
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -57,6 +58,70 @@ CODEX_AUTH_STORE_ROOT = Path("/app/data/codex-auth")
 CODEX_AUTH_STORE_VERSION = 1
 CODEX_AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 CODEX_AUTH_MAX_BYTES = 1_048_576
+
+def valid_live_usage_window(source: dict[str, Any]) -> tuple[float, str] | None:
+    used = source.get("used_percent")
+    if isinstance(used, bool) or not isinstance(used, (int, float)):
+        return None
+    try:
+        used = float(used)
+    except OverflowError:
+        return None
+    if not math.isfinite(used) or not 0 <= used <= 100:
+        return None
+    reset_at = source.get("reset_at")
+    if isinstance(reset_at, bool):
+        return None
+    if isinstance(reset_at, (int, float)):
+        try:
+            reset_at = float(reset_at)
+        except OverflowError:
+            return None
+        if not math.isfinite(reset_at) or reset_at <= 0:
+            return None
+        try:
+            reset_at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(reset_at))
+        except (OverflowError, OSError, ValueError):
+            return None
+    if not isinstance(reset_at, str):
+        return None
+    try:
+        parsed_reset = datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed_reset.tzinfo is None:
+        return None
+    return used, reset_at
+
+
+def live_usage_allows_recovery(payload: dict[str, Any]) -> bool:
+    rate_limit = payload.get("rate_limit")
+    if rate_limit is not None and not isinstance(rate_limit, dict):
+        return False
+    sources = (payload, rate_limit or {})
+    saw_weekly = False
+    for source in sources:
+        for position in ("primary", "secondary"):
+            window = source.get(f"{position}_window")
+            if window is None:
+                continue
+            if not isinstance(window, dict):
+                return False
+            duration = window.get("limit_window_seconds")
+            if duration is None:
+                seconds = FIVE_HOURS_SECONDS if position == "primary" else SEVEN_DAYS_SECONDS
+            else:
+                if isinstance(duration, bool) or not isinstance(duration, int):
+                    return False
+                seconds = duration
+                if seconds not in (FIVE_HOURS_SECONDS, SEVEN_DAYS_SECONDS):
+                    return False
+            validated = valid_live_usage_window(window)
+            if validated is None or validated[0] >= 100:
+                return False
+            saw_weekly = saw_weekly or seconds == SEVEN_DAYS_SECONDS
+    return saw_weekly
+
 
 def normalize_usage_windows(payload: dict[str, Any]) -> dict[str, tuple[dict[str, Any], int]]:
     """Return recognized usage windows, preferring declared duration over position."""
@@ -3299,15 +3364,13 @@ class CodexRouter:
         elif not isinstance(usage_result, dict):
             usage_error = {"slotIndex": slot.index, "source": "none", "message": "Codex usage payload was not an object"}
         else:
-            live_window_used: list[float] = []
+            invalid_window = False
             for window_name, (source, seconds) in normalize_usage_windows(usage_result).items():
-                reset_at = source.get("reset_at")
-                if isinstance(reset_at, (int, float)):
-                    reset_at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(float(reset_at)))
-                if not isinstance(reset_at, str):
+                validated = valid_live_usage_window(source)
+                if validated is None:
+                    invalid_window = True
                     continue
-                used = max(0.0, min(100.0, parse_float(source.get("used_percent"), 0.0)))
-                live_window_used.append(used)
+                used, reset_at = validated
                 window = {
                     "window": window_name,
                     "usedPercent": used,
@@ -3332,7 +3395,13 @@ class CodexRouter:
                     "source": "none",
                     "message": "Codex usage payload did not contain a recognized weekly window",
                 }
-            elif clear_recovered_limit and live_window_used and all(used < 100 for used in live_window_used):
+            elif invalid_window:
+                usage_error = {
+                    "slotIndex": slot.index,
+                    "source": "none",
+                    "message": "Codex usage payload contained an invalid reported window",
+                }
+            elif clear_recovered_limit and live_usage_allows_recovery(usage_result):
                 for item in slots:
                     if item.rate_limited_until > 0:
                         item.rate_limited_until = 0

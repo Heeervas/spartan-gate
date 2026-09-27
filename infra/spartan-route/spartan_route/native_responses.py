@@ -395,6 +395,11 @@ async def execute_codex_responses(
     excluded_accounts: set[str] = set()
     last_result: CodexCallResult | None = None
 
+    if probe is None:
+        initial_state = await router.slot_availability()
+        if initial_state.eligible == 0 and initial_state.rate_limited:
+            await router._probe_rate_limit_recovery()
+
     for _attempt in range(max_attempts):
         if probe is not None:
             if experiments is None:

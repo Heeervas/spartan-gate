@@ -133,6 +133,12 @@ SPARTAN_PRIVATE_REQUEST_FIELDS = {
 }
 CODEX_ULTRA_REQUIRES_APP_SERVER_CODE = "codex_ultra_requires_app_server"
 CODEX_MAX_REQUIRES_GPT56_CODE = "codex_max_requires_gpt_5_6"
+CONTEXT_VARIANT_SUFFIX = "-282kcontext"
+CONTEXT_VARIANT_TOKENS = 282_000
+
+
+class InvalidContextVariant(ValueError):
+    pass
 
 
 def provider_for_model(model_id: str) -> str:
@@ -252,6 +258,19 @@ def normalize_model_id(model_id: Any) -> str:
     return model
 
 
+def context_variant_eligible(entry: ModelEntry) -> bool:
+    return entry.enabled and entry.tool_capable and entry.max_context >= CONTEXT_VARIANT_TOKENS
+
+
+def context_variant_entry(config: SpartanRouteConfig, model_id: str) -> ModelEntry | None:
+    if model_id in config.models or not model_id.endswith(CONTEXT_VARIANT_SUFFIX):
+        return None
+    base = config.models.get(model_id.removesuffix(CONTEXT_VARIANT_SUFFIX))
+    if base is None or not context_variant_eligible(base):
+        return None
+    return replace(base, id=model_id, max_context=CONTEXT_VARIANT_TOKENS)
+
+
 def classify_request(body: dict[str, Any]) -> tuple[str, str, float]:
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     input_tokens = token_count_estimate(body)
@@ -275,6 +294,10 @@ def route_request(
 ) -> RoutedRequest:
     original = str(body.get("model") or "clawroute/auto")
     normalized = normalize_model_id(original)
+    if normalized.endswith(CONTEXT_VARIANT_SUFFIX) and normalized not in config.models:
+        if context_variant_entry(config, normalized) is None:
+            raise InvalidContextVariant(normalized)
+        normalized = normalized.removesuffix(CONTEXT_VARIANT_SUFFIX)
     tier = "passthrough"
     reason = "direct model request"
 
@@ -1741,7 +1764,10 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
     effective_prompt_cache_key = request_effective_prompt_cache_key(body, session_id, prompt_cache_key)
     turn_id = resolve_turn_id(body, session_id, request_id)
     policy = state.routing_policy
-    route = route_request(state.config, body, policy.tier_models if policy else None)
+    try:
+        route = route_request(state.config, body, policy.tier_models if policy else None)
+    except InvalidContextVariant:
+        return response_json_error(f"The model '{body['model']}' does not exist", 404, "model_not_found", "invalid_request_error")
     result = await execute_chat(state, body, route, bool(body.get("stream")), session_id, effective_prompt_cache_key, request_id)
     return await write_execution_response(
         request,
@@ -1768,7 +1794,10 @@ async def responses(request: web.Request) -> web.StreamResponse:
     effective_prompt_cache_key = request_effective_prompt_cache_key(chat_body, session_id, prompt_cache_key)
     turn_id = resolve_turn_id(chat_body, session_id, request_id)
     policy = state.routing_policy
-    route = route_request(state.config, chat_body, policy.tier_models if policy else None)
+    try:
+        route = route_request(state.config, chat_body, policy.tier_models if policy else None)
+    except InvalidContextVariant:
+        return response_json_error(f"The model '{body['model']}' does not exist", 404, "model_not_found", "invalid_request_error")
     wants_stream = bool(body.get("stream"))
     preflight_error = codex_responses_capability_error(body) if route.provider == "codex" else None
     binding_error = None if preflight_error is not None else reasoning_binding_error(
@@ -2038,6 +2067,11 @@ async def models(request: web.Request) -> web.Response:
             {**auto, "id": "custom-1/clawroute/auto"},
             {**auto, "id": "spartan-route/clawroute/auto"},
             *[model_payload(m) for m in state.config.models.values() if m.enabled],
+            *[
+                model_payload(replace(m, id=f"{m.id}{CONTEXT_VARIANT_SUFFIX}", max_context=CONTEXT_VARIANT_TOKENS))
+                for m in state.config.models.values()
+                if context_variant_eligible(m) and f"{m.id}{CONTEXT_VARIANT_SUFFIX}" not in state.config.models
+            ],
             *([realtime_model()] if request.app[RT_KEY].config.enabled else []),
         ],
     })
@@ -2051,9 +2085,14 @@ async def model_detail(request: web.Request) -> web.Response:
     if model_id in {"clawroute/auto", "auto"}:
         return web.json_response({"id": request.match_info["model_id"], "object": "model", "owned_by": "spartan-route", "max_context": 1_000_000, "tool_capable": True, "multimodal": True})
     entry = state.config.models.get(model_id)
+    variant = None if entry is not None else context_variant_entry(state.config, model_id)
+    entry = entry or variant
     if not entry:
         return response_json_error(f"The model '{request.match_info['model_id']}' does not exist", 404, "model_not_found", "invalid_request_error")
-    return web.json_response({"id": entry.id, "object": "model", "owned_by": entry.provider, "max_context": entry.max_context, "tool_capable": entry.tool_capable, "multimodal": entry.multimodal})
+    payload = {"id": entry.id, "object": "model", "owned_by": entry.provider, "max_context": entry.max_context, "tool_capable": entry.tool_capable, "multimodal": entry.multimodal}
+    if variant is not None:
+        payload.update({"context_length": entry.max_context, "max_model_len": entry.max_context})
+    return web.json_response(payload)
 
 
 ROUTING_TIER_PRESENTATION = {

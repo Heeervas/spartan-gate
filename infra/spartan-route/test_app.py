@@ -434,6 +434,91 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(entry["multimodal"])
             self.assertEqual(entry["max_context"], 872_000)
 
+    async def test_context_variants_list_only_eligible_text_models(self) -> None:
+        from spartan_route.config import load_config
+
+        state = self.app[STATE_KEY]
+        state.config.models.update(load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing"}).models)
+        state.config.models["openai/gpt-disabled"] = ModelEntry(
+            "openai/gpt-disabled", "openai", max_context=300_000, enabled=False,
+        )
+        state.config.models["openai/gpt-edge"] = ModelEntry("openai/gpt-edge", "openai", max_context=282_000)
+        entries = {item["id"]: item for item in (await (await self.client.get("/v1/models")).json())["data"]}
+        variant_id = "codex/gpt-6-astra-282kcontext"
+        self.assertEqual(entries["codex/gpt-6-astra"]["max_context"], 872_000)
+        for field in ("max_context", "context_length", "max_model_len"):
+            self.assertEqual(entries[variant_id][field], 282_000)
+        self.assertEqual(entries[variant_id]["owned_by"], "codex")
+        self.assertEqual(entries[variant_id]["tool_capable"], entries["codex/gpt-6-astra"]["tool_capable"])
+        detail = await self.client.get(f"/v1/models/{variant_id}")
+        self.assertEqual(detail.status, 200)
+        detail_entry = await detail.json()
+        self.assertEqual(detail_entry["id"], variant_id)
+        for field in ("max_context", "context_length", "max_model_len"):
+            self.assertEqual(detail_entry[field], 282_000)
+        self.assertNotIn("clawroute/auto-282kcontext", entries)
+        self.assertNotIn("openai/gpt-image-2-282kcontext", entries)
+        self.assertNotIn("openai/gpt-test-282kcontext", entries)
+        self.assertNotIn("openai/gpt-disabled-282kcontext", entries)
+        self.assertIn("openai/gpt-edge-282kcontext", entries)
+
+        state.config.models[variant_id] = ModelEntry(variant_id, "codex", max_context=400_000)
+        entries = {item["id"]: item for item in (await (await self.client.get("/v1/models")).json())["data"]}
+        self.assertEqual(entries[variant_id]["max_context"], 400_000)
+        self.assertEqual(route_request(state.config, {"model": variant_id}).actual_model, variant_id)
+
+    async def test_context_variant_routes_to_base_model(self) -> None:
+        from spartan_route.config import load_config
+
+        state = self.app[STATE_KEY]
+        state.config.models.update(load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing"}).models)
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        model_id = "codex/gpt-6-astra-282kcontext"
+        response = await self.client.post(
+            "/v1/chat/completions", headers={"Authorization": "Bearer secret"},
+            json={"model": model_id, "messages": [{"role": "user", "content": "hello"}]},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(fake_codex.calls[0]["model_id"], "codex/gpt-6-astra")
+        with patch("spartan_route.app.execute_codex_responses", return_value=CodexCallResult(status=200, body={"status": "completed", "output": []})) as execute:
+            response = await self.client.post(
+                "/v1/responses", headers={"Authorization": "Bearer secret"},
+                json={"model": model_id, "input": "hello"},
+            )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(execute.call_args.args[2], "codex/gpt-6-astra")
+
+        state.config.models["openai/gpt-large"] = ModelEntry("openai/gpt-large", "openai", max_context=300_000)
+        if state.session is not None:
+            await state.session.close()
+        fake_session = FakeOpenAISession()
+        state.session = fake_session
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            response = await self.client.post(
+                "/v1/chat/completions", headers={"Authorization": "Bearer secret"},
+                json={"model": "openai/gpt-large-282kcontext", "messages": [{"role": "user", "content": "hello"}]},
+            )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(fake_session.calls[0]["json"]["model"], "gpt-large")
+
+    async def test_invalid_context_variant_is_rejected_before_forwarding(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        for model_id in ("codex/unknown-282kcontext", "openai/gpt-test-282kcontext", "clawroute/auto-282kcontext"):
+            with self.subTest(model=model_id):
+                for endpoint, payload in (
+                    ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hello"}]}),
+                    ("/v1/responses", {"input": "hello"}),
+                ):
+                    response = await self.client.post(endpoint, headers={"Authorization": "Bearer secret"}, json={"model": model_id, **payload})
+                    self.assertEqual(response.status, 404)
+                    self.assertEqual((await response.json())["error"]["code"], "model_not_found")
+                detail = await self.client.get(f"/v1/models/{model_id}")
+                self.assertEqual(detail.status, 404)
+        self.assertFalse(fake_codex.calls)
+
     async def test_gpt6_sol_and_luna_are_selectable_with_max_but_not_ultra(self) -> None:
         from spartan_route.codex_catalog import parse_catalog
 
@@ -485,6 +570,8 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         await catalog.stop()  # Keep publication deterministic during slot-state assertions.
         listed = {item["id"] for item in (await (await self.client.get("/v1/models")).json())["data"]}
         self.assertIn(model_id, listed)
+        variant_id = f"{model_id}-282kcontext"
+        self.assertIn(variant_id, listed)
         config_response = await self.client.get("/api/config/routing", headers={"Authorization": "Bearer secret"})
         config = await config_response.json()
         self.assertTrue(next(item for item in config["models"] if item["id"] == model_id)["eligible"])
@@ -492,6 +579,9 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         denied = await self.client.post("/v1/responses", headers={"Authorization": "Bearer secret"}, json={"model": model_id, "input": "solve"})
         self.assertEqual(denied.status, 503)
         self.assertEqual((await denied.json())["error"]["code"], "codex_model_unavailable")
+        denied_variant = await self.client.post("/v1/responses", headers={"Authorization": "Bearer secret"}, json={"model": variant_id, "input": "solve"})
+        self.assertEqual(denied_variant.status, 503)
+        self.assertEqual((await denied_variant.json())["error"]["code"], "codex_model_unavailable")
         await state.codex.set_slot_routing_enabled(0, True)
         await catalog.refresh()
         mapping = {tier["id"]: model_id for tier in config["editableTiers"]}
@@ -503,6 +593,8 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         unavailable_doc = await unavailable.json()
         self.assertEqual(unavailable_doc["effective"], unavailable_doc["fileDefaults"])
         self.assertTrue(unavailable_doc["warning"])
+        missing_variant = await self.client.get(f"/v1/models/{variant_id}")
+        self.assertEqual(missing_variant.status, 404)
         catalog._fetch = AsyncMock(return_value=parse_catalog({"models": [row]}))
         await catalog.refresh()
         restored = await self.client.get("/api/config/routing", headers={"Authorization": "Bearer secret"})

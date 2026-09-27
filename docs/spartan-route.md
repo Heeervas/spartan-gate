@@ -79,6 +79,14 @@ Kept in v1:
 - OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, `/v1/models`,
   `/v1/images/generations`, and `/v1/images/edits`.
 - Native Hermes `openai-api` provider discovery through `OPENAI_BASE_URL`.
+- `/v1/models` also lists a `-282kcontext` variant of each enabled, tool-capable
+  text model whose configured context is at least 282,000 tokens, including
+  models added by Codex catalog discovery. Hermes can select the variant to use
+  a 282,000-token context window. Spartan Route sends the unsuffixed model ID
+  upstream; the variant is context metadata, not a server-side token limit.
+  Auto aliases, image models, realtime models, and smaller-window models have
+  no variant. `/v1/models/{id}` reports the same variant metadata, and a
+  variant is unavailable when its base model leaves the catalog.
 - Profile `.env` route keys may reference `${OPENAI_API_KEY}` or legacy
   `${CUSTOM_1_API_KEY}`; those two route-key aliases delegate to the named
   container environment key. References to unrelated keys remain literal and
@@ -318,12 +326,14 @@ Reliability contract:
   available pool. It includes the earliest `resets_at`, `resets_in_seconds`,
   slot diagnostics, and `Retry-After`; it does not hold or automatically replay
   the exhausted request.
-- A later chat or image request arriving while every usable slot is quota
-  cooled triggers one coalesced live usage refresh. Successful, structurally
-  valid usage below every reported limit clears the matching account cooldown
-  and the same request continues through that slot. Concurrent requests share
-  the refresh, and new probes are throttled for five seconds. Failed, malformed,
-  or still-full checks remain unavailable and return the aggregate pool error.
+- A later chat, image, or native Responses request arriving while every usable
+  slot is quota cooled triggers one coalesced live usage refresh. Successful,
+  structurally valid usage below every reported limit clears the matching
+  account cooldown and the same request continues through that slot. Concurrent
+  requests share the refresh, and new probes are throttled for five seconds.
+  Failed, malformed, or still-full checks remain unavailable and return the
+  aggregate pool error. Usage checks read quota and reset-credit metadata only;
+  they never redeem a banked reset.
 - An upstream auth rejection quarantines only the rejected credential
   fingerprint. Raw provider auth details are not returned as the final pool
   error; the slot becomes eligible again only after its auth source changes.

@@ -1,14 +1,70 @@
 import asyncio
 import importlib.util
 from pathlib import Path
+import sys
 import threading
-from types import SimpleNamespace as NS
+from types import ModuleType, SimpleNamespace as NS
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 spec = importlib.util.spec_from_file_location('voice_commands', Path(__file__).parent / 'spartan-talk-voice-command/__init__.py')
 plugin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plugin)
+
+
+class Registration(unittest.IsolatedAsyncioTestCase):
+    async def test_register_defers_gateway_import_until_dispatch(self):
+        callbacks = []
+        ctx = NS(register_hook=lambda name, callback: callbacks.append((name, callback)))
+        original_import = __import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == 'gateway.run':
+                raise AssertionError('plugin discovery must not import gateway.run')
+            return original_import(name, *args, **kwargs)
+
+        with patch('builtins.__import__', side_effect=guarded_import):
+            plugin.register(ctx)
+
+        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(callbacks[0][0], 'pre_gateway_dispatch')
+
+        calls = []
+        connected = NS(value=False)
+        channel = NS(id=123)
+        adapter = NS(is_in_voice_channel=lambda guild: connected.value,
+                     get_user_voice_channel=AsyncMock(return_value=channel))
+
+        class Runner:
+            async def _handle_voice_channel_join(self, event):
+                calls.append('native_join')
+                connected.value = True
+                return 'native join'
+
+            async def _handle_voice_channel_leave(self, event):
+                return 'native leave'
+
+            def _get_guild_id(self, event): return 1
+            def _adapter_for_source(self, source): return adapter
+
+        bridge = {'guild_id': 1, 'adapter': adapter, 'voice_client': NS(channel=channel)}
+        talk_module = NS(resolve_voice_bridge=lambda: bridge)
+        handler_globals = {'talk_discord': talk_module, 'calls': calls}
+        exec('def handler(arg):\n calls.append(arg)\n return "Talk started"', handler_globals)
+        gateway = Runner()
+        event = NS(source=NS(platform=NS(value='discord'), user_id='fixture'))
+        hermes_cli = ModuleType('hermes_cli')
+        plugins = ModuleType('hermes_cli.plugins')
+        plugins.get_plugin_command_handler = lambda name: handler_globals['handler']
+        with patch.dict(sys.modules, {'hermes_cli': hermes_cli, 'hermes_cli.plugins': plugins}):
+            callback = callbacks[0][1]
+            self.assertIsNone(callback(event=event, gateway=gateway, session_store=None))
+            installed = Runner._handle_voice_channel_join
+            self.assertTrue(installed._spartan_talk_voice)
+            self.assertIsNone(callback(event=event, gateway=gateway, session_store=None))
+            self.assertIs(Runner._handle_voice_channel_join, installed)
+            self.assertEqual(await gateway._handle_voice_channel_join(event), 'Talk started')
+            self.assertEqual(calls, ['native_join', 'join'])
 
 
 class Commands(unittest.IsolatedAsyncioTestCase):

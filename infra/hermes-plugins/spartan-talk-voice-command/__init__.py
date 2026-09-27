@@ -79,6 +79,13 @@ def install(runner_class, get_handler):
 
 
 def register(ctx):
-    from gateway.run import GatewayRunner
-    from hermes_cli.plugins import get_plugin_command_handler
-    install(GatewayRunner, get_plugin_command_handler)
+    def install_before_dispatch(*, gateway, **_kwargs):
+        runner_class = type(gateway)
+        if not getattr(runner_class._handle_voice_channel_join, '_spartan_talk_voice', False):
+            from hermes_cli.plugins import get_plugin_command_handler
+            install(runner_class, get_plugin_command_handler)
+        # None leaves the inbound event and authorization flow unchanged.
+
+    # Discovery can run on a worker while the main thread imports gateway.run.
+    # Importing that module here would deadlock against the discovery lock.
+    ctx.register_hook('pre_gateway_dispatch', install_before_dispatch)
