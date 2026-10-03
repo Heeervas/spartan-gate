@@ -509,9 +509,18 @@
     function nativeCacheDetail(native) {
       if (!native || native.version !== 2) return 'Legacy cache heuristic; native request comparison unavailable';
       const labels = {replay: 'same structured request', append: 'history extended', changed: 'request changed',
-        no_predecessor: 'no completed predecessor', unattributed: 'comparison scope unavailable', unknown: 'comparison unknown'};
+        no_predecessor: 'no completed predecessor for this cache key', unattributed: 'comparison scope unavailable', unknown: 'comparison unknown'};
       const parts = [labels[native.comparison] || labels.unknown];
       if (native.changed_components?.length) parts.push(native.changed_components.join(', '));
+      const conversation = native.conversation_trace;
+      if (conversation?.comparison === 'continued') {
+        parts.push('conversation continued');
+        if (conversation.cache_key_changed === true) parts.push('cache key changed');
+        if (conversation.changed_components?.length) parts.push(conversation.changed_components.map(name => `${name} changed`).join(', '));
+      } else if (conversation?.comparison === 'unknown') {
+        parts.push('conversation comparison unavailable');
+      }
+      if (conversation?.overlap === true) parts.push('overlapping conversation requests');
       if (native.overlap) parts.push('overlapping requests');
       if (native.predecessor_gap_ms != null) parts.push(`predecessor completed ${Math.round(native.predecessor_gap_ms / 1000)}s before send`);
       parts.push(native.cache_write_tokens == null ? 'cache writes unknown' : `${native.cache_write_tokens} cache-write tokens`);

@@ -1436,6 +1436,176 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured[0]["request"]["input"][0], reasoning_item)
         self.assertEqual(captured[0]["request"]["reasoning"], {"effort": "high"})
 
+    async def test_signed_responses_keep_one_dashboard_session_across_cache_keys(self) -> None:
+        from spartan_route.codex import session_id_from_request
+
+        secret_hex = "55" * 32
+        chain_id = "66" * 32
+        realm = "codex_subscription"
+        binding = {
+            "spartan_chain_id": chain_id,
+            "spartan_expected_realm": realm,
+            "spartan_binding_mac": hmac.new(
+                bytes.fromhex(secret_hex), f"{chain_id}\0{realm}".encode(), hashlib.sha256
+            ).hexdigest(),
+        }
+        captured = []
+        capture = CaptureQueue()
+
+        async def fake_execute(_router, request, model_id, wants_stream, session_id, prompt_cache_key,
+                               diagnostics=None, experiments=None, probe=None):
+            captured.append((request, session_id, prompt_cache_key))
+            payload = {"object": "response", "status": "completed", "output": []}
+
+            async def stream():
+                yield sse("response.completed", {"response": payload})
+
+            return CodexCallResult(
+                status=200, body=payload, stream=stream() if wants_stream else None,
+                input_tokens=60095, cached_input_tokens=0, completed=True, usage_seen=True,
+                native_cache={"version": 2, "cache_read_known": True, "completed": True},
+            )
+
+        with patch.dict(os.environ, {"SPARTAN_REASONING_BINDING_SECRET": secret_hex}), patch(
+            "spartan_route.app.execute_codex_responses", side_effect=fake_execute
+        ), patch.object(self.app[STATE_KEY].queue, "log", side_effect=capture.log):
+            for wants_stream in (False, True):
+                for index, key in enumerate(("first-cache-key", "second-cache-key")):
+                    body = {"model": "codex/gpt-5.6-sol", "input": f"turn {index}", "stream": wants_stream,
+                            "prompt_cache_key": key, "spartan_cache_lineage": 0, **binding}
+                    response = await self.client.post(
+                        "/v1/responses", headers={"Authorization": "Bearer secret"}, json=body
+                    )
+                    self.assertEqual(response.status, 200)
+                    await response.read()
+                    self.assertEqual(captured[-1], (body, session_id_from_request({}, key),
+                                                    f"{key}\0spartan-cache-lineage:0"))
+
+        self.assertEqual(len(capture.entries), 4)
+        self.assertEqual(capture.entries[0].session_id, capture.entries[1].session_id)
+        self.assertNotEqual(capture.entries[0].turn_id, capture.entries[1].turn_id)
+        for entry in capture.entries:
+            self.assertEqual(entry.cached_input_tokens, 0)
+            self.assertEqual(json.loads(entry.context_info)["session_identity"],
+                             {"version": 1, "source": "signed_hermes_chain"})
+            self.store.log_routing(entry)
+        sessions = self.store.live_sessions()["sessions"]
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(len(sessions[0]["turns"]), 2)
+
+    async def test_responses_session_identity_preserves_fallbacks_and_isolates_profiles(self) -> None:
+        from spartan_route.app import request_prompt_cache_key, responses_body_to_chat
+        from spartan_route.codex import session_id_from_request
+
+        secret_hex = "55" * 32
+        realm = "codex_subscription"
+        capture = CaptureQueue()
+
+        async def fake_execute(*args):
+            return CodexCallResult(status=200, body={"status": "completed", "output": []}, completed=True)
+
+        def binding(profile):
+            chain = hmac.new(bytes.fromhex(secret_hex), f"{profile}\0same-session".encode(), hashlib.sha256).hexdigest()
+            return {"spartan_chain_id": chain, "spartan_expected_realm": realm,
+                    "spartan_binding_mac": hmac.new(bytes.fromhex(secret_hex), f"{chain}\0{realm}".encode(), hashlib.sha256).hexdigest()}
+
+        with patch.dict(os.environ, {"SPARTAN_REASONING_BINDING_SECRET": secret_hex}), patch(
+            "spartan_route.app.execute_codex_responses", side_effect=fake_execute
+        ) as execute, patch.object(self.app[STATE_KEY].queue, "log", side_effect=capture.log):
+            for extra in ({"prompt_cache_key": "legacy"}, {},
+                          {"prompt_cache_key": "shared", **binding("profile-a")},
+                          {"prompt_cache_key": "shared", **binding("profile-b")}, binding("profile-a")):
+                body = {"model": "codex/gpt-5.6-sol", "input": "continue", **extra}
+                response = await self.client.post(
+                    "/v1/responses", headers={"Authorization": "Bearer secret"}, json=body
+                )
+                self.assertEqual(response.status, 200)
+                await response.read()
+                chat = responses_body_to_chat(body)
+                key = request_prompt_cache_key(chat)
+                legacy_id = session_id_from_request(chat, key)
+                # The native execution inputs remain legacy-derived even when
+                # telemetry has a trusted chain and no explicit cache key.
+                self.assertEqual(execute.call_args.args[4:6], (legacy_id, key))
+                if "spartan_chain_id" not in body:
+                    self.assertEqual(capture.entries[-1].session_id, legacy_id)
+                    self.assertEqual(json.loads(capture.entries[-1].context_info)["session_identity"]["source"], "legacy_fallback")
+        self.assertNotEqual(capture.entries[2].session_id, capture.entries[3].session_id)
+        self.assertEqual(capture.entries[2].session_id, capture.entries[4].session_id)
+        self.assertEqual(json.loads(capture.entries[4].context_info)["cache_key_source"], "none")
+        self.assertIsNone(json.loads(capture.entries[4].context_info)["effective_cache_key_hash"])
+
+    async def test_dashboard_identity_does_not_change_native_payload_headers_or_affinity(self) -> None:
+        import test_codex as fixtures
+        from test_codex_cache_affinity import CodexCacheAffinityTests
+        from spartan_route.codex import session_id_from_request
+        from spartan_route.native_responses import execute_codex_responses
+
+        subject = fixtures.NativeResponsesTests.router([CodexCacheAffinityTests.response() for _ in range(2)])
+        reference = fixtures.NativeResponsesTests.router([CodexCacheAffinityTests.response() for _ in range(2)])
+        secret_hex, chain, realm = "55" * 32, "66" * 32, "codex_subscription"
+        binding = {"spartan_chain_id": chain, "spartan_expected_realm": realm,
+                   "spartan_binding_mac": hmac.new(bytes.fromhex(secret_hex), f"{chain}\0{realm}".encode(), hashlib.sha256).hexdigest()}
+        capture = CaptureQueue()
+        with patch.dict(os.environ, {"SPARTAN_REASONING_BINDING_SECRET": secret_hex}), patch.object(
+            self.app[STATE_KEY], "codex", subject
+        ), patch.object(subject, "choose_slot", wraps=subject.choose_slot) as choose, patch.object(
+            self.app[STATE_KEY].queue, "log", side_effect=capture.log
+        ):
+            for index, key in enumerate(("first-key", "second-key")):
+                body = {"model": "codex/gpt-5.6-sol", "instructions": f"instructions {index}",
+                        "input": [{"role": "user", "content": f"turn {index}"}],
+                        "prompt_cache_key": key, "spartan_cache_lineage": 0, **binding}
+                control = await execute_codex_responses(reference, body, body["model"], False,
+                                                       session_id_from_request({}, key), f"{key}\0spartan-cache-lineage:0")
+                self.assertEqual(control.status, 200)
+                response = await self.client.post(
+                    "/v1/responses", headers={"Authorization": "Bearer secret"}, json=body
+                )
+                self.assertEqual(response.status, 200)
+                await response.read()
+                self.assertEqual(subject.session.calls[-1], reference.session.calls[-1])
+                self.assertEqual(choose.call_args.args[0], chain)
+        self.assertEqual(capture.entries[0].session_id, capture.entries[1].session_id)
+        context = json.loads(capture.entries[1].context_info)
+        self.assertEqual(context["native_cache"]["comparison"], "no_predecessor")
+        self.assertEqual(context["native_cache"]["conversation_trace"]["comparison"], "continued")
+        self.assertEqual(context["native_cache"]["conversation_trace"]["changed_components"], ["instructions", "input"])
+
+    async def test_rejected_binding_cannot_claim_dashboard_session_or_reach_provider(self) -> None:
+        from spartan_route.codex import session_id_from_request
+
+        secret_hex = "55" * 32
+        chain_id = "66" * 32
+        def binding(realm="codex_subscription"):
+            return {"spartan_chain_id": chain_id, "spartan_expected_realm": realm,
+                    "spartan_binding_mac": hmac.new(bytes.fromhex(secret_hex), f"{chain_id}\0{realm}".encode(), hashlib.sha256).hexdigest()}
+        incomplete = binding()
+        incomplete.pop("spartan_binding_mac")
+        cases = (
+            ({**binding(), "spartan_chain_id": "malformed"}, 400),
+            ({**binding(), "spartan_binding_mac": "00" * 32}, 400),
+            (incomplete, 400),
+            ({**binding(), "spartan_expected_realm": "unknown"}, 400),
+            (binding("openai_api"), 409),
+            ({**binding(), "store": True}, 400),
+        )
+        capture = CaptureQueue()
+        with patch.dict(os.environ, {"SPARTAN_REASONING_BINDING_SECRET": secret_hex}), patch(
+            "spartan_route.app.execute_codex_responses"
+        ) as execute, patch.object(self.app[STATE_KEY].queue, "log", side_effect=capture.log):
+            for extra, status in cases:
+                with self.subTest(extra=extra):
+                    response = await self.client.post(
+                        "/v1/responses", headers={"Authorization": "Bearer secret"},
+                        json={"model": "codex/gpt-5.6-sol", "input": "continue", "prompt_cache_key": "legacy", **extra},
+                    )
+                    self.assertEqual(response.status, status)
+                    await response.read()
+                    self.assertEqual(capture.entries[-1].session_id, session_id_from_request({}, "legacy"))
+                    self.assertEqual(json.loads(capture.entries[-1].context_info)["session_identity"]["source"], "legacy_fallback")
+            execute.assert_not_called()
+
     async def test_codex_encrypted_replay_requires_signed_binding(self) -> None:
         with patch("spartan_route.app.execute_codex_responses") as execute:
             response = await self.client.post(

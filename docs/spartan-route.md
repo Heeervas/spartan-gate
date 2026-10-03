@@ -114,6 +114,24 @@ in the private configuration for rollback.
   `codex_message_items`. This is an upstream plugin contract, not a Hermes image
   patch.
 
+### Dashboard session identity
+
+Native Responses requests with a complete, successfully validated Hermes chain
+binding use a hash of that chain as the dashboard session ID. Cache-key changes
+therefore remain turns of the same conversation. Different profile/session
+chains remain separate. `context_info.session_identity` records version 1 and
+source `signed_hermes_chain` or `legacy_fallback`.
+
+Unsigned clients and rejected bindings keep the existing cache-key/content
+fallback. Execution identity, upstream cache keys, session headers and account
+affinity are independent of the dashboard ID. Historical rows keep their
+recorded session IDs; this change does not rewrite telemetry.
+
+A continued conversation can still have a cold provider cache. Hermes's native
+key includes instructions and tool schemas, so an instruction change can change
+the key while history and the signed chain remain intact. Dashboard grouping
+does not establish cache residency or alter actual provider cache counters.
+
 Kept in v1:
 
 - OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, `/v1/models`,
@@ -427,12 +445,23 @@ Reliability contract:
   predecessors captured before dispatch are compared; failed or cancelled
   requests do not establish a completed baseline. Overlap affects both requests.
   Each bounded attempt records its status and a sanitized error code.
+- A separate `native_cache.conversation_trace` compares the last successful,
+  non-overlapping observation in the same endpoint/realm/model/account/chain
+  across effective cache keys. It reports `continued`, `no_predecessor` or
+  `unknown`, plus nullable `cache_key_changed`, changed-component fingerprints
+  and predecessor gap. The dashboard can show conversation continuation beside
+  a changed key or changed instructions without treating it as a cache hit.
+  Cross-key overlap, expiry and eviction invalidate this comparison; ambiguous
+  completions never establish its next predecessor. Existing key-qualified
+  comparisons, cache aggregates and experiment eligibility remain separate.
 - Content hashes use an ephemeral process-local HMAC key. A restart starts a
   fresh comparison epoch. The ledger retains at most 512 scopes / 8 MiB and
   expires idle scopes after 30 minutes. Each observation processes at most
   8 MiB, 65,536 nodes and 64 nesting levels; the new persisted diagnostic
   object is capped at 8 KiB. Limits produce unknown observations. No additional
   raw prompts, schemas, keys, credentials or reasoning are persisted.
+  Conversation entries share that byte budget, use spare capacity, and cannot
+  displace key-qualified scopes. With no spare capacity their trace is unknown.
 - Cache-read and cache-write coverage are explicit; missing counters are not
   known zeros. Native percentages use only rows with known cache readings,
   while total observed input remains available. Time to first output measures

@@ -10,6 +10,11 @@ All notable changes to Spartan Gate are documented here.
   header latency. Updated aiohttp to 3.14.3 and validated the separate voice
   relay against the shared image dependency.
 
+- Group validated Hermes native Responses chains into stable dashboard sessions
+  across cache-key changes, preserving provider keys, account affinity and real
+  cache counters. Add bounded conversation diagnostics for changed keys and
+  instructions without changing cache experiment comparisons.
+
 - Checkpointed the deployed Hermes refresh, managed Camofox policy, fast-mode
   forwarding, Route cache affinity and catalog/context updates, operator
   helpers, and existing architecture drafts before transport optimization.

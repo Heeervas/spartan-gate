@@ -113,6 +113,9 @@ class Observation:
     finished: bool = False
     first_output: float | None = None
     overlap_generation: int = 0
+    conversation_scope: str | None = None
+    conversation_entry: LedgerEntry | None = None
+    conversation_overlap_generation: int = 0
 
     def output(self, payload: dict[str, Any], event: str, now: float) -> None:
         if self.first_output is None and event in {
@@ -132,9 +135,88 @@ class NativeCacheDiagnostics:
         self.max_payload_bytes = max_payload_bytes
         # Each retained entry is constant-size and charged a conservative 16KiB.
         self.max_scopes = min(max_scopes, max_state_bytes // 16384)
+        self._state_entry_budget = max(0, max_state_bytes // 16384)
         self.idle_seconds = idle_seconds
         self._entries: OrderedDict[str, LedgerEntry] = OrderedDict()
+        self._conversation_entries: OrderedDict[str, LedgerEntry] = OrderedDict()
         self._generation = 0
+
+    def _trim_conversations(self, reserved_primary: int = 0) -> int:
+        # Keep the original key-qualified ledger's capacity. Conversation
+        # comparisons use only spare entries within the same total byte budget.
+        limit = max(0, min(self.max_scopes, self._state_entry_budget - len(self._entries) - reserved_primary))
+        while len(self._conversation_entries) > limit:
+            self._conversation_entries.popitem(last=False)
+        return limit
+
+    def _begin_conversation(self, observation: Observation, shape: dict[str, Any],
+                            identity: list[str], cache_key: str) -> None:
+        trace: dict[str, Any] = {"comparison": "unknown", "cache_key_changed": None,
+                                 "changed_components": [], "predecessor_gap_ms": None, "overlap": False}
+        observation.metadata["conversation_trace"] = trace
+        try:
+            scope = self.digest(identity, Budget(16384))
+            key_hash = self.digest(cache_key, Budget(16384))
+            limit = self._trim_conversations()
+            if limit < 1:
+                trace["reason"] = "state_limit"
+                return
+            entry = self._conversation_entries.get(scope)
+            if entry is None:
+                while len(self._conversation_entries) >= limit:
+                    self._conversation_entries.popitem(last=False)
+                entry = LedgerEntry(0, observation.sent)
+                self._conversation_entries[scope] = entry
+            previous = entry.successful
+            if entry.active:
+                entry.overlap_generation += 1
+                # Neither overlapping completion can establish the latest
+                # reliable predecessor, even when the keys are different.
+                entry.successful, entry.completed = None, None
+                trace.update(overlap=True, reason="overlapping_requests")
+            else:
+                trace["comparison"] = "continued" if previous else "no_predecessor"
+                if previous:
+                    trace.update(
+                        cache_key_changed=previous["cache_key_hash"] != key_hash,
+                        changed_components=[k for k in ("instructions", "tools", "settings", "input")
+                                            if previous[k] != shape[k]],
+                        predecessor_gap_ms=max(0, int((observation.sent - entry.completed) * 1000)),
+                    )
+            entry.generation, entry.touched = observation.generation, observation.sent
+            entry.active += 1
+            self._conversation_entries.move_to_end(scope)
+            observation.conversation_scope, observation.conversation_entry = scope, entry
+            observation.conversation_overlap_generation = entry.overlap_generation
+            # Reuse the already bounded shape hashes; never retain raw keys.
+            observation.shape["cache_key_hash"] = key_hash
+        except Exception:
+            trace.update(comparison="unknown", reason="diagnostic_failure")
+
+    def _finish_conversation(self, observation: Observation, success: bool, now: float) -> None:
+        entry = observation.conversation_entry
+        if entry is None:
+            return
+        trace = observation.metadata["conversation_trace"]
+        try:
+            entry.active = max(0, entry.active - 1)
+            if self._conversation_entries.get(observation.conversation_scope) is not entry:
+                trace.update(comparison="unknown", reason="scope_evicted", overlap=None)
+            elif now - entry.touched >= self.idle_seconds:
+                self._conversation_entries.pop(observation.conversation_scope, None)
+                trace.update(comparison="unknown", reason="scope_expired", overlap=None)
+            elif trace["overlap"] or entry.overlap_generation != observation.conversation_overlap_generation:
+                trace.update(comparison="unknown", reason="overlapping_requests", overlap=True)
+            elif entry.generation != observation.generation:
+                trace.update(comparison="unknown", reason="out_of_order")
+            elif success and observation.shape is not None:
+                entry.successful = {k: observation.shape[k] for k in
+                                    ("instructions", "tools", "settings", "input", "cache_key_hash")}
+                entry.completed, entry.touched = now, now
+        except Exception:
+            trace.update(comparison="unknown", reason="diagnostic_failure")
+        if trace["comparison"] == "unknown":
+            trace.update(cache_key_changed=None, changed_components=[], predecessor_gap_ms=None)
 
     def digest(self, value: Any, budget: Budget | None = None) -> str:
         digest = hmac.new(self._secret, digestmod=hashlib.sha256)
@@ -205,6 +287,9 @@ class NativeCacheDiagnostics:
             for key, entry in list(self._entries.items()):
                 if now - entry.touched >= self.idle_seconds:
                     self._entries.pop(key, None)
+            for key, entry in list(self._conversation_entries.items()):
+                if now - entry.touched >= self.idle_seconds:
+                    self._conversation_entries.pop(key, None)
             if chain:
                 observation.metadata["session_scope"] = self.session_scope(realm, chain)
             identity = account or credential_scope
@@ -218,6 +303,7 @@ class NativeCacheDiagnostics:
             if entry is None:
                 while len(self._entries) >= self.max_scopes:
                     self._entries.popitem(last=False)
+                self._trim_conversations(reserved_primary=1)
                 entry = LedgerEntry(0, now, first_sent=now)
                 self._entries[scope] = entry
             self._generation += 1
@@ -252,6 +338,7 @@ class NativeCacheDiagnostics:
             observation.metadata.update(comparison=comparison, changed_components=changed,
                                         developer_boundary={"items": shape["boundary_items"], "digest": shape["boundary"],
                                                             "reused": boundary_reused, "changed_suffix": boundary_reused and comparison == "changed"})
+            self._begin_conversation(observation, shape, [endpoint, realm, model, identity, chain], cache_key)
         except Exception:
             observation.metadata.update(comparison="unknown", reason="observation_limit")
             observation.shape = None
@@ -273,6 +360,7 @@ class NativeCacheDiagnostics:
                                             ttft_ms=(max(0, int((observation.first_output - observation.sent) * 1000)) if observation.first_output is not None else None))
                 if provider_diagnostics:
                     observation.metadata["provider"] = provider_diagnostics
+                self._finish_conversation(observation, success, now)
                 entry = observation.entry
                 if entry is not None:
                     observation.metadata["overlap"] = bool(observation.metadata["overlap"] or entry.overlap_generation != observation.overlap_generation)

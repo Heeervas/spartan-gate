@@ -1382,6 +1382,9 @@ def log_request(
     session_id: str | None,
     turn_id: str,
     api_kind: str,
+    *,
+    telemetry_session_id: str | None = None,
+    session_identity_source: str = "legacy_fallback",
 ) -> None:
     input_tokens = result.input_tokens or token_count_estimate(body)
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
@@ -1462,6 +1465,7 @@ def log_request(
                 if key in transport:
                     transport["request_" + key] = preparation_ms + transport[key]
     context = {
+        "session_identity": {"version": 1, "source": session_identity_source},
         "routeReason": route.reason,
         "provider": route.provider,
         "status": result.status,
@@ -1533,7 +1537,7 @@ def log_request(
             actual_tool_call_count=result.actual_tool_call_count,
             actual_tool_names=result.actual_tool_names,
             is_dry_run=state.config.dry_run,
-            session_id=session_id,
+            session_id=telemetry_session_id if telemetry_session_id is not None else session_id,
             error=result.error if result.status >= 400 or result.error else None,
             prompt_preview=prompt_preview_from_request(body, state.config.log_content),
             context_info=stable_json(context),
@@ -1797,6 +1801,17 @@ async def responses(request: web.Request) -> web.StreamResponse:
     binding_error = None if preflight_error is not None else reasoning_binding_error(
         state, body, reasoning_realm_for_route(route)
     )
+    # Cache/execution identity stays unchanged. Only a fully validated binding
+    # may replace the dashboard's legacy cache-key-derived session identity.
+    telemetry_session_id = session_id
+    session_identity_source = "legacy_fallback"
+    if preflight_error is None and binding_error is None and all(
+        isinstance(body.get(field), str) and body[field].strip()
+        for field in (SPARTAN_CHAIN_ID_FIELD, SPARTAN_EXPECTED_REALM_FIELD, SPARTAN_BINDING_MAC_FIELD)
+    ):
+        chain_id = body[SPARTAN_CHAIN_ID_FIELD].strip().lower()
+        telemetry_session_id = sha(f"signed_hermes_chain\0{chain_id}", 16)
+        session_identity_source = "signed_hermes_chain"
     probe = None
     probe_header = request.headers.get(PROBE_HEADER)
     if probe_header is not None:
@@ -1818,7 +1833,8 @@ async def responses(request: web.Request) -> web.StreamResponse:
         state.cache_experiments.finish(probe, success=False, sent=False)
 
     def done() -> None:
-        log_request(state, chat_body, route, result, started, request_id, session_id, turn_id, "responses")
+        log_request(state, chat_body, route, result, started, request_id, session_id, turn_id, "responses",
+                    telemetry_session_id=telemetry_session_id, session_identity_source=session_identity_source)
 
     return await write_execution_response(request, result, on_done=done, content_type="text/event-stream" if wants_stream else None)
 
