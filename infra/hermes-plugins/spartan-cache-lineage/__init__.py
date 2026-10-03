@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from collections import OrderedDict
@@ -17,6 +18,8 @@ LINEAGE_SCHEMA_VERSION = 2
 LINEAGE_FIELD = "spartan_cache_lineage"
 LINEAGE_REASON_FIELD = "spartan_cache_lineage_reason"
 DEFAULT_MAX_TRACKED_KEYS = 512
+MAX_FOREGROUND_FRONTIERS = 8
+MAX_STATE_BYTES = 8 * 1024 * 1024
 ROUTE_HOST_MARKERS = ("spartan-route:", "clawroute:")
 REASONING_CHAIN_FIELD = "spartan_chain_id"
 REASONING_REALM_FIELD = "spartan_expected_realm"
@@ -28,6 +31,7 @@ REASONING_REALMS = {"codex_subscription", "openai_api"}
 
 _lock = threading.Lock()
 _state: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+_state_bytes = 0
 
 
 def register(ctx: Any) -> None:
@@ -80,11 +84,14 @@ def _llm_request_middleware(
         extra_body.setdefault("prompt_cache_key", logical_cache_key)
 
     if logical_cache_key:
+        review_origin, review_id = _review_context(_context) if api_mode == "codex_responses" else (False, "")
         lineage, reason = _lineage_for_request(
             session_id=session_id,
             logical_cache_key=logical_cache_key,
             request=updated,
             api_mode=api_mode,
+            review_origin=review_origin,
+            review_id=review_id,
         )
         extra_body[LINEAGE_FIELD] = lineage
         extra_body[LINEAGE_REASON_FIELD] = reason
@@ -214,12 +221,96 @@ def _is_spartan_route_request(request: dict[str, Any], context_base_url: str) ->
     return False
 
 
+def _review_context(context: dict[str, Any]) -> tuple[bool, str]:
+    """Read Hermes' context-local origin once; never infer a review from prompt text."""
+    try:
+        from tools.skill_provenance import get_current_write_origin
+
+        origin = get_current_write_origin()
+    except Exception:
+        return False, ""  # Older Hermes retains its existing lineage behavior.
+    if origin != "background_review":
+        return False, ""
+    identifiers = tuple(_clean_string(context.get(key)) for key in ("task_id", "turn_id"))
+    return True, _fingerprint(identifiers) if any(identifiers) else ""
+
+
+def _next_lineage(
+    previous: dict[str, Any] | None, history: tuple[str, ...], tool_fp: str, seed: int = 0,
+) -> tuple[int, str]:
+    if previous is None:
+        return seed, "baseline"
+    lineage = int(previous.get("lineage") or 0)
+    previous_history = previous.get("history")
+    if previous.get("tool_fp", "") != tool_fp:
+        return lineage + 1, "tool_schema_changed"
+    if previous_history is None:
+        return lineage, "baseline"  # Oversized history was deliberately not retained.
+    if previous_history == history:
+        return lineage, "retry"
+    if _extends(history, previous_history):
+        return lineage, "prefix"
+    return lineage + 1, "history_rewrite"
+
+
+def _extends(history: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+    return len(history) >= len(prefix) and history[:len(prefix)] == prefix
+
+
+def _review_seed(
+    foreground: dict[str, Any] | None, history: tuple[str, ...], tool_fp: str, model_fp: str,
+) -> int:
+    if foreground is None:
+        return 0
+    for frame in reversed(foreground.get("frontiers", ())):
+        if (frame["tool_fp"] == tool_fp and frame["model_fp"] == model_fp
+                and _extends(history, frame["history"])):
+            return frame["lineage"]
+    return int(foreground.get("lineage") or 0)
+
+
+def _retained_size(value: Any) -> int:
+    """Conservative Python allocation size: shared children are charged more than once."""
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        size += sum(_retained_size(k) + _retained_size(v) for k, v in value.items())
+    elif isinstance(value, (tuple, list)):
+        size += sum(_retained_size(item) for item in value)
+    return size
+
+
+def _store_lineage(key: str, entry: dict[str, Any], max_keys: int) -> None:
+    """Called under _lock; bound all lanes and snapshots together."""
+    global _state_bytes
+    entry["_retained_bytes"] = MAX_STATE_BYTES  # Reserve the size-counter integer itself.
+    size = _retained_size(key) + _retained_size(entry)
+    # Trim snapshots first, then retain only the counter if this history cannot fit.
+    while size + sys.getsizeof(OrderedDict()) > MAX_STATE_BYTES and entry.get("frontiers"):
+        entry["frontiers"] = entry["frontiers"][1:]
+        size = _retained_size(key) + _retained_size(entry)
+    if size + sys.getsizeof(OrderedDict()) > MAX_STATE_BYTES:
+        entry["history"] = None
+        entry["frontiers"] = ()
+        size = _retained_size(key) + _retained_size(entry)
+    old = _state.pop(key, None)
+    if old is not None:
+        _state_bytes -= old["_retained_bytes"]
+    entry["_retained_bytes"] = size
+    _state[key] = entry
+    _state_bytes += size
+    while _state and (len(_state) > max_keys or _state_bytes + sys.getsizeof(_state) > MAX_STATE_BYTES):
+        _, evicted = _state.popitem(last=False)
+        _state_bytes -= evicted["_retained_bytes"]
+
+
 def _lineage_for_request(
     *,
     session_id: str,
     logical_cache_key: str,
     request: dict[str, Any],
     api_mode: str,
+    review_origin: bool = False,
+    review_id: str = "",
 ) -> tuple[int, str]:
     transport = api_mode or (
         "codex_responses" if "input" in request and "messages" not in request else "chat_completions"
@@ -234,34 +325,29 @@ def _lineage_for_request(
     )
     state_key = _state_key(session_id, logical_cache_key, transport, realm)
     max_keys = _max_tracked_keys()
+    model_fp = _fingerprint({"model": request.get("model")})
     with _lock:
-        previous = _state.get(state_key)
-        if previous is None:
-            lineage = 0
-            reason = "baseline"
-        else:
-            lineage = int(previous.get("lineage") or 0)
-            previous_history = tuple(previous.get("history") or ())
-            previous_tool_fp = str(previous.get("tool_fp") or "")
-            if previous_tool_fp != tool_fp:
-                lineage += 1
-                reason = "tool_schema_changed"
-            elif previous_history == history_fps:
-                reason = "retry"
-            elif len(history_fps) >= len(previous_history) and history_fps[: len(previous_history)] == previous_history:
-                reason = "prefix"
-            else:
-                lineage += 1
-                reason = "history_rewrite"
+        foreground = _state.get(state_key)
+        if transport == "codex_responses" and review_origin:
+            seed = _review_seed(foreground, history_fps, tool_fp, model_fp)
+            if not review_id:
+                return seed, "baseline"  # Recognized but unidentifiable reviews are read-only.
+            lane_key = _fingerprint(("review", state_key, review_id, model_fp))
+            lineage, reason = _next_lineage(_state.get(lane_key), history_fps, tool_fp, seed)
+            _store_lineage(lane_key, {
+                "lineage": lineage, "history": history_fps, "tool_fp": tool_fp,
+            }, max_keys)
+            return lineage, reason
 
-        _state[state_key] = {
-            "lineage": lineage,
-            "history": history_fps,
-            "tool_fp": tool_fp,
-        }
-        _state.move_to_end(state_key)
-        while len(_state) > max_keys:
-            _state.popitem(last=False)
+        lineage, reason = _next_lineage(foreground, history_fps, tool_fp)
+        entry = {"lineage": lineage, "history": history_fps, "tool_fp": tool_fp}
+        if transport == "codex_responses":
+            frame = {**entry, "model_fp": model_fp}
+            frontiers = tuple(foreground.get("frontiers", ())) if foreground else ()
+            # Repeated retries must not consume the historical snapshot allowance.
+            frontiers = tuple(item for item in frontiers if item != frame)
+            entry["frontiers"] = (*frontiers, frame)[-MAX_FOREGROUND_FRONTIERS:]
+        _store_lineage(state_key, entry, max_keys)
         return lineage, reason
 
 
@@ -355,5 +441,7 @@ def _max_tracked_keys() -> int:
 
 
 def _reset_for_tests() -> None:
+    global _state_bytes
     with _lock:
         _state.clear()
+        _state_bytes = 0

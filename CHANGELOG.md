@@ -3,6 +3,12 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Isolate native Hermes background-review cache tracking from foreground
+  history while preserving compatible shared provider cache keys and signed
+  reasoning identity. Retain bounded hash-only foreground snapshots for late
+  reviews, with stateless handling for reviews missing identifiers. Uses the
+  existing Hermes origin API without a Hermes patch or rebuild.
+
 - Added bounded, cache-isolated Codex WebSocket inference with explicit proxy
   enforcement, full-history replay and safe pre-delivery HTTP fallback. Tuned
   HTTP pooling, isolated background control traffic, fixed split UTF-8 SSE

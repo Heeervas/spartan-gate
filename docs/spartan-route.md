@@ -632,6 +632,35 @@ The plugin owns Spartan Route cache lineage metadata. It can preserve visible
 patch therefore preserves raw `max`/`ultra` only for Spartan Route requests;
 do not remove it until Hermes provides an equivalent pre-normalization hook.
 
+For native Codex Responses, plugin version 0.4.0 reads Hermes' existing
+context-local background-review marker. Foreground and review requests keep
+their shared logical provider cache key and signed reasoning identity, but
+have independent history trackers. A review starts with the lineage of the
+newest compatible foreground snapshot and keeps that lineage as the foreground
+continues; review-only rewrites never advance foreground lineage. Compatibility
+requires an exact sanitized history prefix, tool fingerprint and model.
+
+The plugin retains at most eight foreground snapshots per scope, within the
+shared key limit (512 by default) and an 8-MiB conservative Python allocation
+budget. Repeated snapshots are deduplicated. Oversized history retains counter
+and hash metadata only. After snapshot eviction, incompatible history, or a
+plugin/process restart, reuse of an earlier provider cache is not guaranteed.
+A review without task/turn identifiers is stateless and cannot update foreground
+history. Older Hermes versions without the origin API retain legacy tracking.
+Chat lineage rules, LCM compression, review tools, provider content and account
+affinity remain unchanged; no Hermes patch or image rebuild is needed.
+
+The existing plugin mount is read-only. After updating its source, load the
+new version by recreating only Hermes using the current image:
+
+```sh
+sg up -d --no-deps --no-build --force-recreate hermes
+```
+
+This restarts Hermes processes and can interrupt active turns. Cache-key
+stability is a local invariant, not proof of provider cache residency; judge
+cache savings from actual provider usage counters.
+
 Spartan Route is exposed through Caddy on `CLAWROUTE_EDGE_PORT`, default
 `18790`, for compatibility with existing router URLs. Private HTTPS stacks
 should use the scheme and hostname printed by `sg-urls`; if the private Caddy
