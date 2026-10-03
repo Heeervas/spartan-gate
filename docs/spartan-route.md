@@ -60,6 +60,46 @@ Relevant files:
 
 ## Native Responses update surface
 
+Codex inference supports `SPARTAN_ROUTE_CODEX_TRANSPORT=http|auto|websocket`.
+The public default is `http`. `auto` uses account, credential generation,
+model, chain and prompt-cache isolated WebSockets and falls back to HTTP
+before request delivery when the backend rejects an upgrade or capacity is
+unavailable. Set it in the private env and apply with
+`sg up -d --no-deps --force-recreate spartan-route`. Invalid modes fail startup.
+WebSockets require the explicit HTTPS HTTP proxy and verified TLS; missing or
+malformed proxy configuration fails closed. Both native Responses and Chat
+compatibility send full history, preserve cache keys, model, reasoning and tier,
+and never use incremental `previous_response_id` replay. An ambiguous send or
+disconnect cannot trigger account rotation or HTTP replay. Explicit rejection
+before material output retains existing authentication/quota retry policy.
+
+The pool admits at most 32 connections, four per account, counting connections
+being opened or closed. It services idle peer pings and expires connections
+after 240 seconds idle or 50 minutes age. Frames are limited to 4 MiB, outgoing
+WebSocket requests to 2 MiB; `auto` sends larger requests over HTTP. Handshake,
+send, first event, idle read and close have bounded deadlines. Only successful
+terminal responses return a socket to the pool. Tool arguments still require
+a successful terminal response before Chat compatibility releases them.
+OAuth, catalog and quota requests use a separate HTTP connector so inference
+does not compete with background refreshes. HTTP keeps pooled connections for
+240 seconds, caches DNS for 300 seconds and uses compact UTF-8 JSON. Shared SSE
+parsing preserves multibyte characters split across network chunks.
+
+Routing context includes sanitized `transport` measurements: connection reuse,
+connect/pool wait, first event, reasoning, text, tool and visible output times,
+plus request-relative times including routing preparation. WebSocket event
+latency is separate from the existing HTTP header-latency rollups; total request
+latency remains comparable. No credentials, frames or prompt bodies are added
+to transport telemetry.
+
+Route and a separately configured Discord voice relay can share the same
+immutable Route image. Keep their commands, networks, credentials and memory
+limits separate. Validate the relay's tests against the candidate dependency
+before updating its private image pin; recreate only those two services. Retain
+one active image and one rollback, and remove obsolete Route images only after
+checking all container references. Restore the retained image and `http` mode
+in the private configuration for rollback.
+
 - Spartan Route owns native `/v1/responses` transport, subscription slot retry,
   SSE commit semantics, realm binding, and reasoning-token telemetry.
 - The `spartan-cache-lineage` Hermes plugin owns profile/session chain identity,

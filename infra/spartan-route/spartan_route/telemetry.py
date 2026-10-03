@@ -2142,7 +2142,7 @@ class TelemetryStore:
         upstream_int = int(upstream) if upstream is not None else 0
         total_int = int(total) if total is not None else 0
         legacy = upstream is None and total is None
-        return upstream_int or response, total_int or response, legacy
+        return upstream_int if upstream is not None else response, total_int if total is not None else response, legacy
 
     def _slot_override_from_row(self, row: dict[str, Any]) -> dict[str, Any]:
         return {

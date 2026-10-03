@@ -3,6 +3,13 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Added bounded, cache-isolated Codex WebSocket inference with explicit proxy
+  enforcement, full-history replay and safe pre-delivery HTTP fallback. Tuned
+  HTTP pooling, isolated background control traffic, fixed split UTF-8 SSE
+  decoding, and recorded transport/first-output timing separately from HTTP
+  header latency. Updated aiohttp to 3.14.3 and validated the separate voice
+  relay against the shared image dependency.
+
 - Checkpointed the deployed Hermes refresh, managed Camofox policy, fast-mode
   forwarding, Route cache affinity and catalog/context updates, operator
   helpers, and existing architecture drafts before transport optimization.

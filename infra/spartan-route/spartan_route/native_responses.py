@@ -29,6 +29,7 @@ from .codex import (
 from .util import stable_json, token_count_estimate
 from .native_cache import NativeCacheDiagnostics, provider_cache_fields, request_diagnostics, cache_read_known
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected
+from .transport import TransportError
 
 CODEX_RESPONSES_REALM = "codex_subscription"
 CODEX_RESPONSES_MAX_ATTEMPTS = 3
@@ -39,7 +40,7 @@ CODEX_RESPONSES_PRECOMMIT_MAX_BYTES = 256 * 1024
 @dataclass
 class OpenedResponse:
     response: Any
-    response_time_ms: int
+    response_time_ms: int | None
 
 
 def response_event_name(event: str | None, payload: dict[str, Any]) -> str:
@@ -56,7 +57,10 @@ def response_object(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def annotate_realm(payload: dict[str, Any], realm: str) -> dict[str, Any]:
-    updated = copy.deepcopy(payload)
+    # Events are immutable after parsing; only the response metadata needs copying.
+    updated = dict(payload)
+    if isinstance(payload.get("response"), dict):
+        updated["response"] = dict(payload["response"])
     target = response_object(updated)
     if target is not None:
         metadata = dict(target.get("metadata") or {})
@@ -178,19 +182,12 @@ async def open_response(
     router: CodexRouter,
     body: dict[str, Any],
     auth: CodexAuth,
+    scope: str | None = None,
 ) -> OpenedResponse | CodexCallResult:
     headers = build_codex_responses_headers(body, auth)
     started = time.monotonic()
     try:
-        response = await asyncio.wait_for(
-            router.session.post(
-                CODEX_RESPONSES_URL,
-                json=body,
-                headers=headers,
-                timeout=ClientTimeout(total=None),
-            ),
-            timeout=codex_request_timeout_ms() / 1000,
-        )
+        response = await router.open_inference(body, headers, auth, scope)
     except asyncio.TimeoutError:
         return CodexCallResult(
             status=502,
@@ -205,7 +202,7 @@ async def open_response(
             error=f"codex_error:{type(exc).__name__}",
             upstream_response_time_ms=max(0, int((time.monotonic() - started) * 1000)),
         )
-    elapsed = max(0, int((time.monotonic() - started) * 1000))
+    elapsed = None if getattr(response, "is_websocket", False) else max(0, int((time.monotonic() - started) * 1000))
     if response.status != 200:
         text = await response.text()
         response.release()
@@ -215,6 +212,8 @@ async def open_response(
             headers={"Content-Type": "application/json"},
             error=sanitized_error_code(text),
             upstream_response_time_ms=elapsed,
+            transport_details=getattr(response, "transport_details", None),
+            retry_allowed=getattr(response, "retry_allowed", True),
         )
     return OpenedResponse(response, elapsed)
 
@@ -225,7 +224,11 @@ async def collect_response(
     slot: CodexSlot,
     realm: str,
 ) -> CodexCallResult:
-    result = CodexCallResult(status=200, upstream_response_time_ms=opened.response_time_ms)
+    result = CodexCallResult(
+        status=200, upstream_response_time_ms=opened.response_time_ms,
+        transport_details=getattr(opened.response, "transport_details", None),
+        retry_allowed=getattr(opened.response, "retry_allowed", True),
+    )
     terminal: dict[str, Any] | None = None
     completed_output_items: list[dict[str, Any]] = []
     try:
@@ -255,6 +258,11 @@ async def collect_response(
                 if current is not None:
                     terminal = annotate_realm(current, realm)
                 break
+    except TransportError as exc:
+        result.status, result.error, result.retry_allowed = exc.status, exc.code, exc.retry_allowed
+        client_error = router._websocket_stream_error(slot, exc)
+        result.body = {"error": exc.error if exc.retry_allowed else client_error}
+        return result
     except Exception as exc:
         error = router._stream_transport_error(exc)
         router._mark_streaming_error(slot, error)
@@ -321,6 +329,11 @@ async def prepare_stream(
                 or event_name not in {"response.created", "response.in_progress"}
             ):
                 break
+    except TransportError as exc:
+        result.status, result.error, result.retry_allowed = exc.status, exc.code, exc.retry_allowed
+        result.body = {"error": exc.error}
+        opened.response.release()
+        return False
     except Exception:
         opened.response.release()
         return False
@@ -353,6 +366,11 @@ async def prepare_stream(
                     error = payload.get("error") if isinstance(payload.get("error"), dict) else payload
                     result.error = router._error_code(error)
                 yield sse(annotate_realm(payload, realm), event_name)
+        except TransportError as exc:
+            error = router._websocket_stream_error(slot, exc)
+            result.error = router._error_code(error)
+            result.completed = False
+            yield sse({"error": error}, "error")
         except Exception as exc:
             error = router._stream_transport_error(exc)
             result.error = router._error_code(error)
@@ -465,7 +483,7 @@ async def execute_codex_responses(
         slot.in_flight += 1
         slot.last_selected_at = time.time()
         try:
-            opened = await open_response(router, body, auth)
+            opened = await open_response(router, body, auth, affinity_key)
         except BaseException:
             diagnostics.finish(observation, success=False, error="request_aborted")
             finish_probe(False)
@@ -478,7 +496,7 @@ async def execute_codex_responses(
             finish_cache(opened)
             last_result = opened
             text = opened.body.decode("utf-8", errors="replace") if isinstance(opened.body, bytes) else stable_json(opened.body)
-            if not should_retry(opened.status, text):
+            if not opened.retry_allowed or not should_retry(opened.status, text):
                 return opened
             excluded_slots.add(slot.index)
             if auth.account_key:
@@ -497,6 +515,8 @@ async def execute_codex_responses(
             account_key=auth.account_key,
             input_tokens=token_count_estimate(request),
             upstream_response_time_ms=opened.response_time_ms,
+            transport_details=getattr(opened.response, "transport_details", None),
+            retry_allowed=getattr(opened.response, "retry_allowed", True),
         )
         if wants_stream:
             try:
@@ -541,6 +561,29 @@ async def execute_codex_responses(
                 result.stream = guarded_stream()
                 return result
             slot.in_flight = max(0, slot.in_flight - 1)
+            if not result.retry_allowed:
+                if result.body is None:
+                    result.status = 502
+                    result.error = "codex_stream_error"
+                    result.body = {"error": {"code": result.error, "type": "upstream_error", "message": "Codex stream ended before output"}}
+                finish_cache(result)
+                return result
+            if result.status >= 400 and result.body is not None:
+                finish_cache(result)
+                text = stable_json(result.body)
+                if not should_retry(result.status, text):
+                    return result
+                excluded_slots.add(slot.index)
+                if auth.account_key:
+                    excluded_accounts.add(auth.account_key)
+                if result.status == 401:
+                    router._quarantine_auth_failure(slot)
+                elif result.status == 429:
+                    router.mark_rate_limited(slot, text)
+                else:
+                    router.mark_transient(slot)
+                last_result = result
+                continue
             excluded_slots.add(slot.index)
             if auth.account_key:
                 excluded_accounts.add(auth.account_key)
@@ -566,7 +609,7 @@ async def execute_codex_responses(
         collected.slot_index = slot.index
         collected.account_key = auth.account_key
         finish_cache(collected)
-        if collected.status < 400 or not should_retry(collected.status, stable_json(collected.body)):
+        if not collected.retry_allowed or collected.status < 400 or not should_retry(collected.status, stable_json(collected.body)):
             if collected.completed and not collected.error and affinity_key:
                 router._remember_lease(affinity_key, slot)
             return collected

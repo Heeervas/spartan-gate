@@ -27,6 +27,8 @@ from .native_cache import NativeCacheDiagnostics, Observation, request_diagnosti
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected, PROBE_HEADER
 from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realtime_model, register as register_realtime, voice_dispatch
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
+from .transport import create_client_session
+from .sse import frames as parse_sse_frames
 from .util import (
     json_error,
     now_iso,
@@ -77,6 +79,7 @@ class ExecutionResult:
     usage_event_type: str | None = None
     upstream_response_time_ms: int | None = None
     total_response_time_ms: int | None = None
+    transport_details: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +98,7 @@ class SpartanRouteState:
     telemetry: TelemetryStore
     queue: TelemetryQueue
     session: ClientSession | None = None
+    control_session: ClientSession | None = None
     codex: CodexRouter | None = None
     codex_catalog: CodexModelDiscovery | None = None
     recent_session_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -410,35 +414,8 @@ def parse_json_bytes(data: bytes) -> Any:
 
 
 async def iter_sse_payloads(source: AsyncIterator[bytes]) -> AsyncIterator[tuple[str | None, str, bytes]]:
-    buffer = ""
-    async for chunk in source:
-        text = chunk.decode("utf-8", errors="replace")
-        buffer += text
-        while "\n\n" in buffer:
-            block, buffer = buffer.split("\n\n", 1)
-            event = None
-            lines: list[str] = []
-            for raw in block.splitlines():
-                line = raw.strip("\r")
-                if line.startswith("event:"):
-                    event = line[6:].strip()
-                elif line.startswith("data:"):
-                    lines.append(line[5:].lstrip())
-            data = "\n".join(lines)
-            if data:
-                yield event, data, f"{block}\n\n".encode("utf-8")
-    if buffer.strip():
-        event = None
-        lines = []
-        for raw in buffer.splitlines():
-            line = raw.strip("\r")
-            if line.startswith("event:"):
-                event = line[6:].strip()
-            elif line.startswith("data:"):
-                lines.append(line[5:].lstrip())
-        data = "\n".join(lines)
-        if data:
-            yield event, data, buffer.encode("utf-8")
+    async for event, data, raw in parse_sse_frames(source):
+        yield event, data, raw
 
 
 async def provider_stream(response: Any, result: ExecutionResult) -> AsyncIterator[bytes]:
@@ -870,6 +847,7 @@ async def execute_chat(
             usage_event_type=codex_result.usage_event_type,
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
             total_response_time_ms=codex_result.total_response_time_ms,
+            transport_details=codex_result.transport_details,
         )
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
@@ -928,6 +906,7 @@ async def execute_responses(
             usage_event_type=codex_result.usage_event_type,
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
             total_response_time_ms=codex_result.total_response_time_ms,
+            transport_details=codex_result.transport_details,
         )
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
@@ -947,6 +926,7 @@ def copy_codex_telemetry(source_result: CodexCallResult, target: ExecutionResult
         "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "error",
         "actual_tool_call_count", "actual_tool_names", "tool_telemetry_complete", "native_cache",
         "usage_seen", "usage_event_type", "upstream_response_time_ms", "total_response_time_ms",
+        "transport_details",
     ):
         setattr(target, name, getattr(source_result, name))
 
@@ -1471,6 +1451,16 @@ def log_request(
         if effective_cache_key_hash
         else None
     )
+    transport = None
+    if result.transport_details:
+        transport = {key: value for key, value in result.transport_details.items() if not key.startswith("_")}
+        upstream_started = result.transport_details.get("_started_monotonic")
+        if isinstance(upstream_started, (int, float)):
+            preparation_ms = max(0, int((upstream_started - started) * 1000))
+            transport["routing_preparation_ms"] = preparation_ms
+            for key in ("first_event_ms", "first_reasoning_ms", "first_text_ms", "first_tool_ms", "first_output_ms"):
+                if key in transport:
+                    transport["request_" + key] = preparation_ms + transport[key]
     context = {
         "routeReason": route.reason,
         "provider": route.provider,
@@ -1501,6 +1491,7 @@ def log_request(
         "cache_stall_diagnostic": cache_guard_diagnostic_context(guard_entry),
         "request_api_kind": api_kind,
         "native_cache": native_cache,
+        "transport": transport,
         "cache_diagnostic_version": 2 if native_cache is not None else 1,
         "requested_reasoning_effort": requested_reasoning_effort(body),
         "reasoning_tokens": result.reasoning_tokens,
@@ -1519,7 +1510,10 @@ def log_request(
         else max(0, int((time.monotonic() - started) * 1000))
     )
     upstream_response_time_ms = result.upstream_response_time_ms
-    primary_response_time_ms = upstream_response_time_ms or total_response_time_ms
+    if result.transport_details and result.transport_details.get("kind") == "websocket":
+        primary_response_time_ms = 0  # WS first-event time is not HTTP header latency.
+    else:
+        primary_response_time_ms = upstream_response_time_ms if upstream_response_time_ms is not None else total_response_time_ms
     state.queue.log(
         RoutingLogEntry(
             timestamp=now_iso(),
@@ -3041,8 +3035,9 @@ async def auth_middleware(request: web.Request, handler: Callable[[web.Request],
 
 async def startup(app: web.Application) -> None:
     state: SpartanRouteState = app[STATE_KEY]
-    state.session = ClientSession(trust_env=True)
-    state.codex = CodexRouter(state.session, state.telemetry)
+    state.session = create_client_session()
+    state.control_session = create_client_session(limit=16)
+    state.codex = CodexRouter(state.session, state.telemetry, control_session=state.control_session, transport_mode=state.config.codex_transport)
     bundled_models = dict(state.config.models)
     try:
         contexts = state.telemetry.codex_model_contexts()
@@ -3101,6 +3096,8 @@ async def cleanup(app: web.Application) -> None:
     telemetry_drained = await state.queue.stop()
     if state.session:
         await state.session.close()
+    if state.control_session:
+        await state.control_session.close()
     if telemetry_drained:
         state.telemetry.close()
 

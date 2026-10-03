@@ -19,6 +19,14 @@ GPT56_MODELS = {
 
 
 class ConfigTests(unittest.TestCase):
+    def test_transport_mode_is_explicit_and_invalid_modes_fail_closed(self) -> None:
+        self.assertEqual(load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing"}).codex_transport, "http")
+        for mode in ("http", "auto", "websocket"):
+            self.assertEqual(load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing", "SPARTAN_ROUTE_CODEX_TRANSPORT": mode}).codex_transport, mode)
+        for mode in ("", "direct", "ws", "nonsense"):
+            with self.assertRaises(ValueError):
+                load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing", "SPARTAN_ROUTE_CODEX_TRANSPORT": mode})
+
     def test_astra_is_selectable_without_changing_defaults(self) -> None:
         config = load_config({"SPARTAN_ROUTE_CONFIG_DIR": "/missing"})
         astra = config.models["codex/gpt-6-astra"]

@@ -34,6 +34,23 @@ def routing_entry(timestamp: str, request_id: str | None = None) -> RoutingLogEn
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_websocket_event_latency_does_not_pollute_http_header_rollups(self) -> None:
+        store = TelemetryStore(":memory:")
+        try:
+            for kind, header, total in (("http", 100, 1000), ("websocket", None, 400)):
+                entry = routing_entry(datetime.now(timezone.utc).isoformat(), kind)
+                entry = RoutingLogEntry(**{**entry.__dict__, "response_time_ms": header if header is not None else 0,
+                    "upstream_response_time_ms": header, "total_response_time_ms": total})
+                store.log_routing(entry)
+            for rebuild in (False, True):
+                if rebuild:
+                    store.enforce_routing_retention(force_rebuild=True)
+                rows = store.daily_cache_rows()
+                self.assertEqual(rows[0]["avg_response_time_ms"], 100)
+                self.assertEqual(rows[0]["avg_total_response_time_ms"], 700)
+        finally:
+            store.close()
+
     def test_codex_context_metadata_survives_restart_and_rejects_partial_invalid_updates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "route.db")

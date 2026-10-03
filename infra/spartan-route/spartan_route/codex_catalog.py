@@ -259,7 +259,7 @@ class CodexModelDiscovery:
             "Authorization": f"Bearer {auth.access_token}",
             "chatgpt-account-id": auth.account_id,
         }
-        async with self.router.session.get(
+        async with (getattr(self.router, "control_session", None) or self.router.session).get(
             CODEX_CATALOG_URL,
             params={"client_version": ".".join(map(str, client_version))},
             headers=headers,

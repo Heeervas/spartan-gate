@@ -51,6 +51,7 @@ class SpartanRouteConfig:
     telemetry_queue_capacity: int = 1024
     telemetry_retention_batch_size: int = 256
     telemetry_shutdown_timeout_ms: int = 5000
+    codex_transport: str = "http"
 
     def api_key(self, provider: str) -> str | None:
         keys = {
@@ -154,6 +155,9 @@ def _build_model_catalog(tier_models: dict[str, dict[str, str]], baseline_model:
 
 def load_config(env: dict[str, str] | None = None) -> SpartanRouteConfig:
     env = env or os.environ
+    transport = env.get("SPARTAN_ROUTE_CODEX_TRANSPORT", "http").strip().lower()
+    if transport not in {"http", "auto", "websocket"}:
+        raise ValueError("SPARTAN_ROUTE_CODEX_TRANSPORT must be http, auto, or websocket")
     config_dir = Path(env.get("SPARTAN_ROUTE_CONFIG_DIR") or env.get("CLAWROUTE_CONFIG_DIR") or "/app/config")
     if not config_dir.exists():
         config_dir = Path("config/clawroute")
@@ -200,6 +204,7 @@ def load_config(env: dict[str, str] | None = None) -> SpartanRouteConfig:
         baseline_model=baseline_model,
         tier_models=tier_models,
         models=_build_model_catalog(tier_models, baseline_model),
+        codex_transport=transport,
         telemetry_queue_capacity=parse_int(
             env.get("SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY"),
             1024,

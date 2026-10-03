@@ -21,6 +21,8 @@ from typing import Any, AsyncIterator
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from .telemetry import TelemetryStore
+from .transport import CodexTransport, TransportError, observe_event
+from .sse import frames as sse_frames
 from .util import (
     epoch_millis,
     is_jwt_expired,
@@ -253,6 +255,8 @@ class CodexCallResult:
     usage_event_type: str | None = None
     upstream_response_time_ms: int | None = None
     total_response_time_ms: int | None = None
+    transport_details: dict[str, Any] | None = None
+    retry_allowed: bool = True
 
 
 @dataclass
@@ -690,8 +694,12 @@ class CodexRouter:
         telemetry: TelemetryStore,
         *,
         auth_store_root: Path | None = None,
+        control_session: ClientSession | None = None,
+        transport_mode: str = "http",
     ):
         self.session = session
+        self.control_session = control_session or session
+        self.transport = CodexTransport(session, transport_mode)
         self.telemetry = telemetry
         self.slots: list[CodexSlot] = []
         self.model_catalog: Any = None
@@ -739,6 +747,9 @@ class CodexRouter:
         self._init_slots()
 
     async def cleanup(self) -> None:
+        transport = getattr(self, "transport", None)
+        if transport is not None:
+            await transport.close()
         self._usage_generation = int(getattr(self, "_usage_generation", 0)) + 1
         task = getattr(self, "_usage_refresh_task", None)
         self._usage_refresh_task = None
@@ -1271,7 +1282,7 @@ class CodexRouter:
                 if not isinstance(refresh_token, str) or not refresh_token:
                     raise CodexAuthStoreError("auth_refresh_token_missing", retryable=False)
                 fallback_account_id = derive_account_id(latest.tokens)
-                async with self.session.post(
+                async with getattr(self, "control_session", self.session).post(
                     OAUTH_TOKEN_URL,
                     data={
                         "client_id": OAUTH_CLIENT_ID,
@@ -1724,13 +1735,29 @@ class CodexRouter:
                 slot.last_selected_at = time.time()
                 try:
                     result = await self._single_chat_call(body, model_id, model_name, wants_stream, slot, auth)
-                except Exception:
+                except BaseException:
                     slot.in_flight = max(0, slot.in_flight - 1)
                     raise
                 if result.stream is None:
                     slot.in_flight = max(0, slot.in_flight - 1)
                 else:
                     source = result.stream
+                    source_cleanup = result.stream_cleanup
+                    cleaned = False
+
+                    async def cleanup_stream() -> None:
+                        nonlocal cleaned
+                        if cleaned:
+                            return
+                        cleaned = True
+                        try:
+                            await source.aclose()
+                        finally:
+                            try:
+                                if source_cleanup is not None:
+                                    await source_cleanup()
+                            finally:
+                                slot.in_flight = max(0, slot.in_flight - 1)
 
                     async def stream_with_inflight_guard() -> AsyncIterator[bytes]:
                         try:
@@ -1741,17 +1768,17 @@ class CodexRouter:
                                     break
                                 yield chunk
                         finally:
-                            close = getattr(source, "aclose", None)
-                            if callable(close):
-                                await close()
+                            await cleanup_stream()
                             if result.completed and not result.error and affinity_key:
                                 self._remember_lease(affinity_key, slot)
-                            slot.in_flight = max(0, slot.in_flight - 1)
 
+                    result.stream_cleanup = cleanup_stream
                     result.stream = stream_with_inflight_guard()
                 result.slot_index = slot.index
                 result.account_key = auth.account_key
                 result.input_tokens = token_count_estimate(request)
+                if not result.retry_allowed:
+                    return result
                 if result.status not in {401, 429, 500, 502}:
                     if result.status < 400 and result.stream is None and not result.error:
                         self._remember_lease(affinity_key, slot)
@@ -1792,12 +1819,7 @@ class CodexRouter:
         timeout_ms = codex_request_timeout_ms()
         try:
             upstream_started = time.monotonic()
-            response = await asyncio.wait_for(self.session.post(
-                CODEX_RESPONSES_URL,
-                json=body,
-                headers=headers,
-                timeout=ClientTimeout(total=None),
-            ), timeout=timeout_ms / 1000)
+            response = await self.open_inference(body, headers, auth)
             upstream_response_time_ms = max(0, int((time.monotonic() - upstream_started) * 1000))
         except asyncio.TimeoutError:
             upstream_response_time_ms = max(0, int((time.monotonic() - upstream_started) * 1000))
@@ -1823,19 +1845,40 @@ class CodexRouter:
                 body=text.encode(),
                 headers={"Content-Type": "application/json"},
                 error=text[:300],
-                upstream_response_time_ms=upstream_response_time_ms,
+                upstream_response_time_ms=None if getattr(response, "is_websocket", False) else upstream_response_time_ms,
+                retry_allowed=getattr(response, "retry_allowed", True),
+                transport_details=getattr(response, "transport_details", None),
             )
         if wants_stream:
             result = CodexCallResult(
                 status=200,
                 headers={"Content-Type": "text/event-stream"},
-                upstream_response_time_ms=upstream_response_time_ms,
+                upstream_response_time_ms=None if getattr(response, "is_websocket", False) else upstream_response_time_ms,
+                retry_allowed=getattr(response, "retry_allowed", True),
+                transport_details=getattr(response, "transport_details", None),
             )
             result.stream = self._codex_stream_to_chat(response, model_id, result, slot)
+            async def cleanup_response() -> None:
+                response.release()
+            result.stream_cleanup = cleanup_response
             return result
         collected = await self._collect_codex_response(response, model_id, slot)
-        collected.upstream_response_time_ms = upstream_response_time_ms
+        collected.upstream_response_time_ms = None if getattr(response, "is_websocket", False) else upstream_response_time_ms
+        collected.retry_allowed = getattr(response, "retry_allowed", True)
+        collected.transport_details = getattr(response, "transport_details", None)
         return collected
+
+    async def open_inference(self, body: dict[str, Any], headers: dict[str, str], auth: CodexAuth, scope: str | None = None) -> Any:
+        transport = getattr(self, "transport", None)
+        if transport is not None:
+            return await transport.open(
+                CODEX_RESPONSES_URL, body, headers, account=auth.account_key or "static",
+                scope=scope or body.get("prompt_cache_key"), timeout=codex_request_timeout_ms() / 1000,
+            )
+        # Legacy injected test routers and callers retain their single-session seam.
+        return await asyncio.wait_for(self.session.post(
+            CODEX_RESPONSES_URL, json=body, headers=headers, timeout=ClientTimeout(total=None),
+        ), codex_request_timeout_ms() / 1000)
 
     async def _collect_codex_response(self, response: Any, model: str, slot: CodexSlot) -> CodexCallResult:
         state = CodexEventState()
@@ -1855,6 +1898,14 @@ class CodexRouter:
                     break
         except asyncio.TimeoutError as exc:
             return self._stream_transport_result(exc, slot, state)
+        except TransportError as exc:
+            error = self._websocket_stream_error(slot, exc)
+            if exc.retry_allowed:
+                error = exc.error
+            prompt_tokens, cached, output_tokens = self._usage_values(state)
+            return CodexCallResult(status=exc.status, body={"error": error}, error=exc.code, retry_allowed=exc.retry_allowed,
+                input_tokens=prompt_tokens, cached_input_tokens=cached, output_tokens=output_tokens,
+                usage_seen=state.usage_seen, usage_event_type=state.usage_event_type)
         except Exception as exc:
             return self._stream_transport_result(exc, slot, state)
         finally:
@@ -1865,7 +1916,7 @@ class CodexRouter:
         chat_id = f"chatcmpl_{sha(str(time.time()), 12)}"
         created = int(time.time())
         state = CodexEventState()
-        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=64)
         downstream_open = True
 
         async def emit(chunk: bytes) -> None:
@@ -1873,7 +1924,6 @@ class CodexRouter:
                 await queue.put(chunk)
 
         async def produce() -> None:
-            buffer = ""
             try:
                 await emit(sse({
                     "id": chat_id,
@@ -1882,18 +1932,7 @@ class CodexRouter:
                     "model": model,
                     "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
                 }))
-                async for chunk in response.content.iter_chunked(8192):
-                    buffer += chunk.decode("utf-8", errors="replace")
-                    while "\n\n" in buffer:
-                        block, buffer = buffer.split("\n\n", 1)
-                        event, data = parse_sse_block(block)
-                        outputs, done = self._codex_chat_outputs_for_event(event, data, state, result, slot, chat_id, created, model)
-                        for output in outputs:
-                            await emit(output)
-                        if done:
-                            return
-                if buffer.strip():
-                    event, data = parse_sse_block(buffer)
+                async for event, data in parse_sse_response(response):
                     outputs, done = self._codex_chat_outputs_for_event(event, data, state, result, slot, chat_id, created, model)
                     for output in outputs:
                         await emit(output)
@@ -1940,6 +1979,12 @@ class CodexRouter:
                 self._mark_streaming_error(slot, error)
                 await emit(sse({"error": error}, event="error"))
                 await emit(b"data: [DONE]\n\n")
+            except TransportError as exc:
+                error = self._websocket_stream_error(slot, exc)
+                result.error = self._error_code(error)
+                result.completed = False
+                await emit(sse({"error": error}, event="error"))
+                await emit(b"data: [DONE]\n\n")
             except Exception as exc:
                 error = self._stream_transport_error(exc)
                 result.error = str(error["code"])
@@ -1953,7 +1998,8 @@ class CodexRouter:
                 if state.terminal_error and not result.error:
                     result.error = self._error_code(state.terminal_error)
                 response.release()
-                await queue.put(None)
+                if downstream_open:
+                    await queue.put(None)
 
         producer = asyncio.create_task(produce())
         try:
@@ -1964,16 +2010,21 @@ class CodexRouter:
                 yield item
         finally:
             downstream_open = False
-            if not producer.done():
-                try:
+            while not queue.empty():
+                queue.get_nowait()
+            try:
+                if not producer.done():
                     await asyncio.wait_for(asyncio.shield(producer), timeout=CODEX_USAGE_DRAIN_TIMEOUT_SECONDS)
-                except asyncio.TimeoutError:
+            except asyncio.TimeoutError:
+                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            finally:
+                if not producer.done():
                     producer.cancel()
-                except asyncio.CancelledError:
-                    producer.cancel()
-                    raise
-                except Exception:
-                    pass
+                await asyncio.gather(producer, return_exceptions=True)
             if producer.done():
                 try:
                     producer.result()
@@ -2121,6 +2172,16 @@ class CodexRouter:
             "type": "upstream_error",
             "code": CODEX_STREAM_ERROR_CODE,
         }
+
+    def _websocket_stream_error(self, slot: CodexSlot, exc: TransportError) -> dict[str, Any]:
+        error = dict(exc.error)
+        if exc.rejected:
+            if exc.status == 401:
+                error["type"] = "auth_error"
+            elif exc.status == 429:
+                error["type"] = "rate_limit_error"
+            self._mark_streaming_error(slot, error)
+        return self._stream_client_error(error)
 
     def _stream_transport_result(self, exc: BaseException, slot: CodexSlot, state: CodexEventState) -> CodexCallResult:
         error = self._stream_transport_error(exc)
@@ -3348,14 +3409,14 @@ class CodexRouter:
             headers["chatgpt-account-id"] = auth.account_id
 
         async def fetch_usage() -> Any:
-            async with self.session.get(CODEX_USAGE_URL, headers=headers, timeout=ClientTimeout(total=10)) as response:
+            async with getattr(self, "control_session", self.session).get(CODEX_USAGE_URL, headers=headers, timeout=ClientTimeout(total=10)) as response:
                 if response.status != 200:
                     raise RuntimeError(f"Codex usage HTTP {response.status}")
                 return await response.json()
 
         async def fetch_reset() -> Any:
             reset_headers = {**headers, "OpenAI-Beta": "codex-1", "originator": "Codex Desktop"}
-            async with self.session.get(CODEX_RESET_CREDITS_URL, headers=reset_headers, timeout=ClientTimeout(total=10)) as response:
+            async with getattr(self, "control_session", self.session).get(CODEX_RESET_CREDITS_URL, headers=reset_headers, timeout=ClientTimeout(total=10)) as response:
                 if response.status != 200:
                     raise RuntimeError(f"Codex reset credits HTTP {response.status}")
                 return await response.json()
@@ -3448,18 +3509,21 @@ class CodexRouter:
 
 
 async def parse_sse_response(response: Any) -> AsyncIterator[tuple[str | None, str]]:
-    buffer = ""
-    async for chunk in response.content.iter_chunked(8192):
-        buffer += chunk.decode("utf-8", errors="replace")
-        while "\n\n" in buffer:
-            block, buffer = buffer.split("\n\n", 1)
-            event, data = parse_sse_block(block)
-            if data:
-                yield event, data
-    if buffer.strip():
-        event, data = parse_sse_block(buffer)
-        if data:
+    direct = getattr(response, "iter_events", None)
+    if direct is not None:
+        async for event, data in direct():
             yield event, data
+        return
+    async for event, data, _raw in sse_frames(response.content.iter_chunked(8192)):
+        details = getattr(response, "transport_details", None)
+        if details is not None:
+            try:
+                payload = json.loads(data)
+                if isinstance(payload, dict):
+                    observe_event(details, response.transport_started, event, payload)
+            except (ValueError, TypeError):
+                pass
+        yield event, data
 
 
 def parse_sse_block(block: str) -> tuple[str | None, str]:
