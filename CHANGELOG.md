@@ -8,7 +8,8 @@ All notable changes to Spartan Gate are documented here.
   HTTP pooling, isolated background control traffic, fixed split UTF-8 SSE
   decoding, and recorded transport/first-output timing separately from HTTP
   header latency. Updated aiohttp to 3.14.3 and validated the separate voice
-  relay against the shared image dependency.
+  relay against the shared image dependency. Preserve completion and cache
+  accounting across recognized upstream WebSocket timing diagnostics.
 
 - Group validated Hermes native Responses chains into stable dashboard sessions
   across cache-key changes, preserving provider keys, account affinity and real

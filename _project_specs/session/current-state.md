@@ -1,5 +1,52 @@
 # Current State
 
+## Route transport and stable signed dashboard sessions activated (2026-10-03)
+
+Combined the isolated Hermes session fix with the handed-off Route transport
+work on `codex/spartan-route-transport`. Validated native chain bindings now
+group dashboard requests across cache-key changes without altering execution
+identity, provider keys, headers or account selection. Conversation diagnostics
+identify changed keys/instructions independently of cache residency; legacy
+turn IDs and historical rows remain unchanged.
+
+Route and the separate voice relay run the tested shared image
+`sha256:a9c1e3fe8e9771112364870e8b7fdd767f9d5036fc23c22a5604ab47a8fcd9e2`.
+The retained rollback is `spartan-gate-spartan-route:transport-rollback`.
+Only those two services were recreated; all seven neighboring container IDs,
+images and start times are unchanged. Route remains internal and both target
+root filesystems are read-only. Two guarded builds preserved more than 5.62 GB
+free, with less than 0.1 GB net task overhead. Only one candidate and one rollback
+Route image remain; no Hermes, Browserless or ClawRoute image was built.
+
+Live acceptance used 18 of the authorized maximum 20 Sol medium/low submissions,
+including the four original baseline requests and five incomplete WebSocket
+requests while diagnosing an upstream timing sideband. The failure reproduced
+in a regression: `responsesapi.websocket_timing` arrived after text and before
+completion and was incorrectly rejected. Its exact name now uses bounded
+sideband handling, matching upstream Codex. Unknown and overflowing events still
+fail closed without replay. The private helper now requires terminal completion
+and captures stream errors, so partial text cannot count as acceptance.
+
+All four final WS probes completed with exactly `OK`, full usage accounting,
+five output tokens and zero reasoning tokens. Medium first/warm requests each
+read 10,240 cached tokens; the warm request reused the socket. First-event time
+fell from 795 to 380 ms, but first output varied from 2,854 to 3,626 ms. The signed
+continuation with changed key/instructions/history remained one session, reported
+`continued`, flagged instructions/input changes and correctly recorded zero cache
+reads; first output was 2,522 ms. Low first output was 3,838 ms with 10,240 cached
+tokens. Tuned HTTP ranged 2,214–18,438 ms; the slow outlier waited 17,124 ms for
+headers, and one identical medium replay reported a real zero cache read despite
+unchanged account and request fingerprints. These small samples do not establish
+an end-to-end speedup. Optimized HTTP remains active; WS/auto remains opt-in.
+
+Validation: 375 Route tests pass in the final image, 12 voice-relay tests pass
+against that image, and both dashboard checks pass. Earlier relevant gates passed
+59 Hermes plugin tests and 369 script tests with two optional skips. Public and
+active private Compose render. Independent combined and sideband reviews found
+no blocking issue. Doctor still stops on pre-existing public-path findings.
+Private receipts and the durable paid-budget ledger remain retained. The combined
+branch is for user testing; no base-branch merge is authorized.
+
 ## Rebuilt Hermes activated; plugin test gate has residual failures (2026-10-02)
 
 At the operator's explicit activation request, started only Hermes with

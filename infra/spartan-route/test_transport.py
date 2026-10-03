@@ -198,6 +198,41 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await transport.close()
 
+    async def test_websocket_timing_sideband_preserves_completion_usage_and_reuse(self):
+        sequence = success()
+        sequence.insert(2, event("responsesapi.websocket_timing", timings={"opaque": "not forwarded"}))
+        socket = Socket(sequence + sequence)
+        transport = CodexTransport(Session([socket]), "auto", proxy="http://proxy:8888")
+        try:
+            first = await self.open(transport)
+            events = await self.consume(first)
+            self.assertEqual([name for name, _ in events], [item["type"] for item in success()])
+            terminal = json.loads(events[-1][1])["response"]
+            self.assertEqual(terminal["usage"]["input_tokens_details"]["cached_tokens"], 2000)
+            self.assertTrue(first.success)
+            second = await self.open(transport)
+            await self.consume(second)
+            self.assertTrue(second.transport_details["connection_reused"])
+            self.assertEqual(len(transport.session.connects), 1)
+        finally:
+            await transport.close()
+
+    async def test_timing_sideband_is_bounded_and_unknown_events_still_fail_closed(self):
+        for events, code in (
+            ([event("responsesapi.websocket_timing")] * 257, "codex_ws_sideband_overflow"),
+            ([event("responsesapi.unrecognized")], "codex_ws_unknown_event"),
+        ):
+            with self.subTest(code=code):
+                transport = CodexTransport(Session([Socket(events)]), "auto", proxy="http://proxy:8888")
+                try:
+                    response = await self.open(transport)
+                    self.assertEqual(response.status, 502)
+                    self.assertEqual(json.loads(await response.text())["error"]["code"], code)
+                    self.assertFalse(response.retry_allowed)
+                    self.assertEqual(transport.session.posts, [])
+                finally:
+                    await transport.close()
+
     async def test_failed_terminal_and_cancelled_consumer_discard_socket(self):
         for terminal in ("failed", "incomplete", "cancelled"):
             socket = Socket([event("response." + terminal, response={"status": terminal})])

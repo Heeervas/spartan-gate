@@ -80,6 +80,10 @@ WebSocket requests to 2 MiB; `auto` sends larger requests over HTTP. Handshake,
 send, first event, idle read and close have bounded deadlines. Only successful
 terminal responses return a socket to the pool. Tool arguments still require
 a successful terminal response before Chat compatibility releases them.
+Recognized quota, response metadata and `responsesapi.websocket_timing`
+diagnostics are bounded sideband events; their payloads are not forwarded or
+persisted. The timing diagnostic follows the
+[upstream Codex event handling](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/sse/responses.rs).
 OAuth, catalog and quota requests use a separate HTTP connector so inference
 does not compete with background refreshes. HTTP keeps pooled connections for
 240 seconds, caches DNS for 300 seconds and uses compact UTF-8 JSON. Shared SSE
@@ -126,6 +130,8 @@ Unsigned clients and rejected bindings keep the existing cache-key/content
 fallback. Execution identity, upstream cache keys, session headers and account
 affinity are independent of the dashboard ID. Historical rows keep their
 recorded session IDs; this change does not rewrite telemetry.
+Turn IDs retain the existing request-derived identity; a cache-key change
+within one user turn can still split its turn rows inside the same session.
 
 A continued conversation can still have a cold provider cache. Hermes's native
 key includes instructions and tool schemas, so an instruction change can change

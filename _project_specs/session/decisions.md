@@ -1,5 +1,30 @@
 # Decisions
 
+## 2026-10-03 — Route transport and Hermes dashboard sessions
+
+- Use a fully validated signed Hermes chain for dashboard session identity
+  only. Preserve execution identity, provider keys/headers, account affinity and
+  existing turn IDs. Historical telemetry is not rewritten.
+- Compare completed, non-overlapping conversation observations across keys in
+  a bounded hash-only ledger that shares spare capacity with the existing
+  key-qualified ledger. Changed instructions/key are diagnostics, not proof of
+  provider cache residency; experiment comparisons remain key-qualified.
+- Keep public and active private transport HTTP. Bounded Sol acceptance verified
+  full-history WebSocket completion, real cache counters and socket reuse, but
+  did not show a consistent first-token advantage. Reused WS first-event latency
+  was 380 ms while first output was 3,626 ms; upstream processing still dominates.
+  Keep auto/WebSocket opt-in and do not infer Astra performance from Sol probes.
+- Ignore only recognized bounded WS sideband events, including upstream
+  `responsesapi.websocket_timing`. Require terminal completion in acceptance;
+  text output alone is insufficient. Unknown/overflowing events and ambiguous
+  delivery fail without replay.
+- Route and the separate voice relay share one tested image with unchanged
+  network/process/credential boundaries. Retain one rollback image, enforce the
+  5-GB disk floor and 2-GB overhead limit, and stop paid acceptance at 18 of the
+  authorized maximum 20 actual submissions. No Astra or voice inference ran.
+- Combine the session fix into `codex/spartan-route-transport` for user testing;
+  do not merge into the base branch without the user's later instruction.
+
 ## 2026-10-02 — Hermes fast mode through Spartan Route
 
 - Patch the shared Hermes eligibility gate because request middleware runs

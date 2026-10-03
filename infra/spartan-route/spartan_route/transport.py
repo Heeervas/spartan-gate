@@ -24,7 +24,7 @@ SEND_SECONDS = 15
 READ_SECONDS = 300
 CLOSE_SECONDS = 1
 TERMINAL = {"response.completed", "response.failed", "response.incomplete", "response.cancelled"}
-SIDEBAND = {"codex.rate_limits", "codex.response.metadata"}
+SIDEBAND = {"codex.rate_limits", "codex.response.metadata", "responsesapi.websocket_timing"}
 START_EVENTS = {"response.created", "response.in_progress"}
 
 
