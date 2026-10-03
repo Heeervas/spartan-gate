@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -557,10 +558,10 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
 
         state = self.app[STATE_KEY]
         state.codex.slots = [CodexSlot(0, token="token", auth=CodexAuth("token", account_id="account"))]
-        model_id = "codex/gpt-6-future"
+        model_id = "codex/gpt-6.1-sol"
         row = {
-            "slug": "gpt-6-future", "visibility": "list", "supported_in_api": True,
-            "minimal_client_version": "0.155.0", "input_modalities": ["text", "image"],
+            "slug": "gpt-6.1-sol", "visibility": "list", "supported_in_api": True,
+            "minimal_client_version": "0.153.0", "input_modalities": ["text", "image"],
             "max_context_window": 872000, "supported_reasoning_levels": [{"effort": "max"}],
             "tool_mode": "code_mode_only",
         }
@@ -599,6 +600,110 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         await catalog.refresh()
         restored = await self.client.get("/api/config/routing", headers={"Authorization": "Bearer secret"})
         self.assertEqual((await restored.json())["effective"], mapping)
+
+    async def test_context_refresh_is_dynamic_but_282k_variant_is_fixed(self) -> None:
+        from spartan_route.codex_catalog import parse_catalog
+        from test_codex_catalog import row
+
+        state = self.app[STATE_KEY]
+        catalog = state.codex_catalog
+        await catalog.stop()
+        state.codex.slots = [CodexSlot(0, token="token", auth=CodexAuth("token", account_id="account"))]
+        model_id = "codex/gpt-6-astra"
+        variant_id = f"{model_id}-282kcontext"
+        for context in (950000, 400000, 281999, 282000):
+            with self.subTest(context=context):
+                catalog._fetch = AsyncMock(return_value=parse_catalog({"models": [{
+                    **row("gpt-6-astra"), "max_context_window": context,
+                }]}))
+                await catalog.refresh()
+                listing = {item["id"]: item for item in (await (await self.client.get("/v1/models")).json())["data"]}
+                detail = await (await self.client.get(f"/v1/models/{model_id}")).json()
+                for payload in (listing[model_id], detail):
+                    for field in ("max_context", "context_length", "max_model_len"):
+                        self.assertEqual(payload[field], context)
+                variant = await self.client.get(f"/v1/models/{variant_id}")
+                if context < 282000:
+                    self.assertNotIn(variant_id, listing)
+                    self.assertEqual(variant.status, 404)
+                else:
+                    for payload in (listing[variant_id], await variant.json()):
+                        for field in ("max_context", "context_length", "max_model_len"):
+                            self.assertEqual(payload[field], 282000)
+        catalog._fetch = AsyncMock(side_effect=RuntimeError("upstream unavailable"))
+        await catalog.refresh()
+        self.assertEqual(state.config.models[model_id].max_context, 282000)
+        # Even when no account snapshot remains, bundled metadata must not
+        # revert to its old hardcoded window or add a new availability gate.
+        catalog.slots = {}
+        await catalog.refresh()
+        self.assertEqual(state.config.models[model_id].max_context, 282000)
+        self.assertFalse(catalog.known_unavailable(model_id))
+
+    async def test_context_persistence_failure_does_not_block_model_routing(self) -> None:
+        from spartan_route.codex_catalog import parse_catalog
+        from test_codex_catalog import row
+
+        state = self.app[STATE_KEY]
+        catalog = state.codex_catalog
+        await catalog.stop()
+        state.codex.slots = [CodexSlot(0, token="token", auth=CodexAuth("token", account_id="account"))]
+        model_id = "codex/gpt-6.1-sol"
+        catalog._fetch = AsyncMock(return_value=parse_catalog({"models": [{
+            **row("gpt-6.1-sol", version="0.153.0"), "max_context_window": 400000,
+        }]}))
+        with patch.object(self.store, "save_codex_model_contexts", side_effect=RuntimeError("disk full")):
+            await catalog.refresh()
+        self.assertEqual(state.config.models[model_id].max_context, 400000)
+        self.assertFalse(catalog.known_unavailable(model_id, "max"))
+        with patch("spartan_route.app.execute_codex_responses", return_value=CodexCallResult(status=200, body={"status": "completed", "output": []})) as execute:
+            response = await self.client.post("/v1/responses", headers={"Authorization": "Bearer secret"}, json={
+                "model": f"{model_id}-282kcontext", "input": "solve", "reasoning": {"effort": "max"},
+            })
+        self.assertEqual(response.status, 200)
+        self.assertEqual(execute.call_args.args[2], model_id)
+        with patch.object(state.codex, "execute_chat", new=AsyncMock(return_value=CodexCallResult(status=200, body={"choices": []}))) as execute_chat:
+            response = await self.client.post("/v1/chat/completions", headers={"Authorization": "Bearer secret"}, json={
+                "model": f"{model_id}-282kcontext", "messages": [{"role": "user", "content": "solve"}], "reasoning_effort": "max",
+            })
+        self.assertEqual(response.status, 200)
+        self.assertEqual(execute_chat.call_args.args[1], model_id)
+        rejected = await self.client.post("/v1/responses", headers={"Authorization": "Bearer secret"}, json={
+            "model": model_id, "input": "solve", "reasoning": {"effort": "ultra"},
+        })
+        self.assertEqual((await rejected.json())["error"]["code"], "codex_ultra_requires_app_server")
+
+    async def test_startup_restores_context_metadata_without_resurrecting_models(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "route.db")
+            original = TelemetryStore(path)
+            original.save_codex_model_contexts({"codex/gpt-6-astra": 400000, "codex/removed": 900000})
+            original.close()
+            restored = TelemetryStore(path)
+            app = create_app(test_config(), restored)
+            client = TestClient(TestServer(app))
+            try:
+                await client.start_server()
+                listing = {item["id"]: item for item in (await (await client.get("/v1/models")).json())["data"]}
+                self.assertEqual(listing["codex/gpt-6-astra"]["max_context"], 400000)
+                self.assertEqual(listing["codex/gpt-6-astra-282kcontext"]["max_context"], 282000)
+                self.assertNotIn("codex/removed", listing)
+            finally:
+                await client.close()
+
+    async def test_context_metadata_read_failure_uses_defaults_without_blocking_startup(self) -> None:
+        store = TelemetryStore(":memory:")
+        app = create_app(test_config(), store)
+        client = TestClient(TestServer(app))
+        try:
+            with patch.object(store, "codex_model_contexts", side_effect=RuntimeError("unavailable")):
+                await client.start_server()
+            response = await client.get("/v1/models/codex/gpt-6-astra")
+            self.assertEqual(response.status, 200)
+            self.assertEqual((await response.json())["max_context"], 872000)
+            self.assertFalse(app[STATE_KEY].codex_catalog.known_unavailable("codex/gpt-6-astra"))
+        finally:
+            await client.close()
 
     async def test_unknown_codex_model_fails_before_upstream(self) -> None:
         response = await self.client.post(
@@ -645,6 +750,44 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                                 self.assertEqual(fake_codex.calls[0]["model_id"], "codex/gpt-6-astra")
                                 self.assertEqual(fake_codex.calls[0]["wants_stream"], stream)
                                 self.assertEqual(fake_codex.calls[0]["request"]["reasoning_effort"], effort)
+
+    async def test_fast_tier_survives_both_codex_endpoints_and_stream_modes(self) -> None:
+        state = self.app[STATE_KEY]
+        fake_codex = CaptureChatCodex()
+        state.codex = fake_codex
+        for stream in (False, True):
+            for endpoint, inputs in (("/v1/chat/completions", {"messages": []}),
+                                     ("/v1/responses", {"input": []})):
+                for tier in ("priority", "ultrafast"):
+                    with self.subTest(endpoint=endpoint, stream=stream, tier=tier):
+                        fake_codex.calls.clear()
+                        with patch("spartan_route.app.execute_codex_responses", return_value=CodexCallResult(
+                            status=200, body={"status": "completed", "output": []}, completed=True,
+                        )) as native:
+                            response = await self.client.post(endpoint,
+                                headers={"Authorization": "Bearer secret"}, json={
+                                    "model": "codex/gpt-6-astra", "stream": stream,
+                                    "service_tier": tier, **inputs})
+                        await response.read()
+                        self.assertEqual(response.status, 200)
+                        forwarded = native.call_args.args[1] if endpoint.endswith("responses") else fake_codex.calls[0]["request"]
+                        self.assertEqual(forwarded["service_tier"], tier)
+
+    async def test_fast_tier_survives_openai_passthrough(self) -> None:
+        state = self.app[STATE_KEY]
+        if state.session is not None:
+            await state.session.close()
+        fake_session = FakeOpenAISession()
+        state.session = fake_session
+        for endpoint, inputs in (("/v1/chat/completions", {"messages": []}),
+                                 ("/v1/responses", {"input": []})):
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+                response = await self.client.post(endpoint,
+                    headers={"Authorization": "Bearer secret"}, json={
+                        "model": "openai/gpt-test", "service_tier": "priority", **inputs})
+            await response.read()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(fake_session.calls[-1]["json"]["service_tier"], "priority")
 
     async def test_api_requires_bearer_token(self) -> None:
         missing = await self.client.get("/api/routing/live")

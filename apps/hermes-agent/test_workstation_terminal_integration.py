@@ -13,11 +13,11 @@ class WorkstationTerminalIntegrationTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn(
-            "RUN python3 /opt/hermes/patches/patch_workstation_approval_scope.py",
+            "python3 /opt/hermes/patches/patch_workstation_approval_scope.py",
             dockerfile,
         )
         self.assertLess(
-            dockerfile.index("COPY --chown=0:0 --chmod=a+rX,go-w patches/"),
+            dockerfile.index("COPY --chown=0:0 patches/"),
             dockerfile.index("patch_workstation_approval_scope.py"),
         )
 

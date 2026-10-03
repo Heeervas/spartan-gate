@@ -8,10 +8,17 @@ tree.
 ## When This Backend Is Active
 
 Camofox is a REST service around Camoufox, a Firefox-derived anti-detection
-browser. Hermes uses it when `CAMOFOX_URL` is set and neither
-`BROWSER_CDP_URL` nor `browser.cdp_url` selects a CDP browser. Camofox and
-Browserless are separate modes; do not assume Chrome/CDP features are
-available while Camofox is selected.
+browser. Spartan Gate selects it for every Hermes profile when the deployment
+sets `CAMOFOX_URL`. This administrator policy overrides profile cloud/CDP
+settings and keeps the built-in `browser_*` tools; `browser_exec` is unavailable
+in this mode. Camofox and Browserless are separate modes; do not assume
+Chrome/CDP features are available while Camofox is selected.
+
+The endpoint and authentication are provided through Hermes' native managed
+secret scope. Their absence from the terminal environment does not identify the
+active browser. A failed Camofox connection/authentication returns an error;
+Hermes must not silently launch Chromium. Each profile retains its own durable
+identity and session state.
 
 Prefer Hermes' `browser_*` tools. They apply URL and website policy checks,
 redact returned text, keep one tab associated with the durable Hermes session,

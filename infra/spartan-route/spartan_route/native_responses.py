@@ -17,6 +17,7 @@ from .codex import (
     CodexSlot,
     TERMINAL_CODEX_EVENTS,
     build_codex_responses_body,
+    build_codex_responses_headers,
     codex_request_timeout_ms,
     parse_codex_error,
     parse_sse_response,
@@ -178,13 +179,7 @@ async def open_response(
     body: dict[str, Any],
     auth: CodexAuth,
 ) -> OpenedResponse | CodexCallResult:
-    headers = {
-        "Authorization": f"Bearer {auth.access_token}",
-        "Content-Type": "application/json",
-        "OpenAI-Beta": "responses=experimental",
-    }
-    if auth.account_id:
-        headers["chatgpt-account-id"] = auth.account_id
+    headers = build_codex_responses_headers(body, auth)
     started = time.monotonic()
     try:
         response = await asyncio.wait_for(

@@ -40,14 +40,17 @@ services:
         condition: service_healthy
     environment:
       HERMES_HOME: /opt/data
+      SPARTAN_BROWSER_POLICY_ENABLED: "1"
+      HERMES_MANAGED_DIR: /run/spartan-hermes-managed
+      S6_BEHAVIOUR_IF_STAGE2_FAILS: "2"
       SPARTAN_HERMES_MODE: ${SPARTAN_HERMES_MODE:-free}
       SPARTAN_HERMES_RUN_UID: ${SPARTAN_HERMES_RUN_UID:-${HERMES_UID:-${PUID:-1000}}}
       SPARTAN_HERMES_RUN_GID: ${SPARTAN_HERMES_RUN_GID:-${HERMES_GID:-${PGID:-1000}}}
       XDG_CONFIG_HOME: /opt/data/.config
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
       PYTHONUSERBASE: /opt/data/.local
-      PIP_TARGET: /opt/data/hermes-extra-site
-      PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes
+      PIP_TARGET: /opt/data/hermes-extra-site-py314
+      PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site-py314:/opt/hermes
       npm_config_prefix: /opt/data/.local
       NPM_CONFIG_PREFIX: /opt/data/.local
       HERMES_UID: ${HERMES_UID:-}
@@ -81,6 +84,24 @@ services:
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
     volumes:
       - ${SPARTAN_HERMES_DATA_PATH:-../../../runtime/hermes-l1}:/opt/data
+      - type: bind
+        source: ../../../apps/hermes-agent/spartan_browser_policy.py
+        target: /opt/hermes/bootstrap/spartan_browser_policy.py
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ../../../apps/hermes-agent/spartan_browser_policy.py
+        target: /opt/hermes/spartan_browser_policy.py
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ../../../apps/hermes-agent/spartan-browser-policy-init.sh
+        target: /etc/cont-init.d/0195-spartan-browser-policy
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HERMES_API_PORT:-8642}/health || exit 1"]
       interval: 15s

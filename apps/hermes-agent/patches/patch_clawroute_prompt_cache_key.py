@@ -85,7 +85,10 @@ def patch_source(source: str) -> tuple[str, bool]:
         '    session_id = params.get("session_id")',
         "    if session_id:",
         '        extra_body = dict(api_kwargs.get("extra_body") or {})',
-        '        extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")',
+        '        cache_key = api_kwargs.pop("prompt_cache_key", None) or extra_body.get("prompt_cache_key") or f"hermes:{session_id}"',
+        '        if len(str(cache_key)) > 64:',
+        '            cache_key = __import__("hashlib").sha256(str(cache_key).encode()).hexdigest()',
+        '        extra_body["prompt_cache_key"] = cache_key',
         '        api_kwargs["extra_body"] = extra_body',
         '    reasoning_config = params.get("reasoning_config")',
         '    if isinstance(reasoning_config, dict):',
@@ -97,6 +100,17 @@ def patch_source(source: str) -> tuple[str, bool]:
         "",
         "",
     ]
+
+    # Upstream now funnels both profile and generic requests through one tail.
+    # Keep the adapter at that seam, before raw reasoning_config is discarded.
+    if "def _finish_kwargs(" in source:
+        start = source.index("def _finish_kwargs(")
+        end = source.index("\ndef ", start + 1)
+        block = source[start:end]
+        if block.count("    return api_kwargs\n") != 1:
+            raise ValueError("shared transport kwargs return anchor changed")
+        replacement = block.replace("    return api_kwargs\n", "    return _spartan_add_clawroute_prompt_cache_key(api_kwargs, params)\n", 1)
+        return source[:start] + "\n".join(helper) + replacement + source[end:], True
 
     has_profile_helper = any(
         "_spartan_add_clawroute_prompt_cache_key(profile_kwargs" in lines[index]
@@ -174,8 +188,9 @@ def patch_file(path: Path) -> str:
     source = path.read_text(encoding="utf-8")
     patched, changed = patch_source(source)
     if not changed:
-        status = "already patched" if MARKER in source else "build_kwargs shape not recognized"
-        return f"Skip: {path} {status}"
+        if MARKER not in source:
+            raise ValueError(f"{path}: build_kwargs shape not recognized")
+        return f"Skip: {path} already patched"
     path.write_text(patched, encoding="utf-8")
     return f"Patched: {path} sends session_id as prompt_cache_key and reasoning_effort to ClawRoute"
 
@@ -185,7 +200,7 @@ def main() -> None:
         if path.exists():
             print(patch_file(path))
             return
-    print("Skip: Hermes chat completions transport not found")
+    raise FileNotFoundError("Hermes chat completions transport not found")
 
 
 if __name__ == "__main__":

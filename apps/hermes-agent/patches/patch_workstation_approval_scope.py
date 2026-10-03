@@ -13,6 +13,13 @@ MARKER = "# --- Spartan Gate scoped workstation approval adapter ---"
 PATCH = r'''
 
 # --- Spartan Gate scoped workstation approval adapter ---
+import contextvars
+import re
+import time
+
+if "approval_context" in globals():
+    _fire_approval_hook = approval_context._fire_approval_hook
+
 _spartan_approval_scope_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "spartan_approval_scope", default=""
 )
@@ -277,13 +284,18 @@ def patch_source(source: str) -> str:
         return source
     required = (
         "def check_all_command_guards(",
-        "def _await_gateway_decision(",
         "def request_tool_approval(",
     )
     missing = [anchor for anchor in required if anchor not in source]
     if missing:
         raise ValueError(f"missing upstream approval anchor: {missing[0]}")
-    return source.rstrip() + PATCH + "\n"
+    if not any(anchor in source for anchor in (
+        "def _await_gateway_decision(",
+        "from tools.approval_gateway_wait import _await_gateway_decision",
+    )):
+        raise ValueError("missing upstream approval anchor: _await_gateway_decision")
+    suffix = '\nif "approval_context" in globals():\n    approval_context._fire_approval_hook = _fire_approval_hook\n'
+    return source.rstrip() + PATCH + suffix
 
 
 def patch() -> None:

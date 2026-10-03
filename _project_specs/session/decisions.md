@@ -1,5 +1,37 @@
 # Decisions
 
+## 2026-10-02 — Hermes fast mode through Spartan Route
+
+- Patch the shared Hermes eligibility gate because request middleware runs
+  after this decision and cannot restore static/timed fast-mode resolution.
+  Trust only the exact internal Route endpoint, `openai-api`, and explicit
+  eligible Codex/OpenAI models; retain all other upstream restrictions.
+- Preserve service tiers through Codex Chat conversion and keep cache/reasoning
+  identity intact. Do not downgrade the requested tier locally during retries.
+  The upstream may return a different served tier: the live priority probe
+  completed successfully but reported `default`, so do not claim priority
+  capacity or a speed improvement for this account.
+- Activate with a guarded existing-image Hermes overlay, preserving Camofox,
+  and rebuild only Spartan Route under the operator's task-specific low-disk
+  exception. Keep the previous Route image and original private code snapshot
+  for rollback. Remove the overlay before a future Hermes image build.
+
+## 2026-10-01 — Managed Camofox selection and launcher imports
+
+- Spartan Gate's selected Camofox mode overrides profile cloud, Browser Use and
+  CDP selection through strict browser-only guards. Use native managed secret
+  scopes for infrastructure endpoint/authentication while retaining per-profile
+  identity, sessions and persistence.
+- Validate before s6 profile reconciliation and stop native initialization on
+  failure. Do not let malformed policy, unavailable Camofox or unauthorized
+  requests activate another browser.
+- The native Hermes launcher replaces `PYTHONPATH`. Install the shared helper
+  in the protected project root and validate imports with that launcher path;
+  a bootstrap-only test can pass while actual gateways fail.
+- Activate on the existing image using the fingerprinted private overlay,
+  preserve original snapshots and recreate only Hermes. Retain image-drift
+  guards until the next validated image incorporates the patch.
+
 ## 2026-09-12 — Camofox 1.15 candidate and activation gate
 
 - Retire upstream-owned fixed-proxy protection and duplicate OS/VNC apt work,

@@ -250,6 +250,8 @@ def patch_source(source: str) -> str:
 
     index = source.find(ANCHOR)
     if index == -1:
+        index = source.find("# --- Point agent-browser at the pinned Chromium binary ---")
+    if index == -1:
         raise ValueError("agent-browser discovery anchor not found")
 
     return source[:index] + NEW_BLOCK + source[index:]

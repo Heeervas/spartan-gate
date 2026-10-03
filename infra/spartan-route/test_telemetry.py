@@ -34,6 +34,26 @@ def routing_entry(timestamp: str, request_id: str | None = None) -> RoutingLogEn
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_codex_context_metadata_survives_restart_and_rejects_partial_invalid_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "route.db")
+            store = TelemetryStore(path)
+            try:
+                store.save_codex_model_contexts({"codex/gpt-6.1-sol": 872000})
+                for invalid in (True, 0, 2_000_001, 2.5, "872000"):
+                    with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                        store.save_codex_model_contexts({"codex/gpt-6.1-sol": 300000, "codex/other": invalid})
+                self.assertEqual(store.codex_model_contexts(), {"codex/gpt-6.1-sol": 872000})
+            finally:
+                store.close()
+            restored = TelemetryStore(path)
+            try:
+                self.assertEqual(restored.codex_model_contexts(), {"codex/gpt-6.1-sol": 872000})
+                restored.save_codex_model_contexts({"codex/gpt-6.1-sol": 400000})
+                self.assertEqual(restored.codex_model_contexts(), {"codex/gpt-6.1-sol": 400000})
+            finally:
+                restored.close()
+
     def test_reasoning_tokens_and_chain_realm_are_persisted_without_double_counting(self) -> None:
         store = TelemetryStore(":memory:")
         try:

@@ -155,6 +155,28 @@ if [[ "$autostart" == "yes" && "$mode" != "gateway" ]]; then
     die "manual profiles cannot be autostarted"
 fi
 
+declare -A profile_credentials=()
+api_server_key=""
+
+require_profile_credential() {
+    local key="$1"
+    local source_key="$2"
+    local value
+    value="$(env_value "$source_key")"
+    [[ -n "$value" ]] || die "set $source_key in $ENV_FILE before creating this profile"
+    [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *'${'* ]] \
+        || die "$source_key must be a literal single-line value"
+    profile_credentials["$key"]="$value"
+}
+
+write_credential_line() {
+    local key="$1"
+    local value="${profile_credentials[$key]}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '%s="%s"\n' "$key" "$value"
+}
+
 ensure_env_key() {
     local key="$1"
     if ! grep -q "^${key}=" "$ENV_FILE"; then
@@ -228,16 +250,16 @@ write_profile_env() {
             printf 'API_SERVER_ENABLED=false\n'
         fi
         if [[ "$telegram" == "yes" ]]; then
-            printf 'TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN_%s}\n' "$upper_name"
-            printf 'TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS_%s}\n' "$upper_name"
+            write_credential_line TELEGRAM_BOT_TOKEN
+            write_credential_line TELEGRAM_ALLOWED_USERS
         else
             printf 'TELEGRAM_BOT_TOKEN=\n'
             printf 'TELEGRAM_ALLOWED_USERS=\n'
         fi
         if [[ "$discord" == "yes" ]]; then
-            printf 'DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN_%s}\n' "$upper_name"
-            printf 'DISCORD_ALLOWED_USERS=${DISCORD_ALLOWED_USERS_%s}\n' "$upper_name"
-            printf 'DISCORD_HOME_CHANNEL=${DISCORD_HOME_CHANNEL_%s}\n' "$upper_name"
+            write_credential_line DISCORD_BOT_TOKEN
+            write_credential_line DISCORD_ALLOWED_USERS
+            write_credential_line DISCORD_HOME_CHANNEL
         else
             printf 'DISCORD_BOT_TOKEN=\n'
             printf 'DISCORD_ALLOWED_USERS=\n'
@@ -245,10 +267,11 @@ write_profile_env() {
         fi
         printf 'HERMES_GATEWAY_TOKEN=${HERMES_GATEWAY_TOKEN}\n'
         printf 'CUSTOM_1_API_KEY=${CUSTOM_1_API_KEY}\n'
+        if [[ "$mode" == "gateway" ]]; then printf 'API_SERVER_KEY=%s\n' "$api_server_key"; fi
         if [[ -n "$port" ]]; then printf 'API_SERVER_PORT=%s\n' "$port"; fi
         printf 'BROWSER_CDP_URL=${BROWSER_CDP_URL}\n'
         printf 'OPENAI_BASE_URL=${OPENAI_BASE_URL}\n'
-        printf 'PYTHONPATH=/opt/data/hermes-extra-site:/opt/hermes/bootstrap\n'
+        printf 'PYTHONPATH=/opt/hermes/bootstrap:/opt/data/hermes-extra-site-py314:/opt/hermes\n'
         printf 'PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright\n'
     } > "$tmp"
     mv "$tmp" "$profile_dir/.env"
@@ -267,6 +290,20 @@ printf 'Autostart: %s\n' "$autostart"
 if [[ "$dry_run" == "true" ]]; then
     printf 'Dry run only; no files changed.\n'
     exit 0
+fi
+
+# Complete credential preflight before ensure_env_key/ensure_compose_env writes.
+if [[ "$telegram" == "yes" ]]; then
+    require_profile_credential TELEGRAM_BOT_TOKEN "HERMES_TELEGRAM_BOT_TOKEN_$upper_name"
+    require_profile_credential TELEGRAM_ALLOWED_USERS "HERMES_TELEGRAM_ALLOWED_USERS_$upper_name"
+fi
+if [[ "$discord" == "yes" ]]; then
+    require_profile_credential DISCORD_BOT_TOKEN "DISCORD_BOT_TOKEN_$upper_name"
+    require_profile_credential DISCORD_ALLOWED_USERS "DISCORD_ALLOWED_USERS_$upper_name"
+    require_profile_credential DISCORD_HOME_CHANNEL "DISCORD_HOME_CHANNEL_$upper_name"
+fi
+if [[ "$mode" == "gateway" ]]; then
+    api_server_key="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 fi
 
 if [[ "$telegram" == "yes" ]]; then

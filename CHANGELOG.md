@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Checkpointed the deployed Hermes refresh, managed Camofox policy, fast-mode
+  forwarding, Route cache affinity and catalog/context updates, operator
+  helpers, and existing architecture drafts before transport optimization.
+  The checkpoint preserves the documented residual plugin acceptance failures.
+
 - Added selectable `-282kcontext` Spartan Route model variants for eligible
   text models. Hermes sees a 282,000-token context window while Route forwards
   the base model ID; unknown or ineligible variants return 404.

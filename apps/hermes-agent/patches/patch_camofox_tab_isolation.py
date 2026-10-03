@@ -54,6 +54,8 @@ def _replace_in_function(
 def patch_camofox(source: str) -> str:
     if CAMOFOX_MARKER in source:
         return source
+    if 'def _with_tab(' in source:
+        return patch_modular_camofox(source)
 
     source = _replace_once(
         source,
@@ -147,6 +149,22 @@ def patch_camofox(source: str) -> str:
 def patch_browser_tool(source: str) -> str:
     if REGISTRY_MARKER in source:
         return source
+    if 'def _fallback_call(' in source:
+        source = _replace_once(source, '        params["task_id"] = kw.get("task_id")\n',
+            '        # SPARTAN_CAMOFOX_REGISTRY_SCOPE_V1\n'
+            '        params["task_id"] = (kw.get("session_id") or kw.get("task_id")) if _is_camofox_mode() else kw.get("task_id")\n',
+            'registry durable scope')
+        source = _replace_in_function(source, '_camofox_eval',
+            '    from tools.browser_camofox import _ensure_tab, _post\n',
+            '    from tools.browser_camofox import _require_tab, _post, _spartan_stale_tab\n')
+        source = _replace_in_function(source, '_camofox_eval',
+            '        tab_info = _ensure_tab(task_id or "default")\n',
+            '        tab_info, blocked = _require_tab(task_id or "default", "evaluate JavaScript")\n'
+            '        if blocked:\n            return blocked\n')
+        return _replace_in_function(source, '_camofox_eval', '    except Exception as e:\n',
+            '    except Exception as e:\n'
+            '        stale = _spartan_stale_tab(e, locals().get("tab_info"), "browser_console")\n'
+            '        if stale is not None:\n            return stale\n')
 
     source = _replace_in_function(
         source,
@@ -178,6 +196,42 @@ def patch_browser_tool(source: str) -> str:
         raise RuntimeError(f"registry handlers: expected 10 task_id anchors, found {count}")
     tail = tail.replace(old, "task_id=_spartan_registry_browser_scope(kw)")
     return head + tail
+
+
+def patch_modular_camofox(source: str) -> str:
+    source = _replace_once(source,
+        '    candidates = [tab for tab in dict_tabs if tab.get("listItemId") == session.get("session_key")] or dict_tabs\n',
+        '    # SPARTAN_CAMOFOX_DURABLE_TAB_SCOPE_V1\n'
+        '    candidates = [tab for tab in dict_tabs if tab.get("listItemId") == session.get("session_key")]\n',
+        'exact tab adoption')
+    source = _replace_in_function(source, '_navigate_tab',
+        'e.response.status_code != 404', 'e.response.status_code not in (404, 410)')
+    helper = '''
+
+def _spartan_stale_tab(exc, session, action):
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status not in (404, 410) or not isinstance(session, dict):
+        return None
+    with _sessions_lock:
+        session["tab_id"] = None
+        session["adopt_existing_tab"] = False
+    return json.dumps({"success": False, "code": "stale_browser_generation",
+        "error": "The Camofox tab no longer exists. Call browser_navigate explicitly before retrying this action.",
+        "action": action, "http_status": status, "requires_navigation": True})
+'''
+    source += helper
+    for name in ('_with_tab', 'camofox_type'):
+        source = _replace_in_function(source, name, '    except Exception as e:\n',
+            '    except Exception as e:\n'
+            f'        stale = _spartan_stale_tab(e, locals().get("session"), {name!r})\n'
+            '        if stale is not None:\n            return stale\n')
+    return _replace_in_function(source, 'camofox_close',
+        '            _delete(f"/sessions/{session[\'user_id\']}")\n',
+        '            if session.get("managed"):\n'
+        '                if session.get("tab_id"):\n'
+        '                    _delete(f"/tabs/{session[\'tab_id\']}", {"userId": session["user_id"]})\n'
+        '            else:\n'
+        '                _delete(f"/sessions/{session[\'user_id\']}")\n')
 
 
 def _write_pair_atomic(updates: list[tuple[Path, str]]) -> None:

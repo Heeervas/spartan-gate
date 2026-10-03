@@ -67,17 +67,27 @@ NEW_ENV_UPDATE = '''    if user_env:
 def patch_source(source: str) -> str:
     patched = source
     if MARKER not in patched and not all(token in patched for token in PROXY_TOKENS):
-        if OLD_BLOCK not in patched:
+        compact = '_SAFE_ENV_KEYS = frozenset({"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR"})'
+        if compact in patched:
+            patched = patched.replace(compact, NEW_BLOCK, 1)
+        elif OLD_BLOCK not in patched:
             raise ValueError("safe stdio environment anchor not found")
-        patched = patched.replace(OLD_BLOCK, NEW_BLOCK, 1)
+        else:
+            patched = patched.replace(OLD_BLOCK, NEW_BLOCK, 1)
     if ENV_VALUE_MARKER not in patched:
-        if OLD_ENV_UPDATE not in patched:
+        old = OLD_ENV_UPDATE.removesuffix("    return env")
+        new = NEW_ENV_UPDATE.removesuffix("    return env")
+        if old not in patched:
             raise ValueError("explicit stdio environment anchor not found")
-        patched = patched.replace(OLD_ENV_UPDATE, NEW_ENV_UPDATE, 1)
+        patched = patched.replace(old, new, 1)
     return patched
 
 
 def main() -> None:
+    global TARGET
+    modular = TARGET.with_name("mcp_tool_config.py")
+    if modular.exists():
+        TARGET = modular
     if not TARGET.exists():
         print(f"FATAL: {TARGET} not found", file=sys.stderr)
         sys.exit(1)

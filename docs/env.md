@@ -242,8 +242,30 @@ to transcribe.
 ## Camofox
 
 Camofox is an optional local browser backend for Hermes browser tools. It runs
-as the internal Compose service `camofox`, but Hermes keeps using Browserless
-unless `CAMOFOX_URL` is set.
+as the internal Compose service `camofox`. A nonempty `CAMOFOX_URL` makes it the
+mandatory browser for every Hermes profile, including multiplexed and future
+profiles. Per-profile cloud/CDP settings cannot override this deployment mode;
+the agent keeps the built-in `browser_*` tools instead of `browser_exec`.
+
+Before s6 starts gateways, Spartan Gate generates a root-owned managed layer
+under `/run/spartan-hermes-managed`. Hermes' native secret scopes receive the
+endpoint and protected-route authentication from that layer; user `.env` files
+are unchanged. Browser identities and session keys remain profile scoped.
+Invalid policy, code fingerprints, or launcher-path imports reject startup. A
+Camofox outage or failed authentication never selects Chromium as a fallback.
+Recreate Hermes after policy configuration or authentication changes; restarting
+the existing container does not apply changed Compose environment.
+The terminal tool can legitimately omit `CAMOFOX_URL`; inspect the browser's
+profile scope rather than treating terminal environment as backend evidence.
+
+- `HERMES_MANAGED_DIR`: fixed to `/run/spartan-hermes-managed` by Compose.
+- `HERMES_MANAGED_SOURCE_DIR`: optional administrator source directory, default
+  `/etc/hermes`. Its existing managed config and dotenv are preserved, with
+  only the Spartan-selected browser policy and infrastructure auth overriding
+  conflicting values. Malformed or multiline dotenv assignments are rejected.
+- `SPARTAN_BROWSER_POLICY_ENABLED`: fixed to `1`; controls the strict browser
+  guards. Missing or changed deployment settings fail closed once initialized.
+- `S6_BEHAVIOUR_IF_STAGE2_FAILS`: fixed to `2`; init rejection stops Hermes.
 
 - `COMPOSE_PROFILES`: full-stack service selector. Use `browserless` when
   `CAMOFOX_URL` is empty and `camofox` when it points to Camofox; optionally add
@@ -251,8 +273,8 @@ unless `CAMOFOX_URL` is set.
   Helpers reject duplicate, bootstrap, unknown, or conflicting profiles.
 - `CAMOFOX_URL`: optional Hermes Camofox endpoint. Leave empty to keep
   Browserless as the default browser/CDP backend; set to
-  `http://camofox:9377` to opt in for generic Hermes browser tools and Google
-  Meet transcribe mode.
+  `http://camofox:9377` to select Camofox for all generic Hermes browser tools
+  and Google Meet transcribe mode. The protected-route access key is required.
 - `CAMOFOX_BASE_IMAGE`: pinned upstream Camofox base image, default
   `ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae`.
 - `CAMOFOX_IMAGE`: local Spartan Gate Camofox wrapper image, default

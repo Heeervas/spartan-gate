@@ -1,5 +1,5 @@
-# Upstream main revision: 13ce0c5c675e843af70d19c9e5144249cd51c8d1
-FROM docker.io/nousresearch/hermes-agent:main@sha256:5baa3af502537ef938daf920890dfc0f420057689de819cbae6748c61b8f0213
+# Upstream main revision: e8c97320ac8691d4de92af49f98459f9ef9ddb08
+FROM docker.io/nousresearch/hermes-agent:main@sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde
 
 USER root
 
@@ -67,7 +67,7 @@ RUN apt-get update \
 # Install the complete static Onest 1.000 release and make it available to all
 # Fontconfig consumers (browser automation, image capture, and PDF tooling).
 RUN set -eux; \
-    curl -fsSL "https://github.com/simpals/onest/releases/download/1.000/onest-fonts.zip" -o /tmp/onest-fonts.zip; \
+    curl -fsSL --retry 3 --retry-delay 2 --max-time 120 "https://github.com/simpals/onest/releases/download/1.000/onest-fonts.zip" -o /tmp/onest-fonts.zip; \
     echo "e44491d1f892716036307beddb4cad5adae52aac7fb70f8c274198c8aea3cb15  /tmp/onest-fonts.zip" | sha256sum -c -; \
     mkdir -p /tmp/onest /usr/local/share/fonts/onest; \
     unzip /tmp/onest-fonts.zip "onest-fonts/fonts/ttf/*.ttf" -d /tmp/onest; \
@@ -91,29 +91,42 @@ RUN set -eux; \
 RUN echo 'Acquire::http::Proxy "http://proxy:8888";' > /etc/apt/apt.conf.d/99proxy \
     && echo 'Acquire::https::Proxy "http://proxy:8888";' >> /etc/apt/apt.conf.d/99proxy
 
+# Expose upstream's pinned uv binary without installing a second toolchain.
+RUN python3 -c 'from pathlib import Path; from pm.install import uv_launcher; binary = uv_launcher("uv"); assert binary is not None; Path("/usr/local/bin/uv").symlink_to(binary)'
+
 # Only add packages not already bundled by upstream `.[all]`.
+# Pin the versions validated in the existing Hermes runtime.
 RUN uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python \
-    python-docx \
-    pymupdf \
-    pandas \
-    matplotlib \
-    "yt-dlp[default]" \
-    curl-cffi \
-    PySocks \
-    playwright \
-    obsidiantools
+    "python-docx==1.2.0" \
+    "pymupdf==1.28.2" \
+    "pandas==3.0.5" \
+    "matplotlib==3.11.2" \
+    "yt-dlp[default]==2026.8.19" \
+    "curl-cffi==0.16.3" \
+    "PySocks==1.7.1" \
+    "playwright==1.62.0" \
+    "obsidiantools==0.11.0"
+
+# Native plugin test tooling from this base's pyproject.toml and uv.lock.
+# The runtime already supplies PyYAML, packaging and pygments. Do not sync the
+# entire dev group or replace runtime dependencies to make pytest available.
+RUN uv pip install --no-cache-dir --no-deps --python /opt/hermes/.venv/bin/python \
+    "pytest==9.1.1" \
+    "iniconfig==2.3.0" \
+    "pluggy==1.6.0" \
+    && /opt/hermes/.venv/bin/python -m pytest --version \
+    && /opt/hermes/.venv/bin/python -c 'import sys, yaml; assert sys.version_info[:2] == (3, 14); assert sys.prefix == "/opt/hermes/.venv"; assert yaml.__version__ == "6.0.3"' \
+    && uv pip check --python /opt/hermes/.venv/bin/python
 
 # Proxy bootstrap Python (audit + Brave→SearXNG interception)
 # Loaded via PYTHONPATH=/opt/hermes/bootstrap → sitecustomize.py
-COPY --chown=0:0 --chmod=0644 proxy-bootstrap.py /opt/hermes/bootstrap/sitecustomize.py
+COPY --chown=0:0 proxy-bootstrap.py /opt/hermes/bootstrap/sitecustomize.py
 
 # CDP patch: rewrites browserless 0.0.0.0 WebSocket URLs → Docker hostname
 # Loaded via NODE_OPTIONS=--require=/opt/hermes/bootstrap/cdp-patch.js
-COPY --chown=0:0 --chmod=0644 cdp-patch.js /opt/hermes/bootstrap/cdp-patch.js
-COPY --chown=0:0 --chmod=0644 browserless-cdp-url.js /opt/hermes/bootstrap/browserless-cdp-url.js
-COPY --chown=0:0 --chmod=0644 browserless-profile-live.js /opt/hermes/bootstrap/browserless-profile-live.js
-COPY --chown=0:0 --chmod=0644 browserless-cdp-broker.py /opt/hermes/bootstrap/browserless-cdp-broker.py
-COPY --chown=0:0 --chmod=0644 pocket-tts-client.py /opt/hermes/bootstrap/pocket-tts-client.py
+COPY --chown=0:0 cdp-patch.js /opt/hermes/bootstrap/cdp-patch.js
+COPY --chown=0:0 browserless-cdp-url.js /opt/hermes/bootstrap/browserless-cdp-url.js
+COPY --chown=0:0 browserless-profile-live.js browserless-cdp-broker.py pocket-tts-client.py wrangler-auth.py /opt/hermes/bootstrap/
 
 # Install gogcli (Google CLI — Gmail, Calendar, Drive, Docs, Sheets, etc.)
 # https://github.com/openclaw/gogcli
@@ -126,7 +139,7 @@ RUN set -eux; \
         *) echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;; \
     esac; \
     GOGCLI_ARCHIVE="/tmp/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz"; \
-    curl -fsSL "https://github.com/openclaw/gogcli/releases/download/v${GOGCLI_VERSION}/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz" \
+    curl -fsSL --retry 3 --retry-delay 2 --max-time 120 "https://github.com/openclaw/gogcli/releases/download/v${GOGCLI_VERSION}/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz" \
         -o "${GOGCLI_ARCHIVE}"; \
     echo "${GOGCLI_SHA256}  ${GOGCLI_ARCHIVE}" | sha256sum -c -; \
     tar xzf "${GOGCLI_ARCHIVE}" -C /usr/local/bin gog; \
@@ -143,7 +156,7 @@ RUN set -eux; \
         *) echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;; \
     esac; \
     DENO_ARCHIVE="/tmp/deno-${DENO_ARCH}.zip"; \
-    curl -fsSL "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${DENO_ARCH}.zip" \
+    curl -fsSL --retry 3 --retry-delay 2 --max-time 120 "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${DENO_ARCH}.zip" \
         -o "${DENO_ARCHIVE}"; \
     echo "${DENO_SHA256}  ${DENO_ARCHIVE}" | sha256sum -c -; \
     unzip "${DENO_ARCHIVE}" -d /usr/local/bin; \
@@ -159,35 +172,44 @@ RUN mkdir -p /opt/data/.config/pip \
 
 # Main-program wrapper: runs Spartan-specific boot hooks after upstream s6
 # cont-init setup, then delegates command routing and privilege drop to upstream.
-COPY --chown=0:0 --chmod=0644 wrangler-auth.py /opt/hermes/bootstrap/wrangler-auth.py
-COPY --chown=0:0 --chmod=0755 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
+COPY --chown=0:0 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
+COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/bootstrap/spartan_browser_policy.py
+COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/spartan_browser_policy.py
+COPY --chown=0:0 spartan-browser-policy-init.sh /etc/cont-init.d/0195-spartan-browser-policy
+ENV SPARTAN_BROWSER_POLICY_ENABLED=1 \
+    HERMES_MANAGED_DIR=/run/spartan-hermes-managed \
+    S6_BEHAVIOUR_IF_STAGE2_FAILS=2
 
 # Build-time patches for upstream Hermes files (survive base image updates)
-COPY --chown=0:0 --chmod=a+rX,go-w patches/ /opt/hermes/patches/
-RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py
-RUN python3 /opt/hermes/patches/patch_s6_service_permissions.py
-RUN python3 /opt/hermes/patches/patch_runtime_identity_drop.py
-RUN python3 /opt/hermes/patches/patch_stage2_cdp_env.py
-RUN python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py
-RUN python3 /opt/hermes/patches/patch_camofox_tab_isolation.py
-RUN python3 /opt/hermes/patches/patch_prompt_load_callback.py
-RUN python3 /opt/hermes/patches/patch_checkpoint_rollback_scan.py
-RUN python3 /opt/hermes/patches/patch_mcp_proxy_env.py
-RUN python3 /opt/hermes/patches/patch_google_meet_cdp.py
-RUN python3 /opt/hermes/patches/patch_google_meet_transcript.py
-RUN python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py
-RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py
-RUN python3 /opt/hermes/patches/patch_startup_overlay_precedence.py
-RUN python3 /opt/hermes/patches/patch_codex_429_fail_fast.py
-RUN python3 /opt/hermes/patches/patch_workstation_approval_scope.py
-
-# Fail closed on upstream or patch ownership drift without rewriting the full
-# venv/node_modules tree into a slow copy-on-write chown layer.
-COPY --chown=0:0 --chmod=0644 audit-install-tree.py /opt/hermes/patches/audit-install-tree.py
-RUN chmod 0755 /opt/hermes/bootstrap \
-    && chmod 0644 /opt/hermes/.venv/.lock \
-    && python3 /opt/hermes/patches/audit-install-tree.py /opt/hermes
-RUN test "$(stat -c '%a' /opt/hermes/bootstrap)" = "755" \
+COPY --chown=0:0 patches/ /opt/hermes/patches/
+COPY --chown=0:0 audit-install-tree.py /opt/hermes/patches/audit-install-tree.py
+# Apply patches and verify permissions atomically; avoid one snapshot per patch.
+RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
+    && python3 /opt/hermes/patches/patch_s6_service_permissions.py \
+    && python3 /opt/hermes/patches/patch_runtime_identity_drop.py \
+    && python3 /opt/hermes/patches/patch_stage2_cdp_env.py \
+    && python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py \
+    && python3 /opt/hermes/patches/patch_camofox_tab_isolation.py \
+    && python3 /opt/hermes/patches/patch_camofox_managed_policy.py \
+    && python3 /opt/hermes/patches/patch_prompt_load_callback.py \
+    && python3 /opt/hermes/patches/patch_checkpoint_rollback_scan.py \
+    && python3 /opt/hermes/patches/patch_mcp_proxy_env.py \
+    && python3 /opt/hermes/patches/patch_google_meet_cdp.py \
+    && python3 /opt/hermes/patches/patch_google_meet_transcript.py \
+    && python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py \
+    && python3 /opt/hermes/patches/patch_spartan_fast_mode.py \
+    && python3 /opt/hermes/patches/patch_route_env_placeholders.py \
+    && python3 /opt/hermes/patches/patch_codex_429_fail_fast.py \
+    && python3 /opt/hermes/patches/patch_workstation_approval_scope.py \
+    && python3 /opt/hermes/patches/patch_state_fts_empty_migration.py \
+    && chmod 0755 /opt/hermes/bootstrap /opt/hermes/entrypoint-wrapper.sh \
+    && chmod 0755 /etc/cont-init.d/0195-spartan-browser-policy \
+    && chmod 0644 /opt/hermes/spartan_browser_policy.py \
+    && find /opt/hermes/bootstrap -maxdepth 1 -type f -exec chmod 0644 {} + \
+    && chmod -R a+rX,go-w /opt/hermes/patches \
+    && if [ -f /opt/hermes/.venv/.lock ]; then chmod 0644 /opt/hermes/.venv/.lock; fi \
+    && python3 /opt/hermes/patches/audit-install-tree.py /opt/hermes \
+    && test "$(stat -c '%a' /opt/hermes/bootstrap)" = "755" \
     && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_camofox.py)" = "0:0" \
     && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_tool.py)" = "0:0" \
     && setpriv --reuid=65534 --regid=65534 --clear-groups \

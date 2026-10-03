@@ -948,6 +948,48 @@ def ensure_meet_bot_camofox_backend_source(source: str) -> str:
     return patched
 
 
+def _replace_definition(source: str, name: str, replacement: str) -> str:
+    import ast
+    nodes = [node for node in ast.parse(source).body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+    if len(nodes) != 1:
+        raise ValueError(f"expected one upstream definition: {name}")
+    node = nodes[0]
+    lines = source.splitlines(keepends=True)
+    lines[node.lineno - 1:node.end_lineno] = [replacement.rstrip() + "\n"]
+    return ''.join(lines)
+
+
+def patch_modular_meet_bot(source: str) -> str:
+    # Keep upstream's decomposed realtime/config/drain lifecycle. Adapt only browser
+    # creation and the established local admission diagnostics.
+    helper = MEET_BOT_HELPER_BLOCK.split('def _is_safe_meet_url', 1)[0]
+    locale = (MEET_BOT_NEW_TRY_GUEST_NAME_BLOCK + MEET_BOT_NEW_DETECT_ADMISSION_BLOCK
+              + MEET_BOT_NEW_DETECT_DENIED_BLOCK + MEET_BOT_NEW_CLICK_JOIN_BLOCK
+              + MEET_BOT_READY_HELPER_BLOCK.rsplit('def _try_guest_name', 1)[0])
+    source = source.replace('def _is_safe_meet_url', 'import json\nfrom datetime import datetime, timezone\n\n' + helper + locale + '\ndef _is_safe_meet_url', 1)
+    fields = (
+        ('guestNameAttempted', 'guest_name_attempted', False), ('guestNameFilled', 'guest_name_filled', False),
+        ('guestNameError', 'guest_name_error', None), ('joinButtonFound', 'join_button_found', False),
+        ('joinButtonClicked', 'join_button_clicked', None), ('joinButtonError', 'join_button_error', None),
+        ('lastDebugCapture', 'last_debug_capture', None), ('debugCaptures', 'debug_captures', []),
+    )
+    source = source.replace('_STATUS_FIELDS = (', '_STATUS_FIELDS = (\n' + ''.join('    ' + repr(row) + ',\n' for row in fields), 1)
+    source = source.replace('    if rt["enabled"]:\n        _setup_realtime(rt, cfg.realtime_api_key, state)',
+        '    if rt["enabled"] and _meet_camofox_mode_enabled():\n        rt["enabled"] = False\n        state.set(realtime=False, error="Camofox supports transcribe mode; realtime audio disabled.")\n    if rt["enabled"]:\n        _setup_realtime(rt, cfg.realtime_api_key, state)', 1)
+    old = '        from playwright.sync_api import sync_playwright\n'
+    source = source.replace(old, '        if _meet_camofox_mode_enabled():\n            sync_playwright = _camofox_sync_playwright\n        else:\n    ' + old, 1)
+    old = '    try:\n        with sync_playwright() as pw:\n'
+    source = source.replace(old, '    cdp_url, cdp_profile = _resolve_meet_cdp()\n' + old, 1)
+    launch = '            browser = pw.chromium.launch(\n                channel="chromium", executable_path=chromium_executable(),\n                headless=not cfg.headed, args=chrome_args,\n            )\n            context = browser.new_context(**context_args)\n'
+    replacement = '            if cdp_url:\n                browser = pw.chromium.connect_over_cdp(cdp_url)\n                context = browser.contexts[0] if browser.contexts else browser.new_context(**context_args)\n            else:\n                browser = pw.chromium.launch(\n                    channel="chromium", executable_path=chromium_executable(),\n                    headless=not cfg.headed, args=chrome_args,\n                )\n                context = browser.new_context(**context_args)\n'
+    source, _ = replace_once(source, launch, replacement, MEET_BOT_TARGET)
+    source, _ = replace_once(source, MEET_BOT_OLD_TEARDOWN_BLOCK, MEET_BOT_NEW_TEARDOWN_BLOCK, MEET_BOT_TARGET)
+    join = MEET_BOT_READY_JOIN_CALL_REPLACEMENT.replace('guest_name, state', 'cfg.guest_name, state')
+    source, _ = replace_once(source, '            _join(page, cfg, state)\n', join, MEET_BOT_TARGET)
+    source = source.replace('_probe(page, _ADMISSION_PROBE_JS)', '_detect_admission(page)').replace('_probe(page, _DENIED_PROBE_JS)', '_detect_denied(page)')
+    return source
+
+
 def patch_meet_bot_source(source: str) -> str:
     if MEET_BOT_MARKER in source:
         patched = ensure_meet_bot_camofox_backend_source(source)
@@ -959,6 +1001,9 @@ def patch_meet_bot_source(source: str) -> str:
         if profile_legacy in patched:
             patched = patched.replace(profile_legacy, profile_current, 1)
         return patch_meet_bot_locale_source(patched, required=False)
+
+    if "_STATUS_FIELDS = (" in source:
+        return patch_modular_meet_bot(source)
 
     patched, _ = replace_once(source, MEET_BOT_HELPER_ANCHOR, MEET_BOT_HELPER_BLOCK, MEET_BOT_TARGET)
     if MEET_BOT_REALTIME_BLOCK in patched:
@@ -1032,6 +1077,9 @@ def ensure_cli_camofox_backend_source(source: str) -> str:
 
 
 def patch_cli_source(source: str) -> str:
+    if "_SUBCOMMAND_HELP = (" in source and CLI_MARKER not in source:
+        source = _replace_definition(source, "_auth_state_path", CLI_NEW_HELPER_BLOCK)
+        return _replace_definition(source, "_cmd_setup", CLI_NEW_SETUP_BLOCK)
     if CLI_MARKER in source:
         profile_legacy = '    profile = os.environ.get("HERMES_MEET_CDP_PROFILE", "guest").strip().lower()\n    if profile == "main":\n        return os.environ.get("BROWSER_CDP_MAIN_URL", "").strip(), "main"\n'
         profile_current = '    profile = os.environ.get("HERMES_MEET_CDP_PROFILE", "guest").strip().lower()\n    browserless_profile = os.environ.get("BROWSERLESS_PROFILE", "main").strip().lower()\n    if profile == "main" or (browserless_profile and profile == browserless_profile):\n        return os.environ.get("BROWSER_CDP_MAIN_URL", "").strip(), "main"\n'

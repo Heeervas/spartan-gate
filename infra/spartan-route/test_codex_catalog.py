@@ -2,23 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
 import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from spartan_route.codex import CodexAuth, CodexRouter, CodexSlot
 from spartan_route.codex_catalog import (
     ACCOUNT_GATED_BUNDLED_MODELS,
+    CATALOG_CLIENT_VERSION,
     MAX_AGE_SECONDS,
     MAX_RESPONSE_BYTES,
     CodexModelDiscovery,
     SlotCatalog,
+    cached_client_version,
     parse_catalog,
 )
 from spartan_route.telemetry import TelemetryStore
@@ -38,6 +42,14 @@ def row(slug: str, *, visibility: str = "list", version: str = "0.155.0", effort
 
 
 class CatalogParserTests(unittest.TestCase):
+    def test_gpt_6_1_sol_uses_subscription_maximum_context(self) -> None:
+        catalog = parse_catalog({"models": [{
+            **row("gpt-6.1-sol", version="0.153.0"),
+            "context_window": 272000,
+            "multi_agent_version": "v2",
+        }]})
+        self.assertEqual(catalog["codex/gpt-6.1-sol"].entry.max_context, 872000)
+
     def test_visible_compatible_models_only(self) -> None:
         catalog = parse_catalog({"models": [
             row("gpt-6-sol"), row("gpt-6-luna", efforts=("low", "medium")),
@@ -61,6 +73,44 @@ class CatalogParserTests(unittest.TestCase):
         ):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 parse_catalog(payload)
+
+
+class CatalogVersionTests(unittest.TestCase):
+    def test_newest_enabled_cache_applies_to_all_accounts_without_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            slots = []
+            for index, version in enumerate(("0.148.0", "0.160.0", "0.999.0")):
+                home = Path(directory) / str(index)
+                home.mkdir()
+                (home / "models_cache.json").write_text(json.dumps({"client_version": version}))
+                slots.append(SimpleNamespace(path=str(home / "auth.json"), enabled=index != 2))
+            router = SimpleNamespace(slots=slots, slot_routing_status=lambda slot: {"routingEnabled": slot.enabled})
+            catalog = CodexModelDiscovery(router, AsyncMock(), set())
+            self.assertEqual(catalog.catalog_request_version(), (0, 160, 0))
+            Path(slots[1].path).with_name("models_cache.json").write_text('{"client_version":"0.148.0"}')
+            self.assertEqual(catalog.catalog_request_version(), (0, 160, 0))
+            router.slots = []
+            self.assertEqual(CodexModelDiscovery(router, AsyncMock(), set()).catalog_request_version(), CATALOG_CLIENT_VERSION)
+
+    def test_invalid_missing_oversized_and_nonregular_caches_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            auth_path = str(Path(directory) / "auth.json")
+            cache = Path(directory) / "models_cache.json"
+            self.assertIsNone(cached_client_version(auth_path))
+            self.assertIsNone(cached_client_version(None))
+            self.assertIsNone(cached_client_version("/"))
+            for raw in (
+                b'{}', b'[]', b'not json', b'{"client_version":true}',
+                b'{"client_version":"0.159"}', b'{"client_version":"99999.1.0"}',
+                b'{"client_version":"0.159.0-secret"}', b'\xff',
+                b' ' * (MAX_RESPONSE_BYTES + 1),
+            ):
+                with self.subTest(raw=raw[:50]):
+                    cache.write_bytes(raw)
+                    self.assertIsNone(cached_client_version(auth_path))
+            cache.unlink()
+            os.mkfifo(cache)
+            self.assertIsNone(cached_client_version(auth_path))
 
 
 class CatalogFetchTests(unittest.IsolatedAsyncioTestCase):
@@ -104,8 +154,11 @@ class CatalogFetchTests(unittest.IsolatedAsyncioTestCase):
             router.session = session
             fetched = await catalog._fetch(CodexAuth("secret", account_id="account"))
             self.assertIn("codex/gpt-6-sol", fetched)
-            self.assertEqual(session.request[1]["params"], {"client_version": "0.155.1"})
+            self.assertEqual(session.request[1]["params"], {"client_version": "0.159.0"})
             self.assertFalse(session.request[1]["allow_redirects"])
+            router.session = Session([raw])
+            await catalog._fetch(CodexAuth("secret", account_id="account"), client_version=(0, 160, 0))
+            self.assertEqual(router.session.request[1]["params"], {"client_version": "0.160.0"})
             router.session = Session([b"x" * MAX_RESPONSE_BYTES, b"y"])
             with self.assertRaises(ValueError):
                 await catalog._fetch(CodexAuth("secret", account_id="account"))
@@ -130,7 +183,7 @@ class CatalogRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.catalog = CodexModelDiscovery(self.router, publish, set(ACCOUNT_GATED_BUNDLED_MODELS))
         self.router.model_catalog = self.catalog
 
-        async def fetch(auth):
+        async def fetch(auth, **_kwargs):
             slug = "gpt-6-sol" if auth.account_id == "account-a" else "gpt-6-luna"
             return parse_catalog({"models": [row(slug)]})
 
@@ -152,6 +205,44 @@ class CatalogRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sol_again[0].index, 0)
         luna = await self.router.choose_slot(None, set(), set(), "codex/gpt-6-luna", "max")
         self.assertEqual(luna[0].index, 1)
+
+    async def test_newer_request_version_retries_baseline_for_each_account(self) -> None:
+        models = parse_catalog({"models": [row("gpt-6.1-sol", version="0.153.0")]})
+        self.catalog._fetch = AsyncMock(side_effect=[ValueError("catalog_http_400"), models] * 2)
+        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 160, 0)):
+            await self.catalog.refresh()
+        self.assertEqual(self.catalog._fetch.await_args_list, [
+            call(self.router.slots[0].auth, client_version=(0, 160, 0)),
+            call(self.router.slots[0].auth, client_version=CATALOG_CLIENT_VERSION),
+            call(self.router.slots[1].auth, client_version=(0, 160, 0)),
+            call(self.router.slots[1].auth, client_version=CATALOG_CLIENT_VERSION),
+        ])
+        self.assertIn("codex/gpt-6.1-sol", self.publications[-1])
+
+    async def test_failed_hint_and_fallback_keep_previous_account_catalog(self) -> None:
+        self.catalog._fetch = AsyncMock(side_effect=RuntimeError("unavailable"))
+        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 160, 0)):
+            await self.catalog.refresh()
+        self.assertEqual(self.catalog._fetch.await_count, 4)
+        self.assertFalse(self.catalog.known_unavailable("codex/gpt-6-sol"))
+
+    async def test_cancelled_hint_is_not_retried(self) -> None:
+        self.catalog._fetch = AsyncMock(side_effect=asyncio.CancelledError)
+        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 160, 0)):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.catalog.refresh()
+        self.assertEqual(self.catalog._fetch.await_count, 1)
+
+    async def test_context_uses_smallest_offering_account_and_updates_after_refresh(self) -> None:
+        async def fetch(auth, **_kwargs):
+            context = 900000 if auth.account_id == "account-a" else 400000
+            return parse_catalog({"models": [{**row("gpt-6.1-sol"), "max_context_window": context}]})
+        self.catalog._fetch = fetch
+        await self.catalog.refresh()
+        self.assertEqual(self.publications[-1]["codex/gpt-6.1-sol"].max_context, 400000)
+        await self.router.set_slot_routing_enabled(1, False)
+        await self.catalog.refresh()
+        self.assertEqual(self.publications[-1]["codex/gpt-6.1-sol"].max_context, 900000)
 
     async def test_account_change_and_disabled_slot_fail_closed(self) -> None:
         self.router.slots[0].auth = CodexAuth("new-token", account_id="replacement")

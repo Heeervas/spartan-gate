@@ -331,6 +331,13 @@ class TelemetryStore:
                     model_id TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS codex_model_context_metadata (
+                    model_id TEXT PRIMARY KEY,
+                    max_context INTEGER NOT NULL CHECK (
+                        typeof(max_context) = 'integer' AND max_context BETWEEN 1 AND 2000000
+                    ),
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS reasoning_chain_bindings (
                     chain_id TEXT PRIMARY KEY,
                     realm TEXT NOT NULL,
@@ -1254,6 +1261,33 @@ class TelemetryStore:
         with self._lock:
             row = self._conn.execute("SELECT * FROM codex_slot_overrides WHERE slot_index = ?", (int(slot_index),)).fetchone()
         return self._slot_override_from_row(dict(row)) if row else None
+
+    def codex_model_contexts(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT model_id, max_context FROM codex_model_context_metadata"
+            ).fetchall()
+        return {
+            row["model_id"]: row["max_context"] for row in rows
+            if isinstance(row["model_id"], str) and row["model_id"].startswith("codex/")
+            and type(row["max_context"]) is int and 1 <= row["max_context"] <= 2_000_000
+        }
+
+    def save_codex_model_contexts(self, contexts: dict[str, int]) -> None:
+        if any(
+            not isinstance(model_id, str) or not model_id.startswith("codex/")
+            or type(context) is not int or not 1 <= context <= 2_000_000
+            for model_id, context in contexts.items()
+        ):
+            raise ValueError("invalid_codex_context_metadata")
+        updated_at = now_iso()
+        with self._lock, self._conn:
+            self._conn.executemany(
+                """INSERT INTO codex_model_context_metadata(model_id, max_context, updated_at)
+                VALUES (?, ?, ?) ON CONFLICT(model_id) DO UPDATE SET
+                max_context=excluded.max_context, updated_at=excluded.updated_at""",
+                [(model_id, context, updated_at) for model_id, context in contexts.items()],
+            )
 
     def routing_model_override_rows(self) -> list[dict[str, Any]]:
         with self._lock:

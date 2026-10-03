@@ -502,6 +502,8 @@ def build_codex_request_body(request: dict[str, Any], model_name: str, prompt_ca
     }
     if prompt_cache_key:
         body["prompt_cache_key"] = prompt_cache_key
+    if "service_tier" in request:
+        body["service_tier"] = request["service_tier"]
     if "top_p" in request:
         body["top_p"] = request["top_p"]
     if isinstance(request.get("tools"), list):
@@ -571,6 +573,21 @@ def build_codex_responses_body(
     reasoning.setdefault("context", "all_turns")
     body["reasoning"] = reasoning
     return body
+
+
+def build_codex_responses_headers(body: dict[str, Any], auth: CodexAuth) -> dict[str, str]:
+    """Keep subscription HTTP cache affinity aligned with the final body key."""
+    headers = {
+        "Authorization": f"Bearer {auth.access_token}",
+        "Content-Type": "application/json",
+        "OpenAI-Beta": "responses=experimental",
+    }
+    if auth.account_id:
+        headers["chatgpt-account-id"] = auth.account_id
+    cache_key = body.get("prompt_cache_key")
+    if isinstance(cache_key, str) and cache_key:
+        headers["session-id"] = cache_key
+    return headers
 
 
 def parse_codex_error(text: str) -> dict[str, Any]:
@@ -1771,13 +1788,7 @@ class CodexRouter:
         slot: CodexSlot,
         auth: CodexAuth,
     ) -> CodexCallResult:
-        headers = {
-            "Authorization": f"Bearer {auth.access_token}",
-            "Content-Type": "application/json",
-            "OpenAI-Beta": "responses=experimental",
-        }
-        if auth.account_id:
-            headers["chatgpt-account-id"] = auth.account_id
+        headers = build_codex_responses_headers(body, auth)
         timeout_ms = codex_request_timeout_ms()
         try:
             upstream_started = time.monotonic()

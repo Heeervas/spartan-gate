@@ -5,6 +5,20 @@ container safety, Spartan Gate integration, plugin-like behavior, and likely
 upstream bugs. Keep this classification current when adding or removing a
 patch.
 
+The 2026-10-01 refresh targets upstream main
+`e8c97320ac8691d4de92af49f98459f9ef9ddb08`, OCI digest
+`sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde`.
+The Dockerfile now carries 18 active build-time patches, including the
+post-refresh Camofox policy and Spartan Route fast-mode adaptations. Python 3.14 uses
+`/opt/data/hermes-extra-site-py314`; the Python 3.13 directory is retained but
+excluded from the new runtime import path. Synced plugin versions are retained.
+The build-time count follows the Dockerfile's patch invocation list.
+`patch_clawroute_named_provider.py` remains a boot-time migration; the retained
+`patch_chrome_devtools_ws_auth.py` is not invoked by this image build.
+The deployed image passed runtime health, scoped API authentication, and
+configured Telegram/Discord connection checks after the authorized private
+credential migration. Superseded build images were removed after acceptance.
+
 ## Container Safety
 
 These patches are part of the Docker security boundary. Keep them in the image
@@ -17,8 +31,8 @@ unless upstream provides the same invariant.
 | `patch_s6_service_permissions.py` | Keeps dynamic s6 service definitions root-owned and disables unsafe runtime service registration. |
 | `patch_stage2_cdp_env.py` | Materializes browser/CDP env before supervised services start. |
 | `patch_gateway_service_cdp_env.py` | Imports browser/CDP env into supervised gateways and applies the configured numeric identity to gateway/log execution. It preserves upstream's restart-safe log setup and never adds root-context ownership rewrites. |
-| `patch_chrome_devtools_ws_auth.py` | Migrates browser tooling to authenticated configured CDP endpoints. |
 | `patch_codex_429_fail_fast.py` | Treats only HTTP 429 with top-level `error.code=codex_429` as terminal Codex capacity exhaustion before credential rotation, fallback, or backoff. It still uses normal turn finalization and persistence. |
+| `patch_workstation_approval_scope.py` | Keeps workstation approval requests bound to the intended caller and scope. |
 
 The Hermes image uses root-owned `COPY` metadata and then runs
 `audit-install-tree.py` across `/opt/hermes`. The audit rejects non-root
@@ -35,10 +49,12 @@ extension points.
 
 | Patch or adapter | Role |
 | --- | --- |
-| `patch_clawroute_named_provider.py` | Migrates legacy Hermes route provider config to native `openai-api` while preserving the Spartan Route base URL. |
+| `patch_clawroute_named_provider.py` (boot-time migration) | Migrates legacy Hermes route provider config to native `openai-api` while preserving the Spartan Route base URL. |
 | `patch_route_env_placeholders.py` | Atomically resolves only `OPENAI_API_KEY` and legacy `CUSTOM_1_API_KEY` aliases in config, profile secret scopes, and credential-pool seeding. It preserves upstream `op://` precedence, rejects anchor drift before writing any file, and never expands arbitrary profile secrets. |
-| `patch_clawroute_prompt_cache_key.py` | On Chat Completions, forwards Hermes `session_id` as Spartan Route `prompt_cache_key` and preserves raw `reasoning_config.effort`, including `ultra`, before upstream profile normalization. Native Responses owns its top-level cache key and nested reasoning fields. |
+| `patch_clawroute_prompt_cache_key.py` | Uses the shared Chat Completions finalization seam to forward one cache key (native key preferred, session fallback, bounded to 64 characters) and preserve raw `reasoning_config.effort`, including `ultra`. Native Responses owns its top-level cache key and nested reasoning fields. |
+| `patch_spartan_fast_mode.py` | Allows the shared upstream fast-mode resolver only for eligible explicit `codex/*` and `openai/*` models at the exact internal Spartan Route URL with `openai-api`. Keeps session/static/timed modes and other route restrictions upstream-owned. A request middleware cannot repair this earlier eligibility decision, so it remains a narrow build-time patch with a guarded overlay for existing images. |
 | `patch_camofox_tab_isolation.py` | Scopes Camofox registry state by durable Hermes `session_id` (with task fallback), adopts only the exact tab group, recreates stale 404/410 tabs only for explicit navigation, and makes other stale actions require a new navigation. Managed close deletes the tab without deleting its persistent profile context. This remains a build-time adapter because Hermes plugins and hooks do not expose these browser-tool decisions. |
+| `patch_camofox_managed_policy.py` | Enforces the administrator's Camofox mode before driver, cloud-provider, stored-selection and CDP fallbacks. Five selectors call the strict shared runtime policy; unrelated modalities and unmanaged browser modes retain upstream behavior. The cont-init hook supplies endpoint/auth through native managed secret scopes, without changing `get_secret` or profile identities. Current images can use fingerprinted read-only private mounts; the next build incorporates the same deterministic patch. |
 | `spartan-cache-lineage` 0.3.0 plugin | HMAC-binds Responses reasoning to profile/session/realm and fingerprints Chat `messages` or Responses `instructions` plus `input`, with canonical tool hashing and transport-separated bounded state. It stores only hashes and treats invalid or foreign reasoning as a cold chain. |
 | Camofox auth env mapping | Passes the protected-route `CAMOFOX_ACCESS_KEY` to Hermes under upstream's expected `CAMOFOX_API_KEY` client variable. |
 | `proxy-bootstrap.py` | Routes selected web/search traffic through Spartan Gate controls and logs audited egress. |
@@ -47,8 +63,12 @@ extension points.
 
 ## Archived Patches
 
+`patch_chrome_devtools_ws_auth.py` remains in the patch directory for reference
+but is not invoked by the current Dockerfile.
+
 | Patch | Decision |
 | --- | --- |
+| `archive/2026-10-01-patch_startup_overlay_precedence.py` | Alberto Tools now owns its three Discord command helper modules inside the plugin. Native plugin loading replaces core-module shadows; no startup path-precedence patch is needed. Old overlay files remain outside the Python 3.14 import path. |
 | `archive/2026-06-30-patch_camofox_access_key.py` | Archived after upstream Hermes added Camofox `_auth_headers()` support. Spartan Gate now maps the Camofox protected-route access key into Hermes' upstream `CAMOFOX_API_KEY` client variable instead of patching Hermes browser calls. |
 | `archive/2026-06-30-patch_gateway_retryable_startup.py` | Archived after upstream Hermes added degraded startup behavior for retryable platform outages. |
 
@@ -68,7 +88,7 @@ hooks are stable enough.
 | `patch_google_meet_cdp.py` | Google Meet browser backend selector. |
 | `patch_google_meet_transcript.py` | Google Meet transcript and muted-join behavior. |
 | `patch_prompt_load_callback.py` | Telegram prompt-load callback handler with the upstream chat/thread/user authorization gate applied before any synthetic event. Upstream now ships Telegram as a platform plugin, so this remains a candidate for extraction when an equivalent callback hook is available. |
-| `patch_checkpoint_rollback_scan.py` | Rollback command handler with scoped checkpoint lookup. Keep conservative until upstream rollback APIs settle. |
+| `patch_checkpoint_rollback_scan.py` | Adds only conservative workdir selection to native rollback handlers. Native listing, restore, backend restrictions and chat undo remain upstream-owned. Ambiguous scopes require explicit selection. |
 
 ## Upstream Bug Candidates
 
@@ -77,6 +97,7 @@ These should be proposed upstream or deleted when upstream fixes the behavior.
 | Patch | Why it looks upstreamable |
 | --- | --- |
 | `patch_mcp_proxy_env.py` | Stdio MCP subprocesses need proxy variables in network-constrained containers, and the current MCP SDK requires legacy YAML boolean/number environment scalars to be normalized to strings. |
+| `patch_state_fts_empty_migration.py` | Upstream's empty v1/v2 FTS migration calls `executescript` inside a savepoint, implicitly committing it. Use the existing transactional DDL helper only for this empty-index branch; retain populated migration and rollback behavior. Remove when upstream fixes the branch. |
 | Camofox launch-profile cleanup, immediate timeout-tab retirement, and bounded waiter retention in `infra/camofox/patch-server.js` | v1.15 owns fixed-proxy session preservation. Spartan retains immediate retirement of the timed-out tab, de-duplicated failure accounting, and bounded waiters. Periodic profile scans remain disabled because upstream's established-browser protection does not cover unfinished launches. The noVNC override was removed in v1.14. See [Camofox refresh](camofox-refresh.md). |
 | Camofox runtime viewport route in `infra/camofox/patch-server.js` | Upstream should resize the page runtime viewport and report effective dimensions instead of returning `ok` for screenshot-only crops or no-ops. |
 

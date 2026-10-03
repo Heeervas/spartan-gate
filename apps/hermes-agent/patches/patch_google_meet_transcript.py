@@ -406,7 +406,38 @@ def migrate_meet_bot_source(source: str) -> str:
     return patched
 
 
+def patch_modular_meet_bot(source: str) -> str:
+    if MEET_BOT_MARKER in source:
+        return source
+    fields = (
+        ('micMutedBeforeJoin', 'mic_muted_before_join', False), ('cameraMutedBeforeJoin', 'camera_muted_before_join', False),
+        ('mediaMuteError', 'media_mute_error', None), ('admissionDetected', 'admission_detected', False),
+        ('captionRegionFound', 'caption_region_found', False), ('captionObserverReady', 'caption_observer_ready', False),
+        ('lastCaptionProbeAt', 'last_caption_probe_at', None), ('lastCaptionTextSample', 'last_caption_text_sample', None),
+        ('captionEnableError', 'caption_enable_error', None),
+    )
+    source = source.replace('_STATUS_FIELDS = (', '_STATUS_FIELDS = (\n' + ''.join('    ' + repr(row) + ',\n' for row in fields), 1)
+    # Replace only the native observer constant; keep upstream's audio helpers.
+    import ast
+    nodes = [n for n in ast.parse(source).body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == '_CAPTION_OBSERVER_JS' for t in n.targets)]
+    if len(nodes) != 1:
+        raise ValueError('Meet caption observer anchor changed')
+    lines = source.splitlines(keepends=True); node = nodes[0]
+    lines[node.lineno - 1:node.end_lineno] = [CAPTION_AND_MEDIA_BLOCK + '\n']
+    source = ''.join(lines)
+    source = _replace_regex(source, r'def _detect_admission\(page\) -> bool:\n.*?\ndef _detect_denied\(', ADMISSION_BLOCK + 'def _detect_denied(', 'admission detection')
+    source = source.replace('    "Unirse ahora",\n', '    "Unirse ahora", "Unirme ahora", "Unirse ahora sin cámara",\n', 1)
+    source = source.replace('    "Solicitar unirse",\n', '    "Solicitar unirse", "Solicitar unirme",\n', 1)
+    source = source.replace('            if _wait_for_join_controls(page, state):', '            if not rt["enabled"]:\n                _mute_prejoin_media(page, state)\n            if _wait_for_join_controls(page, state):', 1)
+    source = source.replace('mic_state=_ensure_mic_on(page)', 'admission_detected=True, mic_state=_ensure_mic_on(page) if rt["enabled"] else "muted"', 1)
+    source = source.replace('    last_admission_check = 0.0\n', '    last_admission_check = 0.0\n    last_caption_capture_check = 0.0\n', 1)
+    source = source.replace('        try:\n            queued = page.evaluate', '        if now - last_caption_capture_check > 3.0:\n            last_caption_capture_check = now\n            _ensure_caption_capture(page, state)\n        try:\n            debug = page.evaluate("window.__hermesMeetDebug || {}")\n            if isinstance(debug, dict):\n                state.set(caption_region_found=bool(debug.get("regionFound")),\n                    caption_observer_ready=bool(debug.get("observerReady")), last_caption_probe_at=now,\n                    last_caption_text_sample=str(debug.get("lastSample") or "")[:500] or state.last_caption_text_sample)\n            queued = page.evaluate', 1)
+    return source
+
+
 def patch_meet_bot_source(source: str) -> str:
+    if "_STATUS_FIELDS = (" in source:
+        return patch_modular_meet_bot(source)
     if MEET_BOT_MARKER in source:
         return migrate_meet_bot_source(source)
     patched = source
@@ -500,6 +531,18 @@ def patch_meet_bot_source(source: str) -> str:
 
 
 def patch_cli_source(source: str) -> str:
+    if "_SUBCOMMAND_HELP = (" in source:
+        if CLI_MARKER in source:
+            return source
+        old = '    ("stop", "Leave the current meeting"),\n'
+        new = old + '    ("leave", "Alias for stop"),\n' + f'    {CLI_MARKER}\n'
+        source = _replace_once(source, old, new, 'leave parser')
+        old = '    "stop": lambda a: _print_result(pm.stop(reason="hermes meet stop")),\n'
+        source = _replace_once(source, old, old + '    "leave": lambda a: _print_result(pm.stop(reason="hermes meet leave")),\n', 'leave dispatch')
+        # A stale root-owned auth file must not crash Camofox's auth-independent join.
+        source = source.replace('    auth = _auth_state_path()\n', '    auth = _auth_state_path()\n    try:\n        auth_state = str(auth) if auth.is_file() else None\n    except PermissionError:\n        auth_state = None\n', 1)
+        source = source.replace('auth_state=str(auth) if auth.is_file() else None, mode=mode)', 'auth_state=auth_state, mode=mode)', 1)
+        return source
     patched = source
     if CLI_MARKER not in patched:
         patched = _replace_many(patched, [
@@ -563,6 +606,11 @@ def patch_cli_source(source: str) -> str:
 
 
 def patch_process_manager_source(source: str) -> str:
+    if 'def _kill(' in source:
+        if PROCESS_MANAGER_MARKER in source:
+            return source
+        source = _replace_once(source, 'def stop(*, reason: str = "requested") -> Dict[str, Any]:', 'def _spartan_stop(*, reason: str = "requested") -> Dict[str, Any]:', 'native stop')
+        return source + "\n" + PROCESS_MANAGER_MARKER + '\ndef stop(*, reason: str = "requested") -> Dict[str, Any]:\n    try:\n        return _spartan_stop(reason=reason)\n    except PermissionError as exc:\n        active = _read_active() or {}\n        return {"ok": False, "reason": "permission denied", "error": str(exc),\n            "pid": active.get("pid"), "meetingId": active.get("meeting_id"),\n            "hint": "Run sg-hermes-meet stop from the host to clean up a legacy root-owned bot."}\n'
     if PROCESS_MANAGER_MARKER in source:
         return source
     permission_block = (
@@ -616,7 +664,9 @@ def patch_init_source(source: str) -> str:
         '    return meet_command(args)\n'
     )
     if old not in source:
-        raise ValueError(f'anchor block not found in {INIT_TARGET}: eager cli imports')
+        old = 'from plugins.google_meet.cli import meet_command as _meet_command, register_cli as _register_meet_cli\n'
+        if old not in source:
+            raise ValueError(f'anchor block not found in {INIT_TARGET}: eager cli imports')
     return source.replace(old, new, 1)
 
 

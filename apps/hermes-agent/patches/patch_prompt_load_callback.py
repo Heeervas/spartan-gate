@@ -152,6 +152,16 @@ def patch_source(source: str) -> str:
 
     # Locate the anchor line.
     anchor_idx = source.find(ANCHOR)
+    block = PATCH_BLOCK
+    if anchor_idx == -1 and '        cb = self._callback_ctx(query)\n' in source:
+        anchor_idx = source.index('        cb = self._callback_ctx(query)\n') + len('        cb = self._callback_ctx(query)\n')
+        start = block.index('    caller_id =')
+        end = block.index('    skill_name =')
+        block = block[:start] + '''    if not await self._callback_authorized(query, cb, "⛔ You are not authorized to load prompts."):
+        return
+
+''' + block[end:]
+        return source[:anchor_idx] + ''.join('        ' + line + '\n' if line else '\n' for line in block.splitlines()) + source[anchor_idx:]
     if anchor_idx == -1:
         raise ValueError(f"anchor line not found: {ANCHOR!r}")
 

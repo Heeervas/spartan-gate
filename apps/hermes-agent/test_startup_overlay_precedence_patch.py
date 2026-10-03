@@ -7,7 +7,7 @@ import unittest
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("patches").joinpath(
-    "patch_startup_overlay_precedence.py"
+    "archive/2026-10-01-patch_startup_overlay_precedence.py"
 )
 
 

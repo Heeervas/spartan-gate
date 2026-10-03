@@ -43,7 +43,15 @@ def patch_config_source(source: str) -> str:
     old = '''    env_vars = load_env()\n    val = env_vars.get(key)\n    if val:\n        return val\n'''
     new = '''    env_vars = load_env()\n    val = env_vars.get(key)\n    reference = _spartan_route_env_reference(val, key)\n    if reference:\n        val = os.environ.get(reference)\n    if val:\n        return val\n'''
     if old not in patched:
-        raise ValueError("dotenv lookup block not found")
+        old = '    return load_env().get(key) or _scoped_environ_get(key)\n'
+        new = '''    val = load_env().get(key)
+    reference = _spartan_route_env_reference(val, key)
+    if reference:
+        val = os.environ.get(reference)
+    return val or _scoped_environ_get(key)
+'''
+        if old not in patched:
+            raise ValueError("dotenv lookup block not found")
     return patched.replace(old, new, 1)
 
 
@@ -60,7 +68,10 @@ def patch_secret_scope_source(source: str) -> str:
     old = '''    scope = _SECRET_SCOPE.get()\n    if scope is not None:\n        val = scope.get(name)\n        if val is not None:\n            return val\n'''
     new = '''    scope = _SECRET_SCOPE.get()\n    if scope is not None:\n        val = scope.get(name)\n        if val is not None:\n            reference = _spartan_route_env_reference(val, name)\n            if reference:\n                val = os.environ.get(reference)\n            return val if val is not None else default\n'''
     if old not in patched:
-        raise ValueError("secret scope lookup block not found")
+        old = old.replace("scope = _SECRET_SCOPE.get()", "bound = _SECRET_SCOPE.get()").replace("if scope is not None:", "if bound is not None:").replace("scope.get(name)", "bound.mapping.get(name)")
+        new = new.replace("scope = _SECRET_SCOPE.get()", "bound = _SECRET_SCOPE.get()").replace("if scope is not None:", "if bound is not None:").replace("scope.get(name)", "bound.mapping.get(name)")
+        if old not in patched:
+            raise ValueError("secret scope lookup block not found")
     return patched.replace(old, new, 1)
 
 
@@ -74,8 +85,8 @@ def patch_credential_pool_source(source: str) -> str:
         raise ValueError("get_env_prefer_dotenv anchor not found")
     patched = source.replace(helper_anchor, helper + helper_anchor, 1)
 
-    old = '''def get_env_prefer_dotenv(key: str) -> str:\n    env_file = load_env()\n    raw = env_file.get(key, "").strip()\n    scoped_value = (_get_secret(key, "") or "").strip()\n'''
-    new = '''def get_env_prefer_dotenv(key: str) -> str:\n    env_file = load_env()\n    raw = env_file.get(key, "").strip()\n    scoped_value = (_get_secret(key, "") or "").strip()\n    reference = _spartan_route_env_reference(raw, key)\n    if reference:\n        raw = str(_get_secret(reference, "") or "").strip()\n'''
+    old = '''    env_file = load_env()\n    raw = env_file.get(key, "").strip()\n    scoped_value = (_get_secret(key, "") or "").strip()\n'''
+    new = old + '''    reference = _spartan_route_env_reference(raw, key)\n    if reference:\n        raw = str(_get_secret(reference, "") or "").strip()\n'''
     if old not in patched:
         raise ValueError("credential pool dotenv lookup block not found")
     return patched.replace(old, new, 1)

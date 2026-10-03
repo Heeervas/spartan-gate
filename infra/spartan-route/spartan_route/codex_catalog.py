@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import stat
 import sys
 import time
 from dataclasses import dataclass
@@ -17,6 +19,10 @@ from .config import ModelEntry
 # This is the newest Codex wire version validated with Spartan Route's
 # stateless Responses transport. A newer minimum version needs a transport test.
 VERIFIED_CODEX_CLIENT_VERSION = (0, 155, 1)
+# Catalog visibility depends on the requesting CLI version, independently of
+# each model's minimum transport version. Newer cache hints never lift the
+# validated transport ceiling above.
+CATALOG_CLIENT_VERSION = (0, 159, 0)
 CODEX_CATALOG_URL = f"{CODEX_BASE_URL}/models"
 REFRESH_SECONDS = 3600
 MAX_AGE_SECONDS = 24 * 3600
@@ -41,10 +47,29 @@ class SlotCatalog:
 
 
 def _version(value: Any) -> tuple[int, int, int] | None:
-    if not isinstance(value, str) or not re.fullmatch(r"\d+\.\d+\.\d+", value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}", value):
         return None
     parts = tuple(int(part) for part in value.split("."))
     return parts if all(part <= 9999 for part in parts) else None
+
+
+def cached_client_version(auth_path: str | None) -> tuple[int, int, int] | None:
+    if not auth_path:
+        return None
+    try:
+        path = Path(auth_path).with_name("models_cache.json")
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RESPONSE_BYTES:
+                return None
+            raw = stream.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            return None
+        payload = json.loads(raw)
+        return _version(payload.get("client_version")) if isinstance(payload, dict) else None
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        return None
 
 
 def parse_catalog(payload: Any) -> dict[str, DiscoveredModel]:
@@ -66,6 +91,12 @@ def parse_catalog(payload: Any) -> dict[str, DiscoveredModel]:
         if minimum is None:
             raise ValueError("invalid_client_version")
         if minimum > VERIFIED_CODEX_CLIENT_VERSION:
+            print(
+                f"[spartan-route] Codex catalog skipped {slug}: minimum client "
+                f"{row['minimal_client_version']} exceeds validated transport "
+                f"{'.'.join(map(str, VERIFIED_CODEX_CLIENT_VERSION))}",
+                file=sys.stderr,
+            )
             continue
         modalities = row.get("input_modalities")
         if not isinstance(modalities, list) or not all(isinstance(item, str) for item in modalities):
@@ -111,6 +142,20 @@ class CodexModelDiscovery:
         self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._refresh_lock = asyncio.Lock()
+        self.request_version = CATALOG_CLIENT_VERSION
+
+    def catalog_request_version(self) -> tuple[int, int, int]:
+        version = self.request_version
+        for slot in self.router.slots:
+            if self.router.slot_routing_status(slot)["routingEnabled"]:
+                hint = cached_client_version(slot.path)
+                if hint is not None:
+                    version = max(version, hint)
+        if version != self.request_version:
+            print(f"[spartan-route] Codex catalog request version {'.'.join(map(str, version))}", file=sys.stderr)
+        # Different CLI processes may overwrite a cache with an older version.
+        self.request_version = version
+        return version
 
     def start(self) -> None:
         if self._task is None:
@@ -207,14 +252,16 @@ class CodexModelDiscovery:
                 pass
             self._wake.clear()
 
-    async def _fetch(self, auth: Any) -> dict[str, DiscoveredModel]:
+    async def _fetch(
+        self, auth: Any, *, client_version: tuple[int, int, int] = CATALOG_CLIENT_VERSION,
+    ) -> dict[str, DiscoveredModel]:
         headers = {
             "Authorization": f"Bearer {auth.access_token}",
             "chatgpt-account-id": auth.account_id,
         }
         async with self.router.session.get(
             CODEX_CATALOG_URL,
-            params={"client_version": ".".join(map(str, VERIFIED_CODEX_CLIENT_VERSION))},
+            params={"client_version": ".".join(map(str, client_version))},
             headers=headers,
             timeout=ClientTimeout(total=8),
             allow_redirects=False,
@@ -235,6 +282,7 @@ class CodexModelDiscovery:
 
     async def refresh(self) -> None:
         async with self._refresh_lock:
+            client_version = self.catalog_request_version()
             now = time.monotonic()
             refreshed: dict[int, SlotCatalog] = {}
             for slot in self.router.slots:
@@ -252,7 +300,16 @@ class CodexModelDiscovery:
                 if slot.path and source_account != auth.account_id:
                     continue
                 try:
-                    models = await self._fetch(auth)
+                    try:
+                        models = await self._fetch(auth, client_version=client_version)
+                    except Exception as exc:
+                        if client_version == CATALOG_CLIENT_VERSION:
+                            raise
+                        print(
+                            f"[spartan-route] Codex model catalog slot {slot.index} "
+                            f"retrying baseline version ({type(exc).__name__})", file=sys.stderr,
+                        )
+                        models = await self._fetch(auth, client_version=CATALOG_CLIENT_VERSION)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:

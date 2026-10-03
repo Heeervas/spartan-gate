@@ -143,16 +143,41 @@ def patch_finalizer(source: str) -> str:
     return patched.replace(result_anchor, addition + result_anchor, 1)
 
 
+def patch_api_error(source: str) -> str:
+    """Use upstream's terminal-result path, including durable failed-turn closure."""
+    if MARKER in source:
+        return source
+    anchor = "    _recovered, active_system_prompt = recover_before_classification(\n"
+    if source.count(anchor) != 1:
+        raise ValueError("pre-recovery API error anchor changed")
+    block = f'''    # {MARKER}: stop before recovery, rotation, fallback or backoff.
+    from agent.error_classifier import spartan_codex_capacity_summary
+    summary = spartan_codex_capacity_summary(api_error)
+    if summary is not None:
+        return _verdict("return", {{
+            "final_response": summary, "messages": messages, "api_calls": api_call_count,
+            "completed": False, "failed": True, "error": summary,
+            "failure_reason": "rate_limit", "failure_retryable": False,
+        }})
+
+'''
+    return source.replace(anchor, block + anchor, 1)
+
+
 def patch_files(paths: dict[Path, str] | None = None) -> bool:
     targets = paths or {
         CLASSIFIER: "classifier",
         LOOP: "loop",
         FINALIZER: "finalizer",
     }
+    modular = ROOT / "agent/turn_api_error.py"
+    if paths is None and modular.is_file():
+        targets = {CLASSIFIER: "classifier", modular: "api_error"}
     transforms = {
         "classifier": patch_classifier,
         "loop": patch_loop,
         "finalizer": patch_finalizer,
+        "api_error": patch_api_error,
     }
     originals: dict[Path, str] = {}
     patched: dict[Path, str] = {}

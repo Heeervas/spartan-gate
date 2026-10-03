@@ -31,11 +31,11 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn(
             'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:5baa3af502537ef938daf920890dfc0f420057689de819cbae6748c61b8f0213',
+            'sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde',
             dockerfile,
         )
         self.assertIn(
-            'Upstream main revision: 13ce0c5c675e843af70d19c9e5144249cd51c8d1',
+            'Upstream main revision: e8c97320ac8691d4de92af49f98459f9ef9ddb08',
             dockerfile,
         )
 
@@ -51,12 +51,12 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
     def test_dockerfile_patches_stage2_cdp_env_before_services(self):
         dockerfile = read_text(DOCKERFILE_PATH)
 
-        self.assertIn('RUN python3 /opt/hermes/patches/patch_stage2_cdp_env.py', dockerfile)
-        self.assertIn('RUN python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py', dockerfile)
-        self.assertIn('RUN python3 /opt/hermes/patches/patch_s6_service_permissions.py', dockerfile)
-        self.assertIn('RUN python3 /opt/hermes/patches/patch_runtime_identity_drop.py', dockerfile)
-        self.assertIn('RUN python3 /opt/hermes/patches/patch_route_env_placeholders.py', dockerfile)
-        self.assertIn('RUN python3 /opt/hermes/patches/patch_startup_overlay_precedence.py', dockerfile)
+        self.assertIn('python3 /opt/hermes/patches/patch_stage2_cdp_env.py', dockerfile)
+        self.assertIn('python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py', dockerfile)
+        self.assertIn('python3 /opt/hermes/patches/patch_s6_service_permissions.py', dockerfile)
+        self.assertIn('python3 /opt/hermes/patches/patch_runtime_identity_drop.py', dockerfile)
+        self.assertIn('python3 /opt/hermes/patches/patch_route_env_placeholders.py', dockerfile)
+        self.assertNotIn('python3 /opt/hermes/patches/patch_startup_overlay_precedence.py', dockerfile)
         self.assertLess(
             dockerfile.index('patch_stage2_runtime_owner.py'),
             dockerfile.index('patch_s6_service_permissions.py'),
@@ -112,8 +112,8 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('# hermes-runtime-user-path', entrypoint)
         self.assertIn('export PATH="/opt/data/.local/bin:/opt/hermes/.venv/bin:$PATH"', entrypoint)
         self.assertIn('export PYTHONUSERBASE="${PYTHONUSERBASE:-/opt/data/.local}"', entrypoint)
-        self.assertIn('export PIP_TARGET="${PIP_TARGET:-/opt/data/hermes-extra-site}"', entrypoint)
-        self.assertIn('export PYTHONPATH="${PYTHONPATH:-/opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes}"', entrypoint)
+        self.assertIn('export PIP_TARGET="${PIP_TARGET:-/opt/data/hermes-extra-site-py314}"', entrypoint)
+        self.assertIn('export PYTHONPATH="${PYTHONPATH:-/opt/hermes/bootstrap:/opt/data/hermes-extra-site-py314:/opt/hermes}"', entrypoint)
         self.assertIn('export npm_config_prefix="${npm_config_prefix:-/opt/data/.local}"', entrypoint)
         self.assertIn('exec /opt/hermes/docker/main-wrapper.sh "$@"', entrypoint)
         self.assertNotIn('exec hermes "$@"', entrypoint)
@@ -231,14 +231,14 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         dockerfile = read_text(DOCKERFILE_PATH)
         entrypoint = read_text(ENTRYPOINT_PATH)
 
-        self.assertNotIn('RUN python3 /opt/hermes/patches/patch_camofox_access_key.py', dockerfile)
+        self.assertNotIn('python3 /opt/hermes/patches/patch_camofox_access_key.py', dockerfile)
         self.assertNotIn('run_install_patch "$INSTALL_DIR/patches/patch_camofox_access_key.py"', entrypoint)
         self.assertTrue(ARCHIVED_CAMOFOX_PATCH_PATH.exists())
 
     def test_gateway_retryable_startup_patch_is_archived(self):
         dockerfile = read_text(DOCKERFILE_PATH)
 
-        self.assertNotIn('RUN python3 /opt/hermes/patches/patch_gateway_retryable_startup.py', dockerfile)
+        self.assertNotIn('python3 /opt/hermes/patches/patch_gateway_retryable_startup.py', dockerfile)
         self.assertTrue(ARCHIVED_GATEWAY_RETRY_PATCH_PATH.exists())
 
     def test_compose_maps_camofox_access_key_to_hermes_api_key(self):
@@ -298,8 +298,8 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
                 compose = read_text(TIER_COMPOSE_DIR / name)
 
                 self.assertIn('PYTHONUSERBASE: /opt/data/.local', compose)
-                self.assertIn('PIP_TARGET: /opt/data/hermes-extra-site', compose)
-                self.assertIn('PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes', compose)
+                self.assertIn('PIP_TARGET: /opt/data/hermes-extra-site-py314', compose)
+                self.assertIn('PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site-py314:/opt/hermes', compose)
                 self.assertIn('npm_config_prefix: /opt/data/.local', compose)
                 self.assertIn('NPM_CONFIG_PREFIX: /opt/data/.local', compose)
                 self.assertNotIn('PIP_USER: "1"', compose)
@@ -328,8 +328,8 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         compose = read_text(COMPOSE_PATH)
 
         self.assertIn('PYTHONUSERBASE: /opt/data/.local', compose)
-        self.assertIn('PIP_TARGET: /opt/data/hermes-extra-site', compose)
-        self.assertIn('PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes', compose)
+        self.assertIn('PIP_TARGET: /opt/data/hermes-extra-site-py314', compose)
+        self.assertIn('PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site-py314:/opt/hermes', compose)
         self.assertIn('npm_config_prefix: /opt/data/.local', compose)
         self.assertIn('NPM_CONFIG_PREFIX: /opt/data/.local', compose)
         self.assertNotIn('PIP_USER: "1"', compose)

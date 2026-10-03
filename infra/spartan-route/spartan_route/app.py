@@ -2089,9 +2089,7 @@ async def model_detail(request: web.Request) -> web.Response:
     entry = entry or variant
     if not entry:
         return response_json_error(f"The model '{request.match_info['model_id']}' does not exist", 404, "model_not_found", "invalid_request_error")
-    payload = {"id": entry.id, "object": "model", "owned_by": entry.provider, "max_context": entry.max_context, "tool_capable": entry.tool_capable, "multimodal": entry.multimodal}
-    if variant is not None:
-        payload.update({"context_length": entry.max_context, "max_model_len": entry.max_context})
+    payload = {"id": entry.id, "object": "model", "owned_by": entry.provider, "max_context": entry.max_context, "context_length": entry.max_context, "max_model_len": entry.max_context, "tool_capable": entry.tool_capable, "multimodal": entry.multimodal}
     return web.json_response(payload)
 
 
@@ -3046,17 +3044,41 @@ async def startup(app: web.Application) -> None:
     state.session = ClientSession(trust_env=True)
     state.codex = CodexRouter(state.session, state.telemetry)
     bundled_models = dict(state.config.models)
+    try:
+        contexts = state.telemetry.codex_model_contexts()
+        state.telemetry.record_health_success("read", "codex_model_contexts")
+    except Exception as exc:
+        contexts = {}
+        record_telemetry_failure(state, "read", "codex_model_contexts", exc)
+
+    def with_cached_contexts(entries: dict[str, ModelEntry]) -> dict[str, ModelEntry]:
+        # Context metadata must neither resurrect a removed model nor grant
+        # account eligibility. Overlay only entries already in this catalog.
+        return {
+            model_id: replace(entry, max_context=contexts[model_id])
+            if entry.provider == "codex" and model_id in contexts else entry
+            for model_id, entry in entries.items()
+        }
+
+    state.config = replace(state.config, models=with_cached_contexts(bundled_models))
 
     async def publish_catalog(slots: dict[int, SlotCatalog], discovered: dict[str, ModelEntry]) -> None:
         # Publish the catalog and its persisted-override validation together.
         async with state.routing_policy_lock:
-            candidate = replace(state.config, models={**bundled_models, **discovered})
+            observed = {model_id: entry.max_context for model_id, entry in discovered.items()}
+            contexts.update(observed)
+            candidate = replace(state.config, models=with_cached_contexts({**bundled_models, **discovered}))
             policy = build_routing_policy_snapshot(candidate, state.telemetry)
             catalog = state.codex_catalog
             if catalog is not None:
                 catalog.install_snapshot(slots, discovered)
             state.config = candidate
             state.routing_policy = policy
+        try:
+            state.telemetry.save_codex_model_contexts(observed)
+            state.telemetry.record_health_success("write", "codex_model_contexts")
+        except Exception as exc:
+            record_telemetry_failure(state, "write", "codex_model_contexts", exc)
 
     state.codex_catalog = CodexModelDiscovery(state.codex, publish_catalog, set(bundled_models))
     state.codex.model_catalog = state.codex_catalog

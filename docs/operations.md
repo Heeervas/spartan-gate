@@ -51,6 +51,24 @@ both sources remain distinct. Extra postinstall domains remain private policy;
 add them with `sg-whitelist-domain 15d <domain>` after inspecting the failed
 request.
 
+The Hermes image includes native plugin test tooling in
+`/opt/hermes/.venv`: `pytest==9.1.1`, `iniconfig==2.3.0` and `pluggy==1.6.0`,
+pinned to the current upstream lock. PyYAML 6.0.3 is supplied by the runtime.
+The build installs only these test packages without resolving or replacing
+their dependencies, checks pytest and PyYAML with the native interpreter, and
+checks the resulting environment for dependency conflicts. Additional Python
+packages in the Dockerfile are pinned to the versions validated in the running
+image; this does not freeze their complete transitive dependency closure.
+
+An existing image without pytest needs a rebuild and container recreation;
+restarting its gateway does not install packages. Do not write into the live,
+read-only `/opt/hermes` install tree or sync the full upstream development
+group. Before a Hermes build, require more than 10 GB free and retain a rollback
+image. Building an image does not activate it. After recreation, use
+`/opt/hermes/.venv/bin/python -m pytest --version` and the plugin's native
+prerequisite check before running its pending tests and accepting it. A gateway
+restart alone cannot substitute for those checks.
+
 L4 uses Hermes native SearXNG support for `web_search` through
 `SEARXNG_URL=http://searxng:8080`. Spartan Gate no longer bundles
 `web-search-plus` on fresh installs. SearXNG does not implement `web_extract`;
@@ -65,6 +83,24 @@ Recreate Hermes explicitly after changing its private env or mounts:
 sg up -d hermes
 sg-logs-hermes
 ```
+
+For routine gateway restarts, use the graceful restart helper:
+
+```sh
+sg-hermes-restart            # default gateway, including its multiplexed profiles
+sg-hermes-restart coach      # a separate running gateway for this profile
+# Equivalent grouped form: sg-hermes restart [profile]
+```
+
+This signals the existing s6-supervised gateway with SIGUSR1, allowing active
+work to drain before s6 relaunches it. The signal is sent as the gateway process
+owner because the root supervisor lacks CAP_KILL. It skips container initialization
+and waits up to 180 seconds for a replacement PID, returning an error if none
+appears. Platform/API readiness can still take longer. Missing or
+stopped profile gateways produce an error; the helper never starts them. Profiles
+served by the default multiplexer use the default restart command.
+`sg restart hermes` / `sg-restart-hermes` still restart the whole container.
+Changed Compose environment or mounts require recreation instead.
 
 ## Pocket TTS
 
@@ -434,7 +470,92 @@ missing, confirm Hermes and the helper use the same profile, no second browser
 is holding its directory, and `/profiles` is writable through
 `BROWSERLESS_PROFILES_GID`.
 
+## Hermes fast-mode overlay
+
+For a Hermes image without `patch_spartan_fast_mode.py`, prepare the temporary
+image-pinned code overlay, build only Spartan Route, then recreate both services:
+
+```sh
+python3 scripts/hermes-fast-mode-overlay.py prepare
+source scripts/aliases.sh
+sg config --quiet
+sg build spartan-route
+sg up -d --no-deps --force-recreate spartan-route hermes
+```
+
+The helper publishes ignored `private/compose.hermes-fast-mode.yml` only after
+source and Compose validation. `sg` and tier helpers load it alongside the
+Camofox policy overlay. It mounts only the patched model resolver, validator,
+manifest and native s6 init hook read-only; it leaves profile settings intact.
+Image, source, manifest or startup-hook drift stops initialization. The existing
+Spartan browser-policy helper must be present for native s6 caller validation.
+Preparation normally requires 5 GiB free. `--allow-low-disk` is reserved for an
+explicit operator exception and does not authorize a Hermes rebuild.
+
+Keep the original private bundle and rollback router image before activation.
+To roll back, move `private/compose.hermes-fast-mode.yml` out of its active
+filename, restore the previous Spartan Route image tag, and recreate just
+`spartan-route` and `hermes` with the command above. Keep the Camofox overlay
+active. Preparing after deployment captures already-patched code; retain the
+original source snapshot separately.
+
+Before the next Hermes build, deactivate the fast-mode override and retain its
+bundle for rollback. `sg` blocks rebuilding Hermes while the override is active;
+the future image applies the patch directly. Never reuse a bundle on a different
+image. Verify authenticated gateway/router health and resolver behavior after
+activation. See [supported commands](spartan-route.md#hermes-fast-mode).
+
 ## Camofox Profiles
+
+When `CAMOFOX_URL` selects Camofox, Spartan Gate enforces that browser across
+all Hermes profiles. Endpoint/authentication enter the native managed secret
+scope before gateways start; identities, sessions and persistent browser data
+stay profile scoped. Built-in browser tools remain available and `browser_exec`
+is disabled. A terminal environment without `CAMOFOX_URL` is not a backend test.
+
+For an existing Hermes image that predates the managed-policy patch, prepare
+the fingerprinted code overlay without rebuilding:
+
+```sh
+python3 scripts/hermes-browser-policy-overlay.py prepare
+source scripts/aliases.sh
+sg config --quiet
+sg up -d --no-deps --force-recreate hermes
+```
+
+The helper creates ignored `private/compose.hermes-browser-policy.yml` and an
+immutable private code bundle. `sg` and layer helpers load that override after
+the normal Compose files. Only Hermes is pinned; other images/services are
+unchanged. Preparation validates all source transformations and Compose before
+publishing. Startup checks mounted code, unmounted image anchors and policy
+files, then imports the selectors as the workload user in a disposable home.
+Failures stop initialization without exposing credentials. The policy helper
+is also installed in the Hermes project root because the native launcher
+replaces `PYTHONPATH`; the cold import check uses that same project import
+path. Docker health alone does not establish browser-tool readiness: after
+activation, verify built-in tools and a Camofox navigation in each affected
+profile. Validate the init hook through container initialization, not direct
+invocation: it requires the native s6 cont-init caller and `S6_BEHAVIOUR_IF_STAGE2_FAILS=2`. Unsupported or
+manual invocation intentionally waits and must be interrupted.
+
+Keep the overlay until a Hermes build includes `patch_camofox_managed_policy.py`.
+The helper rejects image drift, and `sg` blocks a Hermes rebuild while the
+override remains active. Before the next planned build, move the overlay out
+of its active filename, retain its bundle for rollback, then build and validate
+the new image under the normal disk gate. Do not reuse the old code overlay on
+a different image. Reverting to the pre-fix runtime requires restoring the
+prior Compose boot wiring as well as removing the overlay, because the strict
+new boot hook deliberately rejects unadapted code. Retain the pre-deployment
+container configuration and code bundle for rollback. Preparing again after
+deployment captures the currently installed, already-patched selectors; those
+captures do not replace the original pre-deployment snapshot.
+
+After changing the selected browser endpoint, authentication, or administrator
+managed source, recreate Hermes with `sg up -d --no-deps --force-recreate hermes`.
+A restart keeps the existing container environment and does not apply changed
+Compose environment. Recreation regenerates the `/run` policy from the new
+configuration. Initialization rejects changes to an existing policy instead
+of partially replacing it.
 
 Use Camofox profiles when Hermes should reuse a manual website login through
 Camofox browser tools. Camofox noVNC is exposed through the private Caddy edge

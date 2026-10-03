@@ -6,6 +6,8 @@ import pathlib
 import subprocess
 import unittest
 
+import yaml
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "infra" / "compose"
@@ -178,13 +180,48 @@ class ComposeHardeningContractTests(unittest.TestCase):
                 self.assertTrue(
                     any(item.startswith("/run") for item in service["tmpfs"])
                 )
-                self.assertFalse(
-                    any(
-                        str(volume.get("target", "")).startswith("/opt/hermes")
-                        for volume in service.get("volumes", [])
-                        if isinstance(volume, dict)
-                    )
+                policy_targets = {
+                    "/opt/hermes/spartan_browser_policy.py",
+                    "/opt/hermes/bootstrap/spartan_browser_policy.py",
+                }
+                installed_mounts = [
+                    volume for volume in service.get("volumes", [])
+                    if isinstance(volume, dict)
+                    and str(volume.get("target", "")).startswith("/opt/hermes")
+                ]
+                self.assertEqual(
+                    {volume["target"] for volume in installed_mounts},
+                    policy_targets,
                 )
+                self.assertEqual(len(installed_mounts), len(policy_targets))
+                for volume in installed_mounts:
+                    self.assertEqual(volume["type"], "bind")
+                    self.assertEqual(
+                        volume["source"],
+                        str(ROOT / "apps/hermes-agent/spartan_browser_policy.py"),
+                    )
+                    self.assertTrue(volume["read_only"])
+                    # Compose omits the false value from normalized JSON.
+                    self.assertIs(volume["bind"].get("create_host_path", False), False)
+
+    def test_policy_helper_sources_explicitly_disable_host_path_creation(self):
+        for path in (COMPOSE / "compose.yml", *(TIERS / f"compose.l{i}.yml" for i in range(3))):
+            with self.subTest(path=path.name):
+                service = yaml.safe_load(path.read_text())["services"]["hermes"]
+                mounts = {
+                    volume["target"]: volume
+                    for volume in service["volumes"] if isinstance(volume, dict)
+                }
+                for target in (
+                    "/opt/hermes/spartan_browser_policy.py",
+                    "/opt/hermes/bootstrap/spartan_browser_policy.py",
+                ):
+                    volume = mounts[target]
+                    self.assertEqual(volume["type"], "bind")
+                    self.assertTrue(volume["read_only"])
+                    self.assertIs(volume["bind"]["create_host_path"], False)
+                    source = (path.parent / volume["source"]).resolve()
+                    self.assertEqual(source, ROOT / "apps/hermes-agent/spartan_browser_policy.py")
 
     def test_private_https_proxy_trust_is_restricted_to_the_internal_subnet(self):
         env = self.renders["l4-private-example"]["services"]["hermes"]["environment"]

@@ -28,7 +28,7 @@ for alias_name in \
     sg-restart-proxy sg-rebuild-hermes sg-rebuild-clawroute sg-rebuild-spartan-route \
     sg-spartan-route-data-check sg-spartan-route-data-migrate sg-logs-hermes \
     sg-logs-clawroute sg-logs-spartan-route sg-hermes-shell sg-hermes-doctor sg-hermes-profile \
-    sg-hermes-profiles sg-hermes-profile-create sg-wrangler sg-wrangler-login sg-wrangler-token sg-hermes-profile-new sg-hermes-gateway-profile \
+    sg-hermes-profiles sg-hermes-profile-create sg-hermes-restart sg-wrangler sg-wrangler-login sg-wrangler-token sg-hermes-profile-new sg-hermes-gateway-profile \
     sg-clawroute-shell sg-whitelist-domain sg-add-port sg-reader-test \
     sg-browserless-profile-live sg-hermes-chrome-profile sg-hermes-meet sg-hermes-meet-join \
     sg-browser-mode-apply sg-camofox-profile-live sg-camofox-profile-use sg-camofox-profile-isolate \
@@ -149,6 +149,14 @@ sg_compose() {
     if [[ -f "$private_compose" ]]; then
         args+=(-f "$private_compose")
     fi
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-browser-policy.yml" ]]; then
+        args+=(-f "$SPARTAN_GATE_DIR/private/compose.hermes-browser-policy.yml")
+        sg_hermes_browser_policy_preflight "$@" || return 1
+    fi
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml" ]]; then
+        args+=(-f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml")
+        sg_hermes_fast_mode_preflight "$@" || return 1
+    fi
 
     if [[ -f "$env_file" ]]; then
         args+=(--env-file "$env_file")
@@ -160,6 +168,71 @@ sg_compose() {
         sg_spartan_route_data_preflight || return 1
     fi
     docker compose "${args[@]}" "$@"
+}
+
+sg_hermes_browser_policy_preflight() {
+    case "${1:-}" in
+        up|start|restart|run|build)
+            # An image-pinned code overlay must never shadow a newly built image.
+            local arg building=false hermes_target=false service_seen=false
+            [[ "${1:-}" == build ]] && building=true
+            for arg in "${@:2}"; do
+                [[ "$arg" == --build ]] && building=true
+                case "$arg" in
+                    hermes) hermes_target=true; service_seen=true ;;
+                    proxy|dns|reader|caddy|searxng|spartan-route|clawroute|camofox|browserless|pocket-tts)
+                        service_seen=true ;;
+                esac
+            done
+            if ! $hermes_target && $service_seen; then
+                return 0
+            fi
+            if $building && { $hermes_target || ! $service_seen; }; then
+                printf '%s\n' 'Remove the private Hermes browser code overlay before rebuilding Hermes; the next image includes its patch.' >&2
+                return 1
+            fi
+            local image_ref
+            if [[ "${HERMES_IMAGE+x}" == x ]]; then
+                image_ref="${HERMES_IMAGE:-spartan-gate-hermes:latest}"
+            else
+                image_ref="$(sg_env_value HERMES_IMAGE spartan-gate-hermes:latest)"
+            fi
+            python3 "$SPARTAN_GATE_DIR/scripts/hermes-browser-policy-overlay.py" check \
+                --image-ref "$image_ref" || return 1
+            ;;
+    esac
+}
+
+sg_hermes_fast_mode_preflight() {
+    case "${1:-}" in
+        up|start|restart|run|build)
+            local arg building=false hermes_target=false service_seen=false
+            [[ "${1:-}" == build ]] && building=true
+            for arg in "${@:2}"; do
+                [[ "$arg" == --build ]] && building=true
+                case "$arg" in
+                    hermes) hermes_target=true; service_seen=true ;;
+                    proxy|dns|reader|caddy|searxng|spartan-route|clawroute|camofox|browserless|pocket-tts)
+                        service_seen=true ;;
+                esac
+            done
+            if ! $hermes_target && $service_seen; then
+                return 0
+            fi
+            if $building && { $hermes_target || ! $service_seen; }; then
+                printf '%s\n' 'Remove the private Hermes fast-mode overlay before rebuilding Hermes; the next image includes its patch.' >&2
+                return 1
+            fi
+            local image_ref
+            if [[ "${HERMES_IMAGE+x}" == x ]]; then
+                image_ref="${HERMES_IMAGE:-spartan-gate-hermes:latest}"
+            else
+                image_ref="$(sg_env_value HERMES_IMAGE spartan-gate-hermes:latest)"
+            fi
+            python3 "$SPARTAN_GATE_DIR/scripts/hermes-fast-mode-overlay.py" check \
+                --image-ref "$image_ref" || return 1
+            ;;
+    esac
 }
 
 sg_route_compose() {
@@ -287,6 +360,12 @@ sg_tier_compose_args() {
             ;;
         *) return 1 ;;
     esac
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-browser-policy.yml" ]]; then
+        printf '%s\n' -f "$SPARTAN_GATE_DIR/private/compose.hermes-browser-policy.yml"
+    fi
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml" ]]; then
+        printf '%s\n' -f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml"
+    fi
 }
 
 sg_tier_compose() {
@@ -300,6 +379,12 @@ sg_tier_compose() {
         return 2
     }
     addons="$(sg_current_addons "$tier")" || return 2
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-browser-policy.yml" ]]; then
+        sg_hermes_browser_policy_preflight "$@" || return 1
+    fi
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml" ]]; then
+        sg_hermes_fast_mode_preflight "$@" || return 1
+    fi
     while IFS= read -r item; do
         args+=("$item")
     done < <(sg_tier_compose_args "$tier" "$addons")
@@ -478,6 +563,7 @@ Usage:
   sg-hermes doctor [args...]           run `hermes doctor` in the container
   sg-hermes profile [args...]          run `hermes profile` in the container
   sg-hermes profiles                   list Hermes profiles
+  sg-hermes restart [profile]          gracefully restart default or a profile gateway
   sg-hermes profile-create <name>      create a Hermes profile
   sg-hermes profile-new [args...]      run the profile scaffolding helper
   sg-hermes wrangler [args...]           run pinned Wrangler 4.45.0
@@ -488,7 +574,7 @@ Usage:
 Flat aliases remain available:
   sg-hermes-shell, sg-hermes-doctor, sg-hermes-profile,
   sg-hermes-profiles, sg-hermes-profile-create,
-  sg-hermes-profile-new, sg-hermes-gateway-profile
+  sg-hermes-profile-new, sg-hermes-gateway-profile, sg-hermes-restart
 EOF
 }
 
@@ -786,6 +872,7 @@ sg_hermes() {
         doctor) shift; sg_hermes_doctor "$@" ;;
         profile) shift; sg_hermes_profile "$@" ;;
         profiles) shift; sg_hermes_profiles "$@" ;;
+        restart) shift; sg_hermes_restart "$@" ;;
         profile-create) shift; sg_hermes_profile_create "$@" ;;
         profile-new) shift; sg_hermes_profile_new "$@" ;;
         gateway-profile) shift; sg_hermes_gateway_profile "$@" ;;
@@ -850,6 +937,62 @@ sg_up_full() {
     fi
 }
 
+sg_hermes_restart() {
+    if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
+        printf 'Usage: sg-hermes-restart [profile] (default: default)\n'
+        return 0
+    fi
+    if [[ "$#" -gt 1 ]]; then
+        printf 'Usage: sg-hermes-restart [profile]\n' >&2
+        return 2
+    fi
+    local profile="${1-default}"
+    case "$profile" in
+        ""|*[!a-zA-Z0-9_-]*)
+            printf 'Invalid profile name: %s\n' "$profile" >&2
+            return 2
+            ;;
+    esac
+    # Root reads supervisor state but lacks CAP_KILL for the unprivileged gateway.
+    # Signal as the process owner, then verify s6 actually replaces the PID.
+    sg_compose exec -T -u root hermes sh -c '
+        service="/run/service/gateway-$1"
+        if [ ! -d "$service" ]; then
+            printf "No gateway service exists for profile %s.\n" "$1" >&2
+            exit 1
+        fi
+        running=$(/command/s6-svstat -o up "$service") || exit 1
+        if [ "$running" != true ]; then
+            printf "Gateway %s is stopped; no restart requested. Profiles served by the default multiplexer use sg-hermes-restart.\n" "$1" >&2
+            exit 1
+        fi
+        old_pid=$(/command/s6-svstat -o pid "$service") || exit 1
+        case "$old_pid" in
+            ""|0|*[!0-9]*) printf "Cannot identify running gateway %s.\n" "$1" >&2; exit 1 ;;
+        esac
+        uid=$(stat -c %u "/proc/$old_pid") || exit 1
+        gid=$(stat -c %g "/proc/$old_pid") || exit 1
+        /command/s6-applyuidgid -u "$uid" -g "$gid" /bin/kill -USR1 "$old_pid" || exit 1
+        printf "Restarting gateway %s (PID %s); waiting for active work to drain...\n" "$1" "$old_pid"
+        waited=0
+        while [ "$waited" -lt 180 ]; do
+            new_pid=$(/command/s6-svstat -o pid "$service") || exit 1
+            case "$new_pid" in
+                ""|0|*[!0-9]*) ;;
+                *)
+                    if [ "$new_pid" != "$old_pid" ]; then
+                        printf "Gateway %s restarted (PID %s -> %s); platform connections may still be warming up.\n" "$1" "$old_pid" "$new_pid"
+                        exit 0
+                    fi
+                    ;;
+            esac
+            sleep 1
+            waited=$((waited + 1))
+        done
+        printf "Gateway %s has not relaunched within 180s. Restart was requested; check gateway logs for drain progress or errors.\n" "$1" >&2
+        exit 1
+    ' sg-hermes-restart "$profile"
+}
 sg_restart_hermes() { sg_compose restart hermes; }
 sg_restart_caddy() { sg_compose restart caddy; }
 sg_restart_proxy() { sg_compose restart proxy dns; }
@@ -2839,6 +2982,7 @@ sg-hermes-shell() { sg_hermes_shell "$@"; }
 sg-hermes-doctor() { sg_hermes_doctor "$@"; }
 sg-hermes-profile() { sg_hermes_profile "$@"; }
 sg-hermes-profiles() { sg_hermes_profiles "$@"; }
+sg-hermes-restart() { sg_hermes_restart "$@"; }
 sg-hermes-profile-create() { sg_hermes_profile_create "$@"; }
 sg-hermes-profile-new() { sg_hermes_profile_new "$@"; }
 sg-hermes-gateway-profile() { sg_hermes_gateway_profile "$@"; }

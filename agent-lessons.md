@@ -29,6 +29,9 @@ Last updated: 2026-07-19
   controller or `finally` cannot overwrite newer state.
 - Hermes uses s6 initialization. Configuration migrations required by
   supervised services must run before profile reconciliation.
+- The native Hermes launcher replaces `PYTHONPATH` with its project and site
+  directories. Shared policy helpers must be importable from that project path;
+  boot probes must not inject extra paths that hide missing runtime imports.
 - Browser backends are separate operational modes. Do not claim that an
   inactive Compose profile remains available.
 - A log-retention boundary must cover overlay-only service definitions as well

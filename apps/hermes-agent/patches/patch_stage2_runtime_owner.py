@@ -288,7 +288,7 @@ def patch_managed_dir_allowlist(source: str) -> str:
         if found_managed_loop:
             return original
         entries = match.group("entries").replace("\\", " ").split()
-        if tuple(entries) not in {UPSTREAM_MANAGED_DIR_ENTRIES, MANAGED_DIR_ENTRIES}:
+        if tuple(entries) not in {UPSTREAM_MANAGED_DIR_ENTRIES, UPSTREAM_MANAGED_DIR_ENTRIES[:-1], MANAGED_DIR_ENTRIES}:
             return original
         found_managed_loop = True
         return f"for sub in {' '.join(MANAGED_DIR_ENTRIES)}; do"
@@ -372,8 +372,14 @@ def patch_source(source: str) -> str:
             )
             patched = patched.replace(anchor, replacement, 1)
     patched = patched.replace(
-        '    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python"',
-        '    as_hermes "$INSTALL_DIR/.venv/bin/python"',
+        's6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python"',
+        'as_hermes "$INSTALL_DIR/.venv/bin/python"',
+    )
+    patched = patched.replace(
+        'chown hermes:hermes "$XDG_RUNTIME_DIR"',
+        'chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$XDG_RUNTIME_DIR"',
+    ).replace(
+        'chgrp hermes /.fly/api', 'chgrp "$SPARTAN_HERMES_RUN_GID" /.fly/api',
     )
 
     patched = patch_managed_dir_allowlist(patched)
@@ -400,6 +406,13 @@ def patch_source(source: str) -> str:
             '    "$HERMES_HOME/kanban" \\\n'
             '    "$HERMES_HOME/.local/state/hermes/gateway-locks"\n'
         )
+        if final_dir not in patched:
+            final_dir = '    "$HERMES_HOME/platforms/pairing"\n'
+            expanded_dirs = (
+                '    "$HERMES_HOME/platforms/pairing" \\\n'
+                '    "$HERMES_HOME/kanban" \\\n'
+                '    "$HERMES_HOME/.local/state/hermes/gateway-locks"\n'
+            )
         if final_dir not in patched:
             raise ValueError("runtime directory list tail not found")
         patched = patched.replace(final_dir, expanded_dirs, 1)

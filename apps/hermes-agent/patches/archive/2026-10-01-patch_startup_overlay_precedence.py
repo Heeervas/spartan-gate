@@ -56,9 +56,22 @@ NEW = f'''def ensure_project_root_on_path() -> None:
 
 def patch_source(source: str) -> str:
     if MARKER in source:
-        if source.count(MARKER) != 1 or NEW not in source:
+        if source.count(MARKER) != 1 or not any(
+            block in source for block in (NEW, NEW.replace("os.path.realpath(", "_realpath_or_self("))
+        ):
             raise ValueError("Hermes startup path patch marker is incomplete")
         return source
+    current = '''def ensure_project_root_on_path() -> None:
+    """Put the project root at sys.path[0], deduping realpath-equivalents."""
+    project_root = project_root_str()
+    normalized_root = os.path.normcase(_realpath_or_self(project_root))
+    sys.path[:] = [entry for entry in sys.path
+                   if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
+    sys.path.insert(0, project_root)
+'''
+    if source.count(current) == 1:
+        # Preserve upstream's tolerance of a deleted working directory.
+        return source.replace(current, NEW.replace("os.path.realpath(", "_realpath_or_self("), 1)
     if source.count(OLD) != 1:
         raise ValueError("Hermes startup path function anchor not found")
     return source.replace(OLD, NEW, 1)

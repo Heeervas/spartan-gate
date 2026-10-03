@@ -58,6 +58,8 @@ def patch_source(source: str) -> str:
     if MARKER not in patched:
         index = patched.find(ANCHOR)
         if index == -1:
+            index = patched.find('            "cd /opt/data",')
+        if index == -1:
             raise ValueError("service manager run-script anchor not found")
 
         insert_at = patched.find("\n", index)

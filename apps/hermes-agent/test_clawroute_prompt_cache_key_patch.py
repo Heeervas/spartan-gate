@@ -49,7 +49,7 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
         patched, changed = module.patch_source(source)
         self.assertTrue(changed)
         self.assertIn("def _spartan_add_clawroute_prompt_cache_key(", patched)
-        self.assertIn('extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")', patched)
+        self.assertIn('extra_body["prompt_cache_key"] = cache_key', patched)
         self.assertIn(
             "return _spartan_add_clawroute_prompt_cache_key(profile_kwargs, params, allow_missing_base_url=True)",
             patched,
@@ -209,7 +209,7 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
             '        clawroute_base_url = __import__("os").environ.get("OPENAI_BASE_URL", "")',
             "        if session_id and clawroute_base_url:",
             '            extra_body = dict(api_kwargs.get("extra_body") or {})',
-            '            extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")',
+            '            extra_body["prompt_cache_key"] = cache_key',
             '            api_kwargs["extra_body"] = extra_body',
             "",
             "        return api_kwargs",
@@ -222,7 +222,7 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertIn(module.MARKER, patched)
-        self.assertIn('extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")', patched)
+        self.assertIn('extra_body["prompt_cache_key"] = cache_key', patched)
         self.assertNotIn("        # spartan-gate: clawroute prompt cache key\n", patched)
 
     def test_upgrades_v3_patch_and_preserves_cache_key_injection(self):
@@ -241,7 +241,7 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
             '    session_id = params.get("session_id")',
             "    if session_id:",
             '        extra_body = dict(api_kwargs.get("extra_body") or {})',
-            '        extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")',
+            '        extra_body["prompt_cache_key"] = cache_key',
             '        api_kwargs["extra_body"] = extra_body',
             '    reasoning_config = params.get("reasoning_config")',
             '    if "reasoning_effort" not in api_kwargs and isinstance(reasoning_config, dict):',
@@ -273,7 +273,7 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertIn(module.MARKER, patched)
         self.assertIn("_spartan_add_clawroute_prompt_cache_key", patched)
-        self.assertIn('extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")', patched)
+        self.assertIn('extra_body["prompt_cache_key"] = cache_key', patched)
 
     def test_upgrades_v4_reasoning_only_patch_and_restores_cache_key_injection(self):
         module = load_module()
@@ -318,7 +318,7 @@ class ClawroutePromptCacheKeyPatchTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertIn(module.MARKER, patched)
         self.assertIn("_spartan_add_clawroute_prompt_cache_key", patched)
-        self.assertIn('extra_body.setdefault("prompt_cache_key", f"hermes:{session_id}")', patched)
+        self.assertIn('extra_body["prompt_cache_key"] = cache_key', patched)
 
 
 if __name__ == "__main__":

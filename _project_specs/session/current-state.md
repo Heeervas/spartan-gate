@@ -1,5 +1,208 @@
 # Current State
 
+## Rebuilt Hermes activated; plugin test gate has residual failures (2026-10-02)
+
+At the operator's explicit activation request, started only Hermes with
+`sg up -d --no-deps hermes`, using rebuilt image
+`sha256:2fc42f4a7fe399f4c9f48d0bced0ca5f94f35889419ae5af798deea16e3922e9`.
+The container is healthy without restarts; authenticated detailed gateway
+health reports `ok`, state `running`, all 12 platform connections active and
+all readiness checks passing. The initial healthcheck failed while native
+startup and MCP initialization were still in progress; it recovered without
+configuration changes or another restart. All eight neighboring service IDs,
+images and start times remain unchanged and healthy. The root filesystem is
+read-only, both Hermes networks are internal, direct external TCP is denied,
+and Route/Camofox/SearXNG health plus proxy connectivity pass from Hermes.
+Persistent bind sources and all 39 volumes remain present; about 7.04 GB is
+free. The old image-pinned code overrides remain disabled.
+
+Native pytest 9.1.1 and the profile-delegate prerequisite check now pass with
+the actual `/opt/hermes/.venv/bin/python` (Python 3.14.7). Fresh installed
+discovery loads profile-delegate 1.10.0 without error and registers six tools;
+the live API's delegation toolset exposes those tools. Portable tests pass
+228/228 with the existing plugin Python 3.13 venv when launched as a normal
+subprocess (direct Docker exec made pytest a session leader and invalidated
+one test's process-identity assumption).
+
+The native integration partition reports 478 passed, 3 failed, 228 deselected.
+Do not claim the plugin's release gate is green. Rechecking the three failures
+with temporary test-home fixtures resolves the timeout/default case (the live
+plugin default is 1800 seconds, while that test expects the import-time 1200).
+Two failures remain: preflight expects `execution_overrides_not_allowed` but
+its minimal mocked policy first fails closed with `profile_policy_required`;
+the legacy deny-bootstrap test without a frozen approval envelope observes an
+approved dangerous command from the native noninteractive guard. A separate
+guard-only probe using the production schema-v2 frozen deny envelope correctly
+refuses dangerous terminal and execute-code actions and permits the safe
+command. No dangerous command was executed. Plugin source, configuration and
+profiles were not edited to change these outcomes. No LLM/delegation or
+outbound message smoke was invoked. Private activation receipts are under
+`private/maintenance/hermes-rebuild-20261002/`.
+
+## Hermes image rebuilt; runtime validation pending (2026-10-02)
+
+At the operator's request, only Hermes was stopped and its container, image
+tags and three unused intermediate images were removed. Persistent bind-mount
+sources and all Docker volumes were preserved; the other eight running services
+retain their container IDs and start times. The pinned upstream base remains
+available. The replacement image was built successfully as
+`spartan-gate-hermes:latest`, digest
+`sha256:2fc42f4a7fe399f4c9f48d0bced0ca5f94f35889419ae5af798deea16e3922e9`.
+Hermes remains stopped; no gateway was started or restarted.
+
+The browser-policy and fast-mode private Compose overrides were renamed with
+the suffix `.disabled-for-rebuild`; their original code bundles remain intact.
+The Dockerfile carries the corresponding patches directly. Do not apply the
+old image-pinned bundles to a rebuilt image.
+
+Cleanup used Hermes's `disk-retention-maintenance` guidance: removed the host
+npm download cache, cached editor extension downloads and an inactive extension
+already marked obsolete. Hermes sessions, databases, checkpoints, profiles,
+workspace content and plugin/runtime environments were untouched. Six obsolete
+Codex release directories were retired after creating a hash-verified private
+archive and restore manifest. The initial build began with 8.59 GB free,
+satisfying the operator's explicit task-specific exception to the normal
+greater-than-10-GB gate. A disk guard interrupted export twice before the
+5-GB floor was breached. An inactive, officially downloadable VS Code Server
+installation was then removed, and exact, immutable Codex voice/rg binary
+duplicates were hardlinked while preserving every path and file hash.
+
+The final export completed entirely from cache, with a measured minimum of
+5.23 GB free. `docker builder prune -a -f` subsequently removed build cache
+only, recovering about 1.85 GB according to filesystem availability; Docker's
+reported cache total was 3.74 GB and must not be treated as physical recovery.
+About 7.08 GB is now free. Docker reports a 6.97-GB image total, compared with
+the retained 4.54-GB base. Including export/cache overhead, the measured peak
+additional filesystem usage was about 4.24 GB. All figures use decimal GB.
+Private receipts, logs and the restore archive are under the ignored
+`private/maintenance/hermes-rebuild-20261002/` directory.
+
+The build installed only pytest 9.1.1, iniconfig 2.3.0 and pluggy 1.6.0 for test
+tooling. Native Python 3.14 pytest/PyYAML checks, dependency compatibility and
+the immutable install-tree audit passed. Host patch validation passed 217
+Python cases with 28 source/runtime-dependent skips, plus 18 JavaScript cases;
+active private Compose renders. The eight neighboring containers retain their
+original IDs, images and start times and remain healthy; all 39 Docker volumes
+and the original persistent bind sources remain present. The profile-delegate
+native prerequisite check and pending plugin tests still require runtime
+validation before gateway activation.
+
+## Hermes fast-mode forwarding activated (2026-10-02)
+
+Completed the interrupted fast-mode implementation and activation. Hermes's
+shared resolver now permits eligible explicit `codex/*` and `openai/*` models
+only at the internal Spartan Route endpoint with `openai-api`. Static, normal,
+auto/cold windows and upstream ultrafast eligibility remain upstream-owned.
+Spartan Route preserves `service_tier` through Chat-to-Codex conversion, native
+Responses and OpenAI passthrough; retries reuse the same tier-bearing body.
+
+Rebuilt only Spartan Route and retained its previous image under
+`spartan-gate-spartan-route:pre-fast-20261002`. Hermes uses the existing image
+with an image-pinned, fingerprinted read-only fast-mode overlay alongside the
+Camofox policy overlay. Both native init guards passed before reconciliation.
+Both services are Docker healthy, read-only and on internal networks; all seven
+neighboring service IDs, images and start times are unchanged. Authenticated
+gateway health returns HTTP 200 with state `running` and all 12 platforms
+connected. Detailed readiness is degraded only by the authorized low-disk
+exception (about 469 MiB free); all other readiness checks pass.
+
+A minimal live native Codex request with `service_tier: priority` completed
+with HTTP 200, but the upstream reported `service_tier: default`. Forwarding is
+verified; priority delivery for this account is not established. There is no
+configured OpenAI API key, so OpenAI was verified with mocked passthrough tests.
+Installed resolver and mocked CLI turn configuration pass for fast, normal,
+auto and cold. The managed Camofox code guard still passes.
+
+Validation: 338 Route tests passed in the rebuilt image, 245 Hermes Python
+tests passed against pinned source, 18 JavaScript tests and 11 fast-overlay
+tests passed. All public layers and the active private Compose stack render.
+The broader script run passed its other cases but hit seven errors in existing
+browser-overlay tests because the host is below their 5 GiB gate; those nine
+browser-overlay tests pass with simulated sufficient disk space. Two optional
+script tests were skipped. Doctor still reports pre-existing public-path
+findings. No unrelated pending changes were committed or reverted.
+
+## Managed Camofox policy restored (2026-10-01)
+
+Completed the interrupted browser-policy activation using the existing Hermes
+image and an image-pinned, fingerprinted read-only code overlay. Camofox is
+mandatory across native profile secret scopes whenever Spartan Gate selects
+that mode. Endpoint/authentication are managed before s6 reconciliation;
+profile identities, sessions and browser persistence remain separate.
+
+Live activation exposed a missing helper import: the native Hermes launcher
+replaces `PYTHONPATH`, while the first implementation stored its helper only
+under `bootstrap`. The helper now also resides in the protected project root;
+the boot import probe uses the launcher project path and safe-path mode. A
+regression reproduces the missing import before the canonical helper is added.
+The future image explicitly sets the canonical helper to mode 0644 before its
+immutable-install audit. Only Hermes was recreated; no image was rebuilt.
+
+Acceptance passed: Docker is healthy, authenticated detailed gateway health
+returns HTTP 200 with status `ok` and state `running`, and all configured
+platform connections are active. Default and named-profile built-in browser
+tools navigated an inert page with Firefox, kept stable/distinct identities,
+and rejected simulated unavailable/unauthorized Camofox without Chromium
+fallback. Probe tabs were closed; no model/channel messages were sent and no
+browser credential stores were inspected. Original overlay source snapshots
+remain available for rollback.
+
+Validation passed 240 Hermes Python tests with pinned sources and no skips,
+18 JavaScript tests, and 357 script tests with two optional skips (pristine
+Camofox source and the host aiohttp dependency). Seven public and seven overlay
+Compose shapes render. Isolated native s6 checks prove valid initialization
+continues and invalid authentication exits 1 before reconciliation, supervised
+services or the main command. Independent review found no remaining blocker.
+Doctor still stops on pre-existing public-path findings. Keep the active
+overlay until the next validated Hermes build includes the managed-policy
+patch; see `docs/operations.md` for its image guard and rollback contract.
+
+## Hermes upstream main refresh activated (2026-10-01)
+
+The Hermes-only refresh is running image
+`sha256:a9e1c04d5c94964effddd6447c07478258d93fcd166340abb8ca26fe5fd58682`,
+built from upstream main `e8c97320ac8691d4de92af49f98459f9ef9ddb08`
+(OCI digest `sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde`).
+It reports Python 3.14.7 and Hermes `git.e8c9732` (2026.9.24). The container
+is healthy, its root filesystem is read-only, its application workload runs as
+UID 1000, and it is attached only to the Spartan internal and Pocket TTS
+internal networks. The other eight running containers retain their pre-refresh
+IDs, images, and start times. A direct TCP egress probe was denied, and the
+proxy returned HTTP 403 for an unlisted domain.
+
+The image uses 16 build-time patches. The install-tree audit covered 69,939
+paths. Final patch tests passed 211 with six source-dependent skips; 18 Hermes
+JavaScript, 59 infrastructure/plugin, 10 Talk provisioning, and 74 Alberto
+Tools tests also passed. The final Talk compatibility suite passed 221 tests
+with two expected failures. All supported Compose variants rendered. Existing
+profile databases completed the native 31/FTS3 migration; the upstream empty
+FTS migration bug received a narrow regression-tested patch. No database
+backup or VACUUM was performed, per the operator's instruction. Synced plugin
+versions were not changed.
+
+After the final Hermes-only reload, Docker health and the gateway API health
+pass. Talk modules import from their read-only mount; Toolaria's UID 1000 write
+check passes without permission warnings. The other eight container IDs remain
+unchanged. The authorized private credential migration resolved 24 channel
+references in eleven mode-0600 profile env files and generated ten independent
+named `API_SERVER_KEY` values. All ten configured Telegram/Discord adapters
+report `connected` through authenticated detailed health. Each named API
+returns HTTP 200 with its own key and HTTP 401 with the default key; no channel
+placeholders remain. The future-profile helper now preflights dedicated channel
+sources and generates a distinct API key for gateway mode; its seven focused
+tests and Bash syntax check pass. No credential values were printed by the
+migration or verification.
+
+After acceptance, only the exact unused old Hermes image
+`sha256:cc5f4d2e2e2983f2e17a4dd4126836a6601c803cb9af805d56d0aeefada63549`
+and task-generated candidate image
+`sha256:0001501fdc331c92079499a05381a6bc10f4b02f006d2ed6ebb5b0f882fb1431`
+were deleted; no broad image prune ran. Hermes remains healthy and disk space
+increased to about 6.9 GB. `scripts/doctor.sh` stopped on pre-existing public
+path findings;
+private permission findings on the backups directory and executable Caddy
+entrypoint were not changed as part of this refresh.
+
 ## Camofox 1.15 active — readiness and recovery accepted (2026-09-12)
 
 Built and trialled the independently reviewed immutable 1.15.0 wrapper after
@@ -215,7 +418,8 @@ requested.
 
 ## Active Task
 
-No active implementation task after the native Responses commit.
+The Hermes refresh is activated. Complete the planned 24-hour log review
+without sending synthetic model or channel traffic.
 
 ## Residual Risks
 

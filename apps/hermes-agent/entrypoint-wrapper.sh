@@ -129,8 +129,8 @@ for _rc in "$HERMES_HOME/.bashrc" "$HERMES_HOME/.profile"; do
     if [ -f "$_rc" ] && ! grep -q "$_venv_marker" "$_rc" 2>/dev/null; then
         printf '\n%s\nexport PATH="/opt/data/.local/bin:/opt/hermes/.venv/bin:$PATH"\n' "$_venv_marker" >> "$_rc"
         printf 'export PYTHONUSERBASE="${PYTHONUSERBASE:-/opt/data/.local}"\n' >> "$_rc"
-        printf 'export PIP_TARGET="${PIP_TARGET:-/opt/data/hermes-extra-site}"\n' >> "$_rc"
-        printf 'export PYTHONPATH="${PYTHONPATH:-/opt/hermes/bootstrap:/opt/data/hermes-extra-site:/opt/hermes}"\n' >> "$_rc"
+        printf 'export PIP_TARGET="${PIP_TARGET:-/opt/data/hermes-extra-site-py314}"\n' >> "$_rc"
+        printf 'export PYTHONPATH="${PYTHONPATH:-/opt/hermes/bootstrap:/opt/data/hermes-extra-site-py314:/opt/hermes}"\n' >> "$_rc"
         printf 'export npm_config_prefix="${npm_config_prefix:-/opt/data/.local}"\n' >> "$_rc"
         chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$_rc" 2>/dev/null || true
     fi

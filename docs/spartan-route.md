@@ -95,8 +95,10 @@ Kept in v1:
 - GPT-6 Astra, Sol, and Luna are selectable as `codex/gpt-6-astra`,
   `codex/gpt-6-sol`, and `codex/gpt-6-luna` through the existing Spartan Route
   `openai-api` provider in Hermes. Use `api_mode: codex_responses` for native
-  Responses sessions. The bundled entries advertise 872,000 tokens of maximum
-  context from the Codex Subscription catalog, distinct from public API limits.
+  Responses sessions. Before any observed metadata exists, bundled entries use
+  an initial estimate of 872,000 tokens. Successful discovery replaces that
+  estimate with the Codex Subscription catalog's `max_context_window`, distinct
+  from public API limits.
   Active Hermes profiles and automatic tier defaults do not change.
 - Spartan Route refreshes the visible Codex Subscription model catalog in the
   background at startup and hourly. It uses each enabled slot's existing OAuth
@@ -111,6 +113,28 @@ Kept in v1:
   account returns `503 codex_model_unavailable`. Saved auto-tier overrides are
   revalidated after refresh and fall back to file defaults with a warning when
   their model is unavailable.
+- Catalog requests use a baseline Codex client version of `0.159.0`, or the
+  highest valid `client_version` from enabled slots' mounted `models_cache.json`
+  files. This version applies to every account and never decreases during a
+  process lifetime when another CLI overwrites a cache with an older version.
+  Missing, malformed, oversized, and nonregular caches are ignored. A failed
+  request with a newer hint retries once with the baseline. Cache model lists
+  never grant account eligibility. The validated transport ceiling remains
+  independent; skipped incompatible models and refresh failures are logged.
+- Ordinary Codex context metadata follows successful catalog refreshes, using
+  the smallest `max_context_window` among offering enabled accounts. Last
+  observed values persist in SQLite and overlay already-listed models after
+  restart or refresh failure; bundled estimates apply only before a value is
+  observed. Metadata failures add no routing availability gate and cannot
+  resurrect removed models or extend account eligibility. Generated
+  `-282kcontext` variants remain fixed at 282,000 tokens and disappear when
+  their base model's supported maximum drops below that threshold. Both model
+  endpoints expose consistent `max_context`, `context_length`, and
+  `max_model_len` fields for ordinary and variant models.
+- Compatible future model additions and context changes follow Codex cache
+  updates automatically. New transport requirements or backend schema changes
+  may still need maintenance; a permanently old CLI/cache cannot reveal newer
+  catalog visibility requirements.
 - Selectable Codex GPT-5.6 catalog entries for manual Hermes sessions:
   `codex/gpt-5.6`, `codex/gpt-5.6-sol`, `codex/gpt-5.6-terra`, and
   `codex/gpt-5.6-luna`. The Codex provider profile still defaults to
@@ -152,6 +176,14 @@ Kept in v1:
   configured slot.
 - Prompt-cache keys based on explicit `prompt_cache_key`, `user`, or stable
   system/tool prefix shape.
+- Codex subscription Responses requests also send the final resolved cache key
+  as the HTTP `session-id` header, for both native Responses and Chat
+  compatibility. This follows upstream Codex's
+  [cache-affinity contract](https://github.com/openai/codex/pull/44862).
+  Existing lineage boundaries produce distinct effective keys; retries retain
+  the same affinity key while using the selected account's credentials. Requests
+  without a resolved key omit the header. Other provider transports do not
+  receive this subscription header.
 - Per-key Codex cache leases, rate-limit cooldowns, transient 5xx cooldowns,
   and retry across slots/accounts.
 - Codex image generation and image edits, including multipart PNG alpha masks
@@ -394,6 +426,31 @@ Reliability contract:
 - Native Responses preserve encrypted reasoning and full replay with
   `store=false`. The legacy Chat Completions assistant-reasoning switch does
   not describe native Responses behavior.
+
+## Hermes fast mode
+
+Hermes `/fast` works through the exact internal endpoint
+`http://spartan-route:18790/v1` with the `openai-api` provider and explicit
+`codex/*` or `openai/*` models eligible under Hermes's upstream model gate.
+Automatic routing aliases, unrelated proxies, and unsupported models do not
+receive fast parameters. The build-time patch changes the shared route gate
+used by CLI and gateway requests.
+
+Use `/fast fast` to request `service_tier: priority`, and `/fast normal` to
+return to normal processing. `/fast auto` opens the upstream timed window on
+each user turn; `/fast cold` opens it only for the first turn of a session.
+`/fast ultrafast` keeps upstream's per-model eligibility restriction. Commands
+are session scoped unless Hermes's `--global` option is supplied. No fast mode
+is enabled by default.
+
+Spartan Route preserves `service_tier` through Codex Chat Completions conversion,
+native Codex Responses, and OpenAI passthrough. Reasoning and cache identity
+remain intact. Account/model eligibility and the tier actually served belong
+to the upstream provider; requesting a tier does not guarantee latency. Upstream
+errors are returned without silently retrying at a normal tier.
+
+Existing Hermes images can use the guarded overlay described in
+[operations](operations.md#hermes-fast-mode-overlay) until the next image build.
 
 ## Dashboard Runtime Routing Overrides
 

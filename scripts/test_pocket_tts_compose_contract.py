@@ -40,14 +40,24 @@ class PocketTTSComposeContractTests(unittest.TestCase):
         self.assertIn("pocket_tts_internal", hermes["networks"])
         self.assertNotIn("pocket-tts", hermes["depends_on"])
         self.assertFalse(
-            any("/opt/hermes" in volume for volume in hermes.get("volumes", []))
+            any(
+                "pocket-tts-client.py" in (
+                    volume if isinstance(volume, str)
+                    else str(volume.get("target", ""))
+                )
+                for volume in hermes.get("volumes", [])
+            )
         )
         dockerfile = (ROOT / "apps" / "hermes-agent" / "Dockerfile").read_text(
             encoding="utf-8"
         )
         self.assertIn(
-            "COPY --chown=0:0 --chmod=0644 pocket-tts-client.py "
-            "/opt/hermes/bootstrap/pocket-tts-client.py",
+            "COPY --chown=0:0 browserless-profile-live.js browserless-cdp-broker.py "
+            "pocket-tts-client.py wrangler-auth.py /opt/hermes/bootstrap/",
+            dockerfile,
+        )
+        self.assertIn(
+            "find /opt/hermes/bootstrap -maxdepth 1 -type f -exec chmod 0644 {} +",
             dockerfile,
         )
 

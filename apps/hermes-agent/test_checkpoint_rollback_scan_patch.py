@@ -2,113 +2,62 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
+import sys
 
-
-MODULE_PATH = pathlib.Path(__file__).with_name('patches').joinpath(
-    'patch_checkpoint_rollback_scan.py'
-)
-
+MODULE_PATH = pathlib.Path(__file__).with_name('patches') / 'patch_checkpoint_rollback_scan.py'
 
 def load_module():
-    spec = importlib.util.spec_from_file_location(
-        'patch_checkpoint_rollback_scan',
-        MODULE_PATH,
-    )
+    spec = importlib.util.spec_from_file_location('patch_checkpoint', MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
 
-
 class CheckpointRollbackScanPatchTests(unittest.TestCase):
-    def test_appends_scope_helpers_and_missing_handlers(self):
-        module = load_module()
+    def setUp(self):
+        self.module = load_module()
+
+    def test_preserves_native_restore_and_is_idempotent(self):
+        for gateway in (True, False):
+            declaration = 'async def' if gateway else 'def'
+            cwd = 'self._terminal_cwd()' if gateway else 'os.getenv("TERMINAL_CWD", os.getcwd())'
+            source = f'class Commands:\n    {declaration} _handle_rollback_command(self, event):\n        cwd = {cwd}\n        return mgr.restore(cwd, "hash", safe=True)\n'
+            changed = self.module.patch_handler(source, gateway=gateway)
+            self.assertIn('mgr.restore(cwd, "hash", safe=True)', changed)
+            self.assertEqual(changed, self.module.patch_handler(changed, gateway=gateway))
+            compile(changed, '<test>', 'exec')
+
+    def test_preflights_all_targets_before_writing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            cm = root / 'checkpoint_manager.py'
-            gw = root / 'run.py'
-            cli = root / 'cli.py'
-            cm.write_text('class CheckpointManager:\n    pass\n', encoding='utf-8')
-            gw.write_text(
-                'class GatewayRunner:\n    pass\n'
-                'async def route(self, event):\n'
-                '    return await self._handle_rollback_command(event)\n',
-                encoding='utf-8',
-            )
-            cli.write_text(
-                'class HermesCLI:\n'
-                '    def _resolve_checkpoint_ref(self, ref, checkpoints):\n'
-                '        return ref\n'
-                'def route(self, cmd_original):\n'
-                '    self._handle_rollback_command(cmd_original)\n',
-                encoding='utf-8',
-            )
-            module.CM_TARGET = cm
-            module.GW_TARGET = gw
-            module.CLI_TARGET = cli
+            paths = [pathlib.Path(tmp) / name for name in ('cm.py', 'gw.py', 'cli.py')]
+            for p in paths: p.write_text('class Empty: pass\n')
+            self.module.CM_TARGET, self.module.GW_TARGET, self.module.CLI_TARGET = paths
+            with self.assertRaises(ValueError): self.module.main()
+            for p in paths: self.assertEqual(p.read_text(), 'class Empty: pass\n')
 
-            module.main()
+    def scope(self, directories, cwd='/tmp', blocked=None):
+        ns = {'Path': pathlib.Path, 'format_checkpoint_list': lambda entries, directory: directory}
+        exec(self.module.CM_PATCH, ns)
+        mgr = SimpleNamespace(list_checkpoints=lambda p: [], unsupported_backend_reason=lambda: blocked,
+                              list_all_checkpoints=lambda: [{'workdir': p} for p in directories])
+        mocks = {'hermes_constants': SimpleNamespace(get_hermes_home=lambda: '/unused'),
+                 'tools.terminal_scope': SimpleNamespace(terminal_env=lambda key, default: default),
+                 'hermes_cli.config': SimpleNamespace(read_raw_config=lambda: {})}
+        with patch.dict(sys.modules, mocks): return ns['spartan_checkpoint_scope'](mgr, cwd)
 
-            self.assertIn(module.CM_MARKER, cm.read_text(encoding='utf-8'))
-            self.assertIn('def resolve_checkpoint_cwd', cm.read_text(encoding='utf-8'))
-            self.assertIn(module.GW_MARKER, gw.read_text(encoding='utf-8'))
-            self.assertIn(
-                'GatewayRunner._handle_rollback_command = '
-                '_spartan_gateway_handle_rollback_command',
-                gw.read_text(encoding='utf-8'),
-            )
-            self.assertIn(module.CLI_MARKER, cli.read_text(encoding='utf-8'))
-            self.assertIn(
-                'HermesCLI._handle_rollback_command = '
-                '_spartan_cli_handle_rollback_command',
-                cli.read_text(encoding='utf-8'),
-            )
+    def test_selects_single_project(self):
+        self.assertEqual(self.scope(['/projects/one']), ('/projects/one', None))
 
-    def test_patch_is_idempotent(self):
-        module = load_module()
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            cm = root / 'checkpoint_manager.py'
-            gw = root / 'run.py'
-            cli = root / 'cli.py'
-            cm.write_text('base\n', encoding='utf-8')
-            gw.write_text(
-                'return await self._handle_rollback_command(event)\n',
-                encoding='utf-8',
-            )
-            cli.write_text(
-                'self._handle_rollback_command(cmd_original)\n',
-                encoding='utf-8',
-            )
-            module.CM_TARGET = cm
-            module.GW_TARGET = gw
-            module.CLI_TARGET = cli
+    def test_ambiguous_projects_cannot_restore(self):
+        cwd, error = self.scope(['/projects/one', '/projects/two'])
+        self.assertEqual(cwd, '/tmp')
+        self.assertIn('Ambiguous rollback scope', error)
 
-            module.main()
-            once = (cm.read_text(encoding='utf-8'), gw.read_text(encoding='utf-8'), cli.read_text(encoding='utf-8'))
-            module.main()
+    def test_nested_project_is_unambiguous(self):
+        self.assertEqual(self.scope(['/projects/one', '/other'], '/projects'), ('/projects/one', None))
 
-            self.assertEqual(once[0], cm.read_text(encoding='utf-8'))
-            self.assertEqual(once[1], gw.read_text(encoding='utf-8'))
-            self.assertEqual(once[2], cli.read_text(encoding='utf-8'))
+    def test_unsupported_backend_keeps_native_denial(self):
+        self.assertEqual(self.scope(['/projects/one'], blocked='remote backend'), ('/tmp', None))
 
-    def test_fails_when_callsite_is_missing(self):
-        module = load_module()
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            cm = root / 'checkpoint_manager.py'
-            gw = root / 'run.py'
-            cli = root / 'cli.py'
-            cm.write_text('base\n', encoding='utf-8')
-            gw.write_text('class GatewayRunner:\n    pass\n', encoding='utf-8')
-            cli.write_text('self._handle_rollback_command(cmd_original)\n', encoding='utf-8')
-            module.CM_TARGET = cm
-            module.GW_TARGET = gw
-            module.CLI_TARGET = cli
-
-            with self.assertRaises(SystemExit):
-                module.main()
-
-
-if __name__ == '__main__':
-    unittest.main()
+if __name__ == '__main__': unittest.main()

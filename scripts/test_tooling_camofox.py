@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -128,6 +129,54 @@ class HermesProfileNewTests(unittest.TestCase):
         profile_env = (self.data_dir / "profiles" / "gateway-profile" / ".env").read_text()
         self.assertIn("API_SERVER_PORT=8643\n", profile_env)
         self.assertIn("OPENAI_BASE_URL=${OPENAI_BASE_URL}\n", profile_env)
+        self.assertRegex(profile_env, r"(?m)^API_SERVER_KEY=[A-Za-z0-9_-]{40,}$")
+
+    def test_channel_sources_must_exist_before_any_write(self):
+        env_before = self.env_file.read_bytes()
+        compose_before = self.compose_file.read_bytes()
+        result = self.run_script(
+            "new-profile", "--gateway", "--port", "8643",
+            "--telegram", "--discord", "--no-autostart",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("set HERMES_TELEGRAM_BOT_TOKEN_NEW_PROFILE", result.stderr)
+        self.assertEqual(self.env_file.read_bytes(), env_before)
+        self.assertEqual(self.compose_file.read_bytes(), compose_before)
+        self.assertFalse((self.data_dir / "profiles" / "new-profile").exists())
+
+    def test_gateway_materializes_channel_values_and_uses_distinct_api_keys(self):
+        with self.env_file.open("a") as output:
+            output.write(
+                "HERMES_TELEGRAM_BOT_TOKEN_FIRST=tg#first\n"
+                "HERMES_TELEGRAM_ALLOWED_USERS_FIRST=123,456\n"
+                "DISCORD_BOT_TOKEN_FIRST=dc#first\n"
+                "DISCORD_ALLOWED_USERS_FIRST=789\n"
+                "DISCORD_HOME_CHANNEL_FIRST=12345\n"
+            )
+        first = self.run_script(
+            "first", "--gateway", "--port", "8643",
+            "--telegram", "--discord", "--no-autostart",
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        profile_env = (self.data_dir / "profiles" / "first" / ".env").read_text()
+        self.assertIn('TELEGRAM_BOT_TOKEN="tg#first"\n', profile_env)
+        self.assertIn('TELEGRAM_ALLOWED_USERS="123,456"\n', profile_env)
+        self.assertIn('DISCORD_BOT_TOKEN="dc#first"\n', profile_env)
+        self.assertIn('DISCORD_ALLOWED_USERS="789"\n', profile_env)
+        self.assertIn('DISCORD_HOME_CHANNEL="12345"\n', profile_env)
+        first_key = re.search(r"(?m)^API_SERVER_KEY=([A-Za-z0-9_-]{40,})$", profile_env)
+        self.assertIsNotNone(first_key)
+        self.assertEqual((self.data_dir / "profiles" / "first" / ".env").stat().st_mode & 0o777, 0o600)
+
+        second = self.run_script(
+            "second", "--gateway", "--port", "8644",
+            "--no-telegram", "--no-discord", "--no-autostart",
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_env = (self.data_dir / "profiles" / "second" / ".env").read_text()
+        second_key = re.search(r"(?m)^API_SERVER_KEY=([A-Za-z0-9_-]{40,})$", second_env)
+        self.assertIsNotNone(second_key)
+        self.assertNotEqual(first_key.group(1), second_key.group(1))
 
 
 class CamofoxContractTests(unittest.TestCase):
