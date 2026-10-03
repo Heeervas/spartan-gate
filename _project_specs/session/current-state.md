@@ -1,5 +1,36 @@
 # Current State
 
+## Hermes background-review cache lineage activated (2026-10-03)
+
+The reviewed `spartan-cache-lineage` 0.4.0 plugin separates native Responses
+foreground history from background-review runs using Hermes' existing
+context-local provenance API. Reviews inherit a compatible retained foreground
+cache lineage, including nonzero and delayed snapshots, without overwriting
+foreground tracking. Actual rewrites still advance their own lane. Snapshot and
+review state remains hash-only and bounded. No Hermes or Route code patch was
+needed; LCM and request content were not modified.
+
+Implementation and regression work used an isolated, initially clean worktree.
+Three focused regressions failed before the fix. Final validation passed 77
+plugin tests, ten Route lineage/native-binding contract tests, installed-Hermes
+provenance integration, and the actual Route/Codex key and private-field
+helpers. Independent adversarial plan and implementation reviews found no
+remaining blocker. No paid inference probes ran.
+
+The clean combined transport branch was fast-forwarded to the implementation.
+Hermes alone was force-recreated with its existing image. The committed plugin
+source matches the live mount; non-root discovery loads version 0.4.0 and its
+request middleware/response hook. API health, proxy and Route connectivity pass.
+Hermes remains read-only on internal networks; all eight neighboring container
+IDs were preserved. Cold startup took approximately three minutes before the
+health endpoint became ready.
+
+Startup also logged an LCM plugin load-timeout warning with ignored late
+registration callbacks. Cache-plugin discovery succeeds, but those checks do
+not establish LCM activation in every already-running profile. Keep that
+separate runtime question visible; provider cache savings also require organic
+traffic rather than inference from key stability alone.
+
 ## Route transport and stable signed dashboard sessions activated (2026-10-03)
 
 Combined the isolated Hermes session fix with the handed-off Route transport
