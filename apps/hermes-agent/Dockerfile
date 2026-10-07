@@ -176,8 +176,7 @@ RUN mkdir -p /opt/data/.config/pip \
 COPY --chown=0:0 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/bootstrap/spartan_browser_policy.py
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/spartan_browser_policy.py
-COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py
-COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/bootstrap/spartan_browser_variant.py
+COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/patches/spartan_browser_variant.py
 COPY --chown=0:0 spartan-browser-policy-init.sh /etc/cont-init.d/0195-spartan-browser-policy
 ENV SPARTAN_BROWSER_POLICY_ENABLED=1 \
     HERMES_MANAGED_DIR=/run/spartan-hermes-managed \
@@ -187,8 +186,7 @@ ENV SPARTAN_BROWSER_POLICY_ENABLED=1 \
 COPY --chown=0:0 patches/ /opt/hermes/patches/
 COPY --chown=0:0 audit-install-tree.py /opt/hermes/patches/audit-install-tree.py
 # Apply patches and verify permissions atomically; avoid one snapshot per patch.
-RUN python3 /opt/hermes/patches/patch_camofox_only_variant.py /opt/hermes \
-    && python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
+RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_s6_service_permissions.py \
     && python3 /opt/hermes/patches/patch_runtime_identity_drop.py \
     && python3 /opt/hermes/patches/patch_stage2_cdp_env.py \
@@ -200,13 +198,18 @@ RUN python3 /opt/hermes/patches/patch_camofox_only_variant.py /opt/hermes \
     && python3 /opt/hermes/patches/patch_mcp_proxy_env.py \
     && python3 /opt/hermes/patches/patch_google_meet_cdp.py \
     && python3 /opt/hermes/patches/patch_google_meet_transcript.py \
-    && python3 /opt/hermes/patches/patch_camofox_only_variant.py /opt/hermes --meet-only \
     && python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py \
     && python3 /opt/hermes/patches/patch_spartan_fast_mode.py \
     && python3 /opt/hermes/patches/patch_route_env_placeholders.py \
     && python3 /opt/hermes/patches/patch_codex_429_fail_fast.py \
     && python3 /opt/hermes/patches/patch_workstation_approval_scope.py \
     && python3 /opt/hermes/patches/patch_state_fts_empty_migration.py \
+    && if [ -f /etc/spartan/hermes-browser-mode ]; then \
+        install -m 0644 /opt/hermes/patches/spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py \
+        && install -m 0644 /opt/hermes/patches/spartan_browser_variant.py /opt/hermes/bootstrap/spartan_browser_variant.py \
+        && python3 /opt/hermes/patches/patch_camofox_only_variant.py /opt/hermes \
+            --helper /opt/hermes/spartan_browser_variant.py --meet-only; \
+    fi \
     && chmod 0755 /opt/hermes/bootstrap /opt/hermes/entrypoint-wrapper.sh \
     && chmod 0755 /etc/cont-init.d/0195-spartan-browser-policy \
     && chmod 0644 /opt/hermes/spartan_browser_policy.py \

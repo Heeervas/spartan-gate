@@ -1,5 +1,8 @@
 import importlib.util
 import io
+import os
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 import tempfile
@@ -81,11 +84,49 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
                     module.prepare(root / 'upstream', output)
                 self.assertEqual((output / 'pm/example.py').read_text(), 'tampered')
 
+    def test_relocated_patcher_cli_uses_explicit_helper_for_early_and_late_layers(self):
+        patcher = Path(os.environ.get('HERMES_VARIANT_PATCHER_TEST_PATH',
+                                     APP / 'patches/patch_camofox_only_variant.py'))
+        if not patcher.exists():
+            self.skipTest('runtime variant patch has not been integrated')
+        runtime_spec = importlib.util.spec_from_file_location('runtime_patcher', patcher)
+        runtime = importlib.util.module_from_spec(runtime_spec)
+        runtime_spec.loader.exec_module(runtime)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / 'hermes'
+            root.mkdir()
+            relocated = root / 'patch_camofox_only_variant.py'
+            relocated.write_bytes(patcher.read_bytes())
+            helper = root / 'spartan_browser_variant.py'
+            helper.write_text('ERROR = "unsupported"\n')
+            for name, guards in runtime.GUARDS.items():
+                source = ''.join(f'def {function}(*args, **kwargs):\n    pass\n\n' for function in guards)
+                if name == 'pm/client.py':
+                    source += 'def sync_tools():\n    for name in tool_roots(Lockfile(paths.lockfile_path()).names()):\n        ensure(name, explicit=True)\n'
+                if name == 'pm/install.py':
+                    source += 'def drift():\n    for name in lockfile.names():\n        pass\ndef activate():\n    for name in lockfile.names():\n        pass\n'
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(source)
+            # Reproduce the root-level script placement used by upstream COPY,
+            # without placing a helper in its implicit parents[1] directory.
+            for command in (module.EARLY.splitlines()[-1], module.LATE.strip()[4:]):
+                self.assertIn('--helper /opt/hermes/spartan_browser_variant.py', command)
+                args = command.strip().split()[1:]
+                args = [arg.replace('/opt/hermes', str(root)) for arg in args]
+                subprocess.run([sys.executable, *args], check=True, capture_output=True)
+            self.assertEqual((root / 'pm/spartan_browser_variant.py').read_bytes(), helper.read_bytes())
+            self.assertIn('tools/browser_tool_install.py', (root / 'pm/spartan-browser-variant.json').read_text())
+
     def test_default_base_remains_immutable_and_variant_is_optional(self):
         source = (APP / 'Dockerfile').read_text()
         self.assertIn('ARG HERMES_BASE_IMAGE=' + module.UPSTREAM_IMAGE, source)
         self.assertIn('FROM ${HERMES_BASE_IMAGE}', source)
-        self.assertIn('patch_camofox_only_variant.py /opt/hermes', source)
+        self.assertIn('--helper /opt/hermes/spartan_browser_variant.py --meet-only', source)
+        self.assertLess(source.index('patch_state_fts_empty_migration.py'), source.index('--meet-only'))
+        self.assertIn('if [ -f /etc/spartan/hermes-browser-mode ]; then', source)
+        self.assertNotIn('COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py', source)
+        self.assertLess(source.index('if [ -f /etc/spartan/hermes-browser-mode ]; then'), source.index('install -m 0644 /opt/hermes/patches/spartan_browser_variant.py'))
         compose = (APP.parents[1] / 'infra/compose/compose.yml').read_text()
         self.assertNotIn('HERMES_CAMOFOX_ONLY', compose)
 

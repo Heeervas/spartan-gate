@@ -69,14 +69,22 @@ The following are build commands, not activation commands:
 docker build --progress=plain \
   --tag spartan-hermes-upstream:e8c97320-camofox-only \
   /path/to/new-hermes-camofox-context
-# Capture the resulting immutable local image ID; use that ID below.
+# Capture and review the resulting immutable local image ID.
+# Keep the local tag pointing to that reviewed ID for the downstream build.
 docker image inspect --format '{{.Id}}' spartan-hermes-upstream:e8c97320-camofox-only
 
+test "$(docker image inspect --format '{{.Id}}' spartan-hermes-upstream:e8c97320-camofox-only)" \
+  = sha256:REVIEWED_UPSTREAM_VARIANT_ID
 docker build --progress=plain \
-  --build-arg HERMES_BASE_IMAGE=sha256:REVIEWED_UPSTREAM_VARIANT_ID \
+  --build-arg HERMES_BASE_IMAGE=spartan-hermes-upstream:e8c97320-camofox-only \
   --tag spartan-hermes:camofox-only apps/hermes-agent
 docker image inspect --format '{{.Id}}' spartan-hermes:camofox-only
 ```
+
+Before the downstream build, inspect the upstream tag again and require its ID
+to match the reviewed ID. Use a registry digest when publishing the base. Local
+image IDs are review coordinates; the Dockerfile `FROM` argument uses a local
+tag or registry digest.
 
 Use an approved clean downstream checkout for the final build: building a dirty
 checkout can silently include unrelated patches. Record installed package
@@ -87,14 +95,16 @@ storage cost and comparison to the previously deployed image distinct.
 ## Explicit selection
 
 `infra/compose/compose.hermes-camofox-only.yml` is optional and requires explicit
-`HERMES_CAMOFOX_ONLY_BASE_IMAGE` and `HERMES_CAMOFOX_ONLY_IMAGE` references. Prefer
-immutable local image IDs or registry digests. Include it after the base Compose
-file and before private overrides; inspect the final render because later
+`HERMES_CAMOFOX_ONLY_BASE_IMAGE` and `HERMES_CAMOFOX_ONLY_IMAGE` references.
+For the base build argument use the reviewed local tag (verify its immutable ID
+before the build) or a registry digest. For the final image use the reviewed
+local tag or registry digest and record its immutable ID. Include it after the
+base Compose file and before private overrides; inspect the final render because later
 overrides can change selection. For configuration validation only:
 
 ```sh
-HERMES_CAMOFOX_ONLY_BASE_IMAGE=sha256:REVIEWED_UPSTREAM_VARIANT_ID \
-HERMES_CAMOFOX_ONLY_IMAGE=sha256:REVIEWED_FINAL_VARIANT_ID \
+HERMES_CAMOFOX_ONLY_BASE_IMAGE=spartan-hermes-upstream:e8c97320-camofox-only \
+HERMES_CAMOFOX_ONLY_IMAGE=spartan-hermes:camofox-only \
 docker compose -f infra/compose/compose.yml \
   -f infra/compose/compose.hermes-camofox-only.yml config --quiet
 ```

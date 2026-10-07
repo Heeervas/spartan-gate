@@ -19,7 +19,7 @@ EARLY = '''COPY _spartan_browser_variant.py /opt/hermes/spartan_browser_variant.
 COPY _spartan_patch_camofox_only_variant.py /opt/hermes/patch_camofox_only_variant.py
 RUN mkdir -p /etc/spartan && printf 'camofox-only\\n' > /etc/spartan/hermes-browser-mode && \\
     chmod 0444 /etc/spartan/hermes-browser-mode && \\
-    python3 /opt/hermes/patch_camofox_only_variant.py /opt/hermes --pm-only
+    python3 /opt/hermes/patch_camofox_only_variant.py /opt/hermes --helper /opt/hermes/spartan_browser_variant.py --pm-only
 '''
 ENSURE = '("uv", "chromium", "npm", "ffmpeg", "ripgrep")'
 PROBE = '''    node --version; npm --version; \\
@@ -29,7 +29,7 @@ PROBE = '''    node --version; npm --version; \\
     mkdir -p /etc/hermes; \\
     printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path'''
 COPY_SOURCE = 'COPY --link --chmod=a+rX,go-w . .\n'
-LATE = 'RUN python3 /opt/hermes/patch_camofox_only_variant.py /opt/hermes\n'
+LATE = 'RUN python3 /opt/hermes/patch_camofox_only_variant.py /opt/hermes --helper /opt/hermes/spartan_browser_variant.py\n'
 
 
 def digest(data):
