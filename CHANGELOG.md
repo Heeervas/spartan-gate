@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Add an explicit image-only Hermes startup mode that validates baked Python,
+  measured extras and enabled plugin requirements before skipping automatic
+  dependency sync and generation collection. Refuse selected generations and
+  preserve existing dependency facts and stamps unchanged.
+
 - Normalize injected Camofox-only build helpers to mode 0644 and repair the
   existing variant base's root patcher before the final installation audit.
 

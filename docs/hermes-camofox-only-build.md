@@ -116,3 +116,25 @@ Camofox-only startup, retained non-browser tools and document workflows before
 selecting this image for production. Browserless requires the full variant.
 Removing this overlay restores the full default on a subsequent approved build;
 changing a build argument alone does not replace an already running container.
+
+## Boot Using The Validated Image Environment
+
+`SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY=1` explicitly disables the native
+startup dependency refresh and generation collection. The default remains the
+upstream refresh behavior. This flag is useful when the image already carries
+the required dependencies and rebuilding a persistent generation would exceed
+the available storage.
+
+Before enabling it, verify that native PM fallback metadata has no
+`environment` or `resolved_lock` pointer. A selected generation causes startup
+to fail; the flag never clears that selection. Back up dependency metadata and
+use the native PM fallback recovery procedure separately when required. Keep
+the recorded extras and original stamp; do not manufacture a current stamp.
+
+Startup runs the baked `.venv/bin/python`, checks startup imports, compares its
+actual optional-feature inventory with `enabled-features.json`, and requires
+all recorded extras and enabled plugin Python requirements to be available in
+that environment. Missing distributions, incompatible versions, unsatisfied
+extras, direct URL requirements and incompatible plugin Python versions refuse
+startup. The check does not install packages, change facts or delete generations.
+Explicit operator dependency installation remains a separate action.
