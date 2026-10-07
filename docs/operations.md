@@ -395,7 +395,11 @@ older credential format into the shared store. In the manual browser flow,
 paste the complete final callback URL into the terminal after Google sign-in;
 the browser sign-in alone does not complete the refresh-token exchange. The
 helper fails unless the stored grant contains every scope requested through
-`GOGCLI_EXTRA_SCOPES`. Verify the active grant at any time with:
+`GOGCLI_EXTRA_SCOPES`. The default extra scopes include Google Ads
+(`https://www.googleapis.com/auth/adwords`). If you set a nonempty
+`GOGCLI_EXTRA_SCOPES` override, include that scope explicitly. Run the login
+again to grant newly added scopes. Google Ads API calls also require a developer
+token. Verify the active grant at any time with:
 
 ```sh
 sg-gog-check --json

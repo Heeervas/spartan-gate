@@ -86,7 +86,7 @@ if [[ "$args" == *" gog auth list --check --json "* ]]; then
   if [[ "${{DOCKER_SCOPE_MODE:-complete}}" == "missing" ]]; then
     printf '%s\\n' '{{"accounts":[{{"email":"person@example.com","scopes":["scope-a"]}}]}}'
   else
-    printf '%s\\n' '{{"accounts":[{{"email":"person@example.com","scopes":["scope-a","scope-b","https://www.googleapis.com/auth/analytics.readonly","https://www.googleapis.com/auth/tagmanager.readonly","https://www.googleapis.com/auth/tagmanager.edit.containers","https://www.googleapis.com/auth/tagmanager.edit.containerversions","https://www.googleapis.com/auth/script.projects","https://www.googleapis.com/auth/script.deployments","https://www.googleapis.com/auth/script.processes","https://www.googleapis.com/auth/script.metrics"]}}]}}'
+    printf '%s\\n' '{{"accounts":[{{"email":"person@example.com","scopes":["scope-a","scope-b","https://www.googleapis.com/auth/adwords","https://www.googleapis.com/auth/analytics.readonly","https://www.googleapis.com/auth/tagmanager.readonly","https://www.googleapis.com/auth/tagmanager.edit.containers","https://www.googleapis.com/auth/tagmanager.edit.containerversions","https://www.googleapis.com/auth/script.projects","https://www.googleapis.com/auth/script.deployments","https://www.googleapis.com/auth/script.processes","https://www.googleapis.com/auth/script.metrics"]}}]}}' | python3 -c 'import json, os, sys; payload = json.load(sys.stdin); scopes = payload["accounts"][0]["scopes"]; scopes[:] = [scope for scope in scopes if not (os.environ.get("DOCKER_SCOPE_MODE") == "missing-ads" and scope == "https://www.googleapis.com/auth/adwords")]; json.dump(payload, sys.stdout)'
   fi
   exit 0
 fi
@@ -153,7 +153,7 @@ exit 0
         self.assertNotIn("super-secret-password", result.stderr)
         self.assertNotIn("super-secret-password", calls)
 
-    def test_default_login_includes_appscript_service_and_scopes(self):
+    def test_default_login_includes_ads_and_appscript_scopes(self):
         self.write_env()
         self.write_stubs()
 
@@ -167,6 +167,7 @@ exit 0
             "sheets,people,forms,appscript,ads",
             calls,
         )
+        self.assertIn("https://www.googleapis.com/auth/adwords", calls)
         self.assertIn("https://www.googleapis.com/auth/analytics.readonly", calls)
         self.assertIn("https://www.googleapis.com/auth/tagmanager.readonly", calls)
         self.assertIn("https://www.googleapis.com/auth/tagmanager.edit.containers", calls)
@@ -189,6 +190,24 @@ exit 0
         self.assertIn("missing requested OAuth scopes: scope-b", result.stderr)
         calls = self.log.read_text(encoding="utf-8")
         self.assertNotIn("--auth-url", calls)
+
+    def test_missing_ads_scope_fails_before_workspace_reauth(self):
+        self.write_env()
+        self.write_stubs()
+
+        result = self.run_script(
+            "GOG_CALLBACK\nCODE_FROM_BROWSER\n",
+            extra_env={"DOCKER_SCOPE_MODE": "missing-ads"},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "missing requested OAuth scopes: https://www.googleapis.com/auth/adwords",
+            result.stderr,
+        )
+        calls = self.log.read_text(encoding="utf-8")
+        self.assertNotIn("--auth-url", calls)
+        self.assertNotIn("gmail labels list", calls)
 
     def test_missing_required_env_fails_before_external_commands(self):
         self.write_env()

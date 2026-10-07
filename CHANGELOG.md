@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Request the Google Ads OAuth scope in the Gog Workspace helper defaults and
+  reject incomplete grants before Workspace reauthentication. Document scope
+  override behavior and the separate Google Ads developer-token requirement.
+
 - Scope Discord `/voice` lifecycle and controls to the receiving Hermes profile
   and server, preserve bridge bindings in session tasks, and prepare the Opus
   codec before native join. Document Talk 0.21.1 multiplex routing and the
