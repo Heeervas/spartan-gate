@@ -29,11 +29,22 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
     def test_uses_pinned_main_base_image(self):
         dockerfile = read_text(DOCKERFILE_PATH)
 
-        self.assertIn(
-            'FROM docker.io/nousresearch/hermes-agent:main@'
-            'sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde',
-            dockerfile,
+        instructions = [line.strip() for line in dockerfile.splitlines()
+                        if line.strip() and not line.lstrip().startswith('#')]
+        pinned_default = (
+            'ARG HERMES_BASE_IMAGE=docker.io/nousresearch/hermes-agent:main@'
+            'sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde'
         )
+        self.assertEqual(
+            [line for line in instructions if line.startswith('ARG HERMES_BASE_IMAGE')],
+            [pinned_default],
+        )
+        self.assertEqual(
+            [line for line in instructions if line.startswith('FROM ')],
+            ['FROM ${HERMES_BASE_IMAGE}'],
+        )
+        self.assertLess(instructions.index(pinned_default),
+                        instructions.index('FROM ${HERMES_BASE_IMAGE}'))
         self.assertIn(
             'Upstream main revision: e8c97320ac8691d4de92af49f98459f9ef9ddb08',
             dockerfile,
