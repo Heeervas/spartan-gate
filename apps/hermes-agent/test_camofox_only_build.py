@@ -126,6 +126,8 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
         self.assertLess(source.index('patch_state_fts_empty_migration.py'), source.index('--meet-only'))
         self.assertIn('if [ -f /etc/spartan/hermes-browser-mode ]; then', source)
         self.assertNotIn('COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py', source)
+        self.assertIn('install -m 0755 /opt/hermes/patches/spartan-browser-variant-init.sh /etc/cont-init.d/0196-spartan-browser-variant', source)
+        self.assertLess(source.index('0196-spartan-browser-variant'), source.index('--meet-only'))
         self.assertLess(source.index('if [ -f /etc/spartan/hermes-browser-mode ]; then'), source.index('install -m 0644 /opt/hermes/patches/spartan_browser_variant.py'))
         compose = (APP.parents[1] / 'infra/compose/compose.yml').read_text()
         self.assertNotIn('HERMES_CAMOFOX_ONLY', compose)

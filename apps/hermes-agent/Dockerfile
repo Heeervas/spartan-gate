@@ -177,6 +177,7 @@ COPY --chown=0:0 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/bootstrap/spartan_browser_policy.py
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/spartan_browser_policy.py
 COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/patches/spartan_browser_variant.py
+COPY --chown=0:0 spartan-browser-variant-init.sh /opt/hermes/patches/spartan-browser-variant-init.sh
 COPY --chown=0:0 spartan-browser-policy-init.sh /etc/cont-init.d/0195-spartan-browser-policy
 ENV SPARTAN_BROWSER_POLICY_ENABLED=1 \
     HERMES_MANAGED_DIR=/run/spartan-hermes-managed \
@@ -211,6 +212,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && if [ -f /etc/spartan/hermes-browser-mode ]; then \
         install -m 0644 /opt/hermes/patches/spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py \
         && install -m 0644 /opt/hermes/patches/spartan_browser_variant.py /opt/hermes/bootstrap/spartan_browser_variant.py \
+        && install -m 0755 /opt/hermes/patches/spartan-browser-variant-init.sh /etc/cont-init.d/0196-spartan-browser-variant \
         && python3 /opt/hermes/patches/patch_camofox_only_variant.py /opt/hermes \
             --helper /opt/hermes/spartan_browser_variant.py --meet-only; \
     fi \
