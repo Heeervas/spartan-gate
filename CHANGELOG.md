@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Scope Discord `/voice` lifecycle and controls to the receiving Hermes profile
+  and server, preserve bridge bindings in session tasks, and prepare the Opus
+  codec before native join. Document Talk 0.21.1 multiplex routing and the
+  remaining upstream result-return rejection; live audio acceptance is pending.
+
 - Isolate native Hermes background-review cache tracking from foreground
   history while preserving compatible shared provider cache keys and signed
   reasoning identity. Retain bounded hash-only foreground snapshots for late

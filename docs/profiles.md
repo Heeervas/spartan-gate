@@ -91,11 +91,17 @@ state, but it will not override an existing stopped state.
 
 ## Hermes Talk delegation
 
-For a gateway profile using Hermes Talk, set `TALK_API_SERVER_URL` in that
-profile's `.env` to `http://127.0.0.1:<API_SERVER_PORT>`, using its existing
-literal API port. Talk otherwise defaults to port 8642, which belongs to the
-default gateway. A named profile can then receive 401, or reach the wrong
-profile if credentials happen to match.
+With the running native multiplex gateway, the adapted Talk plugin selects the
+live shared API listener automatically: the default profile uses its base URL,
+and each named profile uses `/p/<profile>`. This takes precedence over stale
+`TALK_API_SERVER_URL` values pointing at retired per-profile listeners. A missing
+or malformed shared listener refuses endpoint selection; it never falls back
+to the default profile. API credentials remain scoped to the calling profile.
+
+For a standalone gateway profile, set `TALK_API_SERVER_URL` in that profile's
+`.env` to `http://127.0.0.1:<API_SERVER_PORT>`, using its existing literal API
+port. Without the running multiplexer, the ordinary plugin configuration still
+applies; the default port 8642 may otherwise address a different gateway.
 
 Leave `TALK_API_SERVER_KEY` unset when the profile already has a working
 `API_SERVER_KEY`; Talk inherits it after Hermes loads the profile's `.env`.
