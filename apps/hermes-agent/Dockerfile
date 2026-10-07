@@ -202,6 +202,10 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_codex_429_fail_fast.py \
     && python3 /opt/hermes/patches/patch_workstation_approval_scope.py \
     && python3 /opt/hermes/patches/patch_state_fts_empty_migration.py \
+    && python3 /opt/hermes/patches/patch_async_completion_scope.py \
+    && python3 /opt/hermes/patches/patch_lsp_sdk_repair.py \
+    && python3 /opt/hermes/patches/patch_cron_thread_diagnostic.py \
+    && python3 /opt/hermes/patches/freeze_image_features.py \
     && chmod 0755 /opt/hermes/bootstrap /opt/hermes/entrypoint-wrapper.sh \
     && chmod 0755 /etc/cont-init.d/0195-spartan-browser-policy \
     && chmod 0644 /opt/hermes/spartan_browser_policy.py \

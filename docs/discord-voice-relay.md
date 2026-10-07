@@ -88,11 +88,28 @@ to direct UDP. The existing Route Realtime service is independent of this relay.
 
 ## One-command Talk lifecycle
 
-The optional `spartan-talk-voice-command` plugin composes the native Discord
-`/voice join` with the registered `/talk join` handler. Enable it alongside Talk
-and mount its own plugin directory read-only. `/voice leave` stops the matching
-Talk task before disconnecting the native channel. `/talk status`, pause and
-resume remain available. A failed or ambiguous channel join never starts Talk.
+The optional `spartan-talk-voice-command` 0.2.1 plugin provides the Discord
+lifecycle through `/voice` alone. Enable it alongside Talk and mount its own
+plugin directory read-only. Bare `/voice` and `/voice join` join the caller's
+channel and start Talk. `/voice leave` stops the owned Talk task before native
+disconnection. `/voice status`, `/voice pause` and `/voice resume` address only
+the session owned by that profile's adapter and server. Explicit native
+`/voice on`, `off` and `tts` modes remain available; other platforms retain
+their native voice command behavior.
+
+Join the Discord voice channel yourself first, then send `/voice` to that bot.
+No preceding `/talk` command is needed. The adapted Talk gateway handler directs
+`/talk` to `/voice`, avoiding the terminal microphone path in Hermes' command
+worker. The wrapper loads Talk's Opus codec before native receiver creation;
+missing codecs refuse the join. A local deployment may bundle its compatible,
+licensed codec in Talk's read-only plugin mount without rebuilding Hermes.
+
+The bridge is bound to the command's receiving adapter and server using a
+context-local scope inherited by the session task. A secondary profile never
+borrows the default bot's connection. Missing, malformed or mismatched bridges
+refuse startup. A live session cannot be moved by another join command.
+Profiles share the provisioned Route voice credential's concurrency limit;
+availability across profiles does not enable simultaneous calls.
 
 This wrapper changes command ergonomics only: it does not supply host execution
 attachments, grant operator authority, or bypass speaker verification. On a host
@@ -101,6 +118,9 @@ legacy lane. Its registered handler reports that limitation. Full Hermes tool
 parity requires the corresponding host capability; a command alias cannot add it.
 
 The integration relies on the current GatewayRunner join/leave methods and Talk
-session ownership state because Hermes has no voice lifecycle hook. Revalidate
+session ownership state because Hermes has no voice lifecycle hook. Adapter
+selection uses the native `_delivery_adapter_for(event.source)` resolver so it
+follows the command's transport profile. Missing adapters and mismatched voice
+bridges never start Talk. Revalidate
 these surfaces when upgrading either component. Disable this plugin to restore
 the separate native voice and Talk commands.

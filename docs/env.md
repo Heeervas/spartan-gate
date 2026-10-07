@@ -627,7 +627,9 @@ Google MCP project IDs, Codex auth paths, and autostart profiles are
 private/local fields and should be set through `private/`. For the GogCLI and
 Google Workspace helper, set `GOGCLI_ACCOUNT`, `GOGCLI_CLIENT_SECRET_PATH`, and
 optionally `GOGCLI_EXTRA_SCOPES` in `private/env/local.env`; leave it unset to
-use the helper default for Analytics, Tag Manager, and Apps Script. Keep
+use the helper default for Google Ads, Analytics, Tag Manager, and Apps Script.
+A nonempty override replaces these defaults; include
+`https://www.googleapis.com/auth/adwords` for Google Ads. Keep
 `GOG_KEYRING_PASSWORD` and `SPARTAN_GOGCLI_DATA_PATH` there as well.
 
 ## Whitelist Files

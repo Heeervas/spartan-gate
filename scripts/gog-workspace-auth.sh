@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DEFAULT_GOGCLI_SERVICES="gmail,calendar,chat,classroom,drive,docs,slides,contacts,tasks,sheets,people,forms,appscript,ads"
-DEFAULT_GOGCLI_EXTRA_SCOPES="https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/tagmanager.readonly,https://www.googleapis.com/auth/tagmanager.edit.containers,https://www.googleapis.com/auth/tagmanager.edit.containerversions,https://www.googleapis.com/auth/script.projects,https://www.googleapis.com/auth/script.deployments,https://www.googleapis.com/auth/script.processes,https://www.googleapis.com/auth/script.metrics"
+DEFAULT_GOGCLI_EXTRA_SCOPES="https://www.googleapis.com/auth/adwords,https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/tagmanager.readonly,https://www.googleapis.com/auth/tagmanager.edit.containers,https://www.googleapis.com/auth/tagmanager.edit.containerversions,https://www.googleapis.com/auth/script.projects,https://www.googleapis.com/auth/script.deployments,https://www.googleapis.com/auth/script.processes,https://www.googleapis.com/auth/script.metrics"
 WORKSPACE_SETUP="/opt/data/skills/productivity/google-workspace/scripts/setup.py"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

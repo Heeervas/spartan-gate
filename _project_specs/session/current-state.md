@@ -1,5 +1,98 @@
 # Current State
 
+## Hermes log repairs prepared; runtime activation pending (2026-10-07)
+
+Prepared and independently reviewed by an Astra-high adversarial agent:
+image feature inventory, raw API delegation ownership across the entire
+claim/persist/settlement lifecycle, TypeScript companion SDK repair, and a
+cron thread diagnostic that respects intentional destinations. Prepared
+owner-preserving profile/plugin migration for scoped SearXNG, node-search,
+Talk transcript worker context, Toolaria isolation and safe pass-through,
+absent legacy plugin names, and dormant retired reset timers. OOM tuning and
+automatic resets are excluded; explicit tool allowlists and cron routes stay
+intact.
+
+No live configuration, plugin source, PM facts, checkpoint lock, or service
+was changed by this remediation. The dry-run migration covers 26 files;
+native PM fallback preflight measured 25 image extras and installed nothing.
+Hermes Python validation ran 265 tests with 28 skips; 27 focused script tests
+passed. The broader script suite encountered seven errors in existing browser
+overlay tests because their real disk-capacity guard rejected this host.
+Compose rendering and whitespace validation passed.
+
+Activation is gated by AGENTS.md's 5 GB free-space requirement. An explicit
+bounded exception was requested and remains unanswered; free space then fell
+from 1.2 GB to approximately 300 MB. Do not interpret elapsed time as approval.
+Keep the diagnosed old checkpoint index lock intact until native-lock/no-writer
+recovery can run; restore Blender through a persistent installation and repair
+only the TypeScript SDK after the capacity gate. Core patches are wired into
+the next image build, but no build was attempted. Existing-image activation
+still needs guarded code overlays, plugin import checks, cold native launcher
+selection, adapter readiness, and authenticated health acceptance.
+
+## Talk 0.21.1 and all-profile `/voice` compatibility (2026-10-07)
+
+Updated the private adapted Talk snapshot from 0.17.2 to upstream 0.21.1
+(`981711b8f44df78e2ad958174e931c1b584b8bdd`), preserving the Spartan Realtime
+transport, sanitized diagnostics and scoped credentials. The previous source
+and hash manifest are retained for rollback; no image was rebuilt.
+
+The public `spartan-talk-voice-command` 0.2.1 wrapper uses Hermes' current
+`_delivery_adapter_for` resolver. Bare Discord `/voice` starts the caller's
+channel and Talk; `/voice leave` stops only the owned session before native
+disconnection. Context-local bridge bindings survive into session tasks, so
+secondary profiles never borrow the default bot's connection. Status and
+microphone controls enforce adapter/server ownership; native explicit text-voice
+modes and other platforms retain their behavior.
+
+The adapted Talk configuration now derives the live multiplex API listener and
+`/p/<profile>` namespace instead of using stale standalone URLs or the default
+profile endpoint. Credentials remain profile-scoped; unavailable/malformed
+listeners fail closed. Both plugins are enabled and linked in all 11 existing
+profiles. The shared Route credential still permits one active call at a time.
+
+Initial validation: the upstream candidate suite passed 2,760 tests with 61 skips and
+five expected failures; final configuration/transport checks passed 168 tests
+with two expected failures. The final wrapper passed 25 tests and provisioning
+passed ten. Native Hermes loading plus inert `/voice` start/leave, context
+inheritance, bridge selection and API routing passed for all 11 profiles, again
+against the installed source. Installed source hashes match the retained
+manifest. Only the default multiplex gateway process was gracefully reloaded;
+all nine container identities were preserved. Final authenticated health and
+readiness are `ok`, all 12 configured platform connections are active, and all
+11 profile API capability endpoints return authenticated HTTP 200 with run
+submission enabled. Real Discord audio remains pending operator acceptance.
+
+Follow-up runtime errors exposed paths those inert checks had missed: Hermes
+executes synchronous plugin commands in a worker, so `/talk` incorrectly chose
+terminal audio and leaked `SystemExit(1)`; the new capability catalog warmer
+lost profile credential context; and this image lacked Opus. The narrow repair
+makes gateway-worker `/talk` return `/voice` guidance, contains terminal CLI
+exits, copies context into catalog reads, and loads a locally bundled compatible
+codec before the native voice join. No command framework or additional aliases
+were added. Join a Discord channel yourself, then issue `/voice`; stop with
+`/voice leave`.
+
+Repair validation: 179 focused Talk tests passed (three skipped), and 27 wrapper
+checks passed. Native Hermes worker dispatch and inert `/voice` lifecycle passed
+for all 11 profiles. Actual DiscordAudio capture/handoff/cleanup and native
+VoiceClient playback encoder creation passed offline with real Opus encode and
+decode. The repaired gateway was gracefully reloaded and reached authenticated
+health/readiness `ok`, with all 12 configured platform connections connected and
+all 11 profile capability APIs authenticated. These checks do not establish a
+live provider/audio conversation.
+
+A subsequent organic Discord call failed during result return. The latest
+Hermes API run is `completed` and its Talk run is `done`; the gateway remains
+healthy. Talk logged announcement starvation, then Route closed the voice
+session with `realtime_upstream_configuration_rejected`. Talk's `delivered`
+marker records a wire send, not audible playback. Sanitized logs do not retain
+the exact upstream rejected event, so no speculative transport patch was made.
+Transcript-memory handoff also loses profile scope on its background thread.
+Native TTS prerequisite checks pass for the default and affected profile;
+a switch to native voice is pending the operator's mode preference.
+
+
 ## Hermes background-review cache lineage activated (2026-10-03)
 
 The reviewed `spartan-cache-lineage` 0.4.0 plugin separates native Responses

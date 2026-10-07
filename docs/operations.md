@@ -395,7 +395,11 @@ older credential format into the shared store. In the manual browser flow,
 paste the complete final callback URL into the terminal after Google sign-in;
 the browser sign-in alone does not complete the refresh-token exchange. The
 helper fails unless the stored grant contains every scope requested through
-`GOGCLI_EXTRA_SCOPES`. Verify the active grant at any time with:
+`GOGCLI_EXTRA_SCOPES`. The default extra scopes include Google Ads
+(`https://www.googleapis.com/auth/adwords`). If you set a nonempty
+`GOGCLI_EXTRA_SCOPES` override, include that scope explicitly. Run the login
+again to grant newly added scopes. Google Ads API calls also require a developer
+token. Verify the active grant at any time with:
 
 ```sh
 sg-gog-check --json
@@ -469,6 +473,48 @@ the login, then close the debugger tab before starting Hermes. If login state is
 missing, confirm Hermes and the helper use the same profile, no second browser
 is holding its directory, and `/profiles` is writable through
 `BROWSERLESS_PROFILES_GID`.
+
+## Hermes log remediation
+
+`scripts/hermes_log_remediation.py` prepares a bounded profile migration. It
+adds a missing internal `SEARXNG_URL` to existing profile `.env` files, removes
+dormant retired reset timers, and removes absent legacy plugin names only when
+their command owner is enabled. It preserves existing search overrides, tool
+allowlists, cron destinations, unrelated values, ownership, and file modes.
+Missing `.env`, duplicate settings, symlinks, or changed preflight inputs abort.
+
+```sh
+python3 scripts/hermes_log_remediation.py --home /path/to/hermes-data
+```
+
+`--repair-plugins` also prepares deterministic repairs for installed node-search
+and Toolaria sources; `--talk-plugin /path/to/talk-plugin` includes transcript
+worker context propagation. Toolaria uses the native profile home, requires
+session identity for retrieval and pass-reference expansion, and keeps audit
+out of the model tool. If ambient retrieval is unavailable, oversized results
+pass through intact rather than becoming inaccessible handles. Existing shared
+store handles are not copied into other profile stores.
+
+Apply only as the data owner with `--apply --backup-dir` pointing to an empty
+owner-only directory. Every candidate is validated before writes; originals
+and a hash/ownership manifest are retained, and a failed write rolls back
+completed replacements. Quiesce affected profile writers during application.
+Reloading plugin source is required before the running gateway uses it.
+
+For the diagnosed empty-feature PM generation,
+`scripts/hermes_dependency_recovery.py` runs under the image's original Python.
+Its default is a read-only preflight against an explicit facts fingerprint.
+Application backs up the full record and uses native PM locking/publication
+to return to the image dependencies, restoring their actual feature selection
+and preserving the original stamp. It does not install packages or delete
+generations. This is recovery, not a permanent replacement for rebuilding a
+correctly declared dependency graph; future PM synchronization can rebuild it.
+Verify enabled plugin imports, cold launcher selection, and each configured
+adapter as well as container health before accepting activation.
+
+Keep at least 5 GB free for runtime operations unless the operator explicitly
+authorizes a bounded exception. OOM tuning, automatic session resets, trust
+expansion, and checkpoint history deletion are separate operations.
 
 ## Hermes fast-mode overlay
 
