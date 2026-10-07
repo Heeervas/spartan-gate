@@ -1,5 +1,6 @@
 # Upstream main revision: e8c97320ac8691d4de92af49f98459f9ef9ddb08
-FROM docker.io/nousresearch/hermes-agent:main@sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde
+ARG HERMES_BASE_IMAGE=docker.io/nousresearch/hermes-agent:main@sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde
+FROM ${HERMES_BASE_IMAGE}
 
 USER root
 
@@ -175,6 +176,8 @@ RUN mkdir -p /opt/data/.config/pip \
 COPY --chown=0:0 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/bootstrap/spartan_browser_policy.py
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/spartan_browser_policy.py
+COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py
+COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/bootstrap/spartan_browser_variant.py
 COPY --chown=0:0 spartan-browser-policy-init.sh /etc/cont-init.d/0195-spartan-browser-policy
 ENV SPARTAN_BROWSER_POLICY_ENABLED=1 \
     HERMES_MANAGED_DIR=/run/spartan-hermes-managed \
@@ -184,7 +187,8 @@ ENV SPARTAN_BROWSER_POLICY_ENABLED=1 \
 COPY --chown=0:0 patches/ /opt/hermes/patches/
 COPY --chown=0:0 audit-install-tree.py /opt/hermes/patches/audit-install-tree.py
 # Apply patches and verify permissions atomically; avoid one snapshot per patch.
-RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
+RUN python3 /opt/hermes/patches/patch_camofox_only_variant.py /opt/hermes \
+    && python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_s6_service_permissions.py \
     && python3 /opt/hermes/patches/patch_runtime_identity_drop.py \
     && python3 /opt/hermes/patches/patch_stage2_cdp_env.py \
@@ -196,6 +200,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_mcp_proxy_env.py \
     && python3 /opt/hermes/patches/patch_google_meet_cdp.py \
     && python3 /opt/hermes/patches/patch_google_meet_transcript.py \
+    && python3 /opt/hermes/patches/patch_camofox_only_variant.py /opt/hermes --meet-only \
     && python3 /opt/hermes/patches/patch_clawroute_prompt_cache_key.py \
     && python3 /opt/hermes/patches/patch_spartan_fast_mode.py \
     && python3 /opt/hermes/patches/patch_route_env_placeholders.py \

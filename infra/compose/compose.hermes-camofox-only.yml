@@ -1,0 +1,8 @@
+# Opt in only after building the pinned upstream variant and reviewing its ID.
+# Include this after compose.yml and before private overrides.
+services:
+  hermes:
+    image: ${HERMES_CAMOFOX_ONLY_IMAGE:?set the reviewed final Camofox-only image reference}
+    build:
+      args:
+        HERMES_BASE_IMAGE: ${HERMES_CAMOFOX_ONLY_BASE_IMAGE:?set the reviewed upstream Camofox-only image reference}

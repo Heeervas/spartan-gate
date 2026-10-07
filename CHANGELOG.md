@@ -12,6 +12,11 @@ All notable changes to Spartan Gate are documented here.
   codec before native join. Document Talk 0.21.1 multiplex routing and the
   remaining upstream result-return rejection; live audio acceptance is pending.
 
+- Add opt-in pinned Camofox-only Hermes build preparation that omits bundled
+  Chromium from its creation layer, preserves the full toolbox and installs
+  variant guards before resident PM sealing. Keep the full image as the default
+  and document explicit image selection and peak-storage review.
+
 - Isolate native Hermes background-review cache tracking from foreground
   history while preserving compatible shared provider cache keys and signed
   reasoning identity. Retain bounded hash-only foreground snapshots for late
