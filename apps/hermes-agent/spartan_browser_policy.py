@@ -70,8 +70,14 @@ def validate_policy(directory: Path, owner_uid: int, gid: int) -> dict:
 
 def camofox_policy_enabled() -> bool:
     global _cache
+    variant = False
+    if os.path.lexists('/etc/spartan/hermes-browser-mode'):
+        from spartan_browser_variant import camofox_only
+        variant = camofox_only()
     enabled = os.environ.get('SPARTAN_BROWSER_POLICY_ENABLED', '')
     if not enabled and not MANAGED_DIR.exists():
+        if variant:
+            raise RuntimeError('Camofox-only image requires a managed browser policy')
         return False  # Unmodified upstream deployments keep their own semantics.
     if enabled != '1' or os.environ.get('HERMES_MANAGED_DIR') != str(MANAGED_DIR):
         raise RuntimeError('Spartan browser policy deployment settings are invalid')
@@ -83,9 +89,13 @@ def camofox_policy_enabled() -> bool:
                            st.st_size, st.st_mtime_ns, st.st_ctime_ns) for st in stats)
         key = (gid, signature)
         if _cache is not None and _cache[0] == key:
+            if variant and not _cache[1]:
+                raise RuntimeError('Camofox-only image forbids unmanaged browser mode')
             return _cache[1]
         document = validate_policy(MANAGED_DIR, 0, gid)
         result = document['mode'] == 'camofox'
+        if variant and not result:
+            raise RuntimeError('Camofox-only image forbids unmanaged browser mode')
         _cache = (key, result)
         return result
     except (OSError, ValueError, TypeError) as exc:
@@ -278,6 +288,13 @@ def cold_import_preflight(uid: int, gid: int) -> None:
                 'from tools.browser_tool_cloud import _resolve_cloud_provider_uncached\n'
                 'from tools.tool_backend_helpers import read_selection\n'
                 'import tools.browser_tool\n'
+                'import os, pathlib\n'
+                'if os.path.lexists("/etc/spartan/hermes-browser-mode"):\n'
+                ' import spartan_browser_variant, pm.spartan_browser_variant as worker_variant\n'
+                ' assert pathlib.Path(spartan_browser_variant.__file__).resolve() == pathlib.Path("/opt/hermes/spartan_browser_variant.py")\n'
+                ' assert pathlib.Path(worker_variant.__file__).resolve() == pathlib.Path("/opt/hermes/pm/spartan_browser_variant.py")\n'
+                ' spartan_browser_variant.validate_runtime(pathlib.Path("/opt/hermes"))\n'
+                ' assert camofox_policy_enabled()\n'
                 'if camofox_policy_enabled():\n'
                 ' assert is_camofox_mode()\n'
                 ' assert not is_browser_use_cli_mode()\n'
@@ -316,8 +333,15 @@ def main() -> None:
     if source == MANAGED_DIR or source.is_symlink():
         raise ValueError('Managed source directory is invalid')
     raw_manifest = os.environ.get('SPARTAN_HERMES_CODE_MANIFEST', '')
+    if os.path.lexists('/etc/spartan/hermes-browser-mode'):
+        from spartan_browser_variant import validate_runtime
+        validate_runtime(Path('/opt/hermes'))
     validate_code(Path('/opt/hermes'), Path(raw_manifest) if raw_manifest else None)
     documents = prepare_documents(dict(os.environ), source)
+    if os.path.lexists('/etc/spartan/hermes-browser-mode'):
+        from spartan_browser_variant import camofox_only
+        if camofox_only() and json.loads(documents['mode.json'])['mode'] != 'camofox':
+            raise ValueError('Camofox-only image requires managed Camofox configuration')
     publish_policy(documents, MANAGED_DIR, 0, gid)
     cold_import_preflight(uid, gid)
     mode = validate_policy(MANAGED_DIR, 0, gid)['mode']

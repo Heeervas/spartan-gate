@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Enforce the optional Hermes Camofox-only image at startup and package-manager
+  admission. Require managed Camofox, reject native Chromium dependency chains
+  before provisioning, and preserve updates for supported tools.
+
 - Preserve the image's measured Hermes optional features across the first
   managed dependency generation. Bind raw API delegation claims and durable
   delivery to a unique served owner without changing database schemas or

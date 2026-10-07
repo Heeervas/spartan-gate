@@ -20,6 +20,13 @@ active browser. A failed Camofox connection/authentication returns an error;
 Hermes must not silently launch Chromium. Each profile retains its own durable
 identity and session state.
 
+The optional Camofox-only image requires this managed configuration at startup.
+It cannot provision or select local Chromium, including through explicit Hermes
+PM installs, transitive browser dependencies, Meet installation/auth commands,
+or tool staging. Tool updates continue for supported packages. Fix Camofox
+connectivity or authentication when a browser call fails; installing Chromium
+inside this image cannot restore browser service.
+
 Prefer Hermes' `browser_*` tools. They apply URL and website policy checks,
 redact returned text, keep one tab associated with the durable Hermes session,
 and recover safely from a replaced browser generation. Calling the REST API

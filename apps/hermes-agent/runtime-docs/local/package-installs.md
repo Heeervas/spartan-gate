@@ -3,6 +3,11 @@
 Use project-local sandboxes for extra tools. Do not install into `/opt/hermes`,
 `/usr`, `/usr/local`, `/etc`, or `/var/lib` from a live Hermes session.
 
+The optional Camofox-only image rejects Hermes PM requests for Chromium,
+agent-browser, or packages depending on them, including explicit installs and
+staging. Supported tool updates and Python/Node workspace installs retain their
+usual behavior. Browser outages require repairing the managed Camofox service.
+
 ## Python
 
 Create a local virtual environment and install through `uv` with pinned versions:
