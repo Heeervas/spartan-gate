@@ -101,6 +101,8 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
             helper.write_text('ERROR = "unsupported"\n')
             for name, guards in runtime.GUARDS.items():
                 source = ''.join(f'def {function}(*args, **kwargs):\n    pass\n\n' for function in guards)
+                if name == 'tools/browser_tool.py':
+                    source += '''f"a missing Chromium install ('agent-browser install'), "\n'''
                 if name == 'pm/client.py':
                     source += 'def sync_tools():\n    for name in tool_roots(Lockfile(paths.lockfile_path()).names()):\n        ensure(name, explicit=True)\n'
                 if name == 'pm/install.py':
@@ -114,7 +116,8 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
                 self.assertIn('--helper /opt/hermes/spartan_browser_variant.py', command)
                 args = command.strip().split()[1:]
                 args = [arg.replace('/opt/hermes', str(root)) for arg in args]
-                subprocess.run([sys.executable, *args], check=True, capture_output=True)
+                result = subprocess.run([sys.executable, *args], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((root / 'pm/spartan_browser_variant.py').read_bytes(), helper.read_bytes())
             self.assertIn('tools/browser_tool_install.py', (root / 'pm/spartan-browser-variant.json').read_text())
 
