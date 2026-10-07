@@ -1,5 +1,45 @@
 # Current State
 
+## Camofox-only Hermes deployed and accepted (2026-10-07)
+
+The reviewed Camofox-only image is deployed and healthy, including the recent
+log-remediation, voice-scope and Gog patches. Runtime source revision is
+`34dd7391a9615d9bed0864e0b07da83e4a699091`; final image ID is
+`sha256:523dd6f40aa5445033155ebf0c491a5c686ad044dda94a56de3d045f533dec47`.
+This supersedes the preparation-only status below. Backed-up, hash-verified
+profile/plugin migrations and native PM image-fallback feature recovery were
+applied. Persistent application databases were not manually modified or deleted.
+
+The image's compressed content plus unpacked layers decreased from
+6,973,663,861 to 6,326,309,967 bytes: 647,353,894 bytes (9.28%) saved. This is the
+measured deployed-image difference, not a controlled Chromium-only comparison:
+export used Zstandard level 15, and unlocked Python dependencies changed
+fonttools 4.65 to 4.66, networkx 3.6.1 to 3.7, and pymdown-extensions 12.0.1 to
+12.1. The APT inventory is unchanged, no Python distributions were removed,
+and the retained PM toolbox differs only by removal of Chromium.
+
+The opt-in image-dependencies-only startup mode validates the baked environment
+before skipping automatic dependency sync and collection. It refuses selected
+generations or unsatisfied plugin requirements. This prevents startup from
+rebuilding an unnecessary persistent environment under constrained storage.
+Managed Camofox remains required; native Chromium and Chromium HTML-to-PDF are
+unsupported. The compiler, document/PDF, Python, Node and FFmpeg toolbox remains.
+
+Validation passed 298 Hermes Python tests, 399 script tests (two optional skips),
+and 18 JavaScript tests. Actual-image checks cover native and resident PM browser
+rejection, startup denial, retained tools and pdflatex output. Authenticated
+health and capability checks passed for every configured profile, and all
+configured adapters connected. A synthetic Camofox navigation, snapshot and
+screenshot passed. Existing mounts, network isolation, security options and
+neighboring container identities were preserved. Private receipts retain the
+inventories, backups and acceptance evidence.
+
+The upstream source bundle and preparation manifest remain available for a
+future rebuild; the transient upstream build image was removed during capacity
+recovery and must be rebuilt before another downstream build. Existing Blender
+MCP executable repair and live voice-provider/audio acceptance remain separate
+follow-ups; this deployment does not establish that those issues are resolved.
+
 ## Hermes log repairs prepared; runtime activation pending (2026-10-07)
 
 Prepared and independently reviewed by an Astra-high adversarial agent:

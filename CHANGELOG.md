@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Validate and deploy the optional Camofox-only Hermes image with recent runtime
+  repairs and authenticated service acceptance. Record measured storage savings,
+  dependency drift, and the upstream rebuild prerequisite after build-image cleanup.
+
 - Add an explicit image-only Hermes startup mode that validates baked Python,
   measured extras and enabled plugin requirements before skipping automatic
   dependency sync and generation collection. Refuse selected generations and

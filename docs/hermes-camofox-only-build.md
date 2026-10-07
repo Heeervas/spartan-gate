@@ -45,8 +45,10 @@ byte-identical dependencies from APT or other unlocked repositories.
 
 Do not start a build until an explicit peak-space budget fits. The repository
 normally requires more than 10 GB free before a Hermes rebuild and at least
-5 GB throughout; any operator-authorized exception must still retain the
-5 GB floor. Free space just above that floor is insufficient. The changed
+5 GB throughout. Follow any explicit operator-authorized capacity exception
+for that operation, retaining an agreed emergency margin. A small threshold
+dip alone does not authorize cleanup. Free space just above the normal floor
+is insufficient to assume that a full rebuild fits. The changed
 upstream PM layer invalidates subsequent Python/frontend layers, so downloads,
 intermediate stages, BuildKit cache and export can exceed the eventual Chromium
 saving by several times. Image logical sizes do not measure physical coexistence
@@ -85,6 +87,19 @@ Before the downstream build, inspect the upstream tag again and require its ID
 to match the reviewed ID. Use a registry digest when publishing the base. Local
 image IDs are review coordinates; the Dockerfile `FROM` argument uses a local
 tag or registry digest.
+
+A local upstream tag is a required build input, not an archived artifact. If it
+was removed after deployment to recover capacity, repeat upstream preparation
+and build before running the downstream build (including `sg build hermes`).
+Retain the pinned source bundle and preparation manifest separately. The running
+final image does not require the upstream tag to remain installed.
+
+Docker may retain both compressed content and unpacked layers. Record both when
+comparing storage; the image inspect size alone can understate that total.
+Changing export compression also changes the comparison: the first deployed
+variant used Zstandard level 15, so its measured saving includes compression as
+well as the omitted Chromium payload. Compression does not reduce the unpacked
+application footprint or eliminate peak build-space requirements.
 
 Use an approved clean downstream checkout for the final build: building a dirty
 checkout can silently include unrelated patches. Record installed package
