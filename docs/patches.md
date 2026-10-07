@@ -8,7 +8,7 @@ patch.
 The 2026-10-01 refresh targets upstream main
 `e8c97320ac8691d4de92af49f98459f9ef9ddb08`, OCI digest
 `sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde`.
-The Dockerfile now carries 18 active build-time patches, including the
+The Dockerfile now carries 21 active build-time patches, including the
 post-refresh Camofox policy and Spartan Route fast-mode adaptations. Python 3.14 uses
 `/opt/data/hermes-extra-site-py314`; the Python 3.13 directory is retained but
 excluded from the new runtime import path. Synced plugin versions are retained.
@@ -58,6 +58,7 @@ extension points.
 | `spartan-cache-lineage` 0.4.0 plugin | HMAC-binds Responses reasoning to profile/session/realm and fingerprints Chat `messages` or Responses `instructions` plus `input`, with canonical tool hashing and transport-separated bounded state. Native background reviews inherit a compatible foreground cache lineage without overwriting foreground tracking, using the existing Hermes origin API. It stores only hashes and treats invalid or foreign reasoning as a cold chain. |
 | Camofox auth env mapping | Passes the protected-route `CAMOFOX_ACCESS_KEY` to Hermes under upstream's expected `CAMOFOX_API_KEY` client variable. |
 | `proxy-bootstrap.py` | Routes selected web/search traffic through Spartan Gate controls and logs audited egress. |
+| `freeze_image_features.py` | Inventories the image's actually installed native extras and writes Hermes's feature metadata after dependency installation. This preserves shipped optional features when PM creates its first writable generation; it does not declare arbitrary plugin dependencies. |
 | `browserless-cdp-broker.py` | Shares one persistent Browserless profile session across local CDP clients. |
 | `browserless-cdp-url.js` and `cdp-patch.js` | Normalize Browserless CDP URLs for container networking and auth. |
 
@@ -98,6 +99,9 @@ These should be proposed upstream or deleted when upstream fixes the behavior.
 | --- | --- |
 | `patch_mcp_proxy_env.py` | Stdio MCP subprocesses need proxy variables in network-constrained containers, and the current MCP SDK requires legacy YAML boolean/number environment scalars to be normalized to strings. |
 | `patch_state_fts_empty_migration.py` | Upstream's empty v1/v2 FTS migration calls `executescript` inside a savepoint, implicitly committing it. Use the existing transactional DDL helper only for this empty-index branch; retain populated migration and rollback behavior. Remove when upstream fixes the branch. |
+| `patch_async_completion_scope.py` | Requires a unique served owner for raw API delegation sessions before readiness checks, claims, durable delivery persistence, and settlement. Cached origins cannot disambiguate client-chosen IDs or turn a raw completion into a messaging wake. Missing or ambiguous ownership fails closed. |
+| `patch_lsp_sdk_repair.py` | Validates the JavaScript TypeScript SDK alongside existing LSP executables, repairs only the supported companion SDK, and keeps install caches scoped to the profile. Manual/off policies remain probe-only; workspace trust remains unchanged. |
+| `patch_cron_thread_diagnostic.py` | Warns about dropped thread metadata only for origin-resolved delivery, respecting native stale-thread fallback and Discord thread-as-channel addressing. Explicit job destinations and all delivery behavior remain unchanged. |
 | Camofox launch-profile cleanup, immediate timeout-tab retirement, and bounded waiter retention in `infra/camofox/patch-server.js` | v1.15 owns fixed-proxy session preservation. Spartan retains immediate retirement of the timed-out tab, de-duplicated failure accounting, and bounded waiters. Periodic profile scans remain disabled because upstream's established-browser protection does not cover unfinished launches. The noVNC override was removed in v1.14. See [Camofox refresh](camofox-refresh.md). |
 | Camofox runtime viewport route in `infra/camofox/patch-server.js` | Upstream should resize the page runtime viewport and report effective dimensions instead of returning `ok` for screenshot-only crops or no-ops. |
 

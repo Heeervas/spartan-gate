@@ -3,6 +3,16 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Preserve the image's measured Hermes optional features across the first
+  managed dependency generation. Bind raw API delegation claims and durable
+  delivery to a unique served owner without changing database schemas or
+  persistence functions. Validate and repair only the TypeScript companion
+  SDK, and keep intentional cron destinations out of lost-thread warnings.
+- Add dry-run-first, backed-up profile/plugin remediation for scoped search,
+  Talk transcript worker context, Toolaria ownership and safe pass-through,
+  absent legacy plugins, and retired reset timers. Include guarded native PM
+  metadata recovery; runtime activation remains a separate operator action.
+
 - Request the Google Ads OAuth scope in the Gog Workspace helper defaults and
   reject incomplete grants before Workspace reauthentication. Document scope
   override behavior and the separate Google Ads developer-token requirement.

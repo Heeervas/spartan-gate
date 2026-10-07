@@ -204,6 +204,10 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_codex_429_fail_fast.py \
     && python3 /opt/hermes/patches/patch_workstation_approval_scope.py \
     && python3 /opt/hermes/patches/patch_state_fts_empty_migration.py \
+    && python3 /opt/hermes/patches/patch_async_completion_scope.py \
+    && python3 /opt/hermes/patches/patch_lsp_sdk_repair.py \
+    && python3 /opt/hermes/patches/patch_cron_thread_diagnostic.py \
+    && python3 /opt/hermes/patches/freeze_image_features.py \
     && if [ -f /etc/spartan/hermes-browser-mode ]; then \
         install -m 0644 /opt/hermes/patches/spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py \
         && install -m 0644 /opt/hermes/patches/spartan_browser_variant.py /opt/hermes/bootstrap/spartan_browser_variant.py \

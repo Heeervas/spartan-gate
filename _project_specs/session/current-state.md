@@ -1,5 +1,36 @@
 # Current State
 
+## Hermes log repairs prepared; runtime activation pending (2026-10-07)
+
+Prepared and independently reviewed by an Astra-high adversarial agent:
+image feature inventory, raw API delegation ownership across the entire
+claim/persist/settlement lifecycle, TypeScript companion SDK repair, and a
+cron thread diagnostic that respects intentional destinations. Prepared
+owner-preserving profile/plugin migration for scoped SearXNG, node-search,
+Talk transcript worker context, Toolaria isolation and safe pass-through,
+absent legacy plugin names, and dormant retired reset timers. OOM tuning and
+automatic resets are excluded; explicit tool allowlists and cron routes stay
+intact.
+
+No live configuration, plugin source, PM facts, checkpoint lock, or service
+was changed by this remediation. The dry-run migration covers 26 files;
+native PM fallback preflight measured 25 image extras and installed nothing.
+Hermes Python validation ran 265 tests with 28 skips; 27 focused script tests
+passed. The broader script suite encountered seven errors in existing browser
+overlay tests because their real disk-capacity guard rejected this host.
+Compose rendering and whitespace validation passed.
+
+Preparation was initially gated by AGENTS.md's 5 GB free-space requirement;
+free space fell to approximately 300 MB without a runtime exception. A separate
+integration session now coordinates the user-authorized definitive Camofox
+image rebuild and activation. This branch performs no runtime operations.
+Keep the diagnosed old checkpoint index lock intact until native-lock/no-writer
+recovery can run; restore Blender through a persistent installation and repair
+only the TypeScript SDK after the capacity gate. Core patches are wired into
+the next image build, but no build was attempted. Existing-image activation
+still needs guarded code overlays, plugin import checks, cold native launcher
+selection, adapter readiness, and authenticated health acceptance.
+
 ## Talk 0.21.1 and all-profile `/voice` compatibility (2026-10-07)
 
 Updated the private adapted Talk snapshot from 0.17.2 to upstream 0.21.1
