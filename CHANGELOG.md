@@ -3,6 +3,9 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Normalize injected Camofox-only build helpers to mode 0644 and repair the
+  existing variant base's root patcher before the final installation audit.
+
 - Enforce the optional Hermes Camofox-only image at startup and package-manager
   admission. Require managed Camofox, reject native Chromium dependency chains
   before provisioning, and preserve updates for supported tools.

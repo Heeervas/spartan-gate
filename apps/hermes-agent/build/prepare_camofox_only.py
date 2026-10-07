@@ -15,8 +15,8 @@ UPSTREAM_IMAGE = 'docker.io/nousresearch/hermes-agent:main@sha256:5edbc9c277d22f
 DOCKERFILE_SHA256 = '1aa1d2ab18688b340ec1290b684982e4e6eddf0b8686fa317bbc072f2ac23068'
 APP = Path(__file__).resolve().parents[1]
 EARLY_ANCHOR = 'COPY scripts/bundles/payload.py scripts/bundles/payload.py\n'
-EARLY = '''COPY _spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py
-COPY _spartan_patch_camofox_only_variant.py /opt/hermes/patch_camofox_only_variant.py
+EARLY = '''COPY --chmod=0644 _spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py
+COPY --chmod=0644 _spartan_patch_camofox_only_variant.py /opt/hermes/patch_camofox_only_variant.py
 RUN mkdir -p /etc/spartan && printf 'camofox-only\\n' > /etc/spartan/hermes-browser-mode && \\
     chmod 0444 /etc/spartan/hermes-browser-mode && \\
     python3 /opt/hermes/patch_camofox_only_variant.py /opt/hermes --helper /opt/hermes/spartan_browser_variant.py --pm-only

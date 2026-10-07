@@ -213,6 +213,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
         install -m 0644 /opt/hermes/patches/spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py \
         && install -m 0644 /opt/hermes/patches/spartan_browser_variant.py /opt/hermes/bootstrap/spartan_browser_variant.py \
         && install -m 0755 /opt/hermes/patches/spartan-browser-variant-init.sh /etc/cont-init.d/0196-spartan-browser-variant \
+        && chmod 0644 /opt/hermes/patch_camofox_only_variant.py \
         && python3 /opt/hermes/patches/patch_camofox_only_variant.py /opt/hermes \
             --helper /opt/hermes/spartan_browser_variant.py --meet-only; \
     fi \

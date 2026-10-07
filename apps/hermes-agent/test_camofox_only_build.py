@@ -2,6 +2,7 @@ import importlib.util
 import io
 import os
 import subprocess
+import stat
 import sys
 import tarfile
 from pathlib import Path
@@ -75,7 +76,18 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
                 }[args[0]]
             output = root / 'context'
             with mock.patch.object(module, 'APP', app), mock.patch.object(module, 'git', side_effect=fake_git):
+                # A shared developer umask produces group-writable context files;
+                # injected Docker COPY instructions must override that metadata.
+                previous_umask = os.umask(0o002)
+                self.addCleanup(os.umask, previous_umask)
                 first = module.prepare(root / 'upstream', output)
+                dockerfile = (output / 'Dockerfile').read_text()
+                for injected, installed in (
+                    ('_spartan_browser_variant.py', 'spartan_browser_variant.py'),
+                    ('_spartan_patch_camofox_only_variant.py', 'patch_camofox_only_variant.py'),
+                ):
+                    self.assertEqual(stat.S_IMODE((output / injected).stat().st_mode), 0o664)
+                    self.assertIn(f'COPY --chmod=0644 {injected} /opt/hermes/{installed}', dockerfile)
                 self.assertEqual(module.prepare(root / 'upstream', output), first)
                 self.assertEqual((output / 'pm/example.py').read_bytes(), b'old')
                 self.assertIn(module.REVISION, (output / 'install-stamp.json').read_text())
@@ -120,6 +132,16 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((root / 'pm/spartan_browser_variant.py').read_bytes(), helper.read_bytes())
             self.assertIn('tools/browser_tool_install.py', (root / 'pm/spartan-browser-variant.json').read_text())
+
+    def test_existing_variant_base_patcher_mode_is_repaired_before_audit(self):
+        source = (APP / 'Dockerfile').read_text()
+        marker = 'if [ -f /etc/spartan/hermes-browser-mode ]; then'
+        branch = source.split(marker, 1)[1].split('    fi', 1)[0]
+        repair = 'chmod 0644 /opt/hermes/patch_camofox_only_variant.py'
+        self.assertEqual(source.count(repair), 1)
+        self.assertIn(repair, branch)
+        self.assertLess(source.index(repair), source.index('--meet-only'))
+        self.assertLess(source.index(repair), source.index('python3 /opt/hermes/patches/audit-install-tree.py /opt/hermes'))
 
     def test_default_base_remains_immutable_and_variant_is_optional(self):
         source = (APP / 'Dockerfile').read_text()
