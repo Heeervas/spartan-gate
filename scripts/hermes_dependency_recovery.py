@@ -28,9 +28,13 @@ def validate_selection(data: bytes, inventory: list[str]) -> tuple[str, list[str
         raise ValueError('invalid native PM package records')
     fact = packages.get('venv')
     if (not isinstance(fact, dict) or fact.get('extras') != []
-            or not isinstance(fact.get('environment'), str) or not fact['environment']
             or not isinstance(fact.get('stamp'), str) or not fact['stamp']):
         raise ValueError('recovery only accepts the diagnosed empty-feature generation')
+    # Native record_state fallback omits generation pointers; committed_venv
+    # still validates any selected generation before this recovery runs.
+    for key in ('environment', 'resolved_lock'):
+        if key in fact and (not isinstance(fact[key], str) or not fact[key].strip()):
+            raise ValueError('invalid native PM generation pointer')
     if (not isinstance(inventory, list) or any(not isinstance(x, str) or not x.strip() for x in inventory)
             or not REQUIRED.issubset(inventory)):
         raise ValueError('image does not contain the required optional features')

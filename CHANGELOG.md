@@ -19,6 +19,9 @@ All notable changes to Spartan Gate are documented here.
   Talk transcript worker context, Toolaria ownership and safe pass-through,
   absent legacy plugins, and retired reset timers. Include guarded native PM
   metadata recovery; runtime activation remains a separate operator action.
+- Accept native PM image fallback records without generation pointers during
+  guarded feature recovery; reject malformed pointers and preserve unrelated
+  package records without installing dependencies or accessing databases.
 
 - Request the Google Ads OAuth scope in the Gog Workspace helper defaults and
   reject incomplete grants before Workspace reauthentication. Document scope

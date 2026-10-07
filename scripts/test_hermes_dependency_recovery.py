@@ -58,7 +58,7 @@ class DependencyRecoveryTests(unittest.TestCase):
 
         modules = {}
         for name, attrs in {
-            'pm.environments': {'committed_venv': Mock(return_value=Path('/synthetic/selected')), 'runtime_facts_path': lambda root: self.path},
+            'pm.environments': {'committed_venv': Mock(return_value=Path('/synthetic/selected') if 'environment' in self.record['packages']['venv'] else None), 'runtime_facts_path': lambda root: self.path},
             'pm.features': {'installed_extras': Mock(return_value=list(RECOVERY.REQUIRED))},
             'pm.lock': {'Facts': Facts}, 'pm.paths': {'repo_root': lambda: self.root},
             'hermes_cli.runtime_state': {'runtime_lock': runtime_lock},
@@ -83,6 +83,28 @@ class DependencyRecoveryTests(unittest.TestCase):
         self.assertEqual(doc['packages']['venv'], {'stamp': 'original-stamp', 'extras': sorted(RECOVERY.REQUIRED)})
         self.assertEqual((self.backup / 'facts.original.json').stat().st_mode & 0o777, 0o600)
         self.assertEqual(len(self.calls), 1)
+
+    def test_native_fallback_without_generation_pointers_is_recoverable(self):
+        for key in ('environment', 'resolved_lock'):
+            self.record['packages']['venv'].pop(key)
+        self.path.write_text(json.dumps(self.record))
+        self.sha = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        with self.native_modules(), patch.object(sys, 'prefix', str(self.root / '.venv')), patch.object(RECOVERY, 'probe_base'):
+            self.assertEqual(RECOVERY.recover(self.root, self.sha), len(RECOVERY.REQUIRED))
+            self.assertEqual(self.calls, [])
+            self.assertEqual(json.loads(self.path.read_text()), self.record)
+            RECOVERY.recover(self.root, self.sha, self.backup)
+        self.assertEqual(self.calls, [('venv', 'original-stamp', sorted(RECOVERY.REQUIRED))])
+        self.assertEqual(json.loads(self.path.read_text())['packages']['other'], self.record['packages']['other'])
+
+    def test_malformed_optional_generation_pointers_are_refused(self):
+        for key in ('environment', 'resolved_lock'):
+            for value in (None, '', False, [], {}):
+                with self.subTest(key=key, value=value):
+                    changed = json.loads(json.dumps(self.record))
+                    changed['packages']['venv'][key] = value
+                    with self.assertRaises(ValueError):
+                        RECOVERY.validate_selection(json.dumps(changed).encode(), list(RECOVERY.REQUIRED))
 
     def test_concurrent_selection_change_is_not_overwritten(self):
         with self.native_modules(True), patch.object(sys, 'prefix', str(self.root / '.venv')), patch.object(RECOVERY, 'probe_base'):
