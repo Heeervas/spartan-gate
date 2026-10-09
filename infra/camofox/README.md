@@ -260,11 +260,12 @@ proxy is local Tinyproxy, not a residential proxy with a useful geolocation
 target.
 
 For analytics work, set `CAMOFOX_DISABLE_DEFAULT_ADDONS=true` and recreate only
-Camofox. This uses upstream Camofox's native switch to omit its default uBlock
-Origin add-on; `false` remains the privacy-preserving default. The switch does
-not bypass Spartan Gate's Tinyproxy or DNS allowlists, and Camofox still omits
-known analytics iframes from accessibility snapshots even though their network
-requests can load.
+Camofox. Despite its name, this upstream switch excludes only the default
+uBlock Origin (UBO) add-on; custom add-ons configured through `CAMOFOX_ADDONS`
+remain enabled. `false` remains the public privacy-preserving default. The
+switch does not bypass Spartan Gate's Tinyproxy or DNS allowlists, and Camofox
+still omits known analytics iframes from accessibility snapshots even though
+their network requests can load.
 
 Validate tracker protection with ordinary page scripts, not direct automation
 `evaluate(fetch(...))`: the latter can bypass extension interception on Camoufox
@@ -293,6 +294,16 @@ Env:       CAMOFOX_ADDONS=/opt/camofox-addons/web-clipper-obsidian
 
 Set `SPARTAN_CAMOFOX_ADDONS_PATH` to the host `addons` directory. The private
 Compose example mounts it read-only at `/opt/camofox-addons`.
+
+To keep Obsidian Web Clipper enabled while allowing analytics requests, pair
+these settings in private env:
+
+```env
+CAMOFOX_DISABLE_DEFAULT_ADDONS=true
+CAMOFOX_ADDONS=/opt/camofox-addons/web-clipper-obsidian
+```
+
+Recreate only Camofox after changing these settings.
 
 The mounted directory must be an extracted add-on with `manifest.json` at its
 root; raw `.xpi` files are not passed to Camofox directly.

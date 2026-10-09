@@ -3,6 +3,9 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Clarify that Camofox analytics mode disables only default UBO and retains
+  custom add-ons, with paired Obsidian Web Clipper configuration.
+
 - Connect native Hermes credential-vault tools to Camofox with authenticated
   secret transport, durable tab scope, exact-origin OTP checks and textual
   result redaction. Preserve native secure prompts, payment consent and the
