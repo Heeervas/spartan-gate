@@ -8,8 +8,8 @@ patch.
 The 2026-10-01 refresh targets upstream main
 `e8c97320ac8691d4de92af49f98459f9ef9ddb08`, OCI digest
 `sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde`.
-The Dockerfile invokes 22 common build-time patches and one additional patch
-for the Camofox-only variant (23 in that image), including the
+The Dockerfile invokes 23 common build-time patches and one additional patch
+for the Camofox-only variant (24 in that image), including the
 post-refresh Camofox policy and Spartan Route fast-mode adaptations. Python 3.14 uses
 `/opt/data/hermes-extra-site-py314`; the Python 3.13 directory is retained but
 excluded from the new runtime import path. Synced plugin versions are retained.
@@ -59,6 +59,8 @@ extension points.
 | `patch_camofox_managed_policy.py` | Enforces the administrator's Camofox mode before driver, cloud-provider, stored-selection and CDP fallbacks. Five selectors call the strict shared runtime policy; unrelated modalities and unmanaged browser modes retain upstream behavior. The cont-init hook supplies endpoint/auth through native managed secret scopes, without changing `get_secret` or profile identities. Current images can use fingerprinted read-only private mounts; the next build incorporates the same deterministic patch. |
 | `spartan-cache-lineage` 0.4.0 plugin | HMAC-binds Responses reasoning to profile/session/realm and fingerprints Chat `messages` or Responses `instructions` plus `input`, with canonical tool hashing and transport-separated bounded state. Native background reviews inherit a compatible foreground cache lineage without overwriting foreground tracking, using the existing Hermes origin API. It stores only hashes and treats invalid or foreign reasoning as a cold chain. |
 | Camofox auth env mapping | Passes the protected-route `CAMOFOX_ACCESS_KEY` to Hermes under upstream's expected `CAMOFOX_API_KEY` client variable. |
+| `patch_camofox_vault.py` and `spartan_camofox_vault.py` | Adapt native vault page operations to the existing durable Camofox tab, preserve exact-origin checks and native prompts, bind OTP handles to allowed origins, and redact textual Camofox output. Secret expressions use the authenticated capability-versioned route; no CDP fallback. See [vault integration](camofox-vault.md). |
+| Camofox `patch-vault-evaluate.js` | Adds the authenticated secret transport with bounded parsing before generic reporters, scope and tracing checks, sanitized count-only results, and lifecycle-coordinated timeout cleanup. |
 | `proxy-bootstrap.py` | Routes selected web/search traffic through Spartan Gate controls and logs audited egress. |
 | `freeze_image_features.py` | Inventories the image's actually installed native extras and writes Hermes's feature metadata after dependency installation. This preserves shipped optional features when PM creates its first writable generation; it does not declare arbitrary plugin dependencies. |
 | `browserless-cdp-broker.py` | Shares one persistent Browserless profile session across local CDP clients. |

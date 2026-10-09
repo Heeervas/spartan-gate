@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Connect native Hermes credential-vault tools to Camofox with authenticated
+  secret transport, durable tab scope, exact-origin OTP checks and textual
+  result redaction. Preserve native secure prompts, payment consent and the
+  documented screenshot confidentiality limitation.
+
 - Revalidate sealed Hermes image dependencies at native CLI and gateway startup
   before omitting PM's generation verdict, with fingerprinted overlay guards
   and preserved native package-manager diagnostics.

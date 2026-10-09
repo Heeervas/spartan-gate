@@ -489,6 +489,11 @@ lifecycle.
 
 ## Known Limits
 
+Hermes's native credential-vault tools use a protected Camofox transport when
+both images include the vault adapter. See [credential vault integration](../../docs/camofox-vault.md)
+for supported operations, channel requirements, failure behavior and the
+native screenshot confidentiality limitation.
+
 - Camofox does not replace `BROWSER_CDP_URL` or `BROWSER_CDP_MAIN_URL`.
 - Hermes `browser_cdp` functionality remains Browserless/Chromium-backed.
 - Google Meet realtime audio remains Browserless CDP or explicit host Chrome

@@ -1,5 +1,21 @@
 # Decisions
 
+## 2026-10-09 — Native vault transport for Camofox
+
+- Reuse Hermes vault backends, classifiers, fill scripts and secure prompts;
+  adapt only Camofox transport, durable session selection and textual redaction.
+  Require exact-origin OTP handle validation before resolving a code.
+- Keep native screenshot/vision behavior at the operator's explicit request:
+  exact-value text redaction does not protect secrets visible in image pixels.
+- Build pinned upstream Hermes Camofox-only, downstream Hermes and Camofox
+  sequentially after source-backed tests and independent review. The operator
+  authorizes deleting current Hermes/Camofox images, the unused older Hermes
+  image and necessary unused build cache; preserve volumes, profiles and data.
+  Recovery after image removal is by recorded rebuild coordinates.
+- Preserve prior changes in separate commits before goal activation. Parallel
+  implementation uses isolated worktrees and GPT-6.1 Sol medium workers; finish
+  in local commits with clean Git/worktrees and no push.
+
 ## 2026-10-08 — Native managed proxies and sealed-image admission
 
 - Use Hermes' native administrator-managed scope for the six shared HTTP proxy
