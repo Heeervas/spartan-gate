@@ -50,6 +50,10 @@ Last updated: 2026-07-19
 
 ## Tooling
 
+- Docker export with `unpack=false` defers runtime extraction, not its disk
+  cost. Budget builder/runtime snapshot coexistence before the first container;
+  cancelling its client can leave daemon-side extraction running. Retire only
+  authorized, precisely identified build cache before that capacity gate.
 - Helpers that edit multiple files must complete all preflight validation
   before their first write.
 - Generic agent-system CI templates must be adapted to the repository before

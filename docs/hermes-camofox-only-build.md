@@ -101,6 +101,15 @@ variant used Zstandard level 15, so its measured saving includes compression as
 well as the omitted Chromium payload. Compression does not reduce the unpacked
 application footprint or eliminate peak build-space requirements.
 
+With `unpack=false`, reserve space for the first container's extraction as a
+separate gate after export. Builder snapshots and runtime snapshots can coexist
+even when their compressed layers are shared. If approved cleanup is needed,
+identify and retire only this build's reclaimable cache records before the
+first run. Cancelling the Docker client does not reliably stop daemon-side
+extraction; a free-space monitor alone cannot enforce the minimum during that
+operation. Recheck capacity after extraction and remove any unstarted disposable
+canary container left by cancellation.
+
 Use an approved clean downstream checkout for the final build: building a dirty
 checkout can silently include unrelated patches. Record installed package
 inventories and source manifests; any differences beyond browser payload and

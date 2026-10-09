@@ -1,10 +1,17 @@
 # Task List
 
-Last updated: 2026-10-08
+Last updated: 2026-10-09
 
 Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
 ## Completed
+
+- [x] Integrate native Hermes vault tools with Camofox and deploy reviewed images.
+  - Preserve native prompts/backends and payment consent; enforce session/tab
+    ownership, authenticated secret transport and exact-origin OTP checks.
+  - Sequential builds, affected suites, independent adversarial review and real
+    synthetic login/payment/address/OTP acceptance passed. Text is redacted;
+    native screenshot/vision limitations are explicitly accepted and documented.
 
 - [x] Restore proxy inheritance through native managed scope and activate
   reviewed image-only dependency admission without rebuilding Hermes.

@@ -1,5 +1,51 @@
 # Current State
 
+## Native Hermes vault on Camofox deployed (2026-10-09)
+
+Native vault tools now use the existing Camofox tab and session, with a dedicated
+authenticated secret-evaluation route. The reviewed boundary denies tracing,
+cross-session access, the operator login group and OTP origin mismatches;
+timeouts return fixed errors and retire indeterminate tabs. Native backends,
+secure prompts and payment consent remain in place. Text results are redacted;
+the operator explicitly accepted native screenshot/vision confidentiality limits.
+See `docs/camofox-vault.md` for the workflow and recovery contract.
+
+Parallel Sol 6.1 medium implementation worktrees and independent adversarial
+review preceded integration at `12c3d0e`. Hermes Python validation ran 318 tests
+with one optional host-version skip, Hermes JavaScript passed 18, Camofox Python
+passed 26, and Camofox JavaScript passed 46 with two optional skips. Separate
+installed-Express and pinned-source patch-chain checks exercised the skipped
+integration surfaces. Both Compose renders and whitespace checks passed.
+The existing doctor failure on personal host paths in unrelated public files
+remains outside this change.
+
+The base, final Hermes and Camofox images were built sequentially. Final Hermes
+is `sha256:7f2184310662b40d2e6d5ad66732e6bd91ca74c0ab8c611acc668bbdf5565cbd`;
+Camofox is `sha256:d322a13f0c1ba21ff9f91f7b84732ce216726f601565bd63f918815202850a39`.
+The real-image offline canary passed retained tooling and native/resident
+Chromium denial. Live synthetic vault acceptance passed login, payment, address,
+TOTP, exact-origin denial, text redaction and invalid-auth denial, using a
+temporary encrypted vault and an exclusive scratch browser session.
+
+Both services are healthy without restarts, and authenticated health/capability
+GETs passed for every configured profile. The API needed approximately 176
+seconds for cold startup; initial health failures preceded its listener.
+All configured adapters subsequently connected with fresh gateway state and
+no reported adapter error codes.
+Network memberships and neighboring container identities are unchanged.
+The dependency-admission code overlay was retired because its reviewed changes
+are baked into the new Hermes image; persistent mounts and credentials remain.
+
+Old images were removed with operator approval before rebuilding. Capacity
+guards interrupted image operations; one cancelled Docker client did not stop
+runtime extraction and free space briefly fell below the normal 5-GB floor.
+Only precisely identified task build cache and generated temporary inputs were
+removed to recover capacity. The operator subsequently authorized a temporary
+1.5-GB floor during image work. Final free space exceeds 6 GB. The intermediate
+Hermes base was removed after use; the verified upstream source bundle and
+preparation manifest remain available for rebuilding. Private receipts retain
+build, review and acceptance evidence; no browser/vault volumes were deleted.
+
 ## Managed proxies and image-only admission activated (2026-10-08)
 
 Only Hermes was recreated with its existing immutable image. Six proxy/bypass
