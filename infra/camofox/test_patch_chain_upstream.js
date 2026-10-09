@@ -17,6 +17,7 @@ const patchers = [
   ['patch-operator-lease.js'],
   ['patch-operator-lease-api.js'],
   ['patch-memory-pressure.js'],
+  ['patch-vault-evaluate.js'],
 ];
 
 function digest(file) {

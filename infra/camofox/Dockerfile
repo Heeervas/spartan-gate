@@ -82,6 +82,8 @@ COPY patch-operator-lease-api.js /tmp/spartan-camofox-patch-operator-lease-api.j
 RUN node /tmp/spartan-camofox-patch-operator-lease-api.js && rm /tmp/spartan-camofox-patch-operator-lease-api.js
 COPY patch-memory-pressure.js /tmp/spartan-camofox-patch-memory-pressure.js
 RUN node /tmp/spartan-camofox-patch-memory-pressure.js && rm /tmp/spartan-camofox-patch-memory-pressure.js
+COPY patch-vault-evaluate.js /tmp/spartan-camofox-patch-vault-evaluate.js
+RUN node /tmp/spartan-camofox-patch-vault-evaluate.js && rm /tmp/spartan-camofox-patch-vault-evaluate.js
 RUN grep -q "SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1" server.js \
     && grep -q "SPARTAN_PERSISTENCE_DURABILITY_V2" lib/persistence.js \
     && grep -q "SPARTAN_OPERATOR_LEASE_V2" server.js \
