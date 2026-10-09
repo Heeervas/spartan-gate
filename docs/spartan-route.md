@@ -171,9 +171,11 @@ Kept in v1:
   catalog before routing. Hidden, malformed, and models requiring a
   newer validated Codex client protocol are excluded. The catalog is an observed
   Codex backend interface, not a public OpenAI API contract. A failed refresh
-  keeps the last valid account catalog for at most 24 hours; credential changes
-  revoke that account's old eligibility immediately. Unknown explicit Codex
-  model IDs return `404 model_not_found`; a listed model without an eligible
+  keeps the last valid account catalog for at most 24 hours. Detection of a
+  changed bootstrap credential generation revokes stale catalog eligibility
+  and wakes discovery, even when that slot has no catalog entry. Absent or
+  mismatched source identity cannot grant catalog eligibility. Unknown explicit
+  Codex model IDs return `404 model_not_found`; a listed model without an eligible
   account returns `503 codex_model_unavailable`. Saved auto-tier overrides are
   revalidated after refresh and fall back to file defaults with a warning when
   their model is unavailable.
@@ -566,9 +568,13 @@ An expired bootstrap grant is refreshed for its intended account and replaces
 conflicting managed state only after a successful refresh. A terminal rejection
 of that intended grant never falls back to another managed account and requires
 a new login; quota, network, lock, and local persistence failures remain
-retryable and do not imply that the user should reauthenticate. A changed
-bootstrap credential generation clears its matching terminal quarantine and
-stale quota cooldown without a Route restart; unchanged grants keep cooldowns.
+retryable and do not imply that the user should reauthenticate. Spartan Route
+automatically checks for changed bootstrap credential generations even on
+healthy slots with cached auth. Detection invalidates stale cached auth, slot
+and account leases, usage cache, and catalog eligibility, clears matching
+terminal quarantine and stale quota cooldown, and wakes model discovery.
+Unchanged grants keep cooldowns. Managed-state account binding and expiry
+selection still apply; this does not guarantee revocation of in-flight calls.
 Do not copy one refresh grant between slots: every slot needs an independent
 local login. Treat backups of `/app/data/codex-auth` as credentials, not
 ordinary telemetry.

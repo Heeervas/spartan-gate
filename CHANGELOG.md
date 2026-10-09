@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Detect changed Codex bootstrap credentials on healthy cached slots, invalidate
+  stale auth, leases, usage cache and catalog eligibility, and wake discovery
+  even without a prior catalog entry. Preserve managed-state account binding
+  and expiry selection, with fail-closed catalog source identity checks.
+
 - Clarify that Camofox analytics mode disables only default UBO and retains
   custom add-ons, with paired Obsidian Web Clipper configuration.
 

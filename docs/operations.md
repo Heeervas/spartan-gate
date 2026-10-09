@@ -220,15 +220,17 @@ to a pre-existing legacy ClawRoute data root before enabling its non-root addon.
 Codex OAuth profiles mounted into Spartan Route are bootstrap-only and stay
 read-only. Refresh-token rotation is stored under the existing private data
 mount at `/app/data/codex-auth`. A dashboard state of `reauth_required` means
-the intended account's current grant was rejected terminally. Rebuild or
-restart only Spartan Route first, then use the slot's focused **Check usage**
-action: a successful refresh repairs managed state without changing the
+the intended account's current grant was rejected terminally. Restart only
+Spartan Route with `sg restart spartan-route`, then use the slot's focused
+**Check usage** action: a successful refresh repairs managed state without changing the
 read-only bootstrap file. Only if the slot still reports `reauth_required`, log
 in again in that slot's original Codex home (for example,
 `CODEX_HOME=/path/to/original-slot-home codex login --device-auth`) and retry.
-Restart only Spartan Route after a successful login so an already-adopted
-in-memory generation is discarded. Do not delete the managed store or copy
-credentials from another slot.
+Changed bootstrap credentials are detected automatically, including on healthy
+slots with cached auth. If a slot remains stale after changing its login or
+account, reload only Route with `sg restart spartan-route`, then run that slot's
+focused **Check usage** action. No Hermes rebuild is needed. Do not delete the
+managed store or copy credentials from another slot.
 `refresh_rate_limited`,
 `refresh_temporarily_unavailable`, `refresh_lock_timeout`,
 `auth_store_unavailable`, `refresh_persist_failed`, `refresh_invalid_response`,
