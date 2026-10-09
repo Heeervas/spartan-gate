@@ -1168,11 +1168,7 @@ class CodexRouter:
     async def load_auth(self, slot: CodexSlot) -> CodexAuth | None:
         if slot.token:
             return slot.auth
-        if slot.path and slot.auth_source_fingerprint is None:
-            snapshot = read_auth_file(slot.path)
-            slot.auth_source_fingerprint = snapshot[1] if snapshot else ""
-        if slot.rate_limited_until > 0 or slot.auth_error_code or slot.auth_unavailable_reason:
-            self._invalidate_changed_auth_candidate(slot)
+        self._invalidate_changed_auth_candidate(slot)
         if slot.auth_retry_at > time.time():
             return None
         if slot.auth and not is_jwt_expired(slot.auth.access_token):

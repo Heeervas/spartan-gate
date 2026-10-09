@@ -262,6 +262,87 @@ class CatalogRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(0, self.catalog.slots)
         self.assertTrue(self.catalog.known_unavailable("codex/gpt-6-sol"))
 
+    async def test_healthy_account_rotation_refreshes_even_without_previous_catalog(self) -> None:
+        from test_codex import CodexTests, NoCallOAuthSession
+
+        fixtures = CodexTests()
+
+        async def fetch(auth, **_kwargs):
+            slug = "gpt-6-sol" if auth.account_id == "account-a" else "gpt-6-luna"
+            return parse_catalog({"models": [row(slug, efforts=("low", "medium", "high", "max"))]})
+
+        self.catalog._fetch = fetch
+        for populated in (True, False):
+            with self.subTest(populated=populated), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                auth_file = root / "auth.json"
+                expiry = time.time() + 3600
+                fixtures.write_auth(auth_file, fixtures.jwt(expiry), account_id="account-a")
+                self.router.auth_store_root = root / "codex-auth"
+                self.router.session = NoCallOAuthSession()
+                self.router._persist_refresh(str(auth_file), {
+                    "access_token": fixtures.jwt(expiry + 7200),
+                    "refresh_token": "managed-a",
+                    "account_id": "account-a",
+                })
+                slot = CodexSlot(0, path=str(auth_file))
+                self.router.slots = [slot]
+                await self.catalog.refresh()
+                self.assertEqual(slot.auth_state_source, "managed")
+                self.assertTrue(self.catalog.supports(slot, slot.auth, "codex/gpt-6-sol", "max"))
+                if not populated:
+                    self.catalog.slots = {}
+                self.catalog._wake.clear()
+                fixtures.write_auth(auth_file, fixtures.jwt(expiry + 1800), account_id="account-b")
+
+                auth = await self.router.load_auth(slot)
+
+                self.assertEqual(auth.account_id, "account-b")
+                self.assertNotIn(slot.index, self.catalog.slots)
+                self.assertTrue(self.catalog._wake.is_set())
+                self.assertIsNone(await self.router.choose_slot(None, set(), set(), "codex/gpt-6-sol", "max"))
+                self.assertIsNone(await self.router.choose_slot(None, set(), set(), "codex/gpt-6-luna", "high"))
+                await self.catalog.refresh()
+                selected = await self.router.choose_slot(None, set(), set(), "codex/gpt-6-luna", "high")
+                self.assertIsNotNone(selected)
+                self.assertEqual(selected[1].account_id, "account-b")
+                self.assertIsNone(await self.router.choose_slot(None, set(), set(), "codex/gpt-6-sol", "max"))
+
+    async def test_invalid_bootstrap_with_managed_fallback_revokes_catalog_eligibility(self) -> None:
+        from test_codex import CodexTests, NoCallOAuthSession
+
+        fixtures = CodexTests()
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                auth_file = root / "auth.json"
+                expiry = time.time() + 3600
+                fixtures.write_auth(auth_file, fixtures.jwt(expiry), account_id="account-a")
+                self.router.auth_store_root = root / "codex-auth"
+                self.router.session = NoCallOAuthSession()
+                self.router._persist_refresh(str(auth_file), {
+                    "access_token": fixtures.jwt(expiry + 3600),
+                    "refresh_token": "managed-a",
+                    "account_id": "account-a",
+                })
+                slot = CodexSlot(0, path=str(auth_file))
+                self.router.slots = [slot]
+                await self.catalog.refresh()
+                self.assertTrue(self.catalog.supports(slot, slot.auth, "codex/gpt-6-sol", "max"))
+                if missing:
+                    auth_file.unlink()
+                else:
+                    auth_file.write_text("not json")
+
+                auth = await self.router.load_auth(slot)
+
+                self.assertIsNotNone(auth)
+                self.assertEqual(slot.auth_state_source, "managed")
+                self.assertNotIn(slot.index, self.catalog.slots)
+                await self.catalog.refresh()
+                self.assertNotIn(slot.index, self.catalog.slots)
+                self.assertIsNone(await self.router.choose_slot(None, set(), set(), "codex/gpt-6-sol", "max"))
+
     async def test_bootstrap_file_change_revokes_old_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             auth_file = Path(directory) / "auth.json"

@@ -177,7 +177,7 @@ class CodexModelDiscovery:
     def invalidate_slot(self, index: int) -> None:
         if index in self.slots:
             self.slots = {key: value for key, value in self.slots.items() if key != index}
-            self.schedule_refresh()
+        self.schedule_refresh()
 
     def reset(self) -> None:
         self.slots = {}
