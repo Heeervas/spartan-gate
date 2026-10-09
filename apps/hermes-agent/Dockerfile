@@ -176,6 +176,7 @@ RUN mkdir -p /opt/data/.config/pip \
 COPY --chown=0:0 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/bootstrap/spartan_browser_policy.py
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/spartan_browser_policy.py
+COPY --chown=0:0 --chmod=0644 spartan_camofox_vault.py /opt/hermes/spartan_camofox_vault.py
 COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/patches/spartan_browser_variant.py
 COPY --chown=0:0 spartan-browser-variant-init.sh /opt/hermes/patches/spartan-browser-variant-init.sh
 COPY --chown=0:0 spartan-browser-policy-init.sh /etc/cont-init.d/0195-spartan-browser-policy
@@ -194,6 +195,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py \
     && python3 /opt/hermes/patches/patch_camofox_tab_isolation.py \
     && python3 /opt/hermes/patches/patch_camofox_managed_policy.py \
+    && python3 /opt/hermes/patches/patch_camofox_vault.py \
     && python3 /opt/hermes/patches/patch_prompt_load_callback.py \
     && python3 /opt/hermes/patches/patch_checkpoint_rollback_scan.py \
     && python3 /opt/hermes/patches/patch_mcp_proxy_env.py \
