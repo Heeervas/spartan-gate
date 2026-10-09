@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Revalidate sealed Hermes image dependencies at native CLI and gateway startup
+  before omitting PM's generation verdict, with fingerprinted overlay guards
+  and preserved native package-manager diagnostics.
+
 - Validate and deploy the optional Camofox-only Hermes image with recent runtime
   repairs and authenticated service acceptance. Record measured storage savings,
   dependency drift, and the upstream rebuild prerequisite after build-image cleanup.

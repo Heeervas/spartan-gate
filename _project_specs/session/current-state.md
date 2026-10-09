@@ -1,5 +1,42 @@
 # Current State
 
+## Managed proxies and image-only admission activated (2026-10-08)
+
+Only Hermes was recreated with its existing immutable image. Six proxy/bypass
+keys now use the native administrator-managed dotenv, without sharing the full
+private Compose env or changing profile credentials. Native terminal filtering
+preserved them across eleven profiles; default and work reached Google's public
+API over HTTPS. All twenty-three configuration/env/PM-facts hashes and all
+neighboring container identities remained unchanged.
+Direct external TCP remained blocked and an unlisted proxy destination returned
+403; no egress whitelist or network attachment was widened.
+
+The read-only image-pinned adaptation freshly validates the baked interpreter,
+features and enabled plugin dependency closure before omitting PM's writable
+generation fingerprint verdict. It does not rewrite facts or claim full lock
+reproducibility; raw PM checks and other tool diagnostics remain unchanged.
+Failed admission exits 78 through the native CLI/gateway best-effort handlers.
+The temporary overlay is L4-only and blocks Hermes builds or use in other tiers.
+
+Astra medium reviewed the plan and implementation; its blockers were corrected.
+Native Python 3.14 ran fifteen admission tests without skips. Native CLI/gateway
+failure tests and real readonly-mount authority checks passed. The Hermes host
+suite passed 306 tests with 35 optional/source-dependent skips using temporary
+dotenv/packaging modules from the image. Fifty-six alias tests passed. Seven
+browser-overlay fixture errors caused by the physical 5-GiB prerequisite passed
+when that fixture prerequisite was simulated; production disk guards are intact.
+
+Hermes completed cold startup with healthy API, zero restarts and twelve
+connected adapters, including five Discord adapters. The reported Discord
+nonresponse was confirmed as a mobile-app issue. Catalog-only remediation is
+prepared and tested but was not applied; remote command approval is unchanged.
+No upstream refresh, image build, session reset or browser-profile operation ran.
+See `docs/operations.md` for overlay removal/rollback and `docs/patches.md` for
+the dated upstream comparison. An extra manual PM-activation check was rejected
+by automatic review; explicit read-only image validation passed instead.
+`scripts/doctor.sh` remains blocked by pre-existing personal host paths in
+public files; none of its reported files belongs to this implementation's diff.
+
 ## Camofox-only Hermes deployed and accepted (2026-10-07)
 
 The reviewed Camofox-only image is deployed and healthy, including the recent

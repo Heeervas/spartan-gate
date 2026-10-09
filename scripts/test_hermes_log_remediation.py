@@ -63,6 +63,58 @@ class RemediationTests(unittest.TestCase):
         (home / "plugins/adan-discord-launcher").mkdir(parents=True)
         self.assertEqual(MODULE.plan(self.root), [])
 
+    def test_discord_only_preserves_env_timers_tools_and_other_plugins(self):
+        config = {'plugins': {'enabled': ['alberto-tools', 'adan-discord-launcher', 'web-search-plus',
+                                         'toolaria', 'hermes-session-reset-policy']},
+                  'session_reset': {'mode': 'daily'}, 'platform_toolsets': {'discord': ['file']}}
+        home = self.profile(config=config)
+        env = (home / '.env').read_bytes()
+        changes = MODULE.plan(self.root, discord_catalog_only=True)
+        self.assertEqual([c.path for c in changes], [home / 'config.yaml'])
+        MODULE.apply(changes, self.backup, home=self.root)
+        after = yaml.safe_load((home / 'config.yaml').read_text())
+        self.assertEqual(after['session_reset'], config['session_reset'])
+        self.assertEqual(after['platform_toolsets'], config['platform_toolsets'])
+        self.assertEqual(after['plugins']['enabled'], ['alberto-tools', 'toolaria', 'hermes-session-reset-policy'])
+        self.assertEqual((home / '.env').read_bytes(), env)
+        self.assertEqual(MODULE.plan(self.root, discord_catalog_only=True), [])
+
+    def test_rollback_does_not_overwrite_concurrent_edit(self):
+        home = self.profile(config={'session_reset': {'mode': 'daily'}})
+        changes = MODULE.plan(self.root)
+        real = MODULE._atomic
+        calls = 0
+        def fail_after_external_edit(path, data, mode):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                changes[0].path.write_text('user: concurrent-edit\n')
+                raise OSError('injected failure')
+            return real(path, data, mode)
+        with patch.object(MODULE, '_atomic', side_effect=fail_after_external_edit):
+            with self.assertRaisesRegex(RuntimeError, 'preserved a concurrent edit'):
+                MODULE.apply(changes, self.backup, home=self.root)
+        self.assertEqual(changes[0].path.read_text(), 'user: concurrent-edit\n')
+
+    def test_rollback_continues_when_an_applied_destination_disappears(self):
+        self.profile(config={'session_reset': {'mode': 'daily'}})
+        self.profile('secondary', config={'session_reset': {'mode': 'daily'}})
+        changes = MODULE.plan(self.root)
+        real = MODULE._atomic
+        calls = 0
+        def fail_third(path, data, mode):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                changes[1].path.unlink()
+                raise OSError('injected failure')
+            return real(path, data, mode)
+        with patch.object(MODULE, '_atomic', side_effect=fail_third):
+            with self.assertRaisesRegex(RuntimeError, 'preserved a concurrent edit'):
+                MODULE.apply(changes, self.backup, home=self.root)
+        self.assertEqual(changes[0].path.read_bytes(), changes[0].original)
+        self.assertFalse(changes[1].path.exists())
+
     def test_last_profile_validation_failure_does_not_write_first(self):
         first = self.profile(config={"session_reset": {"mode": "daily"}})
         last = self.profile("last")

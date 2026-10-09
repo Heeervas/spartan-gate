@@ -157,6 +157,10 @@ sg_compose() {
         args+=(-f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml")
         sg_hermes_fast_mode_preflight "$@" || return 1
     fi
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-image-dependencies.yml" ]]; then
+        args+=(-f "$SPARTAN_GATE_DIR/private/compose.hermes-image-dependencies.yml")
+        sg_hermes_image_dependencies_preflight "$@" || return 1
+    fi
 
     if [[ -f "$env_file" ]]; then
         args+=(--env-file "$env_file")
@@ -231,6 +235,40 @@ sg_hermes_fast_mode_preflight() {
             fi
             python3 "$SPARTAN_GATE_DIR/scripts/hermes-fast-mode-overlay.py" check \
                 --image-ref "$image_ref" || return 1
+            ;;
+    esac
+}
+
+sg_hermes_image_dependencies_preflight() {
+    local dependency_tier=L4
+    if [[ "${1:-}" == --tier ]]; then
+        dependency_tier="$2"
+        shift 2
+    fi
+    case "${1:-}" in
+        up|start|restart|run|build)
+            local arg building=false hermes_target=false service_seen=false
+            [[ "${1:-}" == build ]] && building=true
+            for arg in "${@:2}"; do
+                [[ "$arg" == --build ]] && building=true
+                case "$arg" in
+                    hermes) hermes_target=true; service_seen=true ;;
+                    proxy|dns|reader|caddy|searxng|spartan-route|clawroute|camofox|browserless|pocket-tts|discord-voice-relay)
+                        service_seen=true ;;
+                esac
+            done
+            if [[ "$hermes_target" == false && "$service_seen" == true ]]; then
+                return 0
+            fi
+            if [[ "$dependency_tier" != L4 ]]; then
+                printf '%s\n' 'Remove the private Hermes dependency overlay before starting Hermes in another tier; its admission is pinned to the main stack.' >&2
+                return 1
+            fi
+            if [[ "$building" == true && ( "$hermes_target" == true || "$service_seen" == false ) ]]; then
+                printf '%s\n' 'Remove the private Hermes dependency overlay before rebuilding Hermes; the image includes its adaptation.' >&2
+                return 1
+            fi
+            python3 "$SPARTAN_GATE_DIR/scripts/hermes-image-dependencies-overlay.py" check || return 1
             ;;
     esac
 }
@@ -366,6 +404,9 @@ sg_tier_compose_args() {
     if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml" ]]; then
         printf '%s\n' -f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml"
     fi
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-image-dependencies.yml" ]]; then
+        printf '%s\n' -f "$SPARTAN_GATE_DIR/private/compose.hermes-image-dependencies.yml"
+    fi
 }
 
 sg_tier_compose() {
@@ -384,6 +425,9 @@ sg_tier_compose() {
     fi
     if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-fast-mode.yml" ]]; then
         sg_hermes_fast_mode_preflight "$@" || return 1
+    fi
+    if [[ -f "$SPARTAN_GATE_DIR/private/compose.hermes-image-dependencies.yml" ]]; then
+        sg_hermes_image_dependencies_preflight --tier "$tier" "$@" || return 1
     fi
     while IFS= read -r item; do
         args+=("$item")

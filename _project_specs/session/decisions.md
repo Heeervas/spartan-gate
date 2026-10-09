@@ -1,5 +1,24 @@
 # Decisions
 
+## 2026-10-08 — Native managed proxies and sealed-image admission
+
+- Use Hermes' native administrator-managed scope for the six shared HTTP proxy
+  and bypass keys. Never mount the full private Compose env as shared policy;
+  other settings need individual scope decisions and credentials remain local
+  to their profiles. Recreate only Hermes to apply the deployment change.
+- In explicit image-only mode, freshly validate the executing baked interpreter,
+  feature inventory and enabled plugin dependency closure. Omit only the PM
+  generation verdict, retain tool diagnostics, and abort failed CLI/gateway
+  admission with SystemExit so native best-effort handlers cannot swallow it.
+  Never forge PM facts or represent this as full uv.lock reproducibility.
+- Avoid rebuilding for a stale mutable generation fingerprint. Use a guarded,
+  read-only, image-pinned L4 adaptation for the existing artifact; verify code
+  fingerprints and remove the overlay before rebuilding or changing tiers.
+- Retain existing patches unless an integrated upstream replacement preserves
+  their complete boundary. Open proposals and partial middleware overlap do
+  not establish that equivalence. Discord's mobile-app incident requires no
+  gateway/catalog migration or remote command approval changes.
+
 ## 2026-10-03 — Route transport and Hermes dashboard sessions
 
 - Use a fully validated signed Hermes chain for dashboard session identity

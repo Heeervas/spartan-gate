@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import fcntl
 import hashlib
 import os
 from pathlib import Path
@@ -59,7 +60,8 @@ def _read(path: Path) -> tuple[bytes, int, int, int]:
     return path.read_bytes(), stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_gid
 
 
-def plan(root: Path, *, repair_plugins: bool = False, talk_plugin: Path | None = None) -> list[Change]:
+def plan(root: Path, *, repair_plugins: bool = False, talk_plugin: Path | None = None,
+         discord_catalog_only: bool = False) -> list[Change]:
     _plain_directory(root)
     profiles = root / "profiles"
     homes = [root]
@@ -88,7 +90,8 @@ def plan(root: Path, *, repair_plugins: bool = False, talk_plugin: Path | None =
         for names in [enabled, disabled]:
             if not isinstance(names, list) or any(not isinstance(x, str) for x in names):
                 raise ValueError("invalid plugin names")
-        if "hermes-session-reset-policy" in enabled and "hermes-session-reset-policy" not in disabled:
+        if (not discord_catalog_only and "hermes-session-reset-policy" in enabled
+                and "hermes-session-reset-policy" not in disabled):
             raise ValueError("automatic reset plugin requires explicit disablement first")
         if "alberto-tools" in enabled and "alberto-tools" not in disabled:
             retained = []
@@ -97,6 +100,11 @@ def plan(root: Path, *, repair_plugins: bool = False, talk_plugin: Path | None =
                 if name not in OBSOLETE_PLUGINS or not absent:
                     retained.append(name)
             plugins["enabled"] = retained
+        if discord_catalog_only:
+            replacement = yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
+            if replacement != before:
+                changes.append(Change(path, original, replacement.encode(), mode, uid, gid))
+            continue
         # Native Hermes now resets only on /new or /reset. Remove only dormant timers.
         for section in [config, config.get("gateway")]:
             if isinstance(section, dict):
@@ -157,8 +165,18 @@ def _atomic(path: Path, data: bytes, mode: int) -> None:
             os.unlink(temporary)
 
 
-def apply(changes: list[Change], backup: Path) -> None:
-    _apply_locked(changes, backup)
+def apply(changes: list[Change], backup: Path, *, home: Path | None = None) -> None:
+    # Serializes operator migrations; callers must also quiesce profile writers.
+    root = home or (Path(os.path.commonpath([c.path.parent for c in changes])) if changes else backup.parent)
+    descriptor = os.open(root / '.hermes-remediation.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if info.st_uid != os.geteuid() or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            raise ValueError('unsafe remediation lock')
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        _apply_locked(changes, backup)
+    finally:
+        os.close(descriptor)
 
 
 def _apply_locked(changes: list[Change], backup: Path) -> None:
@@ -195,8 +213,22 @@ def _apply_locked(changes: list[Change], backup: Path) -> None:
             _atomic(change.path, change.replacement, change.mode)
             completed.append(change)
     except BaseException:
+        conflict = False
         for change in reversed(completed):
-            _atomic(change.path, change.original, change.mode)
+            try:
+                current = _read(change.path)
+            except (OSError, ValueError):
+                conflict = True
+                continue
+            if current != (change.replacement, change.mode, change.uid, change.gid):
+                conflict = True
+                continue
+            try:
+                _atomic(change.path, change.original, change.mode)
+            except OSError:
+                conflict = True
+        if conflict:
+            raise RuntimeError('Rollback preserved a concurrent edit; inspect the private backup manifest') from None
         raise
 
 
@@ -205,16 +237,20 @@ def main() -> None:
     parser.add_argument("--home", required=True, type=Path)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--backup-dir", type=Path)
+    parser.add_argument("--discord-catalog-only", action="store_true", help="only remove absent superseded Discord command plugins")
     parser.add_argument("--repair-plugins", action="store_true", help="also repair installed node-search and Toolaria sources")
     parser.add_argument("--talk-plugin", type=Path, help="optional real Talk plugin source directory; requires --repair-plugins")
     args = parser.parse_args()
     if args.talk_plugin is not None and not args.repair_plugins:
         parser.error("--talk-plugin requires --repair-plugins")
-    changes = plan(args.home, repair_plugins=args.repair_plugins, talk_plugin=args.talk_plugin)
+    if args.discord_catalog_only and (args.repair_plugins or args.talk_plugin is not None):
+        parser.error("--discord-catalog-only cannot modify other plugins")
+    changes = plan(args.home, repair_plugins=args.repair_plugins, talk_plugin=args.talk_plugin,
+                   discord_catalog_only=args.discord_catalog_only)
     if args.apply:
         if args.backup_dir is None:
             parser.error("--apply requires an empty --backup-dir")
-        apply(changes, args.backup_dir)
+        apply(changes, args.backup_dir, home=args.home)
     print(f"{'Applied' if args.apply else 'Planned'} {len(changes)} file changes")
 
 

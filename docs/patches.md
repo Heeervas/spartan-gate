@@ -8,7 +8,8 @@ patch.
 The 2026-10-01 refresh targets upstream main
 `e8c97320ac8691d4de92af49f98459f9ef9ddb08`, OCI digest
 `sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde`.
-The Dockerfile now carries 21 active build-time patches, including the
+The Dockerfile invokes 22 common build-time patches and one additional patch
+for the Camofox-only variant (23 in that image), including the
 post-refresh Camofox policy and Spartan Route fast-mode adaptations. Python 3.14 uses
 `/opt/data/hermes-extra-site-py314`; the Python 3.13 directory is retained but
 excluded from the new runtime import path. Synced plugin versions are retained.
@@ -33,6 +34,7 @@ unless upstream provides the same invariant.
 | `patch_gateway_service_cdp_env.py` | Imports browser/CDP env into supervised gateways and applies the configured numeric identity to gateway/log execution. It preserves upstream's restart-safe log setup and never adds root-context ownership rewrites. |
 | `patch_codex_429_fail_fast.py` | Treats only HTTP 429 with top-level `error.code=codex_429` as terminal Codex capacity exhaustion before credential rotation, fallback, or backoff. It still uses normal turn finalization and persistence. |
 | `patch_workstation_approval_scope.py` | Keeps workstation approval requests bound to the intended caller and scope. |
+| `patch_stage2_image_dependencies.py` | Admits explicitly selected baked-image dependencies without provisioning. Startup revalidates the executing baked interpreter and all enabled plugin requirements before omitting only PM's generation fingerprint verdict; rejection exits nonzero through both native entrypoints. PM tools and raw `pm.check()` retain their native checks. |
 
 The Hermes image uses root-owned `COPY` metadata and then runs
 `audit-install-tree.py` across `/opt/hermes`. The audit rejects non-root
@@ -106,6 +108,20 @@ These should be proposed upstream or deleted when upstream fixes the behavior.
 | Camofox runtime viewport route in `infra/camofox/patch-server.js` | Upstream should resize the page runtime viewport and report effective dimensions instead of returning `ok` for screenshot-only crops or no-ops. |
 
 ## Review Rule
+
+The 2026-10-08 comparison against upstream `99a45ecc17cc51c0488ec3b8ccf7eaf483f7203d`
+did not establish an equivalent replacement for the remaining security patches.
+Track MCP [#107851](https://github.com/NousResearch/hermes-agent/pull/107851),
+empty FTS [#132432](https://github.com/NousResearch/hermes-agent/pull/132432),
+Camofox adoption [#120190](https://github.com/NousResearch/hermes-agent/pull/120190),
+and cron diagnostics [#89702](https://github.com/NousResearch/hermes-agent/pull/89702).
+An open proposal, or a closed unmerged PR, is not an integrated replacement.
+Camofox adoption covers only part of our isolation adapter. Cache middleware
+overlaps part of the cache adapter but does not recover raw `ultra` effort;
+static provider priority does not replace dynamic `/fast`.
+The route-placeholder config transformation needs adaptation to that upstream
+snapshot's `op://` lookup before a future refresh; the deployed revision is
+unchanged by this review.
 
 Before changing a patch, verify both intended transformation and already-patched
 input. Before deleting one, prove the replacement preserves the same boundary:

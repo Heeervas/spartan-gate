@@ -3,6 +3,8 @@
 from pathlib import Path
 
 TARGET = Path('/opt/hermes/docker/stage2-hook.sh')
+RUNTIME = Path('/opt/hermes/hermes_cli/venv_sync.py')
+RUNTIME_MARKER = '# Spartan Gate: admit sealed image dependencies before omitting the PM generation verdict'
 MARKER = '# Spartan Gate: explicitly boot only validated image dependencies'
 OLD = '''as_hermes "$INSTALL_DIR/.venv/bin/python" -c '
 from pathlib import Path
@@ -56,11 +58,44 @@ def patch_text(source):
     return source.replace(OLD, NEW)
 
 
+def patch_runtime_source(source):
+    original = '    problems = pm.activate()\n'
+    replacement = f'''    {RUNTIME_MARKER}
+    if os.environ.get('SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY', '0') == '0':
+        problems = pm.activate()
+    else:
+        try:
+            import importlib.util
+            _admission_spec = importlib.util.spec_from_file_location(
+                '_spartan_image_admission', Path(project_root) / 'patches/validate_image_dependencies.py')
+            _admission = importlib.util.module_from_spec(_admission_spec)
+            _admission_spec.loader.exec_module(_admission)
+            if not _admission.image_only_startup(project_root):
+                raise RuntimeError('Requested image admission was not performed')
+        except Exception:
+            import sys
+            print('FATAL: protected image dependency admission could not run', file=sys.stderr)
+            raise SystemExit(78) from None
+        problems = pm.activate(allow_incomplete=True)
+'''
+    if RUNTIME_MARKER in source:
+        if source.count(replacement) != 1:
+            raise ValueError('Incompatible image-only runtime admission')
+        return source
+    if source.count(original) != 1:
+        raise ValueError('Upstream PM runtime activation anchor missing or ambiguous')
+    result = source.replace(original, replacement, 1)
+    compile(result, str(RUNTIME), 'exec')
+    return result
+
+
 def main():
-    source = TARGET.read_text()
-    result = patch_text(source)
-    if result != source:
-        TARGET.write_text(result)
+    # Complete both preflights before the first write.
+    updates = [(TARGET, TARGET.read_text()), (RUNTIME, RUNTIME.read_text())]
+    results = [patch_text(updates[0][1]), patch_runtime_source(updates[1][1])]
+    for (path, source), result in zip(updates, results):
+        if result != source:
+            path.write_text(result)
 
 
 if __name__ == '__main__':

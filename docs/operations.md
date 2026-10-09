@@ -516,6 +516,52 @@ Keep at least 5 GB free for runtime operations unless the operator explicitly
 authorizes a bounded exception. OOM tuning, automatic session resets, trust
 expansion, and checkpoint history deletion are separate operations.
 
+For a Discord catalog reporting absent superseded command plugins, use
+`--discord-catalog-only` with the existing migration helper. This changes only
+absent legacy plugin names when their replacement owner is enabled. It does
+not modify search, reset timers, tools, cron, or remote application commands.
+Quiesce the affected profile writers before applying; the operator lock only
+serializes this helper. Rollback restores only destinations still matching the
+applied version and preserves concurrent edits, retaining the private manifest.
+Connection health does not prove message admission, execution or delivery.
+Keep the native remote-command plan approval and rate-limit backoff intact.
+
+## Hermes image-only dependency admission
+
+`SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY=1` selects the existing baked-image
+contract. Its startup diagnosis now validates the actual executing interpreter,
+feature inventory, enabled plugin dependency declarations and their installed
+transitive requirements. Changing these inputs during admission rejects startup;
+publish plugin changes only with a fresh admission. Validation performs no
+resolution, installation, generation collection or PM facts writes.
+
+In this mode, PM's writable-generation fingerprint is not the dependency-health
+verdict. The stamp includes mutable plugin members and can remain different
+after an image rebuild. Raw `pm.check()` remains available and unchanged;
+successful image admission does not claim full reproducibility against `uv.lock`.
+Other PM tool failures remain visible. Invalid image authority, a selected
+generation, missing/incompatible dependencies or validation failure exits nonzero
+before CLI/gateway dispatch instead of becoming a swallowed startup warning.
+
+An existing image can use the guarded read-only adaptation:
+
+```sh
+python3 scripts/hermes-image-dependencies-overlay.py prepare
+sg config --quiet
+sg up -d --no-deps --force-recreate hermes
+```
+
+This temporary overlay is scoped to the L4 main stack; remove it before
+starting Hermes in another tier. The helper pins the running container's immutable image and fingerprints source,
+anchors and rollback originals. `sg` checks those fingerprints and blocks Hermes
+rebuilds while `private/compose.hermes-image-dependencies.yml` exists. The next
+image includes the same adaptation. Before changing images, remove the overlay
+and verify the new image's admission. To roll back this adaptation on the same
+image, retain the private bundle, remove that overlay and recreate only Hermes;
+the original generation warning may return. Do not restore session databases or
+browser profiles. Each startup admission is bounded to 90 seconds and its cost
+must be included in readiness checks.
+
 ## Hermes fast-mode overlay
 
 For a Hermes image without `patch_spartan_fast_mode.py`, prepare the temporary
@@ -602,6 +648,50 @@ A restart keeps the existing container environment and does not apply changed
 Compose environment. Recreation regenerates the `/run` policy from the new
 configuration. Initialization rejects changes to an existing policy instead
 of partially replacing it.
+
+For gated deployments, secondary-profile terminals can lose proxy variables
+when Hermes removes the launch profile's dotenv settings. Pin only the shared
+network settings through Hermes' native managed scope; no Hermes source patch
+or image rebuild is required. Create `private/hermes-managed/proxy.env` with
+`HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`, and
+`no_proxy`, using the effective values from the selected Compose configuration.
+Keep both capitalizations consistent and preserve the internal-service bypass
+list. Do not add `ALL_PROXY` when the deployment does not configure it.
+
+Add this mount to the Hermes service in `private/compose.local.yml`:
+
+```yaml
+volumes:
+  - type: bind
+    source: ../../private/hermes-managed/proxy.env
+    target: /etc/hermes/.env
+    read_only: true
+    bind:
+      create_host_path: false
+```
+
+Keep the source directory owner-only (`0700`) and the file owner-readable and
+writable (`0600`). The root initialization helper merges these settings with
+the browser policy into the existing protected runtime managed layer. If an
+administrator managed source already exists, merge the six settings into it
+instead of replacing its mount or discarding its other settings. A custom
+`HERMES_MANAGED_SOURCE_DIR` requires the corresponding mount destination.
+
+Never mount `private/env/local.env` as the managed dotenv or copy its complete
+contents there: Compose interpolation and shared Hermes policy have different
+purposes, and doing so would share profile/provider credentials across bots.
+Leave credential files and existing service `env_file` entries unchanged.
+Docker recommends [service-scoped secret files](https://docs.docker.com/compose/how-tos/use-secrets/)
+for credentials; this network-only managed dotenv must not become a shared
+credential store. Migrating existing credential consumers is a separate change.
+Validate with `sg config --quiet`; at the planned activation, recreate only
+Hermes with the command above and verify proxy inheritance in a secondary
+profile's terminal. Re-render and update the six-key file when deployment proxy
+settings change. Configuration preparation alone does not change running sessions.
+The same native residue filter can remove other launch-dotenv settings, such
+as `SEARXNG_URL`, `OPENAI_BASE_URL` and `PLAYWRIGHT_BROWSERS_PATH`. Decide their
+scope individually; this fix shares only the six network keys and does not
+promote provider endpoints or credentials into global policy.
 
 Use Camofox profiles when Hermes should reuse a manual website login through
 Camofox browser tools. Camofox noVNC is exposed through the private Caddy edge

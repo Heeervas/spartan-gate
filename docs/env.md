@@ -239,6 +239,16 @@ When `CAMOFOX_URL` is set, the Google Meet plugin uses Camofox for
 audio remains Browserless/CDP-only; Camofox mode falls realtime requests back
 to transcribe.
 
+## Hermes dependency admission
+
+`SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY=1` admits only the sealed Docker
+image's baked interpreter and installed feature/plugin dependency closure.
+Failed admission rejects CLI/gateway startup. It does not install dependencies,
+rewrite PM facts or certify the native generation stamp against `uv.lock`.
+The default `0` preserves native PM behavior. See
+[image-only dependency admission](operations.md#hermes-image-only-dependency-admission)
+for the temporary read-only overlay, image-change guard and rollback.
+
 ## Camofox
 
 Camofox is an optional local browser backend for Hermes browser tools. It runs
@@ -263,6 +273,9 @@ profile scope rather than treating terminal environment as backend evidence.
   `/etc/hermes`. Its existing managed config and dotenv are preserved, with
   only the Spartan-selected browser policy and infrastructure auth overriding
   conflicting values. Malformed or multiline dotenv assignments are rejected.
+  For gated multi-profile proxy inheritance, supply a separate six-key network
+  dotenv as this administrator source; never use the complete private Compose
+  env file. See [managed proxy configuration](operations.md#camofox-profiles).
 - `SPARTAN_BROWSER_POLICY_ENABLED`: fixed to `1`; controls the strict browser
   guards. Missing or changed deployment settings fail closed once initialized.
 - `S6_BEHAVIOUR_IF_STAGE2_FAILS`: fixed to `2`; init rejection stops Hermes.

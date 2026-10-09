@@ -1,10 +1,18 @@
 # Task List
 
-Last updated: 2026-09-12
+Last updated: 2026-10-08
 
 Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
 ## Completed
+
+- [x] Restore proxy inheritance through native managed scope and activate
+  reviewed image-only dependency admission without rebuilding Hermes.
+  - Same image; only Hermes recreated. Configuration, credentials and PM facts
+    unchanged; all adapters connected and health passed. Discord's reported
+    nonresponse was a mobile-app issue; no Discord migration was applied.
+  - Upstream patch comparison and rollback contract recorded in `docs/patches.md`
+    and `docs/operations.md`; remaining refresh work below stays separate.
 
 - [x] Activate Camofox 1.15 with reviewed add-on and VNC readiness gates.
   - Cold start, exact analytics mode, malformed-mode protection, open-WebSocket

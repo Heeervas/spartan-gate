@@ -73,11 +73,12 @@ class ImageDependencyTests(unittest.TestCase):
             inventory = Mock(return_value=['cron', 'web'])
             modules = {
                 'pm': SimpleNamespace(),
-                'pm.environments': SimpleNamespace(runtime_facts_path=lambda _: facts),
+                'pm.environments': SimpleNamespace(runtime_facts_path=lambda _: facts, selected_venv=lambda _: root / '.venv'),
                 'pm.features': SimpleNamespace(installed_extras=inventory),
                 'pm.recovery': SimpleNamespace(validate_environment=probe),
                 'pm.plugin_declarations': SimpleNamespace(read_python_declaration=Mock()),
                 'pm.workspace': SimpleNamespace(enabled_plugin_dirs=Mock(return_value=[])),
+                'pm.plugins_state': SimpleNamespace(dependency_homes=lambda: []),
             }
             with patch.dict(sys.modules, modules), patch.object(sys, 'prefix', str(root / '.venv')):
                 validator.validate(root)
@@ -100,6 +101,36 @@ class ImageDependencyTests(unittest.TestCase):
     def test_requires_baked_interpreter(self):
         with self.assertRaises(RuntimeError):
             validator.validate(Path('/not-current-image'))
+
+    def test_changes_in_plugin_selection_and_config_reject_admission(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            facts = root / 'facts.json'
+            facts.write_text(json.dumps({'schema': 1, 'packages': {}}))
+            (root / 'enabled-features.json').write_text(json.dumps({'schema': 1, 'extras': ['web']}))
+            config = root / 'config.yaml'
+            config.write_text('plugins: {}\n')
+            declaration = root / 'plugin.yaml'
+            declaration.write_text('name: fixture\n')
+            plugin = SimpleNamespace(files=[declaration], external=False, requirements=[], python_error=lambda _: None)
+            inventory = Mock(return_value=['web'])
+            modules = {
+                'pm': SimpleNamespace(),
+                'pm.environments': SimpleNamespace(runtime_facts_path=lambda _: facts, selected_venv=lambda _: root / '.venv'),
+                'pm.features': SimpleNamespace(installed_extras=inventory),
+                'pm.recovery': SimpleNamespace(validate_environment=Mock()),
+                'pm.plugin_declarations': SimpleNamespace(read_python_declaration=lambda _: plugin),
+                'pm.workspace': SimpleNamespace(enabled_plugin_dirs=Mock(return_value=[root])),
+                'pm.plugins_state': SimpleNamespace(dependency_homes=lambda: [root]),
+            }
+            with patch.dict(sys.modules, modules), patch.object(sys, 'prefix', str(root / '.venv')):
+                for changed in (config, declaration):
+                    def mutate(*args, **kwargs):
+                        changed.write_text(changed.read_text() + '# concurrent change\n')
+                        return ['web']
+                    inventory.side_effect = mutate
+                    with self.assertRaisesRegex(RuntimeError, 'inputs changed'):
+                        validator.validate(root)
 
     def test_plugin_requirements_versions_markers_extras_and_transitive_closure(self):
         try:
