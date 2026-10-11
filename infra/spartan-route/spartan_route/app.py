@@ -22,6 +22,7 @@ from aiohttp.web_request import FileField
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
 from .codex_catalog import CodexModelDiscovery, SlotCatalog
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
+from .model_variants import VariantPolicy, VARIANT_PATTERN, VARIANT_LIKE_PATTERN, base_eligible
 from .native_responses import annotate_realm, capture_telemetry, execute_codex_responses, response_event_name, usage_values
 from .native_cache import NativeCacheDiagnostics, Observation, request_diagnostics
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected, PROBE_HEADER
@@ -103,6 +104,7 @@ class SpartanRouteState:
     codex_catalog: CodexModelDiscovery | None = None
     recent_session_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
     routing_policy: RoutingPolicySnapshot | None = None
+    model_variants: VariantPolicy = field(default_factory=VariantPolicy)
     routing_policy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cache_guard: dict[str, dict[str, Any]] = field(default_factory=dict)
     native_cache: NativeCacheDiagnostics = field(default_factory=NativeCacheDiagnostics)
@@ -263,16 +265,11 @@ def normalize_model_id(model_id: Any) -> str:
 
 
 def context_variant_eligible(entry: ModelEntry) -> bool:
-    return entry.enabled and entry.tool_capable and entry.max_context >= CONTEXT_VARIANT_TOKENS
+    return base_eligible(entry) and entry.max_context >= CONTEXT_VARIANT_TOKENS
 
 
 def context_variant_entry(config: SpartanRouteConfig, model_id: str) -> ModelEntry | None:
-    if model_id in config.models or not model_id.endswith(CONTEXT_VARIANT_SUFFIX):
-        return None
-    base = config.models.get(model_id.removesuffix(CONTEXT_VARIANT_SUFFIX))
-    if base is None or not context_variant_eligible(base):
-        return None
-    return replace(base, id=model_id, max_context=CONTEXT_VARIANT_TOKENS)
+    return VariantPolicy().snapshot(config)[1].get(model_id)
 
 
 def classify_request(body: dict[str, Any]) -> tuple[str, str, float]:
@@ -295,13 +292,16 @@ def route_request(
     config: SpartanRouteConfig,
     body: dict[str, Any],
     tier_primary_models: Mapping[str, str] | None = None,
+    variants: Mapping[str, ModelEntry] | None = None,
 ) -> RoutedRequest:
     original = str(body.get("model") or "clawroute/auto")
     normalized = normalize_model_id(original)
-    if normalized.endswith(CONTEXT_VARIANT_SUFFIX) and normalized not in config.models:
-        if context_variant_entry(config, normalized) is None:
+    if VARIANT_LIKE_PATTERN.search(normalized) and normalized not in config.models:
+        active = variants if variants is not None else VariantPolicy().snapshot(config)[1]
+        variant = active.get(normalized)
+        if variant is None:
             raise InvalidContextVariant(normalized)
-        normalized = normalized.removesuffix(CONTEXT_VARIANT_SUFFIX)
+        normalized = VARIANT_PATTERN.sub("", normalized)
     tier = "passthrough"
     reason = "direct model request"
 
@@ -1763,7 +1763,7 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
     turn_id = resolve_turn_id(body, session_id, request_id)
     policy = state.routing_policy
     try:
-        route = route_request(state.config, body, policy.tier_models if policy else None)
+        route = route_request(state.config, body, policy.tier_models if policy else None, state.model_variants.snapshot(state.config)[1])
     except InvalidContextVariant:
         return response_json_error(f"The model '{body['model']}' does not exist", 404, "model_not_found", "invalid_request_error")
     result = await execute_chat(state, body, route, bool(body.get("stream")), session_id, effective_prompt_cache_key, request_id)
@@ -1793,7 +1793,7 @@ async def responses(request: web.Request) -> web.StreamResponse:
     turn_id = resolve_turn_id(chat_body, session_id, request_id)
     policy = state.routing_policy
     try:
-        route = route_request(state.config, chat_body, policy.tier_models if policy else None)
+        route = route_request(state.config, chat_body, policy.tier_models if policy else None, state.model_variants.snapshot(state.config)[1])
     except InvalidContextVariant:
         return response_json_error(f"The model '{body['model']}' does not exist", 404, "model_not_found", "invalid_request_error")
     wants_stream = bool(body.get("stream"))
@@ -2078,9 +2078,8 @@ async def models(request: web.Request) -> web.Response:
             {**auto, "id": "spartan-route/clawroute/auto"},
             *[model_payload(m) for m in state.config.models.values() if m.enabled],
             *[
-                model_payload(replace(m, id=f"{m.id}{CONTEXT_VARIANT_SUFFIX}", max_context=CONTEXT_VARIANT_TOKENS))
-                for m in state.config.models.values()
-                if context_variant_eligible(m) and f"{m.id}{CONTEXT_VARIANT_SUFFIX}" not in state.config.models
+                model_payload(m)
+                for m in state.model_variants.snapshot(state.config)[1].values()
             ],
             *([realtime_model()] if request.app[RT_KEY].config.enabled else []),
         ],
@@ -2095,7 +2094,7 @@ async def model_detail(request: web.Request) -> web.Response:
     if model_id in {"clawroute/auto", "auto"}:
         return web.json_response({"id": request.match_info["model_id"], "object": "model", "owned_by": "spartan-route", "max_context": 1_000_000, "tool_capable": True, "multimodal": True})
     entry = state.config.models.get(model_id)
-    variant = None if entry is not None else context_variant_entry(state.config, model_id)
+    variant = None if entry is not None else state.model_variants.snapshot(state.config)[1].get(model_id)
     entry = entry or variant
     if not entry:
         return response_json_error(f"The model '{request.match_info['model_id']}' does not exist", 404, "model_not_found", "invalid_request_error")
@@ -2309,6 +2308,56 @@ def validate_routing_config_body(
             )
         validated[tier] = model_id
     return validated, None
+
+
+def model_variants_response(state: SpartanRouteState, status: int = 200) -> web.Response:
+    policy = state.model_variants
+    etag = policy.etag(state.config)
+    return web.json_response({
+        "variants": policy.snapshot(state.config)[0],
+        "models": [{"id": e.id, "maxContext": e.max_context, "eligible": base_eligible(e),
+                    "readiness": model_readiness(state, e)} for e in state.config.models.values()],
+        "configured": policy.rows is not None, "updatedAt": policy.updated_at,
+        "warning": policy.warning, "etag": etag,
+    }, status=status, headers={"ETag": etag, "Cache-Control": "no-store"})
+
+
+def model_variants_error(state: SpartanRouteState, message: str, status: int, code: str) -> web.Response:
+    response = response_json_error(message, status, code)
+    response.headers["ETag"] = state.model_variants.etag(state.config)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+async def api_config_model_variants_get(request: web.Request) -> web.Response:
+    return model_variants_response(get_state(request))
+
+
+async def api_config_model_variants_put(request: web.Request) -> web.Response:
+    state = get_state(request)
+    if_match = request.headers.get("If-Match")
+    if not if_match:
+        return model_variants_error(state, "If-Match is required for configuration updates.", 428, "config_precondition_required")
+    body = await read_bounded_json_object(request)
+    if isinstance(body, web.Response):
+        return body
+    async with state.routing_policy_lock:
+        policy = state.model_variants
+        if if_match != policy.etag(state.config):
+            return model_variants_error(state, "Model variants or catalog changed; reload before saving.", 412, "config_revision_conflict")
+        try:
+            rows = policy.validate(state.config, body)
+        except ValueError as exc:
+            return response_json_error(str(exc), 400, "invalid_model_variants", "invalid_request_error")
+        try:
+            updated_at = state.telemetry.replace_model_variants([
+                {"model": model, "contextWindow": context} for model, context in rows])
+        except Exception as exc:
+            record_telemetry_failure(state, "write", "model_variants", exc)
+            return model_variants_error(state, "Model variants could not be persisted.", 503, "config_persistence_failed")
+        state.telemetry.record_health_success("write", "model_variants")
+        state.model_variants = VariantPolicy(rows, updated_at)
+        return model_variants_response(state)
 
 
 async def api_config_routing_get(request: web.Request) -> web.Response:
@@ -3123,6 +3172,8 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     telemetry = telemetry or TelemetryStore(config.db_path)
     app = web.Application(middlewares=[auth_middleware], client_max_size=64 * 1024 * 1024)
     app.router.add_get("/dashboard-config", dashboard_file)
+    app.router.add_get("/api/config/model-variants", api_config_model_variants_get)
+    app.router.add_put("/api/config/model-variants", api_config_model_variants_put)
     app.router.add_get("/api/config/routing", api_config_routing_get)
     app.router.add_put("/api/config/routing", api_config_routing_put)
     app.router.add_delete("/api/config/routing", api_config_routing_delete)
@@ -3136,6 +3187,7 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
             shutdown_timeout=config.telemetry_shutdown_timeout_ms / 1000,
         ),
         routing_policy=build_routing_policy_snapshot(config, telemetry),
+        model_variants=VariantPolicy.load(telemetry),
     )
     register_realtime(app, RealtimeConfig.from_env(config.token))
     app.on_startup.append(startup)

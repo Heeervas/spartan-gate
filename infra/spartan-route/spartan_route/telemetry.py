@@ -326,6 +326,10 @@ class TelemetryStore:
                     auth_fingerprint_hash TEXT,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS model_variant_config (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    document TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS routing_model_overrides (
                     tier TEXT PRIMARY KEY,
                     model_id TEXT NOT NULL,
@@ -1288,6 +1292,32 @@ class TelemetryStore:
                 max_context=excluded.max_context, updated_at=excluded.updated_at""",
                 [(model_id, context, updated_at) for model_id, context in contexts.items()],
             )
+
+    def model_variant_config(self) -> dict | None:
+        with self._lock:
+            row = self._conn.execute("SELECT document FROM model_variant_config WHERE singleton = 1").fetchone()
+        if row is None:
+            return None
+        document = json.loads(row["document"])
+        if not isinstance(document, dict):
+            raise ValueError("Invalid stored model variant document")
+        return document
+
+    def replace_model_variants(self, variants: list[dict]) -> str:
+        updated_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        document = json.dumps({"version": 1, "variants": variants, "updatedAt": updated_at})
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO model_variant_config (singleton, document) VALUES (1, ?)",
+                    (document,),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return updated_at
 
     def routing_model_override_rows(self) -> list[dict[str, Any]]:
         with self._lock:
