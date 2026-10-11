@@ -225,13 +225,13 @@ test('distinct names may share one base model and context window', () => {
 });
 
 test('names reject malformed IDs, wrappers, catalog collisions and reserved routes', () => {
-  for (const id of ['', 'x'.repeat(257), 'my name', 'x#y', 'x?y', 'x\ny', 'é', '/name', 'name/', 'x//y', '.', '..', 'x/../y', 'x/./y']) {
+  for (const id of ['', 'x'.repeat(273), 'my name', 'x#y', 'x?y', 'x\ny', 'é', '/name', 'name/', 'x//y', '.', '..', 'x/../y', 'x/./y']) {
     assert.match(helpers.validateVariants([{id, model: 'base', contextWindow: 282000}], models, []), /enter a model ID/, id);
   }
   for (const id of ['auto', 'clawroute/auto', 'custom-1/name', 'spartan-route/name', 'base', 'gpt-image-test', 'openai/gpt-realtime-test']) {
     assert.match(helpers.validateVariants([{id, model: 'base', contextWindow: 282000}], models, []), /reserved/, id);
   }
-  for (const id of ['codex/sol-282kcontext', 'my-sol', 'a.b_c:d/e-f', 'x'.repeat(256)]) {
+  for (const id of ['codex/sol-282kcontext', 'my-sol', 'a.b_c:d/e-f', 'x'.repeat(272)]) {
     assert.equal(helpers.validateVariants([{id, model: 'base', contextWindow: 282000}], models, []), '', id);
   }
 });
@@ -260,4 +260,12 @@ test('generated names are suggested only when creating a new row', async () => {
   context.oninput();
   assert.equal(h.run('variantDraft[1].id'), 'new-name');
   assert.equal(h.run('variantDraft[0].id'), 'base-282kcontext');
+});
+
+
+test('long generated v1 alias names stay editable within the migration bound', async () => {
+  const h = await loaded();
+  const id = `${'b'.repeat(256)}-2000000context`;
+  assert.equal(helpers.validateVariants([{id, model: 'base', contextWindow: 282000}], models, []), '');
+  assert.equal(h.elements.get('variants').querySelectorAll('input')[0].maxLength, 272);
 });

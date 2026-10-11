@@ -454,9 +454,9 @@
         const id = row.id;
         const context = Number(row.contextWindow);
         const preserved = saved.some(item => item.id === row.id && item.model === row.model && item.contextWindow === context);
-        if (typeof id !== 'string' || !id || id.length > 256 || !/^[A-Za-z0-9._:/-]+$/.test(id)
+        if (typeof id !== 'string' || !id || id.length > 272 || !/^[A-Za-z0-9._:/-]+$/.test(id)
           || id.startsWith('/') || id.endsWith('/') || id.includes('//') || id.split('/').some(part => part === '.' || part === '..')) {
-          return `Variant ${index + 1}: enter a model ID of 1–256 ASCII letters, digits or . _ : / - without empty or dot path segments.`;
+          return `Variant ${index + 1}: enter a model ID of 1–272 ASCII letters, digits or . _ : / - without empty or dot path segments.`;
         }
         if (id.startsWith('custom-1/') || id.startsWith('spartan-route/') || ['auto', 'clawroute/auto'].includes(id)
           || /(?:^|[/.-])(?:image|realtime)(?:$|[/.-])/.test(id) || (!preserved && models.some(model => model.id === id))) {
@@ -502,7 +502,7 @@
         const nameInput = document.createElement('input');
         nameInput.id = nameLabel.htmlFor;
         nameInput.type = 'text';
-        nameInput.maxLength = 256;
+        nameInput.maxLength = 272;
         nameInput.autocomplete = 'off';
         nameInput.spellcheck = false;
         nameInput.value = item.id;
