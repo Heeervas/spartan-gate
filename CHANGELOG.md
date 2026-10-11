@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Keep Spartan Route variant names stable across context and base-model edits.
+  Add editable custom model IDs, preserve existing names when loading earlier
+  configurations, and reject removed custom aliases across restarts.
+
 - Manage Spartan Route context variants live from Config using a base model
   and token window. Persist the complete list with transactional, revision-safe
   updates, preserve initial 282k compatibility, and reject inactive or removed

@@ -556,30 +556,40 @@ tabs receive `412 config_revision_conflict` instead of overwriting newer state.
 
 ## Dashboard Context Variants
 
-The **Context window variants** section of `/dashboard-config` manages variants with
-two editable fields: **Model**, an existing text model, and **Context window**,
-an integer token count. Add, edit, or remove rows, then save the complete list.
+The **Context window variants** section of `/dashboard-config` manages variants
+with three editable fields: **Name (model ID)**, the identifier clients select;
+**Base model**, an existing text model; and **Context window**, an integer token
+count. Add, edit, or remove rows, then save the complete list.
 These changes are independent of the auto-routing tier selections.
 
-The variant ID is generated from the base model and window. For example,
-`codex/gpt-6-astra` with 128,000 tokens becomes
-`codex/gpt-6-astra-128kcontext`. Windows divisible by 1,000 use `kcontext`;
-other windows use the exact token count followed by `context`. Editing either
-field changes the selectable ID, and requests to the previous ID are rejected.
-Existing 282k IDs are preserved until their rows are edited or removed.
+The name stays unchanged when the base model or window changes. For example,
+`codex/gpt-6.1-sol-282kcontext` can advertise 412,000 tokens while still routing
+to `codex/gpt-6.1-sol`. The name's text does not determine the window or upstream
+model. This preserves Hermes sessions and profiles pinned to that identifier.
+For Codex models in Hermes, keep the `codex/` prefix so Hermes can recognize its
+Codex-specific modes. Multiple names may point to the same base model and window.
+
+New rows receive a suggested name, which can be edited independently. Existing
+names are retained, including those loaded from the earlier configuration
+format. Only explicitly renaming or removing a row removes its client-facing
+identifier; clients using that old name must then select another model.
 
 - `GET /api/config/model-variants` returns the variants, available base models,
   whether a managed list has been saved, warnings, and an `ETag`.
 - `PUT /api/config/model-variants` requires that `ETag` in `If-Match` and a
   complete list, for example:
-  `{"variants":[{"model":"codex/gpt-6-astra","contextWindow":128000}]}`.
+  `{"variants":[{"id":"codex/my-sol","model":"codex/gpt-6.1-sol","contextWindow":412000}]}`.
+  Legacy API clients may omit `id` to request the earlier generated-name behavior.
 - `{"variants":[]}` explicitly removes all variants. The first save replaces
   the automatic 282k defaults with the managed list. New discoveries then
   appear only as base-model choices until a variant is explicitly added.
 
 Windows must be integers from 1 to the smaller of the base model's supported
 maximum and 2,000,000 tokens. Auto aliases, image/realtime models, nested
-variants, duplicate entries, and IDs colliding with real models are rejected.
+variants, duplicate names, reserved names, and IDs colliding with real models
+are rejected. Names must be bounded model identifiers without whitespace,
+control characters, query/fragment characters, or client wrapper prefixes such
+as `custom-1/` and `spartan-route/`.
 Unavailable saved rows remain visible and can be preserved or removed; they
 become usable again if the base model returns with a compatible window.
 Ordinary provider credential and Codex account eligibility checks still apply.
@@ -589,7 +599,16 @@ without writing to `config/clawroute`. Updates are transactional and use the
 same serialization boundary as catalog refreshes. Missing `If-Match` returns
 428; a stale revision returns `412 config_revision_conflict`. Failed writes
 preserve the active list. An unreadable or malformed stored configuration
-disables managed variants and produces an authenticated warning.
+disables managed variants and produces an authenticated warning. In that
+degraded state unknown explicit IDs are rejected, so previously managed custom
+names cannot accidentally fall through to provider passthrough. Known base
+models continue to work. Removed custom names are retained as rejection records
+across restarts and can be reused by explicitly adding them again.
+
+Version 1 configurations load with their existing generated IDs preserved;
+saving writes version 2 with explicit names and removed-name records. Before
+rolling back to an image that supports only version 1, retain and restore the
+previous variant configuration document as well as the previous image.
 
 Saved changes affect new Route requests immediately and survive restart.
 Clients that cache model metadata, including Hermes, must refresh their model
