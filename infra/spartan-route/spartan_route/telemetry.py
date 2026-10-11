@@ -1303,9 +1303,12 @@ class TelemetryStore:
             raise ValueError("Invalid stored model variant document")
         return document
 
-    def replace_model_variants(self, variants: list[dict]) -> str:
+    def replace_model_variants(self, variants: list[dict], *, retired_ids: list[str] | None = None) -> str:
         updated_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-        document = json.dumps({"version": 1, "variants": variants, "updatedAt": updated_at})
+        # Normalize legacy internal callers as well as API-created explicit rows.
+        from .model_variants import variant_id
+        rows = [{**row, "id": row.get("id", variant_id(row["model"], row["contextWindow"]))} for row in variants]
+        document = json.dumps({"version": 2, "variants": rows, "retiredIds": retired_ids or [], "updatedAt": updated_at})
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")

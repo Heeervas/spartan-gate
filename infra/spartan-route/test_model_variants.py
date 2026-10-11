@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -34,7 +35,7 @@ class PolicyTests(unittest.TestCase):
             store.close()
             store = TelemetryStore(path)
             policy = VariantPolicy.load(store)
-            self.assertEqual(policy.rows, ((BASE, 128001),))
+            self.assertEqual(policy.rows, ((BASE + "-128001context", BASE, 128001),))
             self.assertEqual(variant_id(BASE, 128001), BASE + "-128001context")
             self.assertEqual(variant_id(BASE, 128000), BASE + "-128kcontext")
             self.assertEqual(route_request(test_config(), {"model": BASE + "-128001context"}, variants=policy.snapshot(test_config())[1]).actual_model, BASE)
@@ -68,6 +69,73 @@ class PolicyTests(unittest.TestCase):
             config.models[real] = ModelEntry(real, "codex")
             self.assertEqual(route_request(config, {"model": real}, variants={}).actual_model, real)
 
+    def test_v1_migrates_ids_v2_persists_ids_and_tombstones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "variants.db")
+            store = TelemetryStore(path)
+            legacy = {"version": 1, "variants": [{"model": BASE, "contextWindow": 128000}], "updatedAt": "legacy"}
+            store._conn.execute("INSERT INTO model_variant_config VALUES (1, ?)", (json.dumps(legacy),))
+            store._conn.commit()
+            policy = VariantPolicy.load(store)
+            self.assertEqual(policy.rows, ((BASE + "-128kcontext", BASE, 128000),))
+            store.replace_model_variants([{"id": "friendly-name", "model": BASE, "contextWindow": 412000}], retired_ids=[BASE + "-128kcontext"])
+            store.close()
+            store = TelemetryStore(path)
+            policy = VariantPolicy.load(store)
+            self.assertEqual(store.model_variant_config()["version"], 2)
+            self.assertEqual(policy.rows, (("friendly-name", BASE, 412000),))
+            self.assertEqual(policy.retired_ids, frozenset({BASE + "-128kcontext"}))
+            self.assertEqual(route_request(test_config(), {"model": "friendly-name"}, variants=policy.snapshot(test_config())[1]).actual_model, BASE)
+            with self.assertRaises(InvalidContextVariant):
+                route_request(test_config(), {"model": BASE + "-128kcontext"}, variants=policy.snapshot(test_config())[1])
+            store.close()
+
+    def test_long_v1_generated_alias_survives_migration_and_v2_roundtrip(self):
+        model = "openai/" + "a" * 249
+        store = TelemetryStore(":memory:")
+        legacy = {"version": 1, "variants": [{"model": model, "contextWindow": 282000}], "updatedAt": "legacy"}
+        store._conn.execute("INSERT INTO model_variant_config VALUES (1, ?)", (json.dumps(legacy),))
+        store._conn.commit()
+        policy = VariantPolicy.load(store)
+        self.assertIsNone(policy.warning)
+        config = test_config()
+        config.models[model] = ModelEntry(model, "openai", max_context=500000)
+        rows = policy.snapshot(config)[0]
+        alias = rows[0]["id"]
+        self.assertGreater(len(alias), 256)
+        self.assertTrue(rows[0]["available"])
+        self.assertEqual(policy.validate(config, {"variants": [{"id": alias, "model": model, "contextWindow": 412000}]}), ((alias, model, 412000),))
+        store.replace_model_variants([{"id": alias, "model": model, "contextWindow": 412000}])
+        self.assertIsNone(VariantPolicy.load(store).warning)
+        store.close()
+
+    def test_corrupt_v2_and_read_failure_deny_unknown_but_preserve_real_models(self):
+        store = TelemetryStore(":memory:")
+        documents = [
+            {"version": 2, "variants": [{"id": "friendly", "model": BASE, "contextWindow": 0}], "retiredIds": [], "updatedAt": "now"},
+            {"version": 2, "variants": [], "retiredIds": ["friendly", "friendly"], "updatedAt": "now"},
+            {"version": 2, "variants": [], "retiredIds": [], "updatedAt": "now", "extra": True},
+            {"version": 2, "variants": [{"model": BASE, "contextWindow": 128000}], "retiredIds": [], "updatedAt": "now"},
+        ]
+        for document in documents:
+            store._conn.execute("INSERT OR REPLACE INTO model_variant_config VALUES (1, ?)", (json.dumps(document),))
+            store._conn.commit()
+            policy = VariantPolicy.load(store)
+            self.assertTrue(policy.warning)
+            active = policy.snapshot(test_config())[1]
+            self.assertEqual(active, {})
+            with self.assertRaises(InvalidContextVariant):
+                route_request(test_config(), {"model": "friendly"}, variants=active)
+            self.assertEqual(route_request(test_config(), {"model": BASE}, variants=active).actual_model, BASE)
+            self.assertTrue(route_request(test_config(), {"model": "auto"}, variants=active).actual_model)
+        with patch.object(store, "model_variant_config", side_effect=RuntimeError("read failed")):
+            active = VariantPolicy.load(store).snapshot(test_config())[1]
+            with self.assertRaises(InvalidContextVariant):
+                route_request(test_config(), {"model": "unrecoverable-alias"}, variants=active)
+        healthy = VariantPolicy(rows=()).snapshot(test_config())[1]
+        self.assertEqual(route_request(test_config(), {"model": "ordinary-unknown"}, variants=healthy).actual_model, "ordinary-unknown")
+        store.close()
+
 
 class VariantApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -91,6 +159,77 @@ class VariantApiTests(unittest.IsolatedAsyncioTestCase):
     async def save(self, rows, etag=None):
         etag = etag or (await self.get())["etag"]
         return await self.client.put(PATH, headers={**AUTH, "If-Match": etag}, json={"variants": rows})
+
+    async def test_stable_name_keeps_hermes_alias_when_context_changes(self):
+        alias = "codex/gpt-6.1-sol-282kcontext"
+        model = "codex/gpt-6.1-sol"
+        self.state.config.models[model] = ModelEntry(model, "codex", max_context=872000)
+        result = await self.save([{"id": alias, "model": model, "contextWindow": 412000}])
+        self.assertEqual(result.status, 200)
+        detail = await self.client.get("/v1/models/" + alias)
+        self.assertEqual(detail.status, 200)
+        self.assertEqual((await detail.json())["max_context"], 412000)
+        fake = CaptureChatCodex()
+        self.state.codex = fake
+        result = await self.client.post("/v1/chat/completions", headers=AUTH, json={"model": alias, "messages": []})
+        self.assertEqual(result.status, 200)
+        self.assertEqual(fake.calls[-1]["model_id"], model)
+
+    async def test_arbitrary_stable_ids_context_and_base_edits_and_duplicate_pairs(self):
+        rows = [{"id": "friendly", "model": BASE, "contextWindow": 128000},
+                {"id": "codex/friendly", "model": BASE, "contextWindow": 128000}]
+        self.assertEqual((await self.save(rows)).status, 200)
+        for context, base in ((412000, BASE), (100000, "openai/gpt-test")):
+            rows[0].update(model=base, contextWindow=context)
+            self.assertEqual((await self.save(rows)).status, 200)
+            saved = next(row for row in (await self.get())["variants"] if row["id"] == "friendly")
+            self.assertEqual((saved["model"], saved["contextWindow"]), (base, context))
+            route = route_request(self.state.config, {"model": "friendly"}, variants=self.state.model_variants.snapshot(self.state.config)[1])
+            self.assertEqual(route.actual_model, base)
+        self.assertEqual((await self.save([rows[0], {**rows[0], "contextWindow": 1}])).status, 400)
+        self.assertEqual((await self.save([{"model": BASE, "contextWindow": 128000}])).status, 200)
+        self.assertEqual((await self.get())["variants"][0]["id"], BASE + "-128kcontext")
+
+    async def test_stable_id_validation_and_special_namespace_reservations(self):
+        row = {"model": BASE, "contextWindow": 128000}
+        for alias in ("", "x" * 273, "friendly name", "é", "a?b", "a#b", "a\n", "/a", "a/", "a//b", ".", "..", "a/../b", "a/./b",
+                      "auto", "clawroute/auto", "custom-1/friendly", "spartan-route/friendly", "gpt-image-2", "gpt-realtime-2", BASE, None, 12):
+            with self.subTest(alias=alias):
+                self.assertEqual((await self.save([{**row, "id": alias}])).status, 400)
+        self.state.variant_reserved_ids = frozenset({"customvoice"})
+        self.assertEqual((await self.save([{**row, "id": "customvoice"}])).status, 400)
+        self.assertEqual((await self.save([{**row, "id": "valid_name.v2:chat/a-b"}])).status, 200)
+
+    async def test_retired_and_inactive_custom_ids_deny_chat_responses_and_restart(self):
+        row = {"id": "friendly", "model": BASE, "contextWindow": 412000}
+        self.assertEqual((await self.save([row])).status, 200)
+        self.state.config.models[BASE] = replace(self.state.config.models[BASE], max_context=300000)
+        self.assertFalse((await self.get())["variants"][0]["available"])
+        self.assertEqual((await self.save([row, {"id": "other", "model": BASE, "contextWindow": 100000}])).status, 200)
+        self.assertEqual((await self.save([{**row, "contextWindow": 413000}])).status, 400)
+        self.assertEqual((await self.save([{**row, "id": "renamed"}])).status, 400)
+        for endpoint, payload in (("/v1/chat/completions", {"messages": []}), ("/v1/responses", {"input": "hello"})):
+            self.assertEqual((await self.client.post(endpoint, headers=AUTH, json={"model": "friendly", **payload})).status, 404)
+        self.assertEqual((await self.save([])).status, 200)
+        self.assertIn("friendly", self.state.model_variants.retired_ids)
+        self.state.model_variants = VariantPolicy.load(self.store)
+        for endpoint, payload in (("/v1/chat/completions", {"messages": []}), ("/v1/responses", {"input": "hello"})):
+            self.assertEqual((await self.client.post(endpoint, headers=AUTH, json={"model": "friendly", **payload})).status, 404)
+        self.assertEqual((await self.save([{**row, "contextWindow": 100000}])).status, 200)
+        self.assertNotIn("friendly", self.state.model_variants.retired_ids)
+        self.assertEqual((await self.client.get("/v1/models/friendly")).status, 200)
+        # Real model IDs retain priority even when a retired name later appears.
+        self.assertEqual((await self.save([])).status, 200)
+        self.state.config.models["friendly"] = ModelEntry("friendly", "openai")
+        self.assertEqual(route_request(self.state.config, {"model": "friendly"}, variants=self.state.model_variants.snapshot(self.state.config)[1]).actual_model, "friendly")
+
+    async def test_arbitrary_alias_responses_keeps_original_body_and_routes_saved_base(self):
+        self.assertEqual((await self.save([{"id": "friendly", "model": BASE, "contextWindow": 412000}])).status, 200)
+        with patch("spartan_route.app.execute_codex_responses", return_value=CodexCallResult(status=200, body={"status": "completed", "output": []})) as execute:
+            result = await self.client.post("/v1/responses", headers=AUTH, json={"model": "friendly", "input": "hello"})
+            self.assertEqual(result.status, 200)
+            self.assertEqual(execute.call_args.args[2], BASE)
+            self.assertEqual(execute.call_args.args[1]["model"], "friendly")
 
     async def test_auth_preconditions_defaults_and_authoritative_empty(self):
         self.assertEqual((await self.client.get(PATH)).status, 401)
