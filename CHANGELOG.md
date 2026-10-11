@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Manage Spartan Route context variants live from Config using a base model
+  and token window. Persist the complete list with transactional, revision-safe
+  updates, preserve initial 282k compatibility, and reject inactive or removed
+  variants before forwarding requests.
+
 - Detect changed Codex bootstrap credentials on healthy cached slots, invalidate
   stale auth, leases, usage cache and catalog eligibility, and wake discovery
   even without a prior catalog entry. Preserve managed-state account binding

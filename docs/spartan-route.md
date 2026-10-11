@@ -143,14 +143,15 @@ Kept in v1:
 - OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, `/v1/models`,
   `/v1/images/generations`, and `/v1/images/edits`.
 - Native Hermes `openai-api` provider discovery through `OPENAI_BASE_URL`.
-- `/v1/models` also lists a `-282kcontext` variant of each enabled, tool-capable
-  text model whose configured context is at least 282,000 tokens, including
-  models added by Codex catalog discovery. Hermes can select the variant to use
-  a 282,000-token context window. Spartan Route sends the unsuffixed model ID
-  upstream; the variant is context metadata, not a server-side token limit.
-  Auto aliases, image models, realtime models, and smaller-window models have
-  no variant. `/v1/models/{id}` reports the same variant metadata, and a
-  variant is unavailable when its base model leaves the catalog.
+- `/v1/models` lists context variants managed from `/dashboard-config`.
+  Before the first save, eligible text models retain their automatic
+  `-282kcontext` variants. After saving, the complete managed list is
+  authoritative, including an empty list; newly discovered base models do not
+  automatically receive variants. Hermes can select a variant to use its
+  advertised context window. Spartan Route sends the base model ID upstream;
+  the variant is context metadata, not a server-side token limit.
+  `/v1/models/{id}` reports the same variant metadata. Variants whose base
+  model disappears or no longer supports their window are unavailable.
 - Profile `.env` route keys may reference `${OPENAI_API_KEY}` or legacy
   `${CUSTOM_1_API_KEY}`; those two route-key aliases delegate to the named
   container environment key. References to unrelated keys remain literal and
@@ -193,8 +194,8 @@ Kept in v1:
   restart or refresh failure; bundled estimates apply only before a value is
   observed. Metadata failures add no routing availability gate and cannot
   resurrect removed models or extend account eligibility. Generated
-  `-282kcontext` variants remain fixed at 282,000 tokens and disappear when
-  their base model's supported maximum drops below that threshold. Both model
+  variants retain their chosen window and become unavailable when
+  their base model's supported maximum drops below that window. Both model
   endpoints expose consistent `max_context`, `context_length`, and
   `max_model_len` fields for ordinary and variant models.
 - Compatible future model additions and context changes follow Codex cache
@@ -552,6 +553,50 @@ disabled, non-tool, or unsupported-provider target causes the entire override
 to be ignored in favor of file defaults, with an authenticated dashboard
 warning. Updates and resets are serialized and transactional, and stale browser
 tabs receive `412 config_revision_conflict` instead of overwriting newer state.
+
+## Dashboard Context Variants
+
+The **Context window variants** section of `/dashboard-config` manages variants with
+two editable fields: **Model**, an existing text model, and **Context window**,
+an integer token count. Add, edit, or remove rows, then save the complete list.
+These changes are independent of the auto-routing tier selections.
+
+The variant ID is generated from the base model and window. For example,
+`codex/gpt-6-astra` with 128,000 tokens becomes
+`codex/gpt-6-astra-128kcontext`. Windows divisible by 1,000 use `kcontext`;
+other windows use the exact token count followed by `context`. Editing either
+field changes the selectable ID, and requests to the previous ID are rejected.
+Existing 282k IDs are preserved until their rows are edited or removed.
+
+- `GET /api/config/model-variants` returns the variants, available base models,
+  whether a managed list has been saved, warnings, and an `ETag`.
+- `PUT /api/config/model-variants` requires that `ETag` in `If-Match` and a
+  complete list, for example:
+  `{"variants":[{"model":"codex/gpt-6-astra","contextWindow":128000}]}`.
+- `{"variants":[]}` explicitly removes all variants. The first save replaces
+  the automatic 282k defaults with the managed list. New discoveries then
+  appear only as base-model choices until a variant is explicitly added.
+
+Windows must be integers from 1 to the smaller of the base model's supported
+maximum and 2,000,000 tokens. Auto aliases, image/realtime models, nested
+variants, duplicate entries, and IDs colliding with real models are rejected.
+Unavailable saved rows remain visible and can be preserved or removed; they
+become usable again if the base model returns with a compatible window.
+Ordinary provider credential and Codex account eligibility checks still apply.
+
+The authenticated API stores a versioned configuration in `spartan-route.db`
+without writing to `config/clawroute`. Updates are transactional and use the
+same serialization boundary as catalog refreshes. Missing `If-Match` returns
+428; a stale revision returns `412 config_revision_conflict`. Failed writes
+preserve the active list. An unreadable or malformed stored configuration
+disables managed variants and produces an authenticated warning.
+
+Saved changes affect new Route requests immediately and survive restart.
+Clients that cache model metadata, including Hermes, must refresh their model
+catalog to observe the changed window. This does not change the base model's
+context metadata or impose a server-side token limit.
+
+## Codex Account Health And Credentials
 
 The Codex dashboard also classifies each slot as healthy, failed, unavailable,
 history, or disabled. Only a current failure on a routing-enabled slot makes the
