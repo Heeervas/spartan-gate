@@ -106,12 +106,18 @@
     .source { color: var(--accent); font-size: 12px; }
     .readiness.warn { color: var(--warn); }
     .limitations { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
+    .variant-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+    .variant-row > * { min-width: 0; }
+    .variant-meta { grid-column: 1 / -1; overflow-wrap: anywhere; }
+    .variant-field { display: grid; gap: 4px; }
     .dirty { color: var(--warn); font-weight: 600; }
     @media (max-width: 760px) {
       .toolbar { display: grid; grid-template-columns: 1fr; }
       .token-field { min-width: 0; }
       .tier-row { grid-template-columns: 1fr; gap: 8px; }
       nav { flex-wrap: wrap; }
+      .variant-row { grid-template-columns: minmax(0, 1fr); }
+      .variant-row button { justify-self: start; }
     }
   </style>
 </head>
@@ -157,6 +163,25 @@
       </div>
       <ul id="limitations" class="limitations"></ul>
     </section>
+    <section class="panel" aria-labelledby="variants-title">
+      <div class="section-head">
+        <div>
+          <h2 id="variants-title">Context window variants</h2>
+          <div class="muted">Changes apply immediately and persist. Context is model metadata; refresh your client's model list. Requests use the base model upstream.</div>
+        </div>
+        <span id="variant-status" class="muted" role="status" aria-live="polite"></span>
+      </div>
+      <p class="muted">After saving, new models receive variants only when you add them. Remove every row and save to publish no variants.</p>
+      <div id="variant-warning" class="panel banner hidden" role="status"></div>
+      <div id="variant-error" class="panel banner bad hidden" role="alert"></div>
+      <div id="variant-success" class="panel banner good hidden" role="status"></div>
+      <div id="variants" aria-busy="true"></div>
+      <div class="actions">
+        <button id="variant-add" disabled>Add variant</button>
+        <span id="variant-dirty" class="muted"></span>
+        <button id="variant-save" class="primary" disabled>Save changes</button>
+      </div>
+    </section>
   </main>
   <script>
     const tokenInput = document.getElementById('token');
@@ -175,6 +200,22 @@
     let draft = {};
     let dirty = false;
     let busy = false;
+    let routingLoaded = false;
+    let generation = 0;
+    let variantState = null;
+    let variantEtag = null;
+    let variantDraft = [];
+    let variantDirty = false;
+    let variantBusy = false;
+    let variantsLoaded = false;
+    const variantsEl = document.getElementById('variants');
+    const variantStatus = document.getElementById('variant-status');
+    const variantError = document.getElementById('variant-error');
+    const variantSuccess = document.getElementById('variant-success');
+    const variantWarning = document.getElementById('variant-warning');
+    const variantSave = document.getElementById('variant-save');
+    const variantAdd = document.getElementById('variant-add');
+    const variantDirtyEl = document.getElementById('variant-dirty');
 
     tokenInput.value = sessionStorage.getItem('spartanRouteToken') || '';
 
@@ -209,7 +250,7 @@
       dirty = next;
       dirtyEl.textContent = dirty ? 'Unsaved changes' : '';
       dirtyEl.className = dirty ? 'dirty' : 'muted';
-      saveButton.disabled = busy || !dirty;
+      saveButton.disabled = busy || !routingLoaded || !dirty;
     }
 
     function eligibleModels() {
@@ -265,8 +306,9 @@
           select.prepend(option);
         }
         select.value = draft[tier.id] || '';
-        select.disabled = busy;
+        select.disabled = busy || !routingLoaded;
         select.addEventListener('change', () => {
+          setMessage(successEl, '');
           draft[tier.id] = select.value;
           markDirty(JSON.stringify(draft) !== JSON.stringify(documentState.effective));
           render();
@@ -291,11 +333,12 @@
       }
 
       tiersEl.setAttribute('aria-busy', busy ? 'true' : 'false');
-      resetButton.disabled = busy || !Object.keys(documentState?.overrides || {}).length;
+      resetButton.disabled = busy || !routingLoaded || !Object.keys(documentState?.overrides || {}).length;
       markDirty(dirty);
     }
 
     function renderDocument(payload, nextEtag) {
+      routingLoaded = true;
       documentState = payload;
       etag = nextEtag;
       draft = { ...payload.effective };
@@ -313,25 +356,31 @@
       render();
     }
 
-    async function load() {
+    async function loadRouting(loadGeneration) {
+      routingLoaded = false;
       busy = true;
       statusEl.textContent = 'Loading…';
+      setMessage(successEl, '');
       setMessage(errorEl, '');
       if (documentState) render();
       try {
         const result = await request('/api/config/routing', { headers: headers() });
+        if (loadGeneration !== generation) return;
         renderDocument(result.payload, result.etag);
       } catch (error) {
+        if (loadGeneration !== generation) return;
         statusEl.textContent = '';
         setMessage(errorEl, error.message);
       } finally {
+        if (loadGeneration !== generation) return;
         busy = false;
         if (documentState) render();
       }
     }
 
     async function save() {
-      if (!dirty || busy) return;
+      if (!dirty || busy || !routingLoaded) return;
+      const loadGeneration = generation;
       busy = true;
       render();
       setMessage(errorEl, '');
@@ -342,22 +391,26 @@
           headers: { ...headers(true), 'If-Match': etag },
           body: JSON.stringify({ tiers: draft }),
         });
+        if (loadGeneration !== generation) return;
         renderDocument(result.payload, result.etag);
         setMessage(successEl, 'Routing models saved and active.');
       } catch (error) {
+        if (loadGeneration !== generation) return;
         if (error.status === 412) {
           setMessage(errorEl, 'Configuration changed in another tab. Your selections are preserved; reload before saving.');
         } else {
           setMessage(errorEl, error.message);
         }
       } finally {
+        if (loadGeneration !== generation) return;
         busy = false;
         render();
       }
     }
 
     async function reset() {
-      if (busy) return;
+      if (busy || !routingLoaded) return;
+      const loadGeneration = generation;
       busy = true;
       render();
       setMessage(errorEl, '');
@@ -367,19 +420,240 @@
           method: 'DELETE',
           headers: { ...headers(), 'If-Match': etag },
         });
+        if (loadGeneration !== generation) return;
         renderDocument(result.payload, result.etag);
         setMessage(successEl, 'Runtime override removed. File defaults are active.');
       } catch (error) {
+        if (loadGeneration !== generation) return;
         if (error.status === 412) {
           setMessage(errorEl, 'Configuration changed in another tab. Reload before resetting.');
         } else {
           setMessage(errorEl, error.message);
         }
       } finally {
+        if (loadGeneration !== generation) return;
         busy = false;
         render();
       }
     }
+
+    function variantId(model, contextWindow) {
+      const context = Number(contextWindow);
+      if (!model || !Number.isSafeInteger(context) || context < 1) return 'Enter a model and whole token count';
+      return `${model}-${context % 1000 === 0 ? `${context / 1000}k` : context}context`;
+    }
+
+    function variantPairs(rows) {
+      return rows.map(row => ({ model: row.model, contextWindow: row.contextWindow }));
+    }
+
+    function validateVariants(rows, models, saved) {
+      const seen = new Set();
+      for (const [index, row] of rows.entries()) {
+        const context = Number(row.contextWindow);
+        if (!/^\d+$/.test(String(row.contextWindow)) || !Number.isSafeInteger(context) || context < 1 || context > 2000000) {
+          return `Variant ${index + 1}: enter a whole token count from 1 to 2,000,000.`;
+        }
+        const model = models.find(model => model.id === row.model);
+        const preserved = saved.some(item => item.model === row.model && item.contextWindow === context);
+        if (!model?.eligible && !preserved) return `Variant ${index + 1}: select an eligible base model.`;
+        if (!preserved && model?.eligible && context > Math.min(model.maxContext, 2000000)) {
+          return `Variant ${index + 1}: context exceeds ${model.id}'s maximum of ${Math.min(model.maxContext, 2000000).toLocaleString()} tokens.`;
+        }
+        const key = JSON.stringify([row.model, context]);
+        if (seen.has(key)) return `Variant ${index + 1}: this model and context window already exist.`;
+        seen.add(key);
+      }
+      return '';
+    }
+
+    function updateVariantControls() {
+      variantDirty = JSON.stringify(variantPairs(variantDraft)) !== JSON.stringify(variantPairs(variantState?.variants || []));
+      variantDirtyEl.textContent = variantDirty ? 'Unsaved changes' : '';
+      variantDirtyEl.className = variantDirty ? 'dirty' : 'muted';
+      variantSave.disabled = variantBusy || !variantsLoaded || (!variantDirty && variantState?.configured !== false);
+      variantAdd.disabled = variantBusy || !variantsLoaded || !(variantState?.models || []).some(model => model.eligible);
+      variantsEl.setAttribute('aria-busy', String(variantBusy));
+      for (const control of variantsEl.querySelectorAll('input, select, button')) control.disabled = variantBusy || !variantsLoaded;
+    }
+
+    function renderVariants() {
+      variantsEl.replaceChildren();
+      const models = (variantState?.models || []).filter(model => model.eligible).sort((a, b) => a.id.localeCompare(b.id));
+      if (variantState && !variantDraft.length) addText(variantsEl, 'muted', 'No context variants. Add a variant to publish another context window.');
+      variantDraft.forEach((item, index) => {
+        const row = document.createElement('div');
+        row.className = 'variant-row';
+        const modelLabel = document.createElement('label');
+        modelLabel.className = 'variant-field';
+        modelLabel.htmlFor = `variant-model-${index}`;
+        addText(modelLabel, 'label', 'Model');
+        const select = document.createElement('select');
+        select.id = modelLabel.htmlFor;
+        for (const model of models) {
+          const option = document.createElement('option');
+          option.value = model.id;
+          option.textContent = model.id;
+          select.appendChild(option);
+        }
+        if (!models.some(model => model.id === item.model)) {
+          const option = document.createElement('option');
+          option.value = item.model;
+          option.textContent = `${item.model} · unavailable`;
+          option.disabled = true;
+          select.prepend(option);
+        }
+        select.value = item.model;
+        modelLabel.appendChild(select);
+        const contextLabel = document.createElement('label');
+        contextLabel.className = 'variant-field';
+        contextLabel.htmlFor = `variant-context-${index}`;
+        addText(contextLabel, 'label', 'Context window (tokens)');
+        const input = document.createElement('input');
+        input.id = contextLabel.htmlFor;
+        input.type = 'number';
+        input.min = '1';
+        input.step = '1';
+        input.inputMode = 'numeric';
+        input.value = item.contextWindow;
+        contextLabel.appendChild(input);
+        const remove = document.createElement('button');
+        remove.textContent = 'Remove';
+        remove.setAttribute('aria-label', `Remove variant ${index + 1}`);
+        const metadata = document.createElement('div');
+        metadata.className = 'variant-meta tier-meta';
+        const preview = addText(metadata, 'muted', '');
+        const readiness = addText(metadata, 'muted', '');
+        function refreshMetadata() {
+          preview.textContent = `Model ID: ${variantId(item.model, item.contextWindow)}`;
+          const model = variantState.models.find(model => model.id === item.model);
+          input.max = String(Math.min(model?.maxContext || 2000000, 2000000));
+          const saved = variantState.variants.find(saved => saved.model === item.model && saved.contextWindow === Number(item.contextWindow));
+          readiness.textContent = saved?.available === false
+            ? `Unavailable: ${saved.unavailableReason || 'base model is unavailable'}. Preserve this row or remove it.`
+            : `Maximum: ${Number(input.max).toLocaleString()} tokens · Readiness: ${(model?.readiness || 'unknown').replaceAll('_', ' ')}`;
+        }
+        function changed() {
+          setMessage(variantSuccess, '');
+          setMessage(variantError, '');
+          refreshMetadata();
+          updateVariantControls();
+        }
+        select.onchange = () => { item.model = select.value; changed(); };
+        input.oninput = () => { item.contextWindow = input.value; changed(); };
+        input.onchange = () => {
+          if (/^\d+$/.test(input.value)) item.contextWindow = Number(input.value);
+          changed();
+        };
+        remove.onclick = () => {
+          variantDraft.splice(index, 1);
+          setMessage(variantSuccess, '');
+          setMessage(variantError, '');
+          renderVariants();
+          const next = variantsEl.querySelector('select');
+          (next || variantAdd).focus();
+        };
+        refreshMetadata();
+        row.append(modelLabel, contextLabel, remove, metadata);
+        variantsEl.appendChild(row);
+      });
+      updateVariantControls();
+    }
+
+    function receiveVariants(result) {
+      variantState = result.payload;
+      variantEtag = result.etag;
+      variantDraft = variantPairs(variantState.variants);
+      variantsLoaded = true;
+      variantStatus.textContent = variantState.configured ? 'Source: managed' : 'Source: default 282k';
+      setMessage(variantWarning, variantState.warning);
+      setMessage(variantError, '');
+      renderVariants();
+    }
+
+    async function loadVariants(loadGeneration) {
+      variantsLoaded = false;
+      variantBusy = true;
+      variantStatus.textContent = 'Loading…';
+      setMessage(variantSuccess, '');
+      setMessage(variantError, '');
+      updateVariantControls();
+      try {
+        const result = await request('/api/config/model-variants', { headers: headers() });
+        if (loadGeneration !== generation) return;
+        receiveVariants(result);
+      } catch (error) {
+        if (loadGeneration !== generation) return;
+        variantStatus.textContent = 'Reload required';
+        setMessage(variantError, error.message);
+      } finally {
+        if (loadGeneration !== generation) return;
+        variantBusy = false;
+        updateVariantControls();
+      }
+    }
+
+    async function saveVariants() {
+      if ((!variantDirty && variantState?.configured !== false) || variantBusy || !variantsLoaded) return;
+      setMessage(variantSuccess, '');
+      const errorMessage = validateVariants(variantDraft, variantState.models, variantState.variants);
+      if (errorMessage) { setMessage(variantError, errorMessage); return; }
+      const loadGeneration = generation;
+      variantBusy = true;
+      updateVariantControls();
+      setMessage(variantError, '');
+      try {
+        const result = await request('/api/config/model-variants', {
+          method: 'PUT',
+          headers: { ...headers(true), 'If-Match': variantEtag },
+          body: JSON.stringify({ variants: variantDraft.map(row => ({ model: row.model, contextWindow: Number(row.contextWindow) })) }),
+        });
+        if (loadGeneration !== generation) return;
+        receiveVariants(result);
+        setMessage(variantSuccess, 'Context variants saved. Refresh your client’s model list.');
+      } catch (error) {
+        if (loadGeneration !== generation) return;
+        if (error.status === 412) {
+          variantsLoaded = false;
+          setMessage(variantError, 'Configuration changed in another tab. Your edits are preserved; reload before saving.');
+        } else setMessage(variantError, error.message);
+      } finally {
+        if (loadGeneration !== generation) return;
+        variantBusy = false;
+        updateVariantControls();
+      }
+    }
+
+    function invalidateResources() {
+      generation += 1;
+      routingLoaded = false;
+      variantsLoaded = false;
+      busy = false;
+      variantBusy = false;
+      setMessage(successEl, '');
+      setMessage(variantSuccess, '');
+      statusEl.textContent = 'Reload required';
+      variantStatus.textContent = 'Reload required';
+      if (documentState) render();
+      updateVariantControls();
+    }
+
+    function load() {
+      invalidateResources();
+      return Promise.all([loadRouting(generation), loadVariants(generation)]);
+    }
+
+    tokenInput.addEventListener('input', invalidateResources);
+    variantSave.onclick = saveVariants;
+    variantAdd.onclick = () => {
+      if (variantAdd.disabled) return;
+      const model = variantState.models.find(model => model.eligible);
+      variantDraft.push({ model: model.id, contextWindow: Math.min(model.maxContext, 282000, 2000000) });
+      setMessage(variantSuccess, '');
+      setMessage(variantError, '');
+      renderVariants();
+      document.getElementById(`variant-context-${variantDraft.length - 1}`).focus();
+    };
 
     document.getElementById('use-token').onclick = () => {
       sessionStorage.setItem('spartanRouteToken', tokenInput.value.trim());
@@ -389,7 +663,7 @@
     saveButton.onclick = () => save();
     resetButton.onclick = () => reset();
     window.addEventListener('beforeunload', event => {
-      if (!dirty) return;
+      if (!dirty && !variantDirty) return;
       event.preventDefault();
       event.returnValue = '';
     });
