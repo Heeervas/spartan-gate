@@ -106,7 +106,7 @@
     .source { color: var(--accent); font-size: 12px; }
     .readiness.warn { color: var(--warn); }
     .limitations { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
-    .variant-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+    .variant-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
     .variant-row > * { min-width: 0; }
     .variant-meta { grid-column: 1 / -1; overflow-wrap: anywhere; }
     .variant-field { display: grid; gap: 4px; }
@@ -171,6 +171,7 @@
         </div>
         <span id="variant-status" class="muted" role="status" aria-live="polite"></span>
       </div>
+      <p class="muted">Name stays unchanged when you edit the base model or context window. Renaming or removing it can break clients using that ID. For Codex models in Hermes, keep the codex/ prefix.</p>
       <p class="muted">After saving, new models receive variants only when you add them. Remove every row and save to publish no variants.</p>
       <div id="variant-warning" class="panel banner hidden" role="status"></div>
       <div id="variant-error" class="panel banner bad hidden" role="alert"></div>
@@ -444,25 +445,33 @@
     }
 
     function variantPairs(rows) {
-      return rows.map(row => ({ model: row.model, contextWindow: row.contextWindow }));
+      return rows.map(row => ({ id: row.id, model: row.model, contextWindow: row.contextWindow }));
     }
 
     function validateVariants(rows, models, saved) {
       const seen = new Set();
       for (const [index, row] of rows.entries()) {
+        const id = row.id;
         const context = Number(row.contextWindow);
+        const preserved = saved.some(item => item.id === row.id && item.model === row.model && item.contextWindow === context);
+        if (typeof id !== 'string' || !id || id.length > 256 || !/^[A-Za-z0-9._:/-]+$/.test(id)
+          || id.startsWith('/') || id.endsWith('/') || id.includes('//') || id.split('/').some(part => part === '.' || part === '..')) {
+          return `Variant ${index + 1}: enter a model ID of 1–256 ASCII letters, digits or . _ : / - without empty or dot path segments.`;
+        }
+        if (id.startsWith('custom-1/') || id.startsWith('spartan-route/') || ['auto', 'clawroute/auto'].includes(id)
+          || /(?:^|[/.-])(?:image|realtime)(?:$|[/.-])/.test(id) || (!preserved && models.some(model => model.id === id))) {
+          return `Variant ${index + 1}: this name is reserved or belongs to a base model.`;
+        }
+        if (seen.has(id)) return `Variant ${index + 1}: this model ID already exists.`;
+        seen.add(id);
         if (!/^\d+$/.test(String(row.contextWindow)) || !Number.isSafeInteger(context) || context < 1 || context > 2000000) {
           return `Variant ${index + 1}: enter a whole token count from 1 to 2,000,000.`;
         }
         const model = models.find(model => model.id === row.model);
-        const preserved = saved.some(item => item.model === row.model && item.contextWindow === context);
         if (!model?.eligible && !preserved) return `Variant ${index + 1}: select an eligible base model.`;
         if (!preserved && model?.eligible && context > Math.min(model.maxContext, 2000000)) {
           return `Variant ${index + 1}: context exceeds ${model.id}'s maximum of ${Math.min(model.maxContext, 2000000).toLocaleString()} tokens.`;
         }
-        const key = JSON.stringify([row.model, context]);
-        if (seen.has(key)) return `Variant ${index + 1}: this model and context window already exist.`;
-        seen.add(key);
       }
       return '';
     }
@@ -484,10 +493,24 @@
       variantDraft.forEach((item, index) => {
         const row = document.createElement('div');
         row.className = 'variant-row';
+        const nameLabel = document.createElement('label');
+        nameLabel.className = 'variant-field';
+        nameLabel.htmlFor = `variant-name-${index}`;
+        const nameText = document.createElement('span');
+        nameText.className = 'label';
+        nameText.textContent = 'Name (model ID)';
+        const nameInput = document.createElement('input');
+        nameInput.id = nameLabel.htmlFor;
+        nameInput.type = 'text';
+        nameInput.maxLength = 256;
+        nameInput.autocomplete = 'off';
+        nameInput.spellcheck = false;
+        nameInput.value = item.id;
+        nameLabel.append(nameText, nameInput);
         const modelLabel = document.createElement('label');
         modelLabel.className = 'variant-field';
         modelLabel.htmlFor = `variant-model-${index}`;
-        addText(modelLabel, 'label', 'Model');
+        addText(modelLabel, 'label', 'Base model');
         const select = document.createElement('select');
         select.id = modelLabel.htmlFor;
         for (const model of models) {
@@ -525,10 +548,10 @@
         const preview = addText(metadata, 'muted', '');
         const readiness = addText(metadata, 'muted', '');
         function refreshMetadata() {
-          preview.textContent = `Model ID: ${variantId(item.model, item.contextWindow)}`;
+          preview.textContent = `Model ID: ${item.id || 'Enter a name'}`;
           const model = variantState.models.find(model => model.id === item.model);
           input.max = String(Math.min(model?.maxContext || 2000000, 2000000));
-          const saved = variantState.variants.find(saved => saved.model === item.model && saved.contextWindow === Number(item.contextWindow));
+          const saved = variantState.variants.find(saved => saved.id === item.id && saved.model === item.model && saved.contextWindow === Number(item.contextWindow));
           readiness.textContent = saved?.available === false
             ? `Unavailable: ${saved.unavailableReason || 'base model is unavailable'}. Preserve this row or remove it.`
             : `Maximum: ${Number(input.max).toLocaleString()} tokens · Readiness: ${(model?.readiness || 'unknown').replaceAll('_', ' ')}`;
@@ -539,6 +562,7 @@
           refreshMetadata();
           updateVariantControls();
         }
+        nameInput.oninput = () => { item.id = nameInput.value; changed(); };
         select.onchange = () => { item.model = select.value; changed(); };
         input.oninput = () => { item.contextWindow = input.value; changed(); };
         input.onchange = () => {
@@ -554,7 +578,7 @@
           (next || variantAdd).focus();
         };
         refreshMetadata();
-        row.append(modelLabel, contextLabel, remove, metadata);
+        row.append(nameLabel, modelLabel, contextLabel, remove, metadata);
         variantsEl.appendChild(row);
       });
       updateVariantControls();
@@ -606,7 +630,7 @@
         const result = await request('/api/config/model-variants', {
           method: 'PUT',
           headers: { ...headers(true), 'If-Match': variantEtag },
-          body: JSON.stringify({ variants: variantDraft.map(row => ({ model: row.model, contextWindow: Number(row.contextWindow) })) }),
+          body: JSON.stringify({ variants: variantDraft.map(row => ({ id: row.id, model: row.model, contextWindow: Number(row.contextWindow) })) }),
         });
         if (loadGeneration !== generation) return;
         receiveVariants(result);
@@ -648,11 +672,12 @@
     variantAdd.onclick = () => {
       if (variantAdd.disabled) return;
       const model = variantState.models.find(model => model.eligible);
-      variantDraft.push({ model: model.id, contextWindow: Math.min(model.maxContext, 282000, 2000000) });
+      const contextWindow = Math.min(model.maxContext, 282000, 2000000);
+      variantDraft.push({ id: variantId(model.id, contextWindow), model: model.id, contextWindow });
       setMessage(variantSuccess, '');
       setMessage(variantError, '');
       renderVariants();
-      document.getElementById(`variant-context-${variantDraft.length - 1}`).focus();
+      document.getElementById(`variant-name-${variantDraft.length - 1}`).focus();
     };
 
     document.getElementById('use-token').onclick = () => {

@@ -14,8 +14,8 @@ test('variant IDs use exact tokens or compact whole thousands', () => {
   assert.equal(helpers.variantId('base', ''), 'Enter a model and whole token count');
 });
 
-test('validate whole counts, model eligibility, limits and duplicate pairs', () => {
-  const validate = rows => helpers.validateVariants(rows, models, []);
+test('validate whole counts, model eligibility, limits and duplicate IDs', () => {
+  const validate = rows => helpers.validateVariants(rows.map(row => ({id: 'alias', ...row})), models, []);
   assert.equal(validate([]), '');
   assert.equal(validate([{model: 'base', contextWindow: 1000000}]), '');
   for (const count of ['', '1.5', '1e3', 0, -1, 2000001, Infinity]) {
@@ -27,10 +27,10 @@ test('validate whole counts, model eligibility, limits and duplicate pairs', () 
 });
 
 test('saved inactive pairs can be preserved or removed without selecting a new target', () => {
-  const saved = [{model: 'gone', contextWindow: 282000}, {model: 'base', contextWindow: 1500000}];
+  const saved = [{id: 'gone-alias', model: 'gone', contextWindow: 282000}, {id: 'base-alias', model: 'base', contextWindow: 1500000}];
   assert.equal(helpers.validateVariants(saved, models, saved), '');
   assert.equal(helpers.validateVariants([], models, saved), '');
-  assert.match(helpers.validateVariants([{model: 'gone', contextWindow: 1000}], models, saved), /eligible/);
+  assert.match(helpers.validateVariants([{id: 'gone-alias', model: 'gone', contextWindow: 1000}], models, saved), /eligible/);
 });
 
 class Element {
@@ -88,7 +88,7 @@ test('variant and routing saves preserve the other panel draft and ETag', async 
   const h = await loaded();
   h.run("draft.simple = 'other'; markDirty(true); variantDraft[0].contextWindow = 300000; updateVariantControls(); saveVariants();");
   assert.equal(h.requests[2].options.headers['If-Match'], 'variants-etag');
-  h.respond(h.requests[2], {...variants, configured: true, variants: [{model: 'base', contextWindow: 300000}]});
+  h.respond(h.requests[2], {...variants, configured: true, variants: [{id: 'base-282kcontext', model: 'base', contextWindow: 300000}]});
   await flush();
   assert.equal(h.run('dirty'), true);
   assert.equal(h.run('draft.simple'), 'other');
@@ -146,14 +146,14 @@ test('late responses from previous credentials cannot replace current drafts', a
   assert.equal(h.run('variantDraft[0].contextWindow'), 300000);
 });
 
-test('typing updates ID preview without replacing focused controls and save disables editing', async () => {
+test('typing context preserves ID and focused controls while save disables editing', async () => {
   const h = await loaded();
   const container = h.elements.get('variants');
-  const input = container.querySelector('input');
+  const input = container.querySelectorAll('input')[1];
   input.value = '333001';
   input.oninput();
-  assert.equal(container.querySelector('input'), input);
-  assert.equal(container.children[0].children[3].children[0].textContent, 'Model ID: base-333001context');
+  assert.equal(container.querySelectorAll('input')[1], input);
+  assert.equal(container.children[0].children[4].children[0].textContent, 'Model ID: base-282kcontext');
   assert.equal(h.run('variantDirty'), true);
   h.run('saveVariants();');
   for (const control of container.querySelectorAll('input, select, button')) assert.equal(control.disabled, true);
@@ -181,9 +181,83 @@ test('unchanged defaults can be adopted as a managed list without unsaved edits'
   h.events.beforeunload(event);
   assert.equal(event.prevented, undefined);
   h.run('saveVariants();');
-  assert.deepEqual(JSON.parse(h.requests[2].options.body), {variants: [{model: 'base', contextWindow: 282000}]});
+  assert.deepEqual(JSON.parse(h.requests[2].options.body), {variants: [{id: 'base-282kcontext', model: 'base', contextWindow: 282000}]});
   h.respond(h.requests[2], {...variants, configured: true});
   await flush();
   assert.equal(h.elements.get('variant-save').disabled, true);
   assert.equal(h.elements.get('variant-status').textContent, 'Source: managed');
+});
+
+test('existing 282k name remains stable after changing context to 412k and reloading saved response', async () => {
+  const h = await loaded();
+  const input = h.elements.get('variants').querySelectorAll('input')[1];
+  input.value = '412000';
+  input.oninput();
+  h.run('saveVariants();');
+  assert.deepEqual(JSON.parse(h.requests[2].options.body), {variants: [{id: 'base-282kcontext', model: 'base', contextWindow: 412000}]});
+  h.respond(h.requests[2], {...variants, configured: true, variants: [{id: 'base-282kcontext', model: 'base', contextWindow: 412000}]});
+  await flush();
+  assert.equal(h.elements.get('variants').querySelectorAll('input')[0].value, 'base-282kcontext');
+  assert.equal(h.run('variantDraft[0].contextWindow'), 412000);
+});
+
+test('custom names are editable and persist independently from base model selection', async () => {
+  const h = await loaded();
+  h.run("variantState.models = [...variantState.models, {id: 'codex/sol', eligible: true, maxContext: 1000000}]; renderVariants();");
+  const container = h.elements.get('variants');
+  const name = container.querySelectorAll('input')[0];
+  name.value = 'my-sol';
+  name.oninput();
+  assert.equal(container.querySelectorAll('input')[0], name);
+  assert.equal(container.children[0].children[4].children[0].textContent, 'Model ID: my-sol');
+  const select = container.querySelector('select');
+  select.value = 'codex/sol';
+  select.onchange();
+  assert.equal(name.value, 'my-sol');
+  h.run('saveVariants();');
+  assert.deepEqual(JSON.parse(h.requests[2].options.body), {variants: [{id: 'my-sol', model: 'codex/sol', contextWindow: 282000}]});
+});
+
+test('distinct names may share one base model and context window', () => {
+  const rows = [{id: 'first', model: 'base', contextWindow: 282000}, {id: 'second', model: 'base', contextWindow: 282000}];
+  assert.equal(helpers.validateVariants(rows, models, []), '');
+  assert.match(helpers.validateVariants([{...rows[0]}, {...rows[1], id: 'first'}], models, []), /already exists/);
+});
+
+test('names reject malformed IDs, wrappers, catalog collisions and reserved routes', () => {
+  for (const id of ['', 'x'.repeat(257), 'my name', 'x#y', 'x?y', 'x\ny', 'é', '/name', 'name/', 'x//y', '.', '..', 'x/../y', 'x/./y']) {
+    assert.match(helpers.validateVariants([{id, model: 'base', contextWindow: 282000}], models, []), /enter a model ID/, id);
+  }
+  for (const id of ['auto', 'clawroute/auto', 'custom-1/name', 'spartan-route/name', 'base', 'gpt-image-test', 'openai/gpt-realtime-test']) {
+    assert.match(helpers.validateVariants([{id, model: 'base', contextWindow: 282000}], models, []), /reserved/, id);
+  }
+  for (const id of ['codex/sol-282kcontext', 'my-sol', 'a.b_c:d/e-f', 'x'.repeat(256)]) {
+    assert.equal(helpers.validateVariants([{id, model: 'base', contextWindow: 282000}], models, []), '', id);
+  }
+});
+
+test('inactive preservation requires the same name, base and context identity', () => {
+  const saved = [{id: 'old-name', model: 'gone', contextWindow: 282000}];
+  assert.equal(helpers.validateVariants(saved, models, saved), '');
+  assert.match(helpers.validateVariants([{...saved[0], id: 'renamed'}], models, saved), /eligible/);
+  assert.match(helpers.validateVariants([{...saved[0], contextWindow: 412000}], models, saved), /eligible/);
+  const collision = [{id: 'base', model: 'gone', contextWindow: 282000, available: false}];
+  assert.equal(helpers.validateVariants(collision, models, collision), '');
+  assert.match(helpers.validateVariants([{...collision[0], contextWindow: 412000}], models, collision), /reserved/);
+});
+
+test('generated names are suggested only when creating a new row', async () => {
+  const h = await loaded();
+  h.elements.get('variant-add').onclick();
+  assert.equal(h.run('variantDraft[1].id'), 'base-282kcontext');
+  const container = h.elements.get('variants');
+  const newRow = container.children[1];
+  const name = newRow.querySelectorAll('input')[0];
+  name.value = 'new-name';
+  name.oninput();
+  const context = newRow.querySelectorAll('input')[1];
+  context.value = '412000';
+  context.oninput();
+  assert.equal(h.run('variantDraft[1].id'), 'new-name');
+  assert.equal(h.run('variantDraft[0].id'), 'base-282kcontext');
 });
