@@ -115,6 +115,33 @@ the listener. Invalid values fail startup instead of silently removing bounds.
   completes a validated localhost callback from Hermes stdin and persists
   Wrangler's filesystem credentials under the `/opt/data` mount.
 
+### Shared tool environment values
+
+Use `sg-hermes env set TOOL_API_KEY` to deliberately share a tool credential or
+setting across **all Hermes profiles**. The value prompt is hidden. Choose the
+menu option to recreate only Hermes immediately, or save for a later
+recreation. `sg-hermes env set TOOL_API_KEY --no-apply` saves without applying;
+`sg-hermes env set TOOL_API_KEY --apply` requests immediate application.
+
+The helper requires a running Hermes container for native key and dotenv
+validation, and updates the existing administrator-managed dotenv mounted
+into Hermes. Keep its directory at `0700` and file at `0600`. It preserves the
+other settings and keeps a private backup. It does
+not create a second shared dotenv or copy `private/env/local.env`. Shared
+values use Hermes' native managed scope; terminal filtering and tool-specific
+credential restrictions still apply. Values must be a nonempty single line
+of at most 4096 bytes; `${...}` interpolation syntax is rejected.
+
+Use this only for values intended for every profile. LLM/provider routing
+keys, messaging credentials and browser-policy settings belong to their
+existing configuration workflows. Keep profile-specific tool credentials in
+their profile instead.
+
+Saved changes take effect after container recreation with
+`sg up -d --no-deps --force-recreate hermes`. A gateway restart does not refresh
+the managed runtime environment. Recreation interrupts active Hermes work;
+saving for later leaves the running container unchanged.
+
 Profile-specific variables must be present in your private env file and exposed in `private/compose.local.yml` if the profile `.env` references them.
 Named profiles that enable the API server need explicit, non-conflicting
 `API_SERVER_PORT` / `platforms.api_server.port` values. Spartan Gate no longer

@@ -3,6 +3,10 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Add hidden `sg-hermes env set` prompts for deliberately shared tool values
+  in the existing administrator-managed dotenv, with private backups and a
+  choice to recreate only Hermes now or save for later.
+
 - Keep Spartan Route variant names stable across context and base-model edits.
   Add editable custom model IDs, preserve existing names when loading earlier
   configurations, and reject removed custom aliases across restarts.
