@@ -20,6 +20,12 @@ class HelperError(ValueError):
     """An operator-safe message containing no input values."""
 
 
+class SecretSafeParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, 'Invalid Hermes env arguments; use --help. Secret values must be entered at the hidden prompt.\n')
+
+
 ROOT = Path(__file__).resolve().parent.parent
 KEY_RE = re.compile(r'[A-Z][A-Z0-9_]*\Z')
 ASSIGNMENT = re.compile(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=')
@@ -261,7 +267,7 @@ def update_secret(path: Path, key: str, secret: str, validate=native_check) -> b
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = SecretSafeParser(prog='sg-hermes env', description=__doc__)
     parser.add_argument('command', choices=['set'])
     parser.add_argument('key', nargs='?')
     choice = parser.add_mutually_exclusive_group()
