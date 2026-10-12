@@ -695,6 +695,15 @@ as `SEARXNG_URL`, `OPENAI_BASE_URL` and `PLAYWRIGHT_BROWSERS_PATH`. Decide their
 scope individually; this fix shares only the six network keys and does not
 promote provider endpoints or credentials into global policy.
 
+For a tool API credential explicitly intended for every Hermes profile, use
+`sg-hermes env set SERVICE_API_KEY`. This is an opt-in extension of the shared
+network scope above: it updates only that key in the existing administrator
+managed dotenv, with a hidden value prompt and an apply menu. The menu can
+recreate only Hermes or leave the change saved for later; gateway restart alone
+does not regenerate the protected managed layer. Native credential filters
+still apply; provider, messaging and infrastructure keys are rejected. See
+[Environment](env.md#hermes) for details.
+
 Use Camofox profiles when Hermes should reuse a manual website login through
 Camofox browser tools. Camofox noVNC is exposed through the private Caddy edge
 on `CAMOFOX_NOVNC_PORT`; the helper starts Caddy, verifies internal noVNC and
