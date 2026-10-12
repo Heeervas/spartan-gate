@@ -608,6 +608,7 @@ Usage:
   sg-hermes profile [args...]          run `hermes profile` in the container
   sg-hermes profiles                   list Hermes profiles
   sg-hermes restart [profile]          gracefully restart default or a profile gateway
+  sg-hermes env set [KEY] [--no-apply|--apply]  save a shared tool secret (hidden input)
   sg-hermes profile-create <name>      create a Hermes profile
   sg-hermes profile-new [args...]      run the profile scaffolding helper
   sg-hermes wrangler [args...]           run pinned Wrangler 4.45.0
@@ -917,6 +918,7 @@ sg_hermes() {
         profile) shift; sg_hermes_profile "$@" ;;
         profiles) shift; sg_hermes_profiles "$@" ;;
         restart) shift; sg_hermes_restart "$@" ;;
+        env) shift; sg_hermes_env "$@" ;;
         profile-create) shift; sg_hermes_profile_create "$@" ;;
         profile-new) shift; sg_hermes_profile_new "$@" ;;
         gateway-profile) shift; sg_hermes_gateway_profile "$@" ;;
@@ -929,6 +931,10 @@ sg_hermes() {
             return 2
             ;;
     esac
+}
+
+sg_hermes_env() {
+    python3 "$SPARTAN_GATE_DIR/scripts/hermes-env.py" "$@"
 }
 
 sg_workstation() {
