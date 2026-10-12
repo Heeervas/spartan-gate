@@ -2,6 +2,13 @@ import importlib.util
 import contextlib
 import io
 import json
+import os
+import pty
+import select
+import signal
+import shutil
+import sys
+import time
 from pathlib import Path
 import stat
 import tempfile
@@ -202,6 +209,71 @@ class HermesEnvSourceTests(unittest.TestCase):
                     self.helper.encode_secret(value)
 
 
+class HermesEnvTerminalTests(unittest.TestCase):
+    def test_real_terminal_hides_secret_and_supports_name_and_save_menu(self):
+        for ask_name in (False, True):
+            with self.subTest(ask_name=ask_name):
+                pid, descriptor = pty.fork()
+                if pid == 0:
+                    try:
+                        helper = load_module()
+                        helper.compose = lambda *args, **kwargs: json.dumps(
+                            {"services": {"hermes": {"environment": {}}}})
+                        helper.discover_source = lambda *args: Path("/unused/shared.env")
+                        helper.native_check = lambda *args: True
+                        def update(path, key, secret):
+                            if key != "TOOL_API_KEY" or secret != "synthetic-hidden-tty-value":
+                                raise AssertionError("Unexpected secret input")
+                            print("UPDATE_VERIFIED", flush=True)
+                            return True
+                        helper.update_secret = update
+                        result = helper.main(["set"] if ask_name else ["set", "TOOL_API_KEY"])
+                        sys.stdout.flush()
+                        sys.stderr.flush()
+                        os._exit(result)
+                    except BaseException:
+                        os._exit(99)
+                transcript = bytearray()
+                status = None
+                deadline = time.monotonic() + 8
+                steps = ([(b"Environment key: ", b"TOOL_API_KEY\n")] if ask_name else []) + [
+                    (b"Secret (hidden): ", b"synthetic-hidden-tty-value\n"),
+                    (b"Choice [2]: ", b"2\n")]
+                try:
+                    while time.monotonic() < deadline:
+                        ready, _, _ = select.select([descriptor], [], [], 0.05)
+                        if ready:
+                            try:
+                                data = os.read(descriptor, 4096)
+                            except OSError:
+                                break
+                            if not data:
+                                break
+                            transcript.extend(data)
+                            if steps and steps[0][0] in transcript:
+                                os.write(descriptor, steps.pop(0)[1])
+                        done, result = os.waitpid(pid, os.WNOHANG)
+                        if done:
+                            status = result
+                            break
+                    while status is None and time.monotonic() < deadline:
+                        done, result = os.waitpid(pid, os.WNOHANG)
+                        if done:
+                            status = result
+                        else:
+                            time.sleep(0.01)
+                    self.assertIsNotNone(status, "Terminal helper timed out")
+                    self.assertEqual(os.waitstatus_to_exitcode(status), 0, transcript.decode(errors="replace"))
+                    self.assertFalse(steps)
+                    self.assertIn(b"UPDATE_VERIFIED", transcript)
+                    self.assertNotIn(b"synthetic-hidden-tty-value", transcript)
+                finally:
+                    os.close(descriptor)
+                    if status is None:
+                        os.kill(pid, signal.SIGKILL)
+                        os.waitpid(pid, 0)
+
+
 class HermesEnvFlowTests(unittest.TestCase):
     def setUp(self):
         self.helper = load_module()
@@ -209,7 +281,7 @@ class HermesEnvFlowTests(unittest.TestCase):
         self.config = {"services": {"hermes": {"environment": {}}}}
         self.calls = []
 
-    def run_main(self, arguments, *, menu="", changed=True, reject_native=False, apply_error=False, free=6 * 1024**3, prompt_error=None):
+    def run_main(self, arguments, *, menu="", changed=True, reject_native=False, apply_error=False, prompt_error=None):
         terminal = mock.Mock()
         terminal.readline.side_effect = menu.splitlines(keepends=True) or [""]
         output = io.StringIO()
@@ -232,7 +304,6 @@ class HermesEnvFlowTests(unittest.TestCase):
             prompt = stack.enter_context(mock.patch.object(self.helper.getpass, "getpass", return_value="private-secret-value", side_effect=prompt_error))
             opened = stack.enter_context(mock.patch("builtins.open", mock.mock_open()))
             opened.return_value.__enter__.return_value = terminal
-            stack.enter_context(mock.patch.object(self.helper.shutil, "disk_usage", return_value=mock.Mock(free=free)))
             stack.enter_context(contextlib.redirect_stdout(output))
             stack.enter_context(contextlib.redirect_stderr(errors))
             result = self.helper.main(arguments)
@@ -296,11 +367,28 @@ class HermesEnvFlowTests(unittest.TestCase):
         update.assert_not_called()
         self.assertFalse(any(args[0] == "up" for args, _ in self.calls))
 
-    def test_low_disk_keeps_save_without_recreation(self):
-        result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", "--apply"], free=1024)
-        self.assertEqual(result, 1)
-        update.assert_called_once()
-        self.assertFalse(any(args[0] == "up" for args, _ in self.calls))
+    def test_save_and_apply_never_consult_disk_usage(self):
+        with mock.patch.object(shutil, "disk_usage", side_effect=AssertionError("No disk gate")) as usage:
+            for mode in ("--no-apply", "--apply"):
+                with self.subTest(mode=mode):
+                    self.calls.clear()
+                    result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", mode])
+                    self.assertEqual(result, 0)
+                    update.assert_called_once()
+                    self.assertEqual(any(args[0] == "up" for args, _ in self.calls), mode == "--apply")
+            usage.assert_not_called()
+
+    def test_missing_controlling_terminal_has_sanitized_specific_error(self):
+        errors = io.StringIO()
+        with mock.patch.object(self.helper, "compose", return_value=json.dumps(self.config)), \
+             mock.patch.object(self.helper, "discover_source", return_value=self.path), \
+             mock.patch("builtins.open", side_effect=OSError("private-secret-value")), \
+             mock.patch.object(self.helper, "update_secret") as update, \
+             contextlib.redirect_stderr(errors):
+            self.assertEqual(self.helper.main(["set", "TOOL_API_KEY"]), 1)
+        self.assertIn("controlling terminal is required", errors.getvalue())
+        self.assertNotIn("private-secret-value", errors.getvalue())
+        update.assert_not_called()
 
     def test_apply_failure_is_redacted_and_retains_completed_save(self):
         result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", "--apply"], apply_error=True)

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -277,17 +277,22 @@ def main(argv=None) -> int:
     try:
         config = json.loads(compose('config', '--format', 'json'))
         path = discover_source(config, ROOT)
-        with open('/dev/tty', 'r+') as terminal:
+        with contextlib.ExitStack() as terminals:
+            try:
+                reader = terminals.enter_context(open('/dev/tty', 'r'))
+                writer = terminals.enter_context(open('/dev/tty', 'w'))
+            except OSError:
+                raise HelperError('A controlling terminal is required for hidden secret entry; run sg-hermes env set from an interactive terminal') from None
             key = args.key
             if key is None:
-                terminal.write('Environment key: ')
-                terminal.flush()
-                key = terminal.readline().strip()
+                writer.write('Environment key: ')
+                writer.flush()
+                key = reader.readline().strip()
             validate_key(key, config['services']['hermes'].get('environment') or {})
             native_check(key)
             with warnings.catch_warnings():
                 warnings.simplefilter('error', getpass.GetPassWarning)
-                secret = getpass.getpass('Secret (hidden): ', stream=terminal)
+                secret = getpass.getpass('Secret (hidden): ', stream=writer)
             changed = update_secret(path, key, secret)
             secret = ''
             if not changed:
@@ -296,15 +301,13 @@ def main(argv=None) -> int:
             print('Saved shared tool secret with a private backup.')
             apply = args.apply
             if not args.apply and not args.no_apply:
-                terminal.write('1) Recreate only Hermes now\n2) Save for later\nChoice [2]: ')
-                terminal.flush()
-                answer = terminal.readline().strip()
+                writer.write('1) Recreate only Hermes now\n2) Save for later\nChoice [2]: ')
+                writer.flush()
+                answer = reader.readline().strip()
                 if answer not in {'', '1', '2'}:
                     raise HelperError('Invalid choice; secret is saved for later')
                 apply = answer == '1'
         if apply:
-            if shutil.disk_usage(ROOT).free < 5 * 1024**3:
-                raise HelperError('Secret saved; recreation requires at least 5 GiB free disk space')
             compose('config', '--quiet')
             compose('up', '-d', '--no-build', '--no-deps', '--force-recreate', 'hermes')
             print('Recreated only Hermes; shared secrets remain subject to native tool and profile filters.')
@@ -316,7 +319,7 @@ def main(argv=None) -> int:
         return 1
     except (OSError, UnicodeError, ValueError, KeyboardInterrupt, EOFError, getpass.GetPassWarning):
         # Never render exception strings: parser/OS/Compose errors may contain secrets.
-        print('Hermes env operation stopped safely. Check the managed mount, permissions, native key policy and free disk space. Any completed save remains available for later activation.', file=sys.stderr)
+        print('Hermes env operation stopped safely. Check the managed mount, permissions, native key policy and terminal access. Any completed save remains available for later activation.', file=sys.stderr)
         return 1
 
 

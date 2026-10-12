@@ -3,6 +3,9 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+- Fix `sg-hermes env set` terminal prompting with separate input/output streams,
+  report missing terminal access clearly, and remove its free-space gate.
+
 - Add hidden `sg-hermes env set` prompts for deliberately shared tool values
   in the existing administrator-managed dotenv, with private backups and a
   choice to recreate only Hermes now or save for later.
