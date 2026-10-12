@@ -239,6 +239,22 @@ class HermesEnvFlowTests(unittest.TestCase):
         self.assertNotIn("private-secret-value", output.getvalue() + errors.getvalue())
         return result, update, prompt, native
 
+    def test_invalid_cli_arguments_never_echo_accidental_secrets_or_run_compose(self):
+        secret = "synthetic-accidental-secret"
+        for arguments in (["set", "EXAMPLE_API_KEY", secret], [secret]):
+            with self.subTest(arguments=arguments):
+                output = io.StringIO()
+                errors = io.StringIO()
+                with mock.patch.object(self.helper, "compose") as compose, \
+                     mock.patch.object(self.helper, "update_secret") as update, \
+                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    with self.assertRaises(SystemExit) as raised:
+                        self.helper.main(arguments)
+                self.assertEqual(raised.exception.code, 2)
+                self.assertNotIn(secret, output.getvalue() + errors.getvalue())
+                compose.assert_not_called()
+                update.assert_not_called()
+
     def test_no_apply_saves_without_any_container_action(self):
         result, update, prompt, _ = self.run_main(["set", "TOOL_API_KEY", "--no-apply"])
         self.assertEqual(result, 0)

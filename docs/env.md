@@ -120,7 +120,8 @@ the listener. Invalid values fail startup instead of silently removing bounds.
 Use `sg-hermes env set TOOL_API_KEY` to deliberately share a tool credential or
 setting across **all Hermes profiles**. The value prompt is hidden. Choose the
 menu option to recreate only Hermes immediately, or save for a later
-recreation. `sg-hermes env set TOOL_API_KEY --no-apply` saves without applying;
+recreation. Immediate application requires at least 5 GiB of free disk space.
+`sg-hermes env set TOOL_API_KEY --no-apply` saves without applying;
 `sg-hermes env set TOOL_API_KEY --apply` requests immediate application.
 
 The helper requires a running Hermes container for native key and dotenv
