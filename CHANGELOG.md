@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Make bundled Linux and Onest font paths explicit in Camofox, preserving
+  upstream Fontconfig license comments and rendering rules. Reject conflicting
+  launcher font configuration on patch reapplication.
+
+
 - Recognize the reviewed native Hermes launcher in workstation peer checks.
   Bound transfer staging by validated approved bytes and a configurable 1 GiB
   reserve; deny missing disk information. Release whitelist policy locks before

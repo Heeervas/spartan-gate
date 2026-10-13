@@ -11,6 +11,7 @@ const { pathToFileURL } = require('node:url');
 const upstreamSource = process.env.CAMOFOX_UPSTREAM_SOURCE;
 const patchers = [
   ['patch-server.js'],
+  ['patch-fonts.js'],
   ['patch-vnc-readiness.js'],
   ['patch-log-redaction.js'],
   ['patch-persistence.js', 'lib/persistence.js', 'plugins/persistence/index.js', 'server.js'],
@@ -204,6 +205,7 @@ test('ordered patch chain transforms pristine pinned Camofox source idempotently
     assert.deepStrictEqual(twice, once, 'the complete ordered patch chain must be byte-idempotent');
 
     const server = fs.readFileSync(path.join(temp, 'server.js'), 'utf8');
+    assert.match(server, /addons: addonPaths,\n        fonts: \['Onest'\],/);
     assert.match(server, /SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1/);
     assert.match(server, /SPARTAN_OPERATOR_LEASE_V2/);
     assert.match(server, /if \(timer\) clearTimeout\(timer\)/);

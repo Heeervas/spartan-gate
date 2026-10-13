@@ -29,6 +29,14 @@ RUN set -eux; \
     fc-list | grep -i Onest; \
     rm -rf /tmp/onest /tmp/onest-fonts.zip
 
+# The JS launcher selects a non-existent fontconfig/lin path; the upstream
+# config also resolves its font directory against cwd. Preserve its rendering
+# rules with absolute Linux bundle paths and explicitly add only Onest.
+COPY configure-fonts.py /tmp/spartan-camofox-configure-fonts.py
+RUN python3 /tmp/spartan-camofox-configure-fonts.py \
+    && rm /tmp/spartan-camofox-configure-fonts.py
+ENV FONTCONFIG_FILE=/etc/spartan-camofox-fonts.conf
+
 # Prefetch the exact AMO-signed uBlock Origin release into camoufox-js's cache.
 # The runtime service has no direct egress, and the AMO API publishes this
 # immutable file URL and SHA-256 for version 1.72.2.
@@ -69,6 +77,8 @@ RUN python3 /tmp/spartan-camofox-patch-addon-readiness.py \
     && rm /tmp/spartan-camofox-patch-addon-readiness.py
 COPY patch-server.js /tmp/spartan-camofox-patch-server.js
 RUN node /tmp/spartan-camofox-patch-server.js && rm /tmp/spartan-camofox-patch-server.js
+COPY patch-fonts.js /tmp/spartan-camofox-patch-fonts.js
+RUN node /tmp/spartan-camofox-patch-fonts.js && rm /tmp/spartan-camofox-patch-fonts.js
 COPY patch-vnc-readiness.js /tmp/spartan-camofox-patch-vnc-readiness.js
 RUN node /tmp/spartan-camofox-patch-vnc-readiness.js \
     && rm /tmp/spartan-camofox-patch-vnc-readiness.js

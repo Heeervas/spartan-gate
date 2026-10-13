@@ -35,6 +35,19 @@ created, loaded, evaluated, and closed a raw Playwright context/page.
 Hermes receives the access key under upstream Hermes' `CAMOFOX_API_KEY` client
 variable so upstream Camofox auth headers work without a local Hermes patch.
 
+## Fonts
+
+The image installs all seven static Onest 1.000 TTFs with checksum verification.
+A dedicated `FONTCONFIG_FILE` retains the upstream Linux rendering rules and
+uses absolute paths to its bundled Linux fonts plus Onest. This avoids the JS
+launcher's missing `fontconfig/lin` directory and the bundled config's relative
+font path. The launch adapter also adds `Onest` to Camoufox's visible font list.
+System Fontconfig installation alone is insufficient. Pages can use
+`font-family: Onest, sans-serif` without downloading a web font.
+
+Changes to this adapter require rebuilding and recreating only Camofox;
+existing running images do not pick up the build-time patch.
+
 ## Runtime State
 
 Camofox state is separate from Browserless state.
