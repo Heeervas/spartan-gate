@@ -1,93 +1,151 @@
 # Hermes Profiles
 
-Hermes profiles have two modes: s6-supervised gateway or manual specialist. Keep real profile inventories and token ownership notes in `private/docs/`.
+Native Hermes multiplexing serves the default and eligible named profiles in
+one gateway process and one API listener. Named profiles use `/p/<profile>`;
+the default uses the listener's base endpoint. Keep real inventories, endpoints
+and credential ownership in private documentation.
 
-Gateway profiles run as upstream Hermes s6 services inside the same container.
-They need their own Telegram or Discord token and, if their API server is
-enabled, a literal non-conflicting `API_SERVER_PORT` in the profile `.env`.
-`HERMES_AUTOSTART_PROFILES` is only a legacy first-boot bootstrap that seeds
-missing gateway state as `running`; after that, `hermes -p <profile> gateway
-start|stop` controls persisted s6 state. Spartan Gate keeps `/run/service`
-root-owned, so newly created profiles get their supervised service slot on the
-next Hermes recreate rather than by mutating s6 service definitions from a
-running `hermes` process.
+## Modes and lifecycle
 
-Do not start or seed a gateway profile until its `.env` has dedicated messaging
-credentials or explicit blank credentials. Otherwise the profile can inherit the
-default gateway tokens from the container environment and prevent the default
-gateway from starting.
+The running multiplexer discovers named profile directories immediately on
+native creation and through a periodic rescan (currently 30 seconds). A named
+profile is excluded when `gateway.standalone: true` is set in its configuration
+or its `gateway.parked` marker exists. Do not assume a new profile is manual
+merely because it is absent from `HERMES_AUTOSTART_PROFILES`.
 
-Manual profiles are not listed in `HERMES_AUTOSTART_PROFILES`. They can be used
-interactively from the main gateway, should set `API_SERVER_ENABLED=false`, and
-should not define `API_SERVER_PORT`.
-
-## Browser Extension Gateways
-
-The private HTTPS Caddy override can publish running profile API servers under
-one authenticated extension edge. Each profile mapping is a literal allowlist
-entry; never derive an upstream host or port from a request header, query value,
-or path capture.
-
-The supported private layout keeps the existing root endpoint on `default` and
-strips the selected profile prefix before proxying:
-
-| Public path | Internal API server |
-| --- | --- |
-| `/agents/default/*` | `hermes:8642` |
-| `/agents/coach/*` | `hermes:8643` |
-| `/agents/work/*` | `hermes:8644` |
-| `/agents/market/*` | `hermes:8645` |
-| `/agents/dreamer/*` | `hermes:8646` |
-
-All allowlisted paths may intentionally share one
-`HERMES_EXTENSION_EDGE_KEY`. Compromise of that key therefore grants access to
-every exposed profile and its tools. Caddy must reject unknown `/agents/*`
-paths instead of falling back to `default`, replace the exterior authorization
-with `HERMES_API_KEY`, and remove `X-Hermes-Profile` before proxying.
-
-Only publish profiles whose API server is already running. Manual specialists
-remain on demand with `API_SERVER_ENABLED=false`; do not start them as gateways
-only to make them appear in a browser selector. Keep profile API ports on the
-internal Docker network rather than publishing them on the host.
-
-Caddy targets the stable Docker DNS name `hermes` plus each literal profile
-port. Restarting one gateway therefore causes only temporary unavailability for
-that profile. Recreating the Hermes container updates the Docker DNS record;
-s6 restores the persisted running gateway set, and Caddy reconnects without a
-configuration change. Requests made during startup may receive `502`, but a
-profile route never falls back to another profile.
-
-## Create A Profile
+Native lifecycle commands below run from the **operator host**, outside the
+Hermes gateway's own tool process. The CLI guards self-targeting lifecycle
+operations from inside a gateway.
 
 ```sh
 source scripts/aliases.sh
-sg up -d hermes
+sg exec hermes hermes -p coach gateway stop
+sg exec hermes hermes -p coach gateway status
+# Only after the profile is configured and explicitly approved to serve:
+sg exec hermes hermes -p coach gateway start
+```
+
+For a multiplex profile, `stop` parks it and removes its bots and cron tasks
+from the shared runtime. `start` unparks and enrolls it in the live default
+host. Named `restart` hot unserves/serves the profile and also unparks it; never
+restart parked/manual profiles as a blanket reload procedure.
+
+`sg-hermes-restart` is a different operation: it gracefully restarts the full
+default shared gateway process. `sg-hermes-restart coach` targets only a separate
+running s6 service, not a named profile hosted by the multiplexer. See
+[operations](operations.md) for the drain and readiness contract.
+
+## Create and stage a fresh profile
+
+Prefer native fresh creation. `hermes profile create` creates an empty `.env`
+with mode 0600, publishes the profile directory atomically, and notifies the
+multiplexer. The notification can enroll it before the next shell command;
+creation and parking are **not an atomic operation**. Do not add credentials
+until parking and removal from the live runtime have been confirmed.
+
+Run from the **operator host**:
+
+```sh
+source scripts/aliases.sh
 sg-hermes-profile-create coach
-sg-hermes-profile coach show
+sg exec hermes hermes -p coach gateway stop
+sg exec hermes hermes -p coach gateway status
+sg-hermes-profile show coach
 ```
 
-Hermes is part of the default stack; recreate it explicitly after changing profile-related private env or mounts.
+The show subcommand precedes the name. If discovery has not completed, ensure
+`gateway.parked` exists in this newly created, known empty profile, then repeat
+native stop/status and confirm the profile is unserved before configuration.
+A marker by itself is not proof that an already served profile has stopped.
+Do not print profile secrets when validating configuration.
 
-## Gateway Profile `.env`
+While parked, prepare identity and configuration, dedicated messaging
+credentials or explicit blank messaging values, and a distinct `API_SERVER_KEY`
+when the profile needs API access. Confirm effective values under the named
+Hermes profile context, including inherited settings. Never rely on an empty
+`.env` to prove that container credentials cannot be inherited.
 
-Example for a profile named `coach`, assuming the variables are present in your private env file and exposed in `private/compose.local.yml`:
+Native cloning copies configuration, `.env`, identity and memories. It strips
+messaging credentials by default, but other secrets can remain. Do not blanket
+clone an existing gateway or copy OAuth/provider state. If deliberate cloning
+is required, review each retained configuration and credential locally before
+activation. Never copy `state.db*`, `response_store.db*`, `auth.lock`, gateway
+locks/PIDs, logs, sessions, sandboxes or generated caches into a new identity.
 
-```env
-TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN_COACH}
-TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS_COACH}
-DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN_COACH}
-DISCORD_ALLOWED_USERS=${DISCORD_ALLOWED_USERS_COACH}
-DISCORD_HOME_CHANNEL=${DISCORD_HOME_CHANNEL_COACH}
-HERMES_GATEWAY_TOKEN=${HERMES_GATEWAY_TOKEN}
-CUSTOM_1_API_KEY=${CUSTOM_1_API_KEY}
-OPENAI_BASE_URL=${OPENAI_BASE_URL}
-API_SERVER_PORT=8643
-```
+After configuration, validate the effective route, tools, plugins, credential
+scope and parked state. Start only the intended gateway, then confirm its API
+and messaging readiness without sending unsolicited messages. A manual
+specialist stays parked, uses `API_SERVER_ENABLED=false`, and has blank
+Telegram/Discord credentials; do not start it to populate an API selector.
 
-Recreate Hermes after the profile has its own token and port, then start
-`coach` with `sg exec hermes hermes -p coach gateway start`. For old private deployments,
-`HERMES_AUTOSTART_PROFILES=coach` may be used once to seed missing s6 gateway
-state, but it will not override an existing stopped state.
+## Routing, tools and plugins
+
+Inherit the deployment's managed Route/proxy settings rather than copying
+upstream provider credentials into profiles. Managed dotenv may contain the
+approved shared internal Route client token; it must not contain upstream
+provider or messaging credentials. Keep per-profile messaging and API keys in
+their intended private scope. See [operations](operations.md) for managed
+inheritance and the active Route endpoint contract.
+
+Use native `SEARXNG_URL` for SearXNG. Browser configuration follows the selected
+Compose browser mode. When using the Camofox-only image, managed Camofox is
+required; follow the
+[runtime Camofox guide](../apps/hermes-agent/runtime-docs/local/camofox.md).
+Do not configure Chromium or another backend as an availability fallback.
+
+Reference only installed, enabled plugins in toolsets and profile config.
+Preserve explicit plugin disablement and keep `skills.external_dirs` empty for
+curated profiles. New profile Talk/voice boot provisioning may require container
+initialization; hot multiplex discovery alone does not install those settings.
+Changes to private Compose environment or mounts require `sg up -d hermes` to
+recreate Hermes. Profile-local changes use the native lifecycle above.
+
+## Browser Extension Gateways
+
+A private Caddy override can publish an explicit profile allowlist through one
+authenticated extension edge. For multiplex mode, map literal external paths
+to the shared listener and the intended native prefix, for example:
+
+| External path | Internal request target |
+| --- | --- |
+| `/agents/default/*` | shared Hermes listener, base endpoint |
+| `/agents/coach/*` | shared Hermes listener, `/p/coach/*` |
+| `/agents/specialist/*` | shared Hermes listener, `/p/specialist/*` |
+
+These are examples, not an inventory or automatic routing rule. Keep the
+listener port private and configure each mapping explicitly. Never derive an
+upstream host, port or profile from unchecked headers, query values or captures.
+Unknown `/agents/*` paths must be denied, never routed to default. Remove
+`X-Hermes-Profile` before proxying.
+
+A shared external edge key grants authority over every exposed profile. Caddy
+must replace external authorization with the **selected profile's** internal
+API credential. Each profile needs its own `API_SERVER_KEY`; do not substitute
+one global internal key or fall back to the default profile key. Missing or
+invalid API credentials return 401; an unknown or parked multiplex profile
+returns 404. Expose only confirmed served profiles, and verify both path
+selection and credential isolation after changing mappings.
+
+Recreating Hermes preserves its Docker service name, so Caddy can reconnect to
+the shared listener. During restart, requests can fail temporarily; they must
+never fall through to another profile.
+
+## Separate standalone gateways
+
+A deliberate standalone profile sets `gateway.standalone: true` and runs its
+own gateway/service. Its enabled API listener needs a literal, unique
+`API_SERVER_PORT`; inspect existing listeners with `sg-profile-ports` before
+choosing a port. Keep ports on the internal network. Dedicated messaging
+credentials or explicit blank values must be ready before any gateway starts.
+
+`HERMES_AUTOSTART_PROFILES` is a legacy first-boot bootstrap for missing s6
+state; persisted native start/stop state takes precedence. Newly required s6
+slots are provisioned by container initialization, not by writing root-owned
+`/run/service` from a running Hermes process.
+
+The older `sg-hermes-profile-new` helper implements this standalone port and
+autostart workflow and rejects a native seeded `.env`. Do not use it for native
+multiplex creation or combine it with the fresh-creation sequence above.
 
 ## Hermes Talk delegation
 
@@ -110,15 +168,21 @@ credential result alone is not a gateway diagnosis. Do not copy keys between
 profiles or replace their existing credentials to fix an endpoint mismatch.
 
 Preflight the effective endpoint, authentication and `run_submission` capability
-for every affected gateway before updating any file. Back up the private config,
-preserve all other values, then restart only the changed gateways through the
-normal `sg exec` / `hermes -p <profile> gateway restart` commands. Verify a
-new gateway process and readiness afterward; command success alone is not proof
-that configuration was reloaded. If the supervisor does not deliver the restart,
-Hermes also supports a drain-aware `SIGUSR1` to its verified gateway PID as the
-runtime user; supervision starts its replacement. Existing profile `.env`
-changes need no image rebuild or container recreation. Keep manual profiles
-and stopped gateways in their existing state.
+for every affected gateway before updating any file. Back up the private config
+and preserve unrelated values. From the **operator host**, use native
+`sg exec hermes hermes -p coach gateway restart` for a served named multiplex
+profile; this hot reloads that profile. It also unparks a parked profile, so
+never use it indiscriminately across manual or stopped profiles.
+
+`sg-hermes-restart` instead sends drain-aware SIGUSR1 to the default shared
+process and restarts all its served profiles. Its optional named argument is
+only for a separate running s6 gateway. Verify the intended profile's readiness
+after either operation; command success alone is insufficient. Existing profile
+`.env` edits need no image rebuild or container recreation. New profile Talk or
+voice provisioning performed by container initialization may need a Hermes
+recreation even though multiplex enrollment is hot. Compose env or mount edits
+also require recreation; live-mounted documentation edits need no restart.
+Keep manual and stopped profiles in their existing state.
 
 Acceptance must include an actual delegated tool operation and its spoken result
 in Discord. The plugin's `hermes talk check` requests no tools and can pass via a
@@ -137,29 +201,3 @@ bounded value in the affected profile. A value of `5` gives run requests a
 This config enables the plugin's existing background delegation and result
 watchers. It does not add the optional host execution attachment or merge the
 voice transcript into the text channel's conversation history.
-
-## Manual Profile `.env`
-
-```env
-DISCORD_BOT_TOKEN=
-DISCORD_ALLOWED_USERS=
-DISCORD_HOME_CHANNEL=
-API_SERVER_ENABLED=false
-HERMES_GATEWAY_TOKEN=${HERMES_GATEWAY_TOKEN}
-CUSTOM_1_API_KEY=${CUSTOM_1_API_KEY}
-OPENAI_BASE_URL=${OPENAI_BASE_URL}
-```
-
-Do not start manual profiles as gateways.
-
-## Rules
-
-- Do not copy runtime state into a new profile: `state.db`, `auth.lock`, `logs/`, `sessions/`, and `sandboxes/`.
-- Keep `skills.external_dirs` empty for curated profiles.
-- Do not run two live gateways with the same Telegram or Discord token.
-- Add new profile credential names to your private env file.
-- Expose those names in `private/compose.local.yml` when the profile `.env` references them.
-- Inherit `OPENAI_BASE_URL` from the container so ClawRoute and Spartan Route
-  overlays select the active router consistently.
-- Keep profile API ports explicit and stable; port conflicts should fail visibly
-  instead of shifting automatically.

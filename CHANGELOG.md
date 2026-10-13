@@ -3,6 +3,11 @@
 All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
+
+- Refresh Hermes profile creation guidance for native multiplex enrollment,
+  parked manual profiles, shared API authentication and scoped reloads.
+  Update the live runtime guide and distinguish standalone provisioning.
+
 - Fix `sg-hermes env set` terminal prompting with separate input/output streams,
   report missing terminal access clearly, and remove its free-space gate.
 
