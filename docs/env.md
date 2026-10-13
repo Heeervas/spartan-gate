@@ -698,6 +698,9 @@ combined normalized, active, unique domains are capped by
 replacing a live artifact or private candidate. DNS stages and validates both
 generated artifacts as one policy set; partial installation or child reload
 failure restores the complete previous set.
+The helper waits up to 30 seconds for another policy edit before reporting
+that the whitelist is busy. It releases the policy lock before invoking Docker,
+so a suspended reload client cannot block subsequent policy edits.
 If an in-container scheduled or signal-triggered refresh cannot regenerate the
 policy or signal its child, the service exits so Docker restarts it through the
 same fail-closed startup path. Set

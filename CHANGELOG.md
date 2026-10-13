@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Recognize the reviewed native Hermes launcher in workstation peer checks.
+  Bound transfer staging by validated approved bytes and a configurable 1 GiB
+  reserve; deny missing disk information. Release whitelist policy locks before
+  Docker reloads and bound lock contention to 30 seconds. Document managed Route
+  inheritance, workstation state ownership and scoped secret passthrough.
+
+
 - Refresh Hermes profile creation guidance for native multiplex enrollment,
   parked manual profiles, shared API authentication and scoped reloads.
   Update the live runtime guide and distinguish standalone provisioning.

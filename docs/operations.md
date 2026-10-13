@@ -684,16 +684,28 @@ contents there: Compose interpolation and shared Hermes policy have different
 purposes, and doing so would share profile/provider credentials across bots.
 Leave credential files and existing service `env_file` entries unchanged.
 Docker recommends [service-scoped secret files](https://docs.docker.com/compose/how-tos/use-secrets/)
-for credentials; this network-only managed dotenv must not become a shared
-credential store. Migrating existing credential consumers is a separate change.
+for credentials. Keep this managed dotenv limited to deliberately shared
+infrastructure access; never add upstream provider keys, OAuth tokens, messaging
+credentials, or the complete Compose environment.
+
+For profiles that deliberately share Spartan Route, this same managed source may
+also contain `OPENAI_BASE_URL` set to the internal Route endpoint and
+`OPENAI_API_KEY` set to its existing client token. Store the effective token,
+not a `${CUSTOM_1_API_KEY}` reference: Kanban workers scrub the parent environment,
+so such a reference can lose its source. The native managed scope then supplies
+Route access to the target profile without adding provider keys to terminal
+passthrough. This grants all Hermes profiles access to the shared Route client;
+run profiles requiring separate provider credentials without this shared Route policy.
+The legacy `CUSTOM_1_API_KEY` alias does not need to be added to this source.
+
 Validate with `sg config --quiet`; at the planned activation, recreate only
 Hermes with the command above and verify proxy inheritance in a secondary
-profile's terminal. Re-render and update the six-key file when deployment proxy
+profile's terminal. Re-render and update the proxy entries when deployment proxy
 settings change. Configuration preparation alone does not change running sessions.
 The same native residue filter can remove other launch-dotenv settings, such
 as `SEARXNG_URL`, `OPENAI_BASE_URL` and `PLAYWRIGHT_BROWSERS_PATH`. Decide their
-scope individually; this fix shares only the six network keys and does not
-promote provider endpoints or credentials into global policy.
+scope individually; proxy sharing alone covers only the six network keys.
+The explicit shared Route configuration above is a separate opt-in.
 
 For a tool API credential explicitly intended for every Hermes profile, use
 `sg-hermes env set SERVICE_API_KEY`. This is an opt-in extension of the shared

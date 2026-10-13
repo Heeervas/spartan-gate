@@ -6,6 +6,8 @@ import os
 import pathlib
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 
 CORE_PATH = (
@@ -28,6 +30,125 @@ def load_core():
 class WorkstationTransferCoreTests(unittest.TestCase):
     def setUp(self):
         self.core = load_core()
+
+    def test_receive_space_budget_default_custom_and_boundaries(self):
+        reserve = 1024 ** 3
+        requested = 8_100_000
+        cases = (
+            ("reported", 3_400_000_000, {}, True, reserve),
+            ("exact", requested + reserve, {}, True, reserve),
+            ("insufficient", requested + reserve - 1, {}, False, reserve),
+            ("custom_exact", requested + 2 * reserve,
+             {"minimum_free_bytes": 2 * reserve}, True, 2 * reserve),
+            ("custom_insufficient", requested + 2 * reserve - 1,
+             {"minimum_free_bytes": 2 * reserve}, False, 2 * reserve),
+        )
+        with tempfile.TemporaryDirectory() as source_tmp:
+            source_root = pathlib.Path(source_tmp)
+            content = b"x" * requested
+            (source_root / "artifact").write_bytes(content)
+            summary = self.core.preflight_source(source_root, "artifact")
+            archive = io.BytesIO()
+            self.core.stream_tar(source_root, "artifact", summary, archive)
+            for name, available, options, succeeds, required_reserve in cases:
+                with self.subTest(name=name), tempfile.TemporaryDirectory() as dest_tmp:
+                    dest_root = pathlib.Path(dest_tmp)
+                    stream = io.BytesIO(archive.getvalue())
+                    filesystem = SimpleNamespace(f_bavail=available, f_frsize=1)
+                    with mock.patch.object(self.core.os, "fstatvfs", return_value=filesystem):
+                        arguments = dict(
+                            transfer_id="wtx_" + "d" * 24,
+                            replace=False,
+                            **options,
+                        )
+                        if succeeds:
+                            result = self.core.receive_tar(
+                                stream, dest_root, "result", summary, **arguments
+                            )
+                            self.assertEqual(
+                                result["manifest_sha256"], summary["manifest_sha256"]
+                            )
+                            self.assertEqual((dest_root / "result").read_bytes(), content)
+                            self.assertEqual(list(dest_root.iterdir()), [dest_root / "result"])
+                        else:
+                            with self.assertRaises(self.core.TransferError) as error:
+                                self.core.receive_tar(
+                                    stream, dest_root, "result", summary, **arguments
+                                )
+                            self.assertEqual(
+                                str(error.exception),
+                                "insufficient free space for transfer staging: "
+                                f"available={available} bytes, requested={requested} bytes, "
+                                f"reserve={required_reserve} bytes",
+                            )
+                            self.assertEqual(stream.tell(), 0)
+                            self.assertEqual(list(dest_root.iterdir()), [])
+
+    def test_receive_rejects_invalid_space_budgets_before_reading(self):
+        invalid_totals = (None, -1, True, 1.5, "1", self.core.MAX_TOTAL_BYTES + 1)
+        invalid_reserves = (None, -1, True, 1.5, "1")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for field, values in (("total_bytes", invalid_totals),
+                                  ("minimum_free_bytes", invalid_reserves)):
+                for value in values:
+                    with self.subTest(field=field, value=value):
+                        approved = {"kind": "file", "total_bytes": 1}
+                        options = {"minimum_free_bytes": 0}
+                        if field == "total_bytes":
+                            approved[field] = value
+                        else:
+                            options[field] = value
+                        stream = io.BytesIO(b"not consumed")
+                        with self.assertRaises(self.core.TransferError):
+                            self.core.receive_tar(
+                                stream, root, "result", approved,
+                                transfer_id="wtx_" + "e" * 24, replace=False, **options,
+                            )
+                        self.assertEqual(stream.tell(), 0)
+                        self.assertEqual(list(root.iterdir()), [])
+
+    def test_receive_requires_available_disk_information(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for result in (OSError("unavailable"),
+                           SimpleNamespace(f_bavail=-1, f_frsize=4096),
+                           SimpleNamespace(f_bavail=100, f_frsize=0)):
+                with self.subTest(result=result):
+                    options = ({"side_effect": result} if isinstance(result, OSError)
+                               else {"return_value": result})
+                    stream = io.BytesIO(b"not consumed")
+                    with mock.patch.object(self.core.os, "fstatvfs", **options):
+                        with self.assertRaises(self.core.TransferError):
+                            self.core.receive_tar(
+                                stream, root, "result", {"kind": "file", "total_bytes": 1},
+                                transfer_id="wtx_" + "e" * 24, replace=False,
+                                minimum_free_bytes=0,
+                            )
+                    self.assertEqual(stream.tell(), 0)
+                    self.assertEqual(list(root.iterdir()), [])
+
+    def test_receive_stops_archive_before_exceeding_approved_total(self):
+        with tempfile.TemporaryDirectory() as source_tmp, tempfile.TemporaryDirectory() as dest_tmp:
+            source_root = pathlib.Path(source_tmp)
+            (source_root / "tree").mkdir()
+            (source_root / "tree" / "a").write_bytes(b"a" * 4)
+            (source_root / "tree" / "b").write_bytes(b"b" * 4)
+            approved = self.core.preflight_source(source_root, "tree")
+            archive = io.BytesIO()
+            self.core.stream_tar(source_root, "tree", approved, archive)
+            approved["total_bytes"] = 7
+            archive.seek(0)
+            root = pathlib.Path(dest_tmp)
+            with mock.patch.object(self.core.os, "write", wraps=os.write) as write:
+                with self.assertRaisesRegex(self.core.TransferError, "approved byte limit"):
+                    self.core.receive_tar(
+                        archive, root, "result", approved,
+                        transfer_id="wtx_" + "e" * 24, replace=False,
+                        minimum_free_bytes=0,
+                    )
+            self.assertEqual(sum(len(call.args[1]) for call in write.call_args_list), 4)
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_file_and_directory_manifest_are_deterministic(self):
         with tempfile.TemporaryDirectory() as tmp:

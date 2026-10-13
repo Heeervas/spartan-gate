@@ -1,7 +1,9 @@
+import fcntl
 import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -112,6 +114,52 @@ class WhitelistDomainTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Added permanent: example.com", result.stdout)
         self.assertIn("example.com", self.lines())
+
+    def test_busy_lock_fails_without_changing_policy(self):
+        original = "existing.example.com\n"
+        self.whitelist.write_text(original)
+        env = os.environ.copy()
+        env["SPARTAN_WHITELIST_FILE"] = str(self.whitelist)
+        with pathlib.Path(f"{self.whitelist}.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            process = subprocess.Popen(
+                ["bash", str(SCRIPT), "--no-reload", "amzn.eu"],
+                env=env, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, start_new_session=True,
+            )
+            try:
+                stdout, stderr = process.communicate(timeout=35)
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("Whitelist is busy", stderr)
+        self.assertNotIn("Added permanent", stdout)
+        self.assertEqual(self.whitelist.read_text(), original)
+
+    def test_reload_does_not_hold_policy_lock(self):
+        bin_dir, log, _ = self.fake_docker_bin()
+        docker = bin_dir / "docker"
+        docker.write_text(docker.read_text().replace(
+            "#!/bin/sh\n",
+            '#!/bin/sh\n'
+            'if ! flock -n "$SPARTAN_WHITELIST_FILE.lock" true; then\n'
+            '  echo lock-held >> "$FAKE_DOCKER_LOG"; exit 8\n'
+            'fi\n',
+            1,
+        ))
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "amzn.eu"],
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                 "FAKE_DOCKER_LOG": str(log),
+                 "SPARTAN_WHITELIST_FILE": str(self.whitelist)},
+            text=True, capture_output=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("lock-held", log.read_text())
+        self.assertIn("Reload signal delivered: proxy", result.stdout)
+        self.assertIn("Reload signal delivered: dns", result.stdout)
 
     def test_adds_temporary_domains_for_supported_units(self):
         cases = [("15m", NOW + 900), ("6h", NOW + 21_600), ("15d", NOW + 1_296_000)]

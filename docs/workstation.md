@@ -106,8 +106,26 @@ services:
     environment:
       SPARTAN_WORKSTATION_BROKER_SOCKET: /run/spartan-workstation/workstation-terminal.sock
     volumes:
-      - ${SPARTAN_WORKSTATION_STATE_DIR:-/run/user/1000/spartan-gate-workstation}:/run/spartan-workstation:ro
+      - type: bind
+        source: ${SPARTAN_WORKSTATION_STATE_DIR:-/run/user/1000/spartan-gate-workstation}
+        target: /run/spartan-workstation
+        read_only: true
+        bind:
+          create_host_path: false
 ```
+
+Create the host directory as the operator before starting or recreating Hermes:
+
+```sh
+install -d -m 700 "${SPARTAN_WORKSTATION_STATE_DIR:-/run/user/$(id -u)/spartan-gate-workstation}"
+```
+
+The Compose source must match this path (set `SPARTAN_WORKSTATION_STATE_DIR`
+for a different UID or location). `/run/user` is temporary, so repeat this
+step after reboot before `sg up -d`. Keep `create_host_path: false`: a
+short-form bind mount silently creates a missing directory as root, which
+`sg-workstation` correctly rejects. Do not bypass its ownership checks or
+recursively change ownership of existing state.
 
 The plugin source is mounted read-only by public Compose, but remains inert
 until it is explicitly enabled in the current Hermes configuration.
@@ -222,6 +240,15 @@ file replacement, file fsync, and directory fsync on the real mount. A failed
 probe is cached and leaves Exchange download-only. Transfers use normalized
 streaming tar internally; archive bytes, private keys, absolute roots, and SSH
 parameters are never exposed to the model.
+
+Before creating transfer staging, the receiver requires free space on the
+destination filesystem for the approved payload plus a 1 GiB
+(1,073,741,824-byte) reserve. The reserve is configurable through the
+`minimum_free_bytes` argument of `receive_tar` and the broker's
+`TransferManager`; it is not a model tool parameter. Insufficient-space errors
+report available bytes, requested payload bytes, and required reserve bytes.
+Invalid byte budgets or unavailable disk information reject the transfer before
+staging; the receiver also enforces the approved byte limit while extracting.
 
 There is deliberately no SCP/SFTP/general sync, agent/X11 forwarding,
 local/remote/dynamic forwarding, arbitrary SSH destination, generic proxy, or

@@ -28,7 +28,7 @@ MAX_ENTRIES = 10_000
 MAX_DEPTH = 64
 MAX_COMPONENT_BYTES = 255
 MAX_RELATIVE_BYTES = 4096
-MIN_FREE_BYTES = 5 * 1024 * 1024 * 1024
+MIN_FREE_BYTES = 1024 * 1024 * 1024
 SENSITIVE_SAMPLE_LIMIT = 10
 PRIVATE_KEY_SCAN_BYTES = 64 * 1024
 TRANSFER_ID_RE = re.compile(r"^wtx_[a-f0-9]{24}$")
@@ -606,6 +606,11 @@ def receive_tar(
 ) -> dict[str, Any]:
     if not TRANSFER_ID_RE.fullmatch(transfer_id):
         raise TransferError("invalid transfer id")
+    requested = approved.get("total_bytes")
+    if type(requested) is not int or not 0 <= requested <= MAX_TOTAL_BYTES:
+        raise TransferError("invalid approved transfer byte budget")
+    if type(minimum_free_bytes) is not int or minimum_free_bytes < 0:
+        raise TransferError("invalid transfer free-space reserve")
     root_path = Path(root)
     parts = validate_relative(relative)
     root_fd, root_info = _open_root(root_path)
@@ -642,16 +647,26 @@ def receive_tar(
                 raise TransferError("replace is supported only for regular files")
             if expected_destination and current_destination != expected_destination:
                 raise TransferError("destination changed after approval")
-        filesystem = os.fstatvfs(parent_fd)
+        try:
+            filesystem = os.fstatvfs(parent_fd)
+        except OSError as exc:
+            raise TransferError("cannot determine destination free space") from exc
+        if filesystem.f_bavail < 0 or filesystem.f_frsize <= 0:
+            raise TransferError("cannot determine destination free space")
         available = filesystem.f_bavail * filesystem.f_frsize
-        if available - int(approved.get("total_bytes", 0)) < minimum_free_bytes:
-            raise TransferError("insufficient free space for transfer staging")
+        if available - requested < minimum_free_bytes:
+            raise TransferError(
+                "insufficient free space for transfer staging: "
+                f"available={available} bytes, requested={requested} bytes, "
+                f"reserve={minimum_free_bytes} bytes"
+            )
         try:
             os.mkdir(staging_name, mode=0o700, dir_fd=parent_fd)
         except FileExistsError as exc:
             raise TransferError("transfer staging path already exists") from exc
         payload = staging / "payload"
         received_entries: list[dict[str, Any]] = []
+        received_total = 0
         try:
             with tarfile.open(fileobj=source, mode="r|*") as archive:
                 for member in archive:
@@ -697,8 +712,9 @@ def receive_tar(
                                 if not chunk:
                                     break
                                 written += len(chunk)
-                                if written > MAX_TOTAL_BYTES:
-                                    raise TransferError("archive exceeds the byte limit")
+                                received_total += len(chunk)
+                                if received_total > requested:
+                                    raise TransferError("archive exceeds the approved byte limit")
                                 digest.update(chunk)
                                 os.write(fd, chunk)
                             os.fsync(fd)
@@ -811,7 +827,7 @@ def _cli() -> int:
                 transfer_id=request["transfer_id"],
                 replace=bool(request.get("replace")),
                 expected_destination=request.get("expected_destination"),
-                minimum_free_bytes=int(request.get("minimum_free_bytes", MIN_FREE_BYTES)),
+                minimum_free_bytes=request.get("minimum_free_bytes", MIN_FREE_BYTES),
                 windows_destination=bool(request.get("windows_destination")),
             )
             print(json.dumps({"ok": True, "result": result}, sort_keys=True))

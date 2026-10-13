@@ -17,6 +17,14 @@ DEFAULT_GATEWAY_COMMAND = (
     "/opt/hermes/.venv/bin/python3 /opt/hermes/.venv/bin/hermes "
     "gateway run --replace"
 )
+# The native bundled launcher replaces the legacy console-script process.
+# Keep exact command matching in both discovery and peer authentication.
+NATIVE_GATEWAY_COMMAND = (
+    "/opt/hermes/.venv/bin/python -P -c import os, site, sys; "
+    "sys.argv[0]='hermes'; site.addsitedir(os.environ['HERMES_SITE']); "
+    "from hermes_cli.main import main; sys.exit(main()) gateway run --replace"
+)
+DEFAULT_GATEWAY_COMMANDS = frozenset((DEFAULT_GATEWAY_COMMAND, NATIVE_GATEWAY_COMMAND))
 DEFAULT_SUPERVISOR_COMMAND = "s6-supervise gateway-default"
 DEFAULT_SVSCAN_COMMAND = (
     "/package/admin/s6/command/s6-svscan -d4 -- /run/service"
@@ -84,7 +92,7 @@ def parse_process_rows(output: str) -> list[ProcessRow]:
 def parse_supervised_gateway(output: str) -> tuple[ProcessRow, ProcessRow, ProcessRow]:
     rows = parse_process_rows(output)
     by_pid = {row.pid: row for row in rows}
-    gateways = [row for row in rows if row.command == DEFAULT_GATEWAY_COMMAND]
+    gateways = [row for row in rows if row.command in DEFAULT_GATEWAY_COMMANDS]
     if len(gateways) != 1:
         raise GatewayTrustError(
             "expected exactly one default Hermes gateway process; "
@@ -242,7 +250,7 @@ def validate_peer_process(
             raise GatewayTrustError("Hermes peer pidfd identity changed")
         if peer_pid != snapshot.gateway_pid or _proc_uid(peer_pid) != os.getuid():
             raise GatewayTrustError("broker peer is not the default Hermes gateway")
-        if _proc_command(peer_pid) != DEFAULT_GATEWAY_COMMAND:
+        if _proc_command(peer_pid) not in DEFAULT_GATEWAY_COMMANDS:
             raise GatewayTrustError("Hermes gateway command identity changed")
         if _proc_ppid(peer_pid) != snapshot.supervisor_pid:
             raise GatewayTrustError("Hermes gateway supervisor identity changed")

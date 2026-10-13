@@ -377,7 +377,10 @@ fi
 
 mkdir -p "$(dirname "$WHITELIST")"
 exec 9>"${WHITELIST}.lock"
-flock -x 9
+if ! flock -x -w 30 9; then
+    printf '[whitelist] Whitelist is busy; another helper holds the lock. Finish or cancel that command, then retry.\n' >&2
+    exit 1
+fi
 
 declare -A seen=()
 declare -a domains=()
@@ -507,6 +510,10 @@ if [[ "${#replacements[@]}" -gt 0 ]]; then
         exit 1
     fi
 fi
+
+# Keep the lock scoped to the policy transaction. Docker clients must not
+# inherit it and block later edits if a reload hangs or is suspended.
+exec 9>&-
 
 for domain in "${domains[@]}"; do
     printf '[whitelist] %s\n' "${status_messages[$domain]}"
