@@ -117,7 +117,9 @@ def plan(home: Path, compose: Path) -> list[Change]:
         for profile in sorted(profiles.iterdir()):
             _real_path(profile)
             if profile.is_dir():
-                homes.append(profile)
+                config = profile / 'config.yaml'
+                if config.exists() or config.is_symlink():
+                    homes.append(profile)
     changes = []
     for profile in homes:
         change = _change(profile / 'config.yaml', [(('lsp', 'idle_timeout'), 300)])

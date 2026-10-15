@@ -25,14 +25,14 @@ class MemoryPreparationTests(unittest.TestCase):
         self.config.write_text('# profile comment\nlsp:\n  idle_timeout: 900 # timeout comment\n  servers:\n    python: {command: pyright, version: 1.1.414}\nother: keep\n')
         self.config.chmod(0o640)
 
-    def test_twelve_profiles_exact_delta_comments_metadata_and_idempotence(self):
-        for index in range(12):
+    def test_root_and_eleven_profiles_exact_delta_comments_metadata_and_idempotence(self):
+        for index in range(11):
             profile = self.home / 'profiles' / f'{index:02}'
             profile.mkdir()
             # Exercise absent, empty flow, and existing block mappings.
             (profile / 'config.yaml').write_text(['other: keep\n', 'lsp: {}\nother: keep\n', self.config.read_text()][index % 3])
         changes = memory.plan(self.home, self.compose)
-        self.assertEqual(len(changes), 14)
+        self.assertEqual(len(changes), 13)
         for change in changes:
             before = yaml.safe_load(change.original)
             expected = copy.deepcopy(before)
@@ -51,6 +51,23 @@ class MemoryPreparationTests(unittest.TestCase):
         self.assertEqual((after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)),
                          (metadata.st_uid, metadata.st_gid, 0o640))
         self.assertTrue(all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in self.backup.iterdir()))
+
+    def test_unconfigured_directories_skipped_but_root_and_present_configs_required(self):
+        for name in ['first', 'second', 'third']:
+            (self.home / 'profiles' / name).mkdir()
+        self.assertEqual(len(memory.plan(self.home, self.compose)), 2)
+        path = self.home / 'profiles' / 'first' / 'config.yaml'
+        path.symlink_to(self.base / 'missing.yaml')
+        with self.assertRaises(ValueError):
+            memory.plan(self.home, self.compose)
+        path.unlink()
+        path.mkdir()
+        with self.assertRaises(ValueError):
+            memory.plan(self.home, self.compose)
+        path.rmdir()
+        self.config.unlink()
+        with self.assertRaises(ValueError):
+            memory.plan(self.home, self.compose)
 
     def test_late_malformed_and_duplicate_configs_leave_everything_unchanged(self):
         profile = self.home / 'profiles' / 'last'
