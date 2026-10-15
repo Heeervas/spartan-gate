@@ -685,8 +685,11 @@ docker compose \
 ```
 
 The full-stack baseline mounts the local `spartan-cache-lineage` source read-only
-at `/opt/data/plugins/spartan-cache-lineage`. The plugin remains opt-in in every
-Hermes profile. For each explicit `codex/*` Responses profile, the hot migrator
+at `/opt/data/plugins/spartan-cache-lineage`. Runtime activation remains explicit
+per Hermes profile. Operator provisioning policy requires the link, enablement,
+discovery/import and actual hook registration for every new profile; preserve
+existing intentional exceptions. See the [profile completion checklist](profiles.md).
+For each explicit `codex/*` Responses profile, the hot migrator
 enables it and transactionally creates a relative link from that profile plugin
 directory to the single mounted source. `clawroute/auto` profiles are left
 unchanged, and an existing non-managed plugin path fails before any config write.

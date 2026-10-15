@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Complete native profile provisioning guidance: authorized in-gateway creation,
+  curated identity/skills, new-profile cache-lineage and Reader checks, scoped
+  delegation, shared Discord routing and distinct plugin/route reloads.
+
 - Add backed-up preparation for private Hermes 4 GiB RAM/6 GiB RAM-plus-swap
   limits and a 300-second LSP idle timeout. Document automatic edit diagnostics
   and a complete final Pyright check; operator activation and acceptance remain

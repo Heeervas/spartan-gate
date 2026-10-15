@@ -35,19 +35,28 @@ default shared gateway process. `sg-hermes-restart coach` targets only a separat
 running s6 service, not a named profile hosted by the multiplexer. See
 [operations](operations.md) for the drain and readiness contract.
 
-## Create and stage a fresh profile
+## Create and complete a fresh profile
 
-Prefer native fresh creation. `hermes profile create` creates an empty `.env`
-with mode 0600, publishes the profile directory atomically, and notifies the
-multiplexer. The notification can enroll it before the next shell command;
-creation and parking are **not an atomic operation**. Do not add credentials
-until parking and removal from the live runtime have been confirmed.
+Prefer native fresh creation. With explicit authorization for creation and
+immediate multiplex enrollment of the intended profile, the supported CLI may
+run inside the gateway's tool process:
 
-Run from the **operator host**:
+```sh
+hermes profile create coach --no-alias --no-skills --description 'Focused coaching assistant'
+```
+
+`hermes profile create` creates an empty mode-0600 `.env`, atomically publishes
+the profile directory, and notifies the running multiplexer. Publication can
+enroll the profile before the next command. Enrollment uses the shared listener
+at `/p/<profile>`; no per-profile port or autostart entry is required.
+Enrollment alone proves neither API authentication/readiness nor bot readiness.
+
+There is no `--parked` creation option. Creation and parking are **not atomic**. When the authorized outcome is a parked/manual profile, creation must
+account for immediate enrollment, and the operator must stop it from the host
+and confirm it is unserved before adding credentials:
 
 ```sh
 source scripts/aliases.sh
-sg-hermes-profile-create coach
 sg exec hermes hermes -p coach gateway stop
 sg exec hermes hermes -p coach gateway status
 sg-hermes-profile show coach
@@ -55,15 +64,30 @@ sg-hermes-profile show coach
 
 The show subcommand precedes the name. If discovery has not completed, ensure
 `gateway.parked` exists in this newly created, known empty profile, then repeat
-native stop/status and confirm the profile is unserved before configuration.
-A marker by itself is not proof that an already served profile has stopped.
-Do not print profile secrets when validating configuration.
+native stop/status and confirm removal. A marker alone does not prove that an
+already served profile stopped. Gateway self-targeting stop/restart guards
+remain in force: perform protected lifecycle operations from the operator host,
+without bypassing the guard. An authorized native creation is not a lifecycle
+bypass, and neither is a supported profile configuration edit. Never retry a
+denied action with `--force` or another bypass.
 
-While parked, prepare identity and configuration, dedicated messaging
-credentials or explicit blank messaging values, and a distinct `API_SERVER_KEY`
-when the profile needs API access. Confirm effective values under the named
-Hermes profile context, including inherited settings. Never rely on an empty
-`.env` to prove that container credentials cannot be inherited.
+Prepare the profile's own `SOUL.md`, profile instruction file (for example,
+`AGENTS_<profile>.md`) and compact memories; verify effective instruction loading.
+Curate skills
+deliberately: link complete skill directories, including their supporting
+files, and preserve intentional per-profile divergences and
+`.no-bundled-skills`. Keep `skills.external_dirs` empty for curated profiles;
+do not import another profile's whole skill catalog or memory history.
+
+Configure credentials only in their intended scope. Dedicated messaging bots
+need their own credentials; a profile routed through the default shared Discord
+bot uses `gateway.profile_routes` on that default gateway and does not receive
+a copy of the bot token. A profile needing API access requires a distinct
+`API_SERVER_KEY`. Confirm effective values under the named Hermes context,
+including inheritance: empty `.env` files do not prove that container
+credentials are absent. Hermes scoped dotenv loading may not be visible in a
+plain Python `os.environ` inspection. Validate the effective profile-aware
+configuration without printing secrets.
 
 Native cloning copies configuration, `.env`, identity and memories. It strips
 messaging credentials by default, but other secrets can remain. Do not blanket
@@ -72,11 +96,10 @@ is required, review each retained configuration and credential locally before
 activation. Never copy `state.db*`, `response_store.db*`, `auth.lock`, gateway
 locks/PIDs, logs, sessions, sandboxes or generated caches into a new identity.
 
-After configuration, validate the effective route, tools, plugins, credential
-scope and parked state. Start only the intended gateway, then confirm its API
-and messaging readiness without sending unsolicited messages. A manual
-specialist stays parked, uses `API_SERVER_ENABLED=false`, and has blank
-Telegram/Discord credentials; do not start it to populate an API selector.
+Complete the checklist below and use only the authorized lifecycle transition.
+A manual specialist stays parked, uses `API_SERVER_ENABLED=false`, and has
+blank Telegram/Discord credentials; do not start it to populate an API
+selector.
 
 ## Routing, tools and plugins
 
@@ -93,12 +116,71 @@ required; follow the
 [runtime Camofox guide](../apps/hermes-agent/runtime-docs/local/camofox.md).
 Do not configure Chromium or another backend as an availability fallback.
 
-Reference only installed, enabled plugins in toolsets and profile config.
-Preserve explicit plugin disablement and keep `skills.external_dirs` empty for
-curated profiles. New profile Talk/voice boot provisioning may require container
-initialization; hot multiplex discovery alone does not install those settings.
-Changes to private Compose environment or mounts require `sg up -d hermes` to
-recreate Hermes. Profile-local changes use the native lifecycle above.
+Reference only installed, enabled plugins in toolsets and profile config. Every
+**new profile** must link the mounted `spartan-cache-lineage` plugin, include
+it in `plugins.enabled`, and pass plugin doctor, discovery/import and actual
+registration checks for its `llm_request` middleware and `post_api_request`
+hook. A symlink or list entry alone is insufficient. This new-profile
+completion requirement does not retroactively override existing intentional
+exceptions or change the [explicit runtime activation policy](spartan-route.md). Do not bulk-enable domain plugins to satisfy it.
+
+For Reader, link and enable `web-spartan-reader` and set
+`web.extract_backend: spartan-reader`; verify the effective provider selection. Preserve explicit
+plugin disables, particularly `prompt-load-bridge`, and existing peer tool
+overrides. For profile delegation, add the intended new target to each enabled
+caller's `plugins.entries.profile-delegate.allowed_profiles` only where
+authorized. The effective `PROFILE_DELEGATE_ALLOWED_PROFILES` environment value
+overrides the YAML policy, including values loaded through scoped dotenv.
+Preserve caller limits, modes, existing targets and disabled delegation;
+availability in the multiplexer does not grant delegation authority.
+
+### Reload scope
+
+The installed `/opt/hermes/gateway/run_plugin_rewire.py` supports native plugin
+install/enable and Desktop `plugins.manage` notifications to the running
+gateway and rewires adapter handlers through `on_plugin_loaded`. Tools and
+system-prompt changes take effect in the next session; discovery or adapter
+rewiring alone does not prove that an existing session has loaded them. Confirm
+the installed implementation before relying on hot rewire.
+
+This notification does **not** reload `gateway.profile_routes`, which the
+shared gateway runner caches in its configuration. Changing the default shared
+bot's Discord routes requires a controlled host-side `sg-hermes-restart` and
+route acceptance afterward. A named profile restart is not proof that the
+default runner reloaded its routes. Do not perform this shared restart from
+inside the gateway or turn a lifecycle denial into a forced action.
+
+New profile Talk/voice boot provisioning may require container initialization;
+hot multiplex discovery alone does not install those settings. Changes to
+private Compose environment or mounts require `sg up -d hermes` to recreate
+Hermes. Live-mounted documentation edits need no restart.
+
+### Completion checklist and proof limits
+
+Record each surface as verified, pending or intentionally disabled, without
+publishing private inventories, routing IDs, credentials or session IDs:
+
+- **Creation and lifecycle:** native fresh identity, intended served/parked
+  state, shared-listener path and effective API settings; directory existence,
+  enrollment and command success alone do not prove readiness.
+- **Identity and skills:** profile-local identity and compact memories, curated
+  complete skill links, retained divergences, `.no-bundled-skills` and empty
+  `skills.external_dirs` where curated.
+- **Plugins and tools:** effective enable/disable lists, cache-lineage link,
+  discovery and real middleware/hook registration; Reader link, enablement and
+  effective extract backend; retained peer overrides and next-session tool and
+  prompt loading. Registration proves wiring, not an upstream cache hit or a
+  successful Reader fetch.
+- **Delegation:** each enabled caller's effective target allowlist, limits and
+  mode, including environment overrides; preserved intentional disables. A
+  configuration check does not prove a completed delegated task.
+- **Discord and API:** default shared-bot routes without copied tokens, profile
+  key isolation, effective profile-aware credentials, controlled shared reload
+  if routes changed, and intended route selection. Static route review does not
+  prove delivery; authenticated API readiness does not prove messaging readiness.
+- **Acceptance:** inspect supported status, discovery and authenticated health
+  locally without exposing secrets. Any live message, delegated task or voice
+  operation needs its own authorization; record unperformed checks as pending.
 
 ## Browser Extension Gateways
 
