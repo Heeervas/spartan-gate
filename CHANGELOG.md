@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add backed-up preparation for private Hermes 4 GiB RAM/6 GiB RAM-plus-swap
+  limits and a 300-second LSP idle timeout. Document automatic edit diagnostics
+  and a complete final Pyright check; operator activation and acceptance remain
+  pending.
+
 - Make bundled Linux and Onest font paths explicit in Camofox, preserving
   upstream Fontconfig license comments and rendering rules. Reject conflicting
   launcher font configuration on patch reapplication.

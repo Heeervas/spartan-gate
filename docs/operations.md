@@ -355,6 +355,59 @@ exit behavior. A high swap occupancy by itself is healthy: the audit warns on
 active swap-out churn, low available RAM, PSI pressure, cgroup saturation,
 restarts/OOM events, missing history, or memory-contract drift.
 
+### Hermes Python diagnostics and memory preparation
+
+`scripts/prepare_hermes_memory.py` prepares existing private configuration with
+`mem_limit: 4g`, `memswap_limit: 6g` (4 GiB RAM plus up to 2 GiB swap), and
+`lsp.idle_timeout: 300` in existing Hermes profiles. Its default mode previews
+changes; applying requires `--apply` and a private `--backup-dir`. Retain the
+backups for rollback. These are prepared settings, not evidence of a
+live memory reduction or successful runtime acceptance.
+
+Keep Pyright enabled. The inspected installed Pyright 1.1.414 already defaults
+to `openFilesOnly: true` and `useLibraryCodeForTypes: true`. Do not add a
+`python.analysis` override for this preparation: Hermes shallowly merges the
+`python` settings object, which can discard its automatic interpreter selection.
+Preserve the project's strictness, import environment and library typing.
+
+Use native `write_file`/`patch` diagnostics during Python edits. Before declaring
+a Python task complete, run one complete project Pyright validation using the
+project's configuration and interpreter, then run the relevant tests. Avoid a
+complete scan after every edit or concurrent scans for the same project.
+Terminal writes bypass automatic LSP diagnostics and require an explicit check.
+Correct introduced errors and distinguish pre-existing diagnostics. Never report
+an interrupted, timed-out or failed check as clean.
+
+Existing Hermes LSP code already reuses multi-root servers within each profile
+and process and caps open documents at 64. Reducing its default idle timeout
+from 600 to 300 seconds permits cleanup after approximately 300–360 idle seconds,
+plus shutdown time; this is not a hard performance guarantee. The current LSP
+service singleton does not reload configuration in place. A freshly created
+service can read the new settings before container recreation.
+
+Concurrent Hermes configuration saves can overwrite prepared profile settings.
+Immediately before activation, rerun the preparation helper in preview mode and
+require zero proposed changes. Replace the quoted placeholder below with the
+Hermes data directory. Compose validation and recreation are reserved for the
+operator, in this order:
+
+```sh
+python3 scripts/prepare_hermes_memory.py --home "<Hermes data directory>" --compose private/compose.local.yml
+sg config --quiet
+sg up -d --no-deps hermes
+```
+
+After recreation, check Hermes startup, health, effective cgroup RAM/swap limits
+and LSP settings; confirm other containers were preserved. Runtime acceptance
+is still pending: introduce and correct a synthetic type error, confirm the
+final complete scan detects an affected unopened file, observe server reuse and
+idle cleanup, and compare OOM/restart deltas, memory pressure and available
+margins under representative work. Do not infer success from configuration
+preparation alone. For rollback, use the private backup manifest and restore
+only files whose current hashes still match their prepared versions; review
+later edits rather than overwriting them. Then repeat operator validation and
+Hermes-only recreation.
+
 ### Interactive tmux sessions
 
 The public `sg-tmux` group and the personal shortcuts in
