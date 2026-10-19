@@ -81,6 +81,7 @@ class ExecutionResult:
     upstream_response_time_ms: int | None = None
     total_response_time_ms: int | None = None
     transport_details: dict[str, Any] | None = None
+    selection_diagnostics: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -780,6 +781,25 @@ def codex_model_admission_error(state: SpartanRouteState, model_id: str, effort:
     return None
 
 
+async def codex_model_admission_with_recovery(state: SpartanRouteState, model_id: str, effort: str | None, *, allow_recovery: bool = True, diagnostics: dict[str, Any] | None = None) -> ExecutionResult | None:
+    error = codex_model_admission_error(state, model_id, effort)
+    if error is None or error.status == 404 or not allow_recovery or state.codex is None:
+        return error
+    detail = diagnostics if diagnostics is not None else {}
+    await state.codex.choose_slot_with_catalog_recovery(None, set(), set(), model_id, effort, diagnostics=detail)
+    # The refresh publisher can change model admission while this request awaits it.
+    error = codex_model_admission_error(state, model_id, effort)
+    if error is not None and error.status != 404:
+        if detail.get("operational_eligible", 0) == 0:
+            return None  # Preserve ordinary quota/auth/transient handling.
+        error = ExecutionResult(503, body={"error": {"message": "No operational Codex slot currently offers the requested model and reasoning effort.",
+                                "type": "upstream_error", "code": "codex_model_unavailable", "selection_diagnostics": detail}},
+                                error="codex_model_unavailable", selection_diagnostics=detail)
+    if error is not None:
+        error.selection_diagnostics = detail or None
+    return error
+
+
 def codex_reasoning_validation_error(body: Mapping[str, Any], model_id: str, catalog: CodexModelDiscovery | None = None) -> ExecutionResult | None:
     effort = requested_reasoning_effort(body) or ""
     if effort == "ultra":
@@ -819,7 +839,8 @@ async def execute_chat(
         reasoning_error = codex_reasoning_validation_error(upstream_body, route.actual_model, state.codex_catalog)
         if reasoning_error is not None:
             return reasoning_error
-        model_error = codex_model_admission_error(state, route.actual_model, requested_reasoning_effort(upstream_body))
+        admission_diagnostics: dict[str, Any] = {}
+        model_error = await codex_model_admission_with_recovery(state, route.actual_model, requested_reasoning_effort(upstream_body), diagnostics=admission_diagnostics)
         if model_error is not None:
             return model_error
         if state.codex is None:
@@ -832,6 +853,7 @@ async def execute_chat(
             prompt_cache_key,
             request_id,
         )
+        codex_result.selection_diagnostics = codex_result.selection_diagnostics or admission_diagnostics or None
         execution = ExecutionResult(
             status=codex_result.status,
             body=codex_result.body,
@@ -851,6 +873,7 @@ async def execute_chat(
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
             total_response_time_ms=codex_result.total_response_time_ms,
             transport_details=codex_result.transport_details,
+            selection_diagnostics=codex_result.selection_diagnostics or admission_diagnostics or None,
         )
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
@@ -881,7 +904,8 @@ async def execute_responses(
         reasoning_error = codex_reasoning_validation_error(body, route.actual_model, state.codex_catalog)
         if reasoning_error is not None:
             return reasoning_error
-        model_error = codex_model_admission_error(state, route.actual_model, requested_reasoning_effort(body))
+        admission_diagnostics: dict[str, Any] = {}
+        model_error = await codex_model_admission_with_recovery(state, route.actual_model, requested_reasoning_effort(body), allow_recovery=probe is None, diagnostics=admission_diagnostics)
         if model_error is not None:
             return model_error
         if state.codex is None:
@@ -890,6 +914,7 @@ async def execute_responses(
             state.codex, body, route.actual_model, wants_stream, session_id, prompt_cache_key, state.native_cache,
             state.cache_experiments, probe,
         )
+        codex_result.selection_diagnostics = codex_result.selection_diagnostics or admission_diagnostics or None
         execution = ExecutionResult(
             status=codex_result.status,
             body=codex_result.body,
@@ -910,6 +935,7 @@ async def execute_responses(
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
             total_response_time_ms=codex_result.total_response_time_ms,
             transport_details=codex_result.transport_details,
+            selection_diagnostics=codex_result.selection_diagnostics or admission_diagnostics or None,
         )
         if codex_result.stream is not None:
             execution.stream = sync_codex_stream_result(codex_result, execution)
@@ -929,7 +955,7 @@ def copy_codex_telemetry(source_result: CodexCallResult, target: ExecutionResult
         "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "error",
         "actual_tool_call_count", "actual_tool_names", "tool_telemetry_complete", "native_cache",
         "usage_seen", "usage_event_type", "upstream_response_time_ms", "total_response_time_ms",
-        "transport_details",
+        "transport_details", "selection_diagnostics",
     ):
         setattr(target, name, getattr(source_result, name))
 
@@ -1499,6 +1525,7 @@ def log_request(
         "request_api_kind": api_kind,
         "native_cache": native_cache,
         "transport": transport,
+        "selection_diagnostics": result.selection_diagnostics,
         "cache_diagnostic_version": 2 if native_cache is not None else 1,
         "requested_reasoning_effort": requested_reasoning_effort(body),
         "reasoning_tokens": result.reasoning_tokens,
@@ -3129,6 +3156,9 @@ async def startup(app: web.Application) -> None:
     async def publish_catalog(slots: dict[int, SlotCatalog], discovered: dict[str, ModelEntry]) -> None:
         # Publish the catalog and its persisted-override validation together.
         async with state.routing_policy_lock:
+            catalog = state.codex_catalog
+            if catalog is None or not catalog.publication_current(slots):
+                return
             observed = {model_id: entry.max_context for model_id, entry in discovered.items()}
             contexts.update(observed)
             candidate = replace(state.config, models=with_cached_contexts({**bundled_models, **discovered}))

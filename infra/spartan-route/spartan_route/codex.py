@@ -257,6 +257,7 @@ class CodexCallResult:
     total_response_time_ms: int | None = None
     transport_details: dict[str, Any] | None = None
     retry_allowed: bool = True
+    selection_diagnostics: dict[str, Any] | None = None
 
 
 @dataclass
@@ -1485,22 +1486,8 @@ class CodexRouter:
     async def choose_slot(self, affinity_key: str | None, excluded: set[int], excluded_accounts: set[str], model_id: str | None = None, reasoning_effort: str | None = None) -> tuple[CodexSlot, CodexAuth] | None:
         self._clear_expired_leases()
         now = time.time()
-        candidates: list[tuple[CodexSlot, CodexAuth]] = []
-        for slot in self.slots:
-            if slot.index in excluded:
-                continue
-            if slot.rate_limited_until > now:
-                if not self._invalidate_changed_auth_candidate(slot):
-                    continue
-            if slot.transient_until > now:
-                continue
-            auth = await self.load_auth(slot)
-            if not auth:
-                continue
-            if auth.account_key and auth.account_key in excluded_accounts:
-                continue
-            if not self.slot_routing_status(slot)["routingEnabled"]:
-                continue
+        candidates = []
+        for slot, auth in await self._operational_candidates(excluded, excluded_accounts):
             if model_id and getattr(self, "model_catalog", None) is not None and not self.model_catalog.supports(slot, auth, model_id, reasoning_effort):
                 continue
             candidates.append((slot, auth))
@@ -1515,6 +1502,66 @@ class CodexRouter:
                         return slot, auth
                 self.leases.pop(self._lease_key(affinity_key), None)
         return sorted(candidates, key=lambda pair: (pair[0].in_flight, pair[0].last_selected_at, pair[0].index))[0]
+
+    async def _operational_candidates(self, excluded: set[int], excluded_accounts: set[str]) -> list[tuple[CodexSlot, CodexAuth]]:
+        candidates = []
+        for slot in self.slots:
+            if slot.index in excluded:
+                continue
+            if slot.rate_limited_until > time.time() and not self._invalidate_changed_auth_candidate(slot):
+                continue
+            if slot.transient_until > time.time():
+                continue
+            auth = await self.load_auth(slot)
+            if auth is not None:
+                candidates.append((slot, auth))
+        # Loading another slot's auth can yield. Recheck mutable gates after all awaits.
+        now = time.time()
+        return [(slot, auth) for slot, auth in candidates
+                if slot.index not in excluded
+                and (not auth.account_key or auth.account_key not in excluded_accounts)
+                and self.slot_routing_status(slot)["routingEnabled"]
+                and slot.rate_limited_until <= now and slot.transient_until <= now
+                and slot.auth is auth]
+
+    async def model_selection_diagnostics(self, excluded: set[int], excluded_accounts: set[str], model_id: str, reasoning_effort: str | None = None) -> dict[str, Any]:
+        catalog = getattr(self, "model_catalog", None)
+        candidates = await self._operational_candidates(excluded, excluded_accounts)
+        slots = []
+        eligible = 0
+        for slot, auth in candidates:
+            detail = catalog.eligibility(slot, auth, model_id, reasoning_effort) if catalog is not None else {"eligible": True, "reason": "eligible"}
+            eligible += int(detail["eligible"])
+            if len(slots) < 64:
+                slots.append({"slot_index": slot.index, "reason": detail["reason"],
+                              "catalog_generation": detail.get("catalog_generation", 0),
+                              "catalog_age_seconds": detail.get("catalog_age_seconds")})
+        return {"requested_model": model_id[:160], "requested_reasoning_effort": reasoning_effort[:32] if isinstance(reasoning_effort, str) else None,
+                "operational_eligible": len(candidates), "model_eligible": eligible, "slots": slots}
+
+    async def choose_slot_with_catalog_recovery(self, affinity_key: str | None, excluded: set[int], excluded_accounts: set[str], model_id: str, reasoning_effort: str | None = None, *, diagnostics: dict[str, Any] | None = None, allow_recovery: bool = True) -> tuple[CodexSlot, CodexAuth] | None:
+        catalog = getattr(self, "model_catalog", None)
+        if catalog is None:
+            return await self.choose_slot(affinity_key, excluded, excluded_accounts)
+        chosen = await self.choose_slot(affinity_key, excluded, excluded_accounts, model_id, reasoning_effort)
+        if chosen is not None:
+            return chosen
+        detail = await self.model_selection_diagnostics(excluded, excluded_accounts, model_id, reasoning_effort)
+        recovery = diagnostics.get("recovery") if diagnostics is not None else None
+        if allow_recovery and recovery is None and detail["operational_eligible"] > 0 and detail["model_eligible"] == 0:
+            recovery = await catalog.recover()
+            # Recovery only updates catalog knowledge. Selection repeats every original gate.
+            detail = await self.model_selection_diagnostics(excluded, excluded_accounts, model_id, reasoning_effort)
+            chosen = await self.choose_slot(affinity_key, excluded, excluded_accounts, model_id, reasoning_effort)
+        elif detail["model_eligible"] > 0:
+            # The catalog/auth state changed while the diagnostic scan yielded.
+            chosen = await self.choose_slot(affinity_key, excluded, excluded_accounts, model_id, reasoning_effort)
+        if recovery is not None:
+            detail["recovery"] = recovery
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update(detail)
+        return chosen
 
     async def slot_availability(self) -> SlotAvailability:
         now = time.time()
@@ -1684,14 +1731,22 @@ class CodexRouter:
             "slot_diagnostics": state.diagnostics(),
         }
 
-    async def _unavailable_result(self) -> CodexCallResult:
+    async def _unavailable_result(self, selection_diagnostics: dict[str, Any] | None = None) -> CodexCallResult:
         error = await self._unavailable_error()
+        if (selection_diagnostics and selection_diagnostics.get("operational_eligible", 0) > 0
+                and selection_diagnostics.get("model_eligible") == 0
+                and error.get("slot_diagnostics", {}).get("eligible", 0) > 0):
+            error = {"message": "No operational Codex slot currently offers the requested model and reasoning effort.",
+                     "type": "upstream_error", "code": "codex_model_unavailable",
+                     "slot_diagnostics": error["slot_diagnostics"],
+                     "selection_diagnostics": selection_diagnostics}
         status = 429 if error["code"] == CODEX_RATE_LIMIT_UNAVAILABLE_CODE else 503
         return CodexCallResult(
             status=status,
             body={"error": error},
             headers=self._temporary_unavailable_headers(error),
             error=str(error["code"]),
+            selection_diagnostics=selection_diagnostics or None,
         )
 
     async def execute_chat(
@@ -1718,12 +1773,13 @@ class CodexRouter:
         excluded_slots: set[int] = set()
         excluded_accounts: set[str] = set()
         deadline = time.time() + (self._recovery_wait_ms() / 1000)
+        selection_diagnostics: dict[str, Any] = {}
         while True:
             for _attempt in range(slot_count):
-                if getattr(self, "model_catalog", None) is None:
-                    chosen = await self.choose_slot(affinity_key, excluded_slots, excluded_accounts)
-                else:
-                    chosen = await self.choose_slot(affinity_key, excluded_slots, excluded_accounts, model_id, reasoning_effort)
+                chosen = await self.choose_slot_with_catalog_recovery(
+                    affinity_key, excluded_slots, excluded_accounts, model_id, reasoning_effort,
+                    diagnostics=selection_diagnostics,
+                )
                 if not chosen:
                     break
                 slot, auth = chosen
@@ -1770,6 +1826,7 @@ class CodexRouter:
 
                     result.stream_cleanup = cleanup_stream
                     result.stream = stream_with_inflight_guard()
+                result.selection_diagnostics = selection_diagnostics or None
                 result.slot_index = slot.index
                 result.account_key = auth.account_key
                 result.input_tokens = token_count_estimate(request)
@@ -1794,13 +1851,13 @@ class CodexRouter:
 
             state = await self.slot_availability()
             if state.eligible == 0 and state.rate_limited and not state.transient_5xx:
-                return await self._unavailable_result()
+                return await self._unavailable_result(selection_diagnostics)
             recovery_at = state.earliest_recovery()
             if recovery_at is not None and recovery_at <= deadline and await self._wait_for_temporary_recovery(deadline):
                 excluded_slots.clear()
                 excluded_accounts.clear()
                 continue
-            return await self._unavailable_result()
+            return await self._unavailable_result(selection_diagnostics)
 
     async def _single_chat_call(
         self,

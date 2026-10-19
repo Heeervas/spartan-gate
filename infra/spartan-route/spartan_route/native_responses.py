@@ -407,6 +407,7 @@ async def execute_codex_responses(
     excluded_slots: set[int] = set()
     excluded_accounts: set[str] = set()
     last_result: CodexCallResult | None = None
+    selection_diagnostics: dict[str, Any] = {}
 
     if probe is None:
         initial_state = await router.slot_availability()
@@ -425,10 +426,10 @@ async def execute_codex_responses(
                     raise
                 return CodexCallResult(status=503, body={"error": {"code": "probe_account_unavailable"}}, error="probe_account_unavailable")
         else:
-            if getattr(router, "model_catalog", None) is None:
-                chosen = await router.choose_slot(affinity_key, excluded_slots, excluded_accounts)
-            else:
-                chosen = await router.choose_slot(affinity_key, excluded_slots, excluded_accounts, model_id, reasoning_effort)
+            chosen = await router.choose_slot_with_catalog_recovery(
+                affinity_key, excluded_slots, excluded_accounts, model_id, reasoning_effort,
+                diagnostics=selection_diagnostics,
+            )
         if not chosen:
             break
         slot, auth = chosen
@@ -491,6 +492,7 @@ async def execute_codex_responses(
             raise
         if isinstance(opened, CodexCallResult):
             slot.in_flight = max(0, slot.in_flight - 1)
+            opened.selection_diagnostics = selection_diagnostics or None
             opened.slot_index = slot.index
             opened.account_key = auth.account_key
             finish_cache(opened)
@@ -511,6 +513,7 @@ async def execute_codex_responses(
 
         result = CodexCallResult(
             status=200,
+            selection_diagnostics=selection_diagnostics or None,
             slot_index=slot.index,
             account_key=auth.account_key,
             input_tokens=token_count_estimate(request),
@@ -606,6 +609,7 @@ async def execute_codex_responses(
             raise
         finally:
             slot.in_flight = max(0, slot.in_flight - 1)
+        collected.selection_diagnostics = selection_diagnostics or None
         collected.slot_index = slot.index
         collected.account_key = auth.account_key
         finish_cache(collected)
@@ -625,6 +629,12 @@ async def execute_codex_responses(
             router.mark_transient(slot)
         last_result = collected
 
+    if selection_diagnostics.get("operational_eligible", 0) > 0 and selection_diagnostics.get("model_eligible") == 0:
+        unavailable = await router._unavailable_result(selection_diagnostics)
+        if last_result is not None:
+            unavailable.native_cache = last_result.native_cache
+        return unavailable
     if last_result is not None:
+        last_result.selection_diagnostics = selection_diagnostics or None
         return last_result
-    return await router._unavailable_result()
+    return await router._unavailable_result(selection_diagnostics)

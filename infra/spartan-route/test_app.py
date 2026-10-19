@@ -579,10 +579,10 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         await state.codex.set_slot_routing_enabled(0, False)
         denied = await self.client.post("/v1/responses", headers={"Authorization": "Bearer secret"}, json={"model": model_id, "input": "solve"})
         self.assertEqual(denied.status, 503)
-        self.assertEqual((await denied.json())["error"]["code"], "codex_model_unavailable")
+        self.assertEqual((await denied.json())["error"]["code"], "codex_unavailable")
         denied_variant = await self.client.post("/v1/responses", headers={"Authorization": "Bearer secret"}, json={"model": variant_id, "input": "solve"})
         self.assertEqual(denied_variant.status, 503)
-        self.assertEqual((await denied_variant.json())["error"]["code"], "codex_model_unavailable")
+        self.assertEqual((await denied_variant.json())["error"]["code"], "codex_unavailable")
         await state.codex.set_slot_routing_enabled(0, True)
         await catalog.refresh()
         mapping = {tier["id"]: model_id for tier in config["editableTiers"]}
