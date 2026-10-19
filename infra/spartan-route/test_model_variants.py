@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 from aiohttp.test_utils import TestClient, TestServer
 
 from test_app import test_config, CaptureChatCodex
+from test_codex_catalog import row
 from spartan_route.app import STATE_KEY, create_app, route_request, InvalidContextVariant
 from spartan_route.config import ModelEntry
 from spartan_route.model_variants import VariantPolicy, variant_id
@@ -163,7 +164,11 @@ class VariantApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_stable_name_keeps_hermes_alias_when_context_changes(self):
         alias = "codex/gpt-6.1-sol-282kcontext"
         model = "codex/gpt-6.1-sol"
-        self.state.config.models[model] = ModelEntry(model, "codex", max_context=872000)
+        # A discovered model needs a validated offering even in alias-only tests.
+        catalog = self.state.codex_catalog
+        catalog.router.slots = [CodexSlot(0, token="synthetic", auth=CodexAuth("synthetic", account_id="synthetic"))]
+        catalog._fetch = AsyncMock(return_value=parse_catalog({"models": [row("gpt-6.1-sol")]}))
+        await catalog.refresh()
         result = await self.save([{"id": alias, "model": model, "contextWindow": 412000}])
         self.assertEqual(result.status, 200)
         detail = await self.client.get("/v1/models/" + alias)

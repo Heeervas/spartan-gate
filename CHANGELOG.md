@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Recover Codex model eligibility through bounded shared catalog refreshes and
+  report model-specific selection diagnostics without bypassing account,
+  reasoning, identity, or quota restrictions. Keep removed discovered models
+  fail-closed. Save an adversarially reviewed Hermes delegation repair plan;
+  Hermes implementation and production activation remain pending.
+
 - Complete native profile provisioning guidance: authorized in-gateway creation,
   curated identity/skills, new-profile cache-lineage and Reader checks, scoped
   delegation, shared Discord routing and distinct plugin/route reloads.
