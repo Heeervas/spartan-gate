@@ -28,6 +28,9 @@ REFRESH_SECONDS = 3600
 MAX_AGE_SECONDS = 24 * 3600
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_MODELS = 256
+RECOVERY_MIN_SECONDS = 60
+RECOVERY_DEADLINE_SECONDS = 20
+RECOVERY_FETCH_CONCURRENCY = 4
 MODEL_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 ACCOUNT_GATED_BUNDLED_MODELS = frozenset({"codex/gpt-6-sol", "codex/gpt-6-luna"})
 
@@ -127,6 +130,14 @@ def parse_catalog(payload: Any) -> dict[str, DiscoveredModel]:
     return found
 
 
+class CatalogPublication(dict):
+    """Generation carried through the existing two-argument publisher API."""
+
+    def __init__(self, slots: dict[int, SlotCatalog], generation: int):
+        super().__init__(slots)
+        self.generation = generation
+
+
 class CodexModelDiscovery:
     def __init__(
         self,
@@ -143,6 +154,12 @@ class CodexModelDiscovery:
         self._wake = asyncio.Event()
         self._refresh_lock = asyncio.Lock()
         self.request_version = CATALOG_CLIENT_VERSION
+        self._generation = 0
+        self._catalog_generation = 0
+        self._stopped = False
+        self._recovery_task: asyncio.Task[dict] | None = None
+        self._retired_tasks: set[asyncio.Task] = set()
+        self._last_recovery_started: float | None = None
 
     def catalog_request_version(self) -> tuple[int, int, int]:
         version = self.request_version
@@ -162,14 +179,46 @@ class CodexModelDiscovery:
             self._task = asyncio.create_task(self._run(), name="codex-model-discovery")
 
     async def stop(self) -> None:
-        task = self._task
+        self._stopped = True
+        self._generation += 1
+        self._catalog_generation += 1
+        tasks = set(self._retired_tasks)
+        tasks.update(task for task in (self._task, self._recovery_task) if task is not None)
         self._task = None
-        if task is not None:
+        self._recovery_task = None
+        for task in tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._retired_tasks.clear()
+
+    async def recover(self) -> dict:
+        if self._stopped:
+            return {"outcome": "stopped", "duration_ms": 0}
+        task = self._recovery_task
+        if task is not None and not task.done():
+            return await asyncio.shield(task)
+        now = time.monotonic()
+        if self._last_recovery_started is not None and now - self._last_recovery_started < RECOVERY_MIN_SECONDS:
+            return {"outcome": "rate_limited", "duration_ms": 0}
+        self._last_recovery_started = now
+        task = asyncio.create_task(self._recover(now, self._generation), name="codex-catalog-recovery")
+        self._recovery_task = task
+        return await asyncio.shield(task)
+
+    async def _recover(self, started: float, generation: int) -> dict:
+        outcome = "failed"
+        try:
+            async with asyncio.timeout(RECOVERY_DEADLINE_SECONDS):
+                published = await self._refresh(generation, started + RECOVERY_DEADLINE_SECONDS - 0.05)
+                outcome = published if published else "stopped"
+        except asyncio.TimeoutError:
+            outcome = "timed_out"
+        except asyncio.CancelledError:
+            outcome = "stopped"
+        except Exception:
+            outcome = "failed"
+        return {"outcome": outcome, "duration_ms": max(0, int((time.monotonic() - started) * 1000))}
 
     def schedule_refresh(self) -> None:
         self._wake.set()
@@ -180,6 +229,13 @@ class CodexModelDiscovery:
         self.schedule_refresh()
 
     def reset(self) -> None:
+        self._generation += 1
+        self._catalog_generation += 1
+        task = self._recovery_task
+        if task is not None:
+            task.cancel()
+            self._retired_tasks.add(task)
+            self._recovery_task = None
         self.slots = {}
         self.schedule_refresh()
 
@@ -216,18 +272,34 @@ class CodexModelDiscovery:
             return None
         return catalog
 
+    def eligibility(self, slot: Any, auth: Any, model_id: str, effort: str | None = None) -> dict:
+        catalog = self.slots.get(slot.index)
+        age = max(0, int(time.monotonic() - catalog.fetched_at)) if catalog is not None else None
+        reason = "eligible"
+        if model_id not in self.bundled_ids or model_id in ACCOUNT_GATED_BUNDLED_MODELS:
+            if catalog is None:
+                reason = "missing_catalog"
+            else:
+                source_fingerprint, source_account = self._source(slot)
+                if (auth is None or catalog.account_key != auth.account_key
+                    or catalog.source_fingerprint != source_fingerprint
+                    or (slot.path and source_account != auth.account_id)):
+                    reason = "identity_mismatch"
+                    self.schedule_refresh()
+                elif time.monotonic() - catalog.fetched_at > MAX_AGE_SECONDS:
+                    reason = "expired_catalog"
+                elif model_id not in catalog.models:
+                    reason = "model_absent"
+                elif effort is not None and effort not in catalog.models[model_id].efforts:
+                    reason = "unsupported_reasoning"
+        return {"eligible": reason == "eligible", "reason": reason,
+                "catalog_generation": self._catalog_generation, "catalog_age_seconds": age}
+
     def supports(self, slot: Any, auth: Any, model_id: str, effort: str | None = None) -> bool:
-        gated = model_id in self.discovered_ids or model_id in ACCOUNT_GATED_BUNDLED_MODELS
-        if not gated:
-            return True
-        catalog = self._current(slot, auth)
-        if catalog is None:
-            return False
-        model = catalog.models.get(model_id)
-        return model is not None and (effort is None or effort in model.efforts)
+        return self.eligibility(slot, auth, model_id, effort)["eligible"]
 
     def known_unavailable(self, model_id: str, effort: str | None = None) -> bool:
-        if model_id not in self.discovered_ids and model_id not in ACCOUNT_GATED_BUNDLED_MODELS:
+        if model_id in self.bundled_ids and model_id not in ACCOUNT_GATED_BUNDLED_MODELS:
             return False
         for slot in self.router.slots:
             auth = slot.auth
@@ -281,24 +353,46 @@ class CodexModelDiscovery:
             return parse_catalog(json.loads(b"".join(chunks)))
 
     async def refresh(self) -> None:
+        await self._refresh(self._generation)
+
+    async def _refresh(self, generation: int, fetch_deadline: float | None = None) -> str | None:
         async with self._refresh_lock:
+            if generation != self._generation:
+                return None
             client_version = self.catalog_request_version()
-            now = time.monotonic()
             refreshed: dict[int, SlotCatalog] = {}
             for slot in self.router.slots:
+                if slot.auth is not None and self.router.slot_routing_status(slot)["routingEnabled"]:
+                    old = self._current(slot, slot.auth)
+                    if old is not None:
+                        refreshed[slot.index] = old
+            successful_fetches = 0
+            fetch_timed_out = False
+
+            async def fetch_slot(slot: Any) -> None:
+                nonlocal successful_fetches
                 if not self.router.slot_routing_status(slot)["routingEnabled"]:
-                    continue
+                    refreshed.pop(slot.index, None)
+                    return
                 try:
                     auth = await self.router.load_auth(slot)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    auth = None
+                    refreshed.pop(slot.index, None)
+                    return
                 if auth is None or not auth.account_id or not auth.account_key:
-                    continue
+                    refreshed.pop(slot.index, None)
+                    return
                 source_fingerprint, source_account = self._source(slot)
                 if slot.path and source_account != auth.account_id:
-                    continue
+                    refreshed.pop(slot.index, None)
+                    return
+                old = self._current(slot, auth)
+                if old is not None:
+                    refreshed[slot.index] = old
+                else:
+                    refreshed.pop(slot.index, None)
                 try:
                     try:
                         models = await self._fetch(auth, client_version=client_version)
@@ -313,12 +407,48 @@ class CodexModelDiscovery:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    old = self._current(slot, auth)
-                    if old is not None:
-                        refreshed[slot.index] = old
                     print(f"[spartan-route] Codex model catalog slot {slot.index} refresh failed ({type(exc).__name__})", file=sys.stderr)
                 else:
-                    refreshed[slot.index] = SlotCatalog(auth.account_key, source_fingerprint, now, models)
+                    # A source or account switch while fetching cannot grow the snapshot.
+                    current_auth = slot.auth
+                    if (self._source(slot) == (source_fingerprint, source_account)
+                        and current_auth is not None and current_auth.account_key == auth.account_key
+                        and self.router.slot_routing_status(slot)["routingEnabled"]):
+                        refreshed[slot.index] = SlotCatalog(auth.account_key, source_fingerprint, time.monotonic(), models)
+                        successful_fetches += 1
+                    else:
+                        refreshed.pop(slot.index, None)
+
+            if fetch_deadline is None:
+                for slot in self.router.slots:
+                    await fetch_slot(slot)
+            else:
+                semaphore = asyncio.Semaphore(RECOVERY_FETCH_CONCURRENCY)
+
+                async def bounded(slot: Any) -> None:
+                    async with semaphore:
+                        await fetch_slot(slot)
+
+                tasks = [asyncio.create_task(bounded(slot)) for slot in self.router.slots]
+                try:
+                    if tasks:
+                        _, pending = await asyncio.wait(tasks, timeout=max(0, fetch_deadline - time.monotonic()))
+                        fetch_timed_out = bool(pending)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+            # Recheck retained entries after fetches, including cancelled fetches.
+            refreshed = {index: catalog for index, catalog in refreshed.items()
+                         if any(slot.index == index and slot.auth is not None
+                                and self.router.slot_routing_status(slot)["routingEnabled"]
+                                and catalog.account_key == slot.auth.account_key
+                                and self._source(slot)[0] == catalog.source_fingerprint
+                                and (not slot.path or self._source(slot)[1] == slot.auth.account_id)
+                                and time.monotonic() - catalog.fetched_at <= MAX_AGE_SECONDS
+                                for slot in self.router.slots)}
             merged: dict[str, ModelEntry] = {}
             for catalog in refreshed.values():
                 for model_id, model in catalog.models.items():
@@ -331,8 +461,20 @@ class CodexModelDiscovery:
                             tool_capable=previous.tool_capable and model.entry.tool_capable,
                             multimodal=previous.multimodal and model.entry.multimodal,
                         )
-            await self.publish(refreshed, merged)
+            if generation != self._generation:
+                return None
+            publication = CatalogPublication(refreshed, generation)
+            await self.publish(publication, merged)
+            if not self.publication_current(publication):
+                return None
+            return "refreshed" if successful_fetches else ("timed_out" if fetch_timed_out else "failed")
+
+    def publication_current(self, slots: dict[int, SlotCatalog]) -> bool:
+        return getattr(slots, "generation", self._generation) == self._generation
 
     def install_snapshot(self, slots: dict[int, SlotCatalog], models: dict[str, ModelEntry]) -> None:
+        if not self.publication_current(slots):
+            return
+        self._catalog_generation += 1
         self.slots = slots
         self.discovered_ids = frozenset(models) - self.bundled_ids

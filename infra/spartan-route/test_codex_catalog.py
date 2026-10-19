@@ -195,6 +195,181 @@ class CatalogRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         self.store.close()
 
+    async def test_removed_discovered_model_stays_denied(self) -> None:
+        self.catalog._fetch = AsyncMock(return_value=parse_catalog({"models": [row("future-model")]}))
+        await self.catalog.refresh()
+        self.assertTrue(self.catalog.supports(self.router.slots[0], self.router.slots[0].auth, "codex/future-model"))
+        self.catalog._fetch = AsyncMock(return_value={})
+        await self.catalog.refresh()
+        self.assertNotIn("codex/future-model", self.catalog.discovered_ids)
+        self.assertFalse(self.catalog.supports(self.router.slots[0], self.router.slots[0].auth, "codex/future-model"))
+
+    async def test_eligibility_reasons_are_sanitized_and_fenced(self) -> None:
+        slot = self.router.slots[0]
+        self.assertEqual(self.catalog.eligibility(slot, slot.auth, "codex/gpt-6-sol")["reason"], "eligible")
+        self.assertEqual(self.catalog.eligibility(slot, slot.auth, "codex/gpt-6-sol", "ultra")["reason"], "unsupported_reasoning")
+        self.assertEqual(self.catalog.eligibility(slot, slot.auth, "codex/absent")["reason"], "model_absent")
+        self.catalog.slots[0] = replace(self.catalog.slots[0], fetched_at=time.monotonic() - MAX_AGE_SECONDS - 1)
+        self.assertEqual(self.catalog.eligibility(slot, slot.auth, "codex/gpt-6-sol")["reason"], "expired_catalog")
+        slot.auth = CodexAuth("other-token", account_id="other-account")
+        self.assertEqual(self.catalog.eligibility(slot, slot.auth, "codex/gpt-6-sol")["reason"], "identity_mismatch")
+        before = self.catalog.eligibility(slot, slot.auth, "codex/gpt-6-sol")["catalog_generation"]
+        self.catalog.reset()
+        result = self.catalog.eligibility(slot, slot.auth, "codex/gpt-6-sol")
+        self.assertEqual(result["reason"], "missing_catalog")
+        self.assertGreater(result["catalog_generation"], before)
+        self.assertEqual(set(result), {"eligible", "reason", "catalog_generation", "catalog_age_seconds"})
+
+    async def test_recovery_initial_call_and_shared_cancelled_waiter(self) -> None:
+        self.assertIsNone(self.catalog._last_recovery_started)
+        started, release = asyncio.Event(), asyncio.Event()
+        async def fetch(auth, **kwargs):
+            started.set()
+            await release.wait()
+            return parse_catalog({"models": [row("new-model")]})
+        self.catalog._fetch = AsyncMock(side_effect=fetch)
+        first = asyncio.create_task(self.catalog.recover())
+        await started.wait()
+        second = asyncio.create_task(self.catalog.recover())
+        await asyncio.sleep(0)
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        release.set()
+        self.assertEqual((await second)["outcome"], "refreshed")
+        self.assertEqual(self.catalog._fetch.await_count, 2)
+        self.assertEqual((await self.catalog.recover())["outcome"], "rate_limited")
+        await self.catalog.stop()
+        self.assertEqual((await self.catalog.recover())["outcome"], "stopped")
+
+    async def test_recovery_parallel_partial_publication_cancels_slow_children(self) -> None:
+        self.catalog._last_recovery_started = time.monotonic() - 61
+        self.router.slots += [CodexSlot(index, token=f"t{index}", auth=CodexAuth(f"t{index}", account_id=f"a{index}")) for index in range(2, 5)]
+        cancelled = asyncio.Event()
+        async def fetch(auth, **kwargs):
+            if auth.account_id == "account-a":
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            return parse_catalog({"models": [row("later-model")]})
+        self.catalog._fetch = fetch
+        with patch("spartan_route.codex_catalog.RECOVERY_DEADLINE_SECONDS", 0.2):
+            result = await self.catalog.recover()
+        self.assertEqual(result["outcome"], "refreshed")
+        self.assertTrue(cancelled.is_set())
+        self.assertIn("codex/later-model", self.catalog.discovered_ids)
+        self.assertIn("codex/gpt-6-sol", self.catalog.slots[0].models)
+        await self.catalog.stop()
+
+    async def test_recovery_failure_retains_valid_snapshot_without_growth(self) -> None:
+        self.catalog._last_recovery_started = time.monotonic() - 61
+        original_fetched_at = self.catalog.slots[0].fetched_at
+        self.catalog._fetch = AsyncMock(side_effect=ValueError("malformed"))
+        result = await self.catalog.recover()
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(self.catalog.slots[0].fetched_at, original_fetched_at)
+        self.assertTrue(self.catalog.supports(self.router.slots[0], self.router.slots[0].auth, "codex/gpt-6-sol"))
+        self.assertFalse(self.catalog.supports(self.router.slots[0], self.router.slots[0].auth, "codex/new-model"))
+        await self.catalog.stop()
+
+    async def test_recovery_keeps_valid_snapshot_for_queued_slot(self) -> None:
+        self.router.slots += [CodexSlot(index, token=f"t{index}", auth=CodexAuth(f"t{index}", account_id=f"a{index}")) for index in range(2, 5)]
+        last = self.router.slots[-1]
+        old = SlotCatalog(last.auth.account_key, None, time.monotonic() - 123, parse_catalog({"models": [row("queued-model")]}))
+        self.catalog.slots[last.index] = old
+        async def slow(*args, **kwargs):
+            await asyncio.Event().wait()
+        self.catalog._fetch = slow
+        with patch("spartan_route.codex_catalog.RECOVERY_DEADLINE_SECONDS", 0.1):
+            result = await self.catalog.recover()
+        self.assertEqual(result["outcome"], "timed_out")
+        self.assertEqual(self.catalog.slots[last.index].fetched_at, old.fetched_at)
+        self.assertTrue(self.catalog.supports(last, last.auth, "codex/queued-model"))
+        await self.catalog.stop()
+
+    async def test_recovery_deadline_includes_refresh_lock(self) -> None:
+        self.catalog._last_recovery_started = time.monotonic() - 61
+        async with self.catalog._refresh_lock:
+            with patch("spartan_route.codex_catalog.RECOVERY_DEADLINE_SECONDS", 0.02):
+                result = await self.catalog.recover()
+        self.assertEqual(result["outcome"], "timed_out")
+        await self.catalog.stop()
+
+    async def test_reset_cancels_recovery_and_stop_gathers_children(self) -> None:
+        self.catalog._last_recovery_started = time.monotonic() - 61
+        started, finished = asyncio.Event(), asyncio.Event()
+        async def fetch(auth, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
+        self.catalog._fetch = fetch
+        waiter = asyncio.create_task(self.catalog.recover())
+        await started.wait()
+        self.catalog.reset()
+        await self.catalog.stop()
+        self.assertTrue(finished.is_set())
+        self.assertEqual((await waiter)["outcome"], "stopped")
+        self.assertFalse(self.catalog.slots)
+        self.assertFalse(self.catalog._retired_tasks)
+
+    async def test_generation_guard_after_publisher_wait(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def publish(slots, models):
+            entered.set()
+            await release.wait()
+            self.catalog.install_snapshot(slots, models)
+        self.catalog.publish = publish
+        pending = asyncio.create_task(self.catalog.refresh())
+        await entered.wait()
+        self.catalog.reset()
+        release.set()
+        await pending
+        self.assertFalse(self.catalog.slots)
+
+    async def test_stop_fences_publisher_waiting_on_external_lock(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def publish(slots, models):
+            entered.set()
+            await release.wait()
+            if self.catalog.publication_current(slots):
+                self.catalog.install_snapshot(slots, models)
+        self.catalog.publish = publish
+        pending = asyncio.create_task(self.catalog.refresh())
+        await entered.wait()
+        self.catalog.slots = {}
+        await self.catalog.stop()
+        release.set()
+        await pending
+        self.assertFalse(self.catalog.slots)
+
+    async def test_bootstrap_source_change_during_fetch_cannot_grow_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            auth_file = Path(directory) / "auth.json"
+            auth_file.write_text(json.dumps({"tokens": {"account_id": "account-a", "access_token": "token-a"}}))
+            slot = self.router.slots[0]
+            slot.path = str(auth_file)
+            self.router.slots = [slot]
+            async def fetch(auth, **kwargs):
+                auth_file.write_text(json.dumps({"tokens": {"account_id": "account-a", "access_token": "changed-token"}}))
+                return parse_catalog({"models": [row("new-model")]})
+            self.catalog._fetch = fetch
+            await self.catalog.refresh()
+            self.assertFalse(self.catalog.slots)
+            self.assertNotIn("codex/new-model", self.catalog.discovered_ids)
+
+    async def test_source_change_during_fetch_cannot_grow_snapshot(self) -> None:
+        async def fetch(auth, **kwargs):
+            self.router.slots[0].auth = CodexAuth("changed", account_id="changed")
+            return parse_catalog({"models": [row("new-model")]})
+        self.router.slots = self.router.slots[:1]
+        self.catalog._fetch = fetch
+        await self.catalog.refresh()
+        self.assertFalse(self.catalog.slots)
+        self.assertNotIn("codex/new-model", self.catalog.discovered_ids)
+
     async def test_partial_rollout_filters_accounts_and_affinity(self) -> None:
         self.assertEqual(set(self.publications[-1]), {"codex/gpt-6-sol", "codex/gpt-6-luna"})
         sol = await self.router.choose_slot("session", set(), set(), "codex/gpt-6-sol", "max")
