@@ -1,5 +1,37 @@
 # Current State
 
+## Spartan Route dashboard source completed (2026-10-20)
+
+Reviewed existing operator changes were committed with user approval before
+parallel GPT-6.1 Sol medium implementation and independent review. Routing,
+Codex and Config now share a responsive layout, preserving percentage rings,
+live counters, configuration drafts, expanded details and keyboard focus.
+Refresh generations, serialized quota operations and guarded persistence/cache
+recovery prevent retired requests from overwriting newer state. Assets use
+authenticated private revalidation; request details load on demand.
+
+Telemetry queries materialize selected complete turns, batch account metadata,
+use separate read-only connections for heavy file-backed reads and incrementally
+process new requests for today's summary. On a synthetic 60,000-request fixture,
+five-run median live queries improved from 900.53 to 247.09 ms, filtered queries
+from 607.47 to 158.30 ms and summaries after an append from 614.17 to 8.57 ms.
+Live payload hashes matched the baseline. Cold summaries still scan the day;
+retained-history selection and exact percentile work remain dataset dependent.
+These measurements are comparative, not production latency guarantees.
+
+The integrated suite passed 438 Python and 37 JavaScript tests. Chrome checked
+all three screens at widths 320, 390, 768, 1024 and 1440, plus lazy detail loading,
+preserved state, quota actions, countdowns and unsaved configuration. Independent
+review regressions cover retired refresh writes/cache recovery, concurrent
+controls and hidden-page polling. Repository doctor still fails on pre-existing
+personal host paths in public files.
+
+The requested redesign skill is installed and applied. Source work and tests
+were authorized under a temporary low-disk exception; no image builds, runtime
+restart or push occurred. Deployment and live acceptance remain pending until
+adequate disk capacity is available. See `docs/spartan-route.md` and the runtime
+note `route_dashboard_performance_20102026.md` for operator behavior.
+
 ## Native Hermes vault on Camofox deployed (2026-10-09)
 
 Native vault tools now use the existing Camofox tab and session, with a dedicated

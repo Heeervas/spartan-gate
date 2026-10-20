@@ -58,6 +58,47 @@ Relevant files:
   overlay.
 - `infra/spartan-route/test_*.py`: focused regression suite.
 
+### Dashboard performance and refresh behavior
+
+The Routing, Codex and Config screens share a responsive operator layout and
+local stylesheet. Codex rings show the raw percentage used; capacity-weighted
+units remain beside each ring. Reset and expiry countdowns update locally.
+Tables retain all columns on small screens in keyboard-accessible scroll regions.
+No external fonts, image downloads or third-party scripts are required.
+
+Dashboard JavaScript is served separately from the HTML. Routing request-detail
+rendering (about 7.7 KB uncompressed) loads only when a turn is expanded. Total
+JavaScript grew with refresh and focus safeguards; this change defers detail
+code and avoids retransferring unchanged assets rather than reducing every
+screen's initial script size. HTML and the allowlisted
+`/dashboard-assets/` files use private HTTP revalidation, retaining the same
+authentication requirement as the dashboard. Dashboard API responses use
+`Cache-Control: no-store`; private telemetry is not a browser asset cache.
+
+Routing and Codex check for updated data every 15 seconds while visible, pause
+scheduled reads when hidden, and check again when visible. Refresh retains
+expanded Routing sessions and turns. Unchanged data avoids replacing their DOM
+and Codex account/table contents. Request-detail loads are coalesced, and
+credential changes or superseded responses cannot publish into a newer view.
+Config keeps its explicit save model, unsaved drafts and ETag conflict checks.
+
+Use **Refresh** to read the current snapshot and **Refresh Live** on Codex to
+start or join an upstream usage refresh. The page reports progress and preserves
+last-good data on a temporary failure. A countdown changing does not mean a new
+provider quota observation has arrived; check the snapshot/progress status.
+Mutations are not automatically replayed after a network error.
+
+The session query materializes only requests belonging to the selected turns,
+preserving whole-turn metrics, literal filters and exact matching counts. Its
+selection still examines retained history, so the retained dataset and active
+filters continue to affect query time. Capacity multipliers are read in a
+batch. Today's summary processes newly appended requests incrementally; a day
+change, retention rebuild or external database update invalidates that cache.
+The first summary and exact latency percentiles still depend on the day's data.
+`infra/spartan-route/benchmark_dashboard.py` provides an offline synthetic
+query benchmark; it never opens the operator database. Its timings are
+comparative evidence, not a production latency guarantee.
+
 ## Native Responses update surface
 
 Codex inference supports `SPARTAN_ROUTE_CODEX_TRANSPORT=http|auto|websocket`.

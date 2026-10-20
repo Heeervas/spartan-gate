@@ -4,6 +4,15 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Redesign Spartan Route's Routing, Codex and Config dashboards with responsive
+  navigation, quota percentage rings and live countdowns. Preserve expanded
+  details, focus and unsaved configuration across refreshes; lazy-load request
+  details, revalidate authenticated local assets, pause hidden-page polling and
+  prevent stale reads or retired quota refreshes from overwriting newer state.
+  Bound telemetry materialization to selected turns, batch account lookups,
+  isolate heavy SQLite readers and update today's summary incrementally.
+  Source validation is complete; runtime deployment remains pending.
+
 - Preserve reviewed operator updates: guarded cleanup of obsolete host Codex
   builds, safe workstation mount preparation, explicit Hermes recreation
   confirmation, shared MASTER prompt loading, and accompanying operational
