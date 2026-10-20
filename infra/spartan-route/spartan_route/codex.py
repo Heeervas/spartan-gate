@@ -713,6 +713,7 @@ class CodexRouter:
         self._usage_refresh_task: asyncio.Task[dict[str, Any]] | None = None
         self._usage_progress_snapshot: dict[str, Any] | None = None
         self._usage_generation = 0
+        self._usage_operation_lock = asyncio.Lock()
         # Constructor-only injection keeps production fixed at /app/data/codex-auth.
         self.auth_store_root = Path(auth_store_root) if auth_store_root is not None else CODEX_AUTH_STORE_ROOT
         self._init_slots()
@@ -739,6 +740,9 @@ class CodexRouter:
         if task is not None and not task.done():
             task.cancel()
         self._usage_refresh_task = None
+        # A cancelled old controller may still be draining owned children.
+        # The new generation must not queue behind that retired generation.
+        self._usage_operation_lock = asyncio.Lock()
         self.slots = []
         self.leases.clear()
         self.refresh_locks.clear()
@@ -773,10 +777,12 @@ class CodexRouter:
 
     def slot_status(self, include_paths: bool = False) -> list[dict[str, Any]]:
         now = time.time()
+        telemetry = getattr(self, "telemetry", None)
+        overrides = telemetry.slot_routing_overrides() if telemetry and self.slots else {}
         out = []
         for slot in self.slots:
             auth = slot.auth
-            routing = self.slot_routing_status(slot)
+            routing = self.slot_routing_status(slot, overrides=overrides)
             out.append({
                 "slotIndex": slot.index,
                 "accountKey": auth.account_key if auth else None,
@@ -824,9 +830,14 @@ class CodexRouter:
         if event is not None:
             event.set()
 
-    def slot_routing_status(self, slot: CodexSlot) -> dict[str, Any]:
+    def slot_routing_status(
+        self, slot: CodexSlot, *, overrides: dict[int, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         telemetry = getattr(self, "telemetry", None)
-        override = telemetry.slot_routing_override(slot.index) if telemetry else None
+        override = (
+            overrides.get(slot.index) if overrides is not None
+            else telemetry.slot_routing_override(slot.index) if telemetry else None
+        )
         if not override:
             return {
                 "routingEnabled": True,
@@ -2919,73 +2930,13 @@ class CodexRouter:
 
     async def usage_snapshot(self, force: bool = False, slot_indexes: set[int] | None = None) -> dict[str, Any]:
         if slot_indexes is not None:
-            payload = await self._fetch_usage_snapshot(slot_indexes)
-            discovery_semaphore = asyncio.Semaphore(4)
-
-            async def discover_identity(slot: CodexSlot) -> None:
-                async with discovery_semaphore:
-                    await self.load_auth(slot)
-
-            await asyncio.gather(*(
-                discover_identity(slot)
-                for slot in self.slots
-                if not slot.account_key()
-            ))
-            persisted = self._persisted_usage_snapshot()
-            accounts_by_key = {
-                str(account.get("accountKey")): copy.deepcopy(account)
-                for account in persisted.get("accounts", [])
-                if account.get("accountKey")
-            }
-            for live in payload.get("accounts", []):
-                account_key = str(live.get("accountKey") or "")
-                if not account_key:
-                    continue
-                previous = accounts_by_key.get(account_key, {})
-                merged = {**previous, **copy.deepcopy(live)}
-                merged["slotIndexes"] = sorted({
-                    int(index)
-                    for index in [
-                        *(previous.get("slotIndexes") or []),
-                        *(live.get("slotIndexes") or []),
-                    ]
-                })
-                merged["slotPaths"] = list(dict.fromkeys([
-                    *(previous.get("slotPaths") or []),
-                    *(live.get("slotPaths") or []),
-                ]))
-                accounts_by_key[account_key] = merged
-            payload["accounts"] = sorted(
-                accounts_by_key.values(),
-                key=lambda row: min(row.get("slotIndexes") or [9999]),
-            )
-            telemetry_errors = []
-            for error in [
-                *(persisted.get("telemetryErrors") or []),
-                *(payload.get("telemetryErrors") or []),
-            ]:
-                if error not in telemetry_errors:
-                    telemetry_errors.append(error)
-            if telemetry_errors:
-                payload["telemetryErrors"] = telemetry_errors
-            payload["partial"] = bool(
-                persisted.get("partial")
-                or payload.get("slotErrors")
-                or payload.get("resetCreditErrors")
-                or telemetry_errors
-            )
-            has_persisted = any(
-                account.get("source") == "persisted"
-                for account in payload["accounts"]
-            )
-            payload.update({
-                "cached": False,
-                "source": "mixed" if has_persisted else "live",
-                "refreshing": False,
-                "observedAt": now_iso(),
-            })
-            self._usage_cache = None
-            return payload
+            # Finish any older controller before fetching a newer targeted reading.
+            # Shield its shared task from cancellation of this request.
+            task = getattr(self, "_usage_refresh_task", None)
+            if task is not None and not task.done():
+                await asyncio.shield(task)
+            async with self._usage_operation_guard():
+                return await self._targeted_usage_snapshot(slot_indexes)
 
         task = getattr(self, "_usage_refresh_task", None)
         if task is not None and not task.done():
@@ -3016,6 +2967,90 @@ class CodexRouter:
         if force:
             return copy.deepcopy(await asyncio.shield(refresh))
         return copy.deepcopy(self._usage_progress_snapshot or self._persisted_usage_snapshot())
+
+    def _usage_operation_guard(self) -> asyncio.Lock:
+        lock = getattr(self, "_usage_operation_lock", None)
+        if lock is None:
+            lock = self._usage_operation_lock = asyncio.Lock()
+        return lock
+
+    async def _targeted_usage_snapshot(self, slot_indexes: set[int]) -> dict[str, Any]:
+        generation = int(getattr(self, "_usage_generation", 0))
+        payload = await self._fetch_usage_snapshot(slot_indexes)
+        discovery_semaphore = asyncio.Semaphore(4)
+
+        async def discover_identity(slot: CodexSlot) -> None:
+            async with discovery_semaphore:
+                await self.load_auth(slot)
+
+        await asyncio.gather(*(
+            discover_identity(slot)
+            for slot in self.slots
+            if not slot.account_key()
+        ))
+        persisted = self._persisted_usage_snapshot()
+        accounts_by_key = {
+            str(account.get("accountKey")): copy.deepcopy(account)
+            for account in persisted.get("accounts", [])
+            if account.get("accountKey")
+        }
+        for live in payload.get("accounts", []):
+            account_key = str(live.get("accountKey") or "")
+            if not account_key:
+                continue
+            previous = accounts_by_key.get(account_key, {})
+            merged = {**previous, **copy.deepcopy(live)}
+            merged["slotIndexes"] = sorted({
+                int(index)
+                for index in [
+                    *(previous.get("slotIndexes") or []),
+                    *(live.get("slotIndexes") or []),
+                ]
+            })
+            merged["slotPaths"] = list(dict.fromkeys([
+                *(previous.get("slotPaths") or []),
+                *(live.get("slotPaths") or []),
+            ]))
+            accounts_by_key[account_key] = merged
+        payload["accounts"] = sorted(
+            accounts_by_key.values(),
+            key=lambda row: min(row.get("slotIndexes") or [9999]),
+        )
+        telemetry_errors = []
+        for error in [
+            *(persisted.get("telemetryErrors") or []),
+            *(payload.get("telemetryErrors") or []),
+        ]:
+            if error not in telemetry_errors:
+                telemetry_errors.append(error)
+        if telemetry_errors:
+            payload["telemetryErrors"] = telemetry_errors
+        payload["partial"] = bool(
+            persisted.get("partial")
+            or payload.get("slotErrors")
+            or payload.get("resetCreditErrors")
+            or telemetry_errors
+        )
+        has_persisted = any(
+            account.get("source") == "persisted"
+            for account in payload["accounts"]
+        )
+        payload.update({
+            "cached": False,
+            "source": "mixed" if has_persisted else "live",
+            "refreshing": False,
+            "observedAt": now_iso(),
+        })
+        expires_at = time.time() + CODEX_USAGE_CACHE_TTL_SECONDS
+        payload["cacheExpiresAt"] = self._iso_from_epoch(expires_at)
+        if generation == int(getattr(self, "_usage_generation", 0)):
+            self._usage_cache = {
+                "expiresAt": expires_at,
+                "signature": self._usage_cache_signature(),
+                "payload": copy.deepcopy(payload),
+            }
+            self._publish_usage_snapshot(generation, payload)
+        return payload
 
     def trigger_usage_refresh(self) -> dict[str, Any]:
         self._ensure_usage_refresh()
@@ -3050,6 +3085,10 @@ class CodexRouter:
         return task
 
     async def _refresh_usage_cache(self, generation: int) -> dict[str, Any]:
+        async with self._usage_operation_guard():
+            return await self._refresh_usage_cache_locked(generation)
+
+    async def _refresh_usage_cache_locked(self, generation: int) -> dict[str, Any]:
         payload = copy.deepcopy(self._usage_progress_snapshot or self._persisted_usage_snapshot())
         total_accounts: int | None = None
         completed_accounts = 0

@@ -105,7 +105,9 @@ class TelemetryStore:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         self._health_lock = threading.Lock()
-        self._today_summary_cache: tuple[tuple[str, int, int], dict[str, Any]] | None = None
+        self._today_summary_lock = threading.Lock()
+        self._routing_retention_epoch = 0
+        self._today_summary_cache: dict[str, Any] | None = None
         self._health_failures = {
             "read": 0,
             "write": 0,
@@ -159,6 +161,23 @@ class TelemetryStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    @contextlib.contextmanager
+    def _dashboard_connection(self):
+        # Heavy dashboard scans must not hold the writer/policy-read lock.
+        # WAL permits this independent read-only connection to share a snapshot
+        # with concurrent telemetry writes. In-memory stores cannot be reopened.
+        if self.db_path == ":memory:":
+            with self._lock:
+                yield self._conn
+            return
+        uri = Path(self.db_path).resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+        finally:
+            connection.close()
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -663,6 +682,8 @@ class TelemetryStore:
                 self._conn.rollback()
                 raise
             self._retention_status = report
+            if rebuild:
+                self._routing_retention_epoch += 1
             return dict(report)
 
     def retention_status(self) -> dict[str, Any]:
@@ -929,37 +950,58 @@ class TelemetryStore:
         return rows
 
     def today_summary(self, day: str | None = None) -> dict[str, Any]:
+        with self._today_summary_lock:
+            return self._today_summary_locked(day)
+
+    def _today_summary_locked(self, day: str | None) -> dict[str, Any]:
         current_day = day or datetime.now(timezone.utc).date().isoformat()
         with self._lock:
-            revision = (current_day, self._conn.total_changes,
+            # data_version belongs to this persistent connection; a fresh reader
+            # would not detect external updates/deletes/backfills between calls.
+            revision = (current_day, self._routing_retention_epoch,
                         int(self._conn.execute("PRAGMA data_version").fetchone()[0]))
-            if self._today_summary_cache is not None and self._today_summary_cache[0] == revision:
-                return copy.deepcopy(self._today_summary_cache[1])
-            rows = self._conn.execute(
+        cached = self._today_summary_cache
+        if cached is not None and cached["revision"] != revision:
+            cached = None
+        with self._dashboard_connection() as connection:
+            if self.db_path != ":memory:":
+                connection.execute("BEGIN")
+            last_id = int(connection.execute("SELECT coalesce(max(id), 0) FROM routing_log").fetchone()[0])
+            if cached is not None and cached["lastId"] > last_id:
+                cached = None
+            after_id = cached["lastId"] if cached is not None else 0
+            rows = connection.execute(
                 """
                 SELECT input_tokens, cached_input_tokens, output_tokens, response_time_ms,
                        upstream_response_time_ms, total_response_time_ms, error, context_info
                 FROM routing_log
-                WHERE actual_model LIKE 'codex/%' AND date(timestamp) = ?
+                WHERE id > ? AND id <= ?
+                  AND actual_model LIKE 'codex/%' AND date(timestamp) = ?
                 ORDER BY id ASC
                 """,
-                (current_day,),
+                (after_id, last_id, current_day),
             ).fetchall()
+        previous = cached["result"] if cached else {}
+        if cached is not None and not rows:
+            cached["lastId"] = last_id
+            return copy.deepcopy(previous)
         items = [dict(row) for row in rows]
-        native_metrics = empty_native_metrics()
-        usage_seen = 0
-        errors = 0
-        input_tokens = cached_tokens = output_tokens = 0
-        cache_likely_requests = 0
-        cache_likely_input_tokens = 0
-        cache_likely_cached_input_tokens = 0
-        cache_low_requests = 0
-        cache_low_input_tokens = 0
-        latencies: list[int] = []
-        split_latencies: list[int] = []
-        total_latencies: list[int] = []
-        legacy_latency_requests = 0
-        split_latency_requests = 0
+        native_metrics = copy.deepcopy(cached["native"]) if cached else empty_native_metrics()
+        usage_seen = previous.get("usageSeenRequests", 0)
+        errors = previous.get("errors", 0)
+        input_tokens = previous.get("inputTokens", 0)
+        cached_tokens = previous.get("cachedInputTokens", 0)
+        output_tokens = previous.get("outputTokens", 0)
+        cache_likely_requests = previous.get("cacheLikelyRequests", 0)
+        cache_likely_input_tokens = previous.get("cacheLikelyInputTokens", 0)
+        cache_likely_cached_input_tokens = previous.get("cacheLikelyCachedInputTokens", 0)
+        cache_low_requests = previous.get("cacheLowRequests", 0)
+        cache_low_input_tokens = previous.get("cacheLowInputTokens", 0)
+        latencies: list[int] = list(cached["latencies"]) if cached else []
+        split_latencies: list[int] = list(cached["split_latencies"]) if cached else []
+        total_latencies: list[int] = list(cached["total_latencies"]) if cached else []
+        legacy_latency_requests = previous.get("legacyLatencyRequests", 0)
+        split_latency_requests = previous.get("splitLatencyRequests", 0)
         for item in items:
             context = self._row_context(item)
             add_native_request(native_metrics, context, int(item.get("input_tokens") or 0), int(item.get("cached_input_tokens") or 0))
@@ -990,11 +1032,11 @@ class TelemetryStore:
                 legacy_latency_requests += 1
         result = {
             "day": current_day,
-            "loggedRequests": len(items),
+            "loggedRequests": previous.get("loggedRequests", 0) + len(items),
             "nativeCache": public_native_metrics(native_metrics),
             "legacyCacheHeuristics": True,
             "usageSeenRequests": usage_seen,
-            "usageMissingRequests": len(items) - usage_seen,
+            "usageMissingRequests": previous.get("loggedRequests", 0) + len(items) - usage_seen,
             "inputTokens": input_tokens,
             "cachedInputTokens": cached_tokens,
             "outputTokens": output_tokens,
@@ -1017,10 +1059,15 @@ class TelemetryStore:
             "splitLatencyRequests": split_latency_requests,
         }
         with self._lock:
-            current_revision = (current_day, self._conn.total_changes,
+            current_revision = (current_day, self._routing_retention_epoch,
                                 int(self._conn.execute("PRAGMA data_version").fetchone()[0]))
             if current_revision == revision:
-                self._today_summary_cache = (revision, copy.deepcopy(result))
+                self._today_summary_cache = {
+                    "revision": revision, "lastId": last_id,
+                    "result": copy.deepcopy(result), "native": native_metrics,
+                    "latencies": latencies, "split_latencies": split_latencies,
+                    "total_latencies": total_latencies,
+                }
         return result
 
     def routing_filter_options(self) -> dict[str, list[str]]:
@@ -1140,8 +1187,8 @@ class TelemetryStore:
                     = turns.effective_turn_id
             ORDER BY logs.id DESC
         """
-        with self._lock:
-            selected_rows = self._conn.execute(
+        with self._dashboard_connection() as connection:
+            selected_rows = connection.execute(
                 selection_sql,
                 (*params, safe_limit, safe_turn_limit),
             ).fetchall()
