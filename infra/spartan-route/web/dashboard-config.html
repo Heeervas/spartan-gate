@@ -4,127 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Spartan Route Config</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #f6f7f5;
-      --panel: #ffffff;
-      --text: #202124;
-      --muted: #636a67;
-      --line: #d9dfdc;
-      --accent: #146b58;
-      --good: #237b3b;
-      --warn: #9a5b00;
-      --bad: #b3261e;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #151716;
-        --panel: #202321;
-        --text: #eff2ef;
-        --muted: #a9b0ab;
-        --line: #383d3a;
-        --accent: #56c2a8;
-        --good: #7bd88f;
-        --warn: #e5ad4f;
-        --bad: #ff897d;
-      }
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    header { background: var(--panel); border-bottom: 1px solid var(--line); }
-    .wrap { width: min(1120px, calc(100vw - 32px)); margin: 0 auto; }
-    .top, .toolbar, .actions, .section-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    .top { padding: 18px 0; }
-    h1, h2, h3, p { margin-top: 0; }
-    h1 { margin-bottom: 0; font-size: 22px; }
-    h2 { margin-bottom: 0; font-size: 16px; }
-    h3 { margin-bottom: 4px; font-size: 14px; }
-    nav, .actions { display: flex; align-items: center; gap: 8px; }
-    nav a, button {
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--panel);
-      color: var(--text);
-      padding: 8px 10px;
-      text-decoration: none;
-      cursor: pointer;
-      font: inherit;
-    }
-    nav a[aria-current="page"], button.primary {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-    button.danger { border-color: var(--bad); color: var(--bad); }
-    button:disabled { cursor: not-allowed; opacity: .55; }
-    main { padding: 22px 0 40px; }
-    .toolbar { margin-bottom: 18px; }
-    .token-field { display: grid; gap: 4px; min-width: 260px; }
-    .label, .muted { color: var(--muted); font-size: 12px; }
-    input, select {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--panel);
-      color: var(--text);
-      padding: 9px 10px;
-      font: inherit;
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 14px;
-      margin-top: 14px;
-    }
-    .banner { border-left: 4px solid var(--warn); }
-    .banner.bad { border-left-color: var(--bad); color: var(--text); }
-    .banner.good { border-left-color: var(--good); color: var(--text); }
-    .hidden { display: none; }
-    .tier-list { display: grid; gap: 0; margin-top: 12px; }
-    .tier-row {
-      display: grid;
-      grid-template-columns: minmax(150px, .8fr) minmax(240px, 1.35fr) minmax(180px, 1fr);
-      gap: 16px;
-      align-items: center;
-      padding: 14px 0;
-      border-top: 1px solid var(--line);
-    }
-    .tier-row:first-child { border-top: 0; }
-    .tier-meta { display: grid; gap: 3px; }
-    .source { color: var(--accent); font-size: 12px; }
-    .readiness.warn { color: var(--warn); }
-    .limitations { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
-    .variant-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
-    .variant-row > * { min-width: 0; }
-    .variant-meta { grid-column: 1 / -1; overflow-wrap: anywhere; }
-    .variant-field { display: grid; gap: 4px; }
-    .dirty { color: var(--warn); font-weight: 600; }
-    @media (max-width: 760px) {
-      .toolbar { display: grid; grid-template-columns: 1fr; }
-      .token-field { min-width: 0; }
-      .tier-row { grid-template-columns: 1fr; gap: 8px; }
-      nav { flex-wrap: wrap; }
-      .variant-row { grid-template-columns: minmax(0, 1fr); }
-      .variant-row button { justify-self: start; }
-    }
-  </style>
+  <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
 </head>
-<body>
+<body class="config-page">
+  <a class="skip-link" href="#main">Skip to content</a>
   <header>
     <div class="wrap top">
-      <h1>Spartan Route Config</h1>
+      <a class="brand" href="/dashboard" aria-label="Spartan Route home"><svg class="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M5 22V6h18v16M5 14h18M10 6v8m8 0v8" stroke="currentColor" stroke-width="2"/><path d="M10 10h8" stroke="currentColor" stroke-width="2"/></svg><span>Spartan Route</span></a>
       <nav aria-label="Dashboard">
         <a href="/dashboard">Routing</a>
         <a href="/dashboard-codex">Codex</a>
@@ -132,11 +18,12 @@
       </nav>
     </div>
   </header>
-  <main class="wrap">
-    <div class="toolbar">
+  <main class="wrap" id="main">
+    <div class="page-heading"><div><h1>Routing configuration</h1><p>Model assignments and context windows for your clients.</p></div><span class="scope-label">Operator console</span></div>
+    <div class="toolbar" aria-label="Dashboard access and refresh">
       <label class="token-field" for="token">
-        <span class="label">Bearer token</span>
-        <input id="token" type="password" autocomplete="off">
+        <span class="label">Dashboard access · Bearer token</span>
+        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Enter bearer token">
       </label>
       <div class="actions">
         <button id="use-token">Use token</button>
@@ -144,7 +31,7 @@
       </div>
     </div>
 
-    <section class="panel" aria-labelledby="routing-title">
+    <section class="panel settings-panel" aria-labelledby="routing-title">
       <div class="section-head">
         <div>
           <h2 id="routing-title">Auto routing models</h2>
@@ -156,14 +43,14 @@
       <div id="error" class="panel banner bad hidden" role="alert"></div>
       <div id="success" class="panel banner good hidden" role="status"></div>
       <div id="tiers" class="tier-list" aria-busy="true"></div>
-      <div class="actions">
+      <div class="actions form-actions">
         <button id="reset" class="danger" disabled>Reset to file defaults</button>
         <span id="dirty" class="muted"></span>
         <button id="save" class="primary" disabled>Save changes</button>
       </div>
       <ul id="limitations" class="limitations"></ul>
     </section>
-    <section class="panel" aria-labelledby="variants-title">
+    <section class="panel settings-panel" aria-labelledby="variants-title">
       <div class="section-head">
         <div>
           <h2 id="variants-title">Context window variants</h2>
@@ -177,7 +64,7 @@
       <div id="variant-error" class="panel banner bad hidden" role="alert"></div>
       <div id="variant-success" class="panel banner good hidden" role="status"></div>
       <div id="variants" aria-busy="true"></div>
-      <div class="actions">
+      <div class="actions form-actions">
         <button id="variant-add" disabled>Add variant</button>
         <span id="variant-dirty" class="muted"></span>
         <button id="variant-save" class="primary" disabled>Save changes</button>
