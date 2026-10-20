@@ -1,15 +1,17 @@
 # Route dashboard performance and refresh
 
 Date: 2026-10-20 (Europe/Madrid).
-Status: source changes applied; runtime activation remains pending. No service
-was rebuilt or restarted during this work.
+Status: redesign deployed, with the sessions-query correction subsequently
+activated and verified. See `route_dashboard_query_regression_20102026.md` for
+the live results, rollback image and remaining disk-capacity constraint.
 
 The obsolete private Route image pin has been removed after a backed-up,
 validated Compose edit. The main-stack command
 `sg up -d --build spartan-route` now builds the repository's Route source and
 selects the resulting Compose image. All other effective service settings are
-unchanged. This configuration fix is applied; the build and live UI acceptance
-are still pending. Ensure the normal 5 GB free-space floor before building.
+unchanged. This configuration fix is applied. Ensure the normal 5 GB free-space
+floor before routine builds; the corrective deployment used a separate,
+explicitly approved low-disk exception.
 
 Routing, Codex and Config now share a responsive operator layout. Codex quota
 rings show raw used percentages, with capacity-weighted units alongside and
@@ -38,7 +40,7 @@ Dashboard HTML and allowlisted local assets retain authentication and private
 HTTP revalidation. Sensitive API responses are not stored in the browser cache.
 No external fonts, image downloads or third-party scripts were added.
 
-Activation requires the operator's normal deployment procedure after adequate
-disk space is available. Validate the live dashboard and freshness after
-deployment; source tests and synthetic browser fixtures do not establish that
-the currently running image contains these changes.
+Future activation requires the operator's normal deployment procedure after
+adequate disk space is available. Validate the live dashboard and freshness
+after deployment; source tests and synthetic browser fixtures alone do not
+establish that a running image contains the current changes.

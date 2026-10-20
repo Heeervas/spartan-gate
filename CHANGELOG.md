@@ -9,7 +9,8 @@ All notable changes to Spartan Gate are documented here.
   scanning each selected session once, with a covering metadata index to avoid
   loading retained context payloads during selection and filtering. Publish
   sessions and summary independently, avoid immediate timeout replay, and reuse
-  active background reads when returning to a tab.
+  active background reads when returning to a tab. Deploy the reviewed
+  correction with Route-only recreation and live dashboard acceptance.
 
 - Redesign Spartan Route's Routing, Codex and Config dashboards with responsive
   navigation, quota percentage rings and live countdowns. Preserve expanded
@@ -18,7 +19,7 @@ All notable changes to Spartan Gate are documented here.
   prevent stale reads or retired quota refreshes from overwriting newer state.
   Bound telemetry materialization to selected turns, batch account lookups,
   isolate heavy SQLite readers and update today's summary incrementally.
-  Source validation is complete; runtime deployment remains pending. Record
+  Source and corrected runtime validation are complete. Record
   the applied private image-pin correction so the normal Route build command
   can select the current source.
 

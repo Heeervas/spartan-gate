@@ -1,6 +1,27 @@
 # Route dashboard query regression — 20 October 2026
 
-Status: source fix applied; runtime activation remains pending.
+Status: deployed and live acceptance passed on 20 October 2026.
+
+The operator approved a limited low-disk deployment. An offline patch image
+reused the installed runtime and replaced only the reviewed telemetry and
+dashboard JavaScript files; no dependencies were downloaded. Only Spartan Route
+was recreated. The previous image is retained as
+`spartan-gate-spartan-route:rollback-query-20261020`.
+
+The exact browser query now returned in 0.501, 0.360 and 0.346 seconds, versus
+13.540 seconds before deployment. The 20-turn endpoint returned in 0.566 seconds
+during concurrent summary/health reads. Model, reasoning and literal prompt
+filter checks passed below the five-second deadline. A fresh disposable Chrome
+session displayed all 30 sessions and six summary metrics, loaded request
+details on demand, retained expanded state across refresh and passed the mobile
+overflow check with no JavaScript exceptions. Unauthenticated API and asset
+requests remained denied. Other container identities were unchanged; Route is
+healthy with no restart loop or startup/database errors.
+
+The covering index is installed. Final free space was approximately 848 MiB;
+the normal 5 GB operational floor still needs restoration. The standard
+`sg up -d --build spartan-route` remains the source-build path for later changes;
+the private override does not pin the rollback image.
 
 The dashboard now publishes sessions and summary independently. A timed-out
 read waits for the next scheduled poll instead of immediately replaying work
@@ -16,13 +37,15 @@ only requests from those complete turns. Both phases share one read snapshot.
 A covering index avoids loading large retained context payloads during turn
 selection and filtering. Existing previews are indexed without truncation;
 legacy preview size can increase the first-startup index space and time.
-Index creation happens during Route schema initialization; runtime activation requires an authorized restart and disk budget.
+Index creation happens during Route schema initialization and needs disk
+headroom on installations where the index is not present yet.
 Filters, exact matching counts, request details and routing behavior are
 preserved. No inference, account or network policy changes are required.
 
 A deterministic SQLite instruction-count regression covers long sessions;
 focused tests preserve complete-turn metrics and incremental summary behavior.
-Source-only validation uses existing dependencies without a build or restart.
+Pre-deployment source validation used existing dependencies without a build
+or restart; the subsequent offline patch deployment is recorded above.
 
 The live authenticated sessions endpoint took 18.084 seconds before this fix.
 The exact browser query (30 sessions, 12 turns) took 13.540 seconds. Health
