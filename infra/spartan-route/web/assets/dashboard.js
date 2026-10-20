@@ -189,7 +189,9 @@
         }
         return payload;
       } catch (error) {
-        if (retry && !signal?.aborted && (timedOut || error.transient || error instanceof TypeError)) {
+        // Aborting the browser request does not stop an already-running server
+        // query. Let the next scheduled poll retry instead of doubling its work.
+        if (retry && !timedOut && !signal?.aborted && (error.transient || error instanceof TypeError)) {
           return getJson(path, signal, false);
         }
         if (timedOut) throw new Error('Request timed out after 5 seconds. Refresh to retry.');
@@ -408,6 +410,7 @@
     });
     async function load(background = false) {
       clearTimeout(pollTimer);
+      if (background && activeLoadController && !activeLoadController.signal.aborted) return;
       if (renderedCredential !== tokenInput.value.trim()) {
         renderedCredential = tokenInput.value.trim();
         cancelTurnLoads();
@@ -425,14 +428,24 @@
         const filters = selectedFilters();
         const query = new URLSearchParams({ sessionLimit: '30', turnLimit: '12' });
         for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
-        const [stats, live] = await Promise.all([
-          getJson('/stats', controller.signal),
-          getJson(`/api/routing/live?${query}`, controller.signal),
+        const current = () => generation === loadGeneration && !controller.signal.aborted;
+        const results = await Promise.allSettled([
+          getJson('/stats', controller.signal).then(stats => {
+            if (current()) renderStats(stats);
+          }),
+          getJson(`/api/routing/live?${query}`, controller.signal).then(live => {
+            if (!current()) return;
+            renderFilterState(live);
+            renderSessions(live);
+          }),
         ]);
-        if (generation !== loadGeneration || controller.signal.aborted) return;
-        renderStats(stats);
-        renderFilterState(live);
-        renderSessions(live);
+        if (!current()) return;
+        const failures = results.flatMap((result, index) => result.status === 'rejected'
+          ? [`${index === 0 ? 'Summary' : 'Sessions'}: ${result.reason.message}`] : []);
+        if (failures.length) {
+          const retained = results[1].status === 'rejected' && sessionsEl.children.length;
+          statusEl.textContent = `${failures.join(' · ')}${retained ? ' · showing last successful sessions' : ''}`;
+        }
       } catch (error) {
         if (generation !== loadGeneration || controller.signal.aborted) return;
         statusEl.textContent = `${error.message}${sessionsEl.children.length ? ' · showing last successful data' : ''}`;

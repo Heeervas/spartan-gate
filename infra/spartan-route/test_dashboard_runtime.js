@@ -303,3 +303,59 @@ test('hiding during the refresh delay prevents the next poll dispatch', async ()
   await pending;
   assert.equal(h.requests.length, 0);
 });
+
+test('Routing publishes sessions before stats finishes and keeps them when stats fails', async () => {
+  const h = harness();
+  const rendered = [];
+  h.context.recordSessions = payload => rendered.push(payload.label);
+  h.run('renderFilterState = () => {}; renderSessions = recordSessions; pending = load()');
+  h.respond(h.requests[1], {label: 'sessions'});
+  await flush();
+  assert.deepEqual(rendered, ['sessions']);
+  h.respond(h.requests[0], {error: {message: 'stats unavailable'}}, 401);
+  await h.run('pending');
+  assert.deepEqual(rendered, ['sessions']);
+  assert.match(h.elements.get('status').textContent, /stats unavailable/);
+});
+
+test('Routing publishes stats despite a sessions failure and rejects retired results', async () => {
+  const h = harness();
+  const rendered = [];
+  h.context.recordStats = payload => rendered.push(payload.label);
+  h.run('renderStats = recordStats; pending = load()');
+  h.respond(h.requests[1], {error: {message: 'sessions unavailable'}}, 401);
+  h.respond(h.requests[0], {label: 'stats'});
+  await h.run('pending');
+  assert.deepEqual(rendered, ['stats']);
+  h.run('retired = load()');
+  h.elements.get('token').listeners.input();
+  h.respond(h.requests[2], {label: 'retired stats'});
+  h.respond(h.requests[3], {label: 'retired sessions'});
+  await h.run('retired');
+  assert.deepEqual(rendered, ['stats']);
+});
+
+test('Routing timeout waits for the normal poll instead of replaying the expensive read', async () => {
+  const h = harness();
+  const pending = h.run('getJson("/api/routing/live")');
+  const rejection = assert.rejects(pending, /timed out after 5 seconds/);
+  const [id, timer] = [...h.timers].find(([, timer]) => timer.ms === 5000);
+  h.timers.delete(id); timer.callback();
+  const error = new Error('aborted'); error.name = 'AbortError';
+  h.requests[0].reject(error);
+  await flush();
+  assert.equal(h.requests.length, 1);
+  await rejection;
+  assert.equal(h.timers.size, 0);
+});
+
+test('Routing visibility resume preserves an active poll instead of replacing its reads', async () => {
+  const h = harness();
+  h.run('renderStats = () => {}; renderFilterState = () => {}; renderSessions = () => {}; pending = load()');
+  h.document.hidden = true; h.events.visibilitychange();
+  h.document.hidden = false; h.events.visibilitychange();
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[0].options.signal.aborted, false);
+  h.respond(h.requests[0], {}); h.respond(h.requests[1], {});
+  await h.run('pending');
+});
