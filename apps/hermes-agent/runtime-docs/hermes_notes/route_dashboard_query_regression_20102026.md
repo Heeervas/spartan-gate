@@ -30,6 +30,16 @@ remained responsive during the slow query, and active logs showed no errors.
 The reported inference slowdown has not been independently attributed to a
 specific inference-path defect; this correction removes measured dashboard
 database work and duplicate timeout requests.
+
+A bounded comparison of 200 recent Codex requests on each side of deployment
+found median routing preparation at 36 ms before and 32 ms after (95th percentile
+65 ms and 62 ms). Median upstream response headers moved from 1.030 to 1.135
+seconds. For requests carrying first-output timing, median upstream first output
+moved from 5.320 to 9.510 seconds. The latter samples differ in workload: median
+input tokens increased and output tokens more than doubled. These observations
+locate the recorded increase after upstream dispatch; they do not establish a
+provider defect or a controlled before/after regression. They do not show an
+increase in the measured router-preparation phase.
 A read-only same-snapshot comparison of the detail-scan correction alone took
 11.738 seconds and preserved the baseline payload hash; retained metadata
 selection remained the main cost. A read-only experiment copied real metadata

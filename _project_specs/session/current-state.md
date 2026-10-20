@@ -20,7 +20,11 @@ low-disk exception: the normal 5 GB floor is unavailable and the earlier
 exception covered only source/tests. A small offline image patch can reuse the
 installed runtime and replace the two reviewed files, followed by Route-only
 recreation and live acceptance. The reported inference slowdown has not yet
-been attributed to an inference-path defect.
+been attributed to an inference-path defect. A bounded before/after comparison
+of 200 recent requests per period found median routing preparation at 36/32 ms,
+while upstream first-output timing increased with a heavier request/output mix.
+The measured delay increase occurs after dispatch; this is observational
+evidence, not a controlled comparison or proof of provider fault.
 
 ## Spartan Route dashboard source completed (2026-10-20)
 
