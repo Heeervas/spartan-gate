@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add a Pi extension that supplies an explicit session prompt-cache key for
+  Spartan Route Chat Completions requests while preserving existing keys, with
+  installation guidance and focused regression checks. Provider cache hits and
+  savings remain dependent on actual upstream requests.
+
 - Document opt-in writable host skill sharing for Hermes through
   `skills.external_dirs`, with explicit profile enrollment, preserved local
   precedence and creation destination, SELinux shared labeling and non-root
