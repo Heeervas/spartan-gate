@@ -283,6 +283,40 @@
       renderedMarkup.set(element, markup);
       return true;
     }
+    const cardSignatures = new WeakMap();
+    function accountCardKey(account) {
+      return account.accountKey && account.accountKey !== 'unknown' ? account.accountKey : `slots:${(account.slotIndexes || []).join(',')}`;
+    }
+    function reconcileAccountCards(markup, cards, leases) {
+      const focused = document.activeElement;
+      const focusedCard = focused?.closest?.('article.account');
+      const focusedKey = focusedCard?.dataset.accountKey;
+      const control = focused?.dataset?.action ? { action: focused.dataset.action, slot: focused.dataset.slot, account: focused.dataset.account,
+        draft: focused.value !== focused.dataset.savedValue, value: focused.value } : null;
+      const previous = new Map([...accountsEl.querySelectorAll('article.account')].map(item => [item.dataset.accountKey, item]));
+      const template = document.createElement('template');
+      template.innerHTML = markup;
+      template.content.querySelectorAll('article.account').forEach((next, index) => {
+        const card = cards[index];
+        const relevantLeases = leases.filter(lease => lease.accountKey === card.accountKey || (card.slotIndexes || []).includes(Number(lease.slotIndex)));
+        const signature = JSON.stringify([card, relevantLeases]);
+        const old = previous.get(next.dataset.accountKey);
+        if (old && cardSignatures.get(old) === signature) next.replaceWith(old);
+        else cardSignatures.set(next, signature);
+      });
+      accountsEl.replaceChildren(...template.content.childNodes);
+      if (focused?.isConnected) {
+        if (document.activeElement !== focused) focused.focus({ preventScroll: true });
+      } else if (focusedKey && control && !mutationPending) {
+        const card = [...accountsEl.querySelectorAll('article.account')].find(item => item.dataset.accountKey === focusedKey);
+        const replacement = [...(card?.querySelectorAll('[data-action]') || [])].find(item => item.dataset.action === control.action
+          && item.dataset.slot === control.slot && item.dataset.account === control.account);
+        if (replacement && !replacement.disabled) {
+          if (control.action === 'capacity' && control.draft) replacement.value = control.value;
+          replacement.focus({ preventScroll: true });
+        }
+      }
+    }
     let accountSignature = null;
     function renderAccountCards(accounts, slots = [], leases = []) {
       const signature = JSON.stringify([accounts, slots, leases]);
@@ -291,12 +325,12 @@
       const cards = mergeAccountCards(accounts, slots);
       const healthRows = [];
       const disclosures = new Map([...accountsEl.querySelectorAll('details.auth-lifecycle')].map(item => [item.dataset.slotIndex, item.open]));
-      stableHTML(accountsEl, cards.map(account => {
+      reconcileAccountCards(cards.map(account => {
         const credits = account.resetCredits;
         const slotsHtml = (account.slots || []).map(renderSlotControls).join('');
         const health = accountHealth(account);
         healthRows.push(health);
-        return `<article class="account health-${health.status}${account.slotOnly ? ' slot-only' : ''}">
+        return `<article class="account health-${health.status}${account.slotOnly ? ' slot-only' : ''}" data-account-key="${esc(accountCardKey(account))}">
           <div class="account-head">
             <div class="account-meta">
               <h3>${esc(account.accountKey || 'unknown')}</h3>
@@ -314,7 +348,7 @@
           ${resetCreditStrip(credits)}
           ${slotsHtml || '<div class="slot-row muted">No configured slot metadata.</div>'}
         </article>`;
-      }).join('') || '<div class="panel muted">No usage telemetry yet.</div>');
+      }).join('') || '<div class="panel muted">No usage telemetry yet.</div>', cards, leases);
       accountsEl.querySelectorAll('details.auth-lifecycle').forEach(item => { item.open = disclosures.get(item.dataset.slotIndex) || false; });
       accountsEl.querySelectorAll('article.account').forEach((element, index) => {
         const health = healthRows[index];
@@ -515,8 +549,9 @@
     }
     accountsEl.addEventListener('change', async event => {
       const select = event.target.closest('select[data-action="capacity"]');
-      if (!select || mutationPending) return;
-      mutationPending = true;
+      if (!select) return;
+      if (mutationPending) { select.value = select.dataset.savedValue; return; }
+      setMutationPending(true);
       const generation = ++loadGeneration;
       if (activeLoadController) activeLoadController.abort();
       restoreLoadControls();
@@ -538,7 +573,7 @@
           showError(error.message);
         }
       } finally {
-        mutationPending = false;
+        setMutationPending(false);
         select.disabled = false;
         if (generation === loadGeneration) {
           activeLoadController = null;
@@ -550,7 +585,7 @@
     accountsEl.addEventListener('click', async event => {
       const button = event.target.closest('button[data-action]');
       if (!button || mutationPending) return;
-      mutationPending = true;
+      setMutationPending(true);
       clearTimeout(pollTimer);
       const generation = ++loadGeneration;
       if (activeLoadController) activeLoadController.abort();
@@ -574,7 +609,7 @@
       } catch (error) {
         if (generation === loadGeneration && !controller.signal.aborted) showError(error.message);
       } finally {
-        mutationPending = false;
+        setMutationPending(false);
         button.disabled = false;
         button.textContent = originalLabel;
         if (generation === loadGeneration) {
@@ -587,6 +622,19 @@
     let loadGeneration = 0;
     let activeLoadController = null;
     let mutationPending = false;
+    const mutationControls = new Map();
+    function setMutationPending(pending) {
+      mutationPending = pending;
+      if (pending) {
+        for (const control of accountsEl.querySelectorAll('button[data-action], select[data-action]')) {
+          mutationControls.set(control, control.disabled);
+          control.disabled = true;
+        }
+      } else {
+        for (const [control, disabled] of mutationControls) control.disabled = disabled;
+        mutationControls.clear();
+      }
+    }
     let pollTimer = null;
     let renderedCredential = tokenInput.value.trim();
     let hasPayload = false;
@@ -671,7 +719,7 @@
           return;
         }
         await new Promise(resolve => setTimeout(resolve, 1000));
-        if (generation !== loadGeneration || signal.aborted) return;
+        if (document.hidden || generation !== loadGeneration || signal.aborted) return;
         const payload = await fetchJson('/api/codex/usage', { headers: headers(), signal: signal });
         if (generation !== loadGeneration || signal.aborted) return;
         renderPayload(payload);

@@ -270,3 +270,36 @@ test('changed routing reconciliation restores surviving focus without scrolling'
   h.run('restoreFocus(element)');
   assert.deepEqual(calls, [true]);
 });
+
+
+test('pending capacity mutation disables all controls and rejects a second unsaved selection', async () => {
+  const h = harness('dashboard-codex');
+  const first = new Element(); first.dataset = {account: 'one', savedValue: '1'}; first.value = '5'; first.disabled = false;
+  const second = new Element(); second.dataset = {account: 'two', savedValue: '5'}; second.value = '5'; second.disabled = false;
+  const action = new Element(); action.disabled = false;
+  h.elements.get('accounts').querySelectorAll = () => [first, second, action];
+  const handler = h.elements.get('accounts').listeners.change;
+  const pending = handler({target: {closest: () => first}});
+  assert.equal(second.disabled, true);
+  assert.equal(action.disabled, true);
+  second.value = '1';
+  await handler({target: {closest: () => second}});
+  assert.equal(second.value, '5');
+  assert.equal(h.requests.length, 1);
+  h.respond(h.requests[0], {error: {message: 'failed'}}, 503);
+  await pending;
+  assert.equal(first.disabled, false);
+  assert.equal(second.disabled, false);
+  assert.equal(action.disabled, false);
+});
+
+
+test('hiding during the refresh delay prevents the next poll dispatch', async () => {
+  const h = harness('dashboard-codex');
+  const pending = h.run('pollRefresh(loadGeneration, new AbortController().signal, Date.now() + 45000)');
+  h.document.hidden = true;
+  const [id, timer] = [...h.timers].find(([, timer]) => timer.ms === 1000);
+  h.timers.delete(id); timer.callback();
+  await pending;
+  assert.equal(h.requests.length, 0);
+});
