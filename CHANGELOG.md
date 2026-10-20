@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document opt-in writable host skill sharing for Hermes through
+  `skills.external_dirs`, with explicit profile enrollment, preserved local
+  precedence and creation destination, SELinux shared labeling and non-root
+  runtime acceptance checks. Record verified default-only activation with an
+  empty library, unchanged named profiles and local skills, and the narrowly
+  scoped SELinux correction required by the Compose Mount API limitation.
+
 - Fix repeated Spartan Route dashboard session scans when selecting multiple
   turns. Read selected-turn metadata and complete requests in one snapshot,
   scanning each selected session once, with a covering metadata index to avoid

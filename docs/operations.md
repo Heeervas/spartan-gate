@@ -102,6 +102,80 @@ served by the default multiplexer use the default restart command.
 `sg restart hermes` / `sg-restart-hermes` still restart the whole container.
 Changed Compose environment or mounts require recreation instead.
 
+### Shared host skills (opt-in)
+
+Hermes can discover a host-owned skill library through `skills.external_dirs`.
+Prepare the host's `~/.agents/skills` directory first, then add this bind mount
+to the Hermes service in the private Compose override. Before editing, back up
+that override and each Hermes configuration being enrolled.
+
+```yaml
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: ${HOME}/.agents/skills
+        target: /opt/shared-skills
+        read_only: false
+        bind:
+          create_host_path: false
+          selinux: z
+```
+
+Resolve `${HOME}` for the intended host account when rendering Compose. The
+missing-source check prevents Docker from silently creating an empty directory.
+On SELinux hosts, `z` requests a shared container label. Some Compose versions
+do not apply it when `create_host_path: false` selects Docker's Mount API;
+verify the actual label and non-root access, not just the rendered setting.
+For a dedicated empty library root, a narrowly scoped host preparation is
+`chcon -t container_file_t "$HOME/.agents/skills"`, without recursive or parent
+relabeling. This temporary label can be reset by `restorecon` or a filesystem
+relabel; persistent `semanage fcontext` host policy is a separate decision.
+See the [upstream Compose explanation](https://github.com/docker/compose/issues/13396).
+Check host permissions and SELinux access for Hermes' actual non-root runtime
+UID/GID before activation.
+
+Merge `/opt/shared-skills` into the existing `skills.external_dirs` list in each
+intended Hermes context's private `config.yaml`; preserve other skills settings
+and external directories. For example, when the list was previously empty:
+
+```yaml
+skills:
+  external_dirs:
+    - /opt/shared-skills
+```
+
+Named profiles support this setting too. Enroll each intended profile explicitly;
+an empty list in a curated profile is a curation choice. Existing profile-local
+skills retain precedence over same-name external skills. Keep complete skill
+directories, including supporting files, when populating the shared library.
+
+Leave `skills.create_dir` unchanged: discovery does not redirect new skill
+creation. When asking Hermes to populate the shared library, explicitly name
+`/opt/shared-skills` as the destination. The mount is writable, so edits and
+deletions there change the host library for every consumer; review the intended
+destination before modifying an existing skill.
+
+After operator authorization for the interruption, recreate only Hermes from
+the deployment checkout with its real private configuration:
+
+```sh
+source scripts/aliases.sh
+sg config --quiet
+sg up -d --no-deps --no-build --force-recreate hermes
+sg_hermes_exec sh -c 'id; test -r /opt/shared-skills && test -w /opt/shared-skills && test -x /opt/shared-skills'
+```
+
+Confirm the resolved mount source, writable flag and SELinux label, then verify
+native skill discovery and the effective configuration in every enrolled
+context. Run access checks as the actual Hermes runtime user, not container
+root; directory permission checks alone do not prove existing skills are
+readable or editable. Do not infer gateway acceptance from a host config edit
+or a successful root probe.
+`sg_hermes_exec` resolves the configured runtime UID/GID and sets `HOME` and
+`HERMES_HOME` to `/opt/data`. For rollback, restore the private override and
+enrolled configurations, then recreate only Hermes; retain the shared library.
+
 ## Pocket TTS
 
 Pocket TTS 2.1.0 runs as an optional local English/Spanish sidecar.
