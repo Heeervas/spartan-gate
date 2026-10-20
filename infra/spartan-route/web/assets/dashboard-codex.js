@@ -68,6 +68,7 @@
       return Number.isFinite(target) && target > Date.now() ? countdownText(until) : '-';
     }
     function updateCountdowns() {
+      if (document.hidden) return;
       document.querySelectorAll('[data-countdown]').forEach(element => {
         const prefix = element.getAttribute('data-countdown-prefix') || '';
         element.textContent = `${prefix}${countdownText(element.getAttribute('data-countdown'))}`;
@@ -113,7 +114,7 @@
       const capacityUnits = Number(row.capacityUnits ?? (100 * multiplier));
       const resetCopy = row.resetAt ? `resets in ${countdownText(row.resetAt)}` : 'reset time unavailable';
       return `<div class="ring-wrap${secondary ? ' secondary' : ''}">
-        <div class="ring" style="--degrees:${used * 3.6}deg;--tone:${balanceTone(used)}"><span class="ring-value">${esc(fmtUnits(usedUnits))}u</span></div>
+        <div class="ring" style="--degrees:${used * 3.6}deg;--tone:${balanceTone(used)}"><span class="ring-value">${used.toFixed(1)}%</span></div>
         <div>
           <strong>${esc(windowName)}</strong>
           <div class="usage-primary"><strong>${esc(fmtUnits(usedUnits))} / ${esc(fmtUnits(capacityUnits))} units</strong></div>
@@ -157,11 +158,11 @@
       const expiry = slot.authExpiresAt
         ? `<span title="${esc(fmtTime(slot.authExpiresAt))}" data-countdown-prefix="expires in " data-countdown="${esc(slot.authExpiresAt)}">expires in ${esc(countdownText(slot.authExpiresAt))}</span>`
         : '<span>expiry unknown</span>';
-      const refreshed = slot.authLastRefreshAt ? ` · refreshed ${esc(fmtTime(slot.authLastRefreshAt))}` : '';
+      const refreshed = slot.authLastRefreshAt ? `Last refreshed ${esc(fmtTime(slot.authLastRefreshAt))}` : 'No refresh recorded.';
       const persistence = slot.authPersistenceHealthy === false
         ? ` · persistence unavailable (${esc(slot.authErrorCode || 'auth_store_unavailable')})`
         : '';
-      return `<div class="auth-lifecycle ${slot.authPersistenceHealthy === false ? 'warn' : 'muted'}"><strong>OAuth ${esc(source)}</strong>${expiry}<span>${refreshed}${persistence}</span></div>`;
+      return `<details class="diagnostics auth-lifecycle ${slot.authPersistenceHealthy === false ? 'warn' : 'muted'}" data-slot-index="${esc(slot.slotIndex)}"><summary><strong>OAuth ${esc(source)}</strong> · ${expiry}${persistence}</summary><div>${refreshed}</div></details>`;
     }
     function renderSlotControls(slot) {
       const tone = slot.healthStatus === 'failed' ? 'bad' : (slot.healthStatus === 'unavailable' ? 'warn' : (slot.healthStatus === 'healthy' ? 'good' : 'muted'));
@@ -245,7 +246,7 @@
       const valid = /^[0-9a-f]{16}$/.test(accountKey);
       const multiplier = Number(account.capacityMultiplier || 1);
       return `<label class="plan-control">Plan
-        <select data-action="capacity" data-account="${esc(accountKey)}"${valid ? '' : ' disabled'}>
+        <select data-action="capacity" data-saved-value="${esc(multiplier)}" data-account="${esc(accountKey)}"${valid ? '' : ' disabled'}>
           <option value="1"${multiplier === 1 ? ' selected' : ''}>x1</option>
           <option value="5"${multiplier === 5 ? ' selected' : ''}>x5</option>
         </select>
@@ -275,10 +276,22 @@
         slotIndexes: affected.map(slot => slot.slotIndex),
       };
     }
+    const renderedMarkup = new WeakMap();
+    function stableHTML(element, markup) {
+      if (renderedMarkup.get(element) === markup) return false;
+      element.innerHTML = markup;
+      renderedMarkup.set(element, markup);
+      return true;
+    }
+    let accountSignature = null;
     function renderAccountCards(accounts, slots = [], leases = []) {
+      const signature = JSON.stringify([accounts, slots, leases]);
+      if (signature === accountSignature) { updateCountdowns(); return; }
+      accountSignature = signature;
       const cards = mergeAccountCards(accounts, slots);
       const healthRows = [];
-      accountsEl.innerHTML = cards.map(account => {
+      const disclosures = new Map([...accountsEl.querySelectorAll('details.auth-lifecycle')].map(item => [item.dataset.slotIndex, item.open]));
+      stableHTML(accountsEl, cards.map(account => {
         const credits = account.resetCredits;
         const slotsHtml = (account.slots || []).map(renderSlotControls).join('');
         const health = accountHealth(account);
@@ -294,14 +307,15 @@
           </div>
           <div class="account-health" role="status"></div>
           <div class="rings">
-            ${balanceRing('Weekly balance', account.weekly)}
-            ${balanceRing('Five-hour balance', account.fiveHour, true)}
+            ${balanceRing('Weekly usage', account.weekly)}
+            ${balanceRing('Five-hour usage', account.fiveHour, true)}
           </div>
           ${activeLeaseStrip(account, leases)}
           ${resetCreditStrip(credits)}
           ${slotsHtml || '<div class="slot-row muted">No configured slot metadata.</div>'}
         </article>`;
-      }).join('') || '<div class="panel muted">No usage telemetry yet.</div>';
+      }).join('') || '<div class="panel muted">No usage telemetry yet.</div>');
+      accountsEl.querySelectorAll('details.auth-lifecycle').forEach(item => { item.open = disclosures.get(item.dataset.slotIndex) || false; });
       accountsEl.querySelectorAll('article.account').forEach((element, index) => {
         const health = healthRows[index];
         const slotsText = health.slotIndexes.length ? ` · slots ${health.slotIndexes.join(', ')}` : '';
@@ -320,7 +334,7 @@
       };
       if (!usage.available) {
         modelUsageMeta.textContent = usage.observedAt ? `as of ${fmtTime(usage.observedAt)}` : '';
-        modelUsageEl.innerHTML = `<tr><td colspan="6" class="muted">${esc(reasonLabels[usage.unavailableReason] || 'Estimate unavailable.')}</td></tr>`;
+        stableHTML(modelUsageEl, `<tr><td colspan="6" class="muted">${esc(reasonLabels[usage.unavailableReason] || 'Estimate unavailable.')}</td></tr>`);
         return;
       }
       const coverage = [
@@ -330,21 +344,21 @@
         usage.unattributedRequests ? `${num(usage.unattributedRequests)} unattributed rows excluded` : '',
       ].filter(Boolean);
       modelUsageMeta.textContent = `${coverage.join(' · ')}${usage.observedAt ? ` · as of ${fmtTime(usage.observedAt)}` : ''}`;
-      modelUsageEl.innerHTML = models.map(row => `<tr>
+      stableHTML(modelUsageEl, models.map(row => `<tr>
         <td>${esc(row.model)}</td>
         <td>${esc(num(row.requests))}</td>
         <td title="input ${esc(num(row.inputTokens))} · output ${esc(num(row.outputTokens))}">${esc(num(row.totalTokens))}</td>
         <td><strong>${esc(fmtUnits(row.expectedUnits))} units</strong></td>
         <td>${esc(fmtUnits(row.x1EquivalentPercent))}%</td>
         <td>${esc(fmtUnits(row.x5EquivalentPercent))}%</td>
-      </tr>`).join('') || '<tr><td colspan="6" class="muted">No model usage in the current weekly window.</td></tr>';
+      </tr>`).join('') || '<tr><td colspan="6" class="muted">No model usage in the current weekly window.</td></tr>');
     }
     function renderEfficiency(usage = {}) {
       const rows = Array.isArray(usage.efficiency) ? usage.efficiency : [];
       efficiencyMeta.textContent = usage.available
         ? `${rows.length} groups · current weekly window · account-weighted calibration`
         : 'Estimate unavailable';
-      efficiencyEl.innerHTML = rows.map(row => {
+      stableHTML(efficiencyEl, rows.map(row => {
         const average = row.averageMillionTokensPerSession == null
           ? 'unknown'
           : Number(row.averageMillionTokensPerSession).toFixed(3);
@@ -360,7 +374,7 @@
           <td><strong>${esc(average)}</strong></td>
           <td><strong>${esc(percent)}</strong></td>
         </tr>`;
-      }).join('') || '<tr><td colspan="6" class="muted">No model and reasoning usage in the current weekly window.</td></tr>';
+      }).join('') || '<tr><td colspan="6" class="muted">No model and reasoning usage in the current weekly window.</td></tr>');
     }
     function latencyCell(row) {
       const avg = Number(row.avg_response_time_ms || 0);
@@ -375,7 +389,7 @@
       return parts.join('') || '-';
     }
     function renderCache(days) {
-      cacheEl.innerHTML = (days || []).map(row => {
+      stableHTML(cacheEl, (days || []).map(row => {
         const likely = Number(row.cache_likely_requests || 0);
         const low = Number(row.cache_low_requests || 0);
         const cacheDetails = [
@@ -392,19 +406,20 @@
         <td>${latencyCell(row)}</td>
         <td class="${Number(row.errors || 0) ? 'bad' : ''}">${esc(row.errors || 0)}</td>
       </tr>`;
-      }).join('') || '<tr><td colspan="7" class="muted">No Codex cache rows yet.</td></tr>';
+      }).join('') || '<tr><td colspan="7" class="muted">No Codex cache rows yet.</td></tr>');
     }
     function renderLeases(leases) {
       leaseSummary.textContent = `${(leases || []).length} active`;
-      leasesEl.innerHTML = (leases || []).map(lease => `<tr>
+      stableHTML(leasesEl, (leases || []).map(lease => `<tr>
         <td>${esc(lease.affinityKeyHash)}</td>
         <td>${esc(lease.slotIndex)}</td>
         <td>${esc(lease.accountKey)}</td>
         <td>${esc(fmtTime(lease.lastUsedAt))}</td>
         <td>${esc(fmtTime(lease.nominalExpiresAt))}</td>
-      </tr>`).join('') || '<tr><td colspan="5" class="muted">No active cache leases.</td></tr>';
+      </tr>`).join('') || '<tr><td colspan="5" class="muted">No active cache leases.</td></tr>');
     }
     function showError(message) {
+      previousErrors = null;
       errorsEl.replaceChildren();
       if (!message) return;
       const panel = document.createElement('div');
@@ -413,7 +428,11 @@
       panel.textContent = message;
       errorsEl.appendChild(panel);
     }
+    let previousErrors = null;
     function renderErrors(payload) {
+      const signature = JSON.stringify([payload.slotErrors, payload.resetCreditErrors, payload.telemetryErrors]);
+      if (signature === previousErrors) return;
+      previousErrors = signature;
       const errors = [...(payload.slotErrors || []), ...(payload.resetCreditErrors || [])];
       const telemetryErrors = payload.telemetryErrors || [];
       errorsEl.replaceChildren();
@@ -436,46 +455,55 @@
       });
       errorsEl.appendChild(upstreamPanel);
     }
-    async function fetchJson(path, options = {}) {
+    async function fetchJson(path, options = {}, retry = true) {
+      const { timeoutMs = 5000, ...fetchOptions } = options;
       const timeoutController = new AbortController();
       let timedOut = false;
       const timeout = setTimeout(() => {
         timedOut = true;
         timeoutController.abort();
-      }, 5000);
-      if (options.signal) {
-        if (options.signal.aborted) timeoutController.abort();
-        else options.signal.addEventListener('abort', () => timeoutController.abort(), { once: true });
-      }
+      }, timeoutMs);
+      const abort = () => timeoutController.abort();
+      if (options.signal?.aborted) abort();
+      else options.signal?.addEventListener('abort', abort, { once: true });
       try {
-        const response = await fetch(path, { ...options, signal: timeoutController.signal });
+        const response = await fetch(path, { ...fetchOptions, signal: timeoutController.signal });
         let payload = null;
         try { payload = await response.json(); } catch (_error) { payload = null; }
         if (!response.ok) {
-          throw new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
+          const error = new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
+          error.transient = response.status >= 500;
+          throw error;
         }
         return payload;
       } catch (error) {
-        if (timedOut) throw new Error('Request timed out after 5 seconds');
+        if (retry && (!options.method || options.method === 'GET') && !options.signal?.aborted
+            && (timedOut || error.transient || error instanceof TypeError)) {
+          return fetchJson(path, options, false);
+        }
+        if (timedOut) throw new Error(`Request timed out after ${timeoutMs / 1000} seconds.${options.method && options.method !== 'GET' ? ' The server operation may continue; refresh to check current state.' : ' Refresh to retry.'}`);
         throw error;
       } finally {
         clearTimeout(timeout);
+        options.signal?.removeEventListener('abort', abort);
       }
     }
-    async function patchSlot(slotIndex, enabled) {
+    async function patchSlot(slotIndex, enabled, signal) {
       await fetchJson(`/api/codex/balancer/slots/${slotIndex}`, {
         method: 'PATCH',
         headers: headers(true),
         body: JSON.stringify({ routingEnabled: enabled }),
+        signal,
       });
-      await load();
     }
-    async function forceSlot(slotIndex) {
+    async function forceSlot(slotIndex, signal) {
       const payload = await fetchJson(`/api/codex/usage/slots/${slotIndex}`, {
         method: 'POST',
+        timeoutMs: 60000,
         headers: headers(),
+        signal,
       });
-      renderPayload(payload);
+      return payload;
     }
     async function patchCapacity(accountKey, capacityMultiplier, signal) {
       return fetchJson(`/api/codex/balancer/accounts/${encodeURIComponent(accountKey)}/capacity`, {
@@ -487,13 +515,15 @@
     }
     accountsEl.addEventListener('change', async event => {
       const select = event.target.closest('select[data-action="capacity"]');
-      if (!select) return;
+      if (!select || mutationPending) return;
+      mutationPending = true;
       const generation = ++loadGeneration;
       if (activeLoadController) activeLoadController.abort();
       restoreLoadControls();
       const controller = new AbortController();
       activeLoadController = controller;
       select.disabled = true;
+      clearTimeout(pollTimer);
       try {
         const payload = await patchCapacity(
           select.dataset.account,
@@ -503,37 +533,92 @@
         if (generation === loadGeneration && !controller.signal.aborted) renderPayload(payload);
       } catch (error) {
         if (generation === loadGeneration && !controller.signal.aborted) {
+          select.value = select.dataset.savedValue;
+          accountSignature = null;
           showError(error.message);
-          await load();
         }
       } finally {
+        mutationPending = false;
+        select.disabled = false;
         if (generation === loadGeneration) {
           activeLoadController = null;
           restoreLoadControls();
+          schedulePoll();
         }
       }
     });
     accountsEl.addEventListener('click', async event => {
       const button = event.target.closest('button[data-action]');
-      if (!button) return;
+      if (!button || mutationPending) return;
+      mutationPending = true;
+      clearTimeout(pollTimer);
+      const generation = ++loadGeneration;
+      if (activeLoadController) activeLoadController.abort();
+      restoreLoadControls();
+      const controller = new AbortController();
+      activeLoadController = controller;
       const originalLabel = button.textContent;
       button.disabled = true;
       button.textContent = 'Working…';
       try {
+        let payload;
         if (button.dataset.action === 'toggle') {
-          await patchSlot(button.dataset.slot, button.dataset.next === 'true');
+          await patchSlot(button.dataset.slot, button.dataset.next === 'true', controller.signal);
+          if (generation === loadGeneration && !controller.signal.aborted) {
+            payload = await fetchJson('/api/codex/usage', { headers: headers(), signal: controller.signal });
+          }
         } else if (button.dataset.action === 'usage') {
-          await forceSlot(button.dataset.slot);
+          payload = await forceSlot(button.dataset.slot, controller.signal);
         }
+        if (payload && generation === loadGeneration && !controller.signal.aborted) renderPayload(payload);
       } catch (error) {
-        showError(error.message);
+        if (generation === loadGeneration && !controller.signal.aborted) showError(error.message);
       } finally {
+        mutationPending = false;
         button.disabled = false;
         button.textContent = originalLabel;
+        if (generation === loadGeneration) {
+          activeLoadController = null;
+          restoreLoadControls();
+          schedulePoll();
+        }
       }
     });
     let loadGeneration = 0;
     let activeLoadController = null;
+    let mutationPending = false;
+    let pollTimer = null;
+    let renderedCredential = tokenInput.value.trim();
+    let hasPayload = false;
+    function clearAuthenticatedData() {
+      for (const element of [accountsEl, modelUsageEl, efficiencyEl, cacheEl, leasesEl]) {
+        element.replaceChildren();
+        renderedMarkup.delete(element);
+      }
+      errorsEl.replaceChildren();
+      previousErrors = null;
+      modelUsageMeta.textContent = '';
+      efficiencyMeta.textContent = '';
+      leaseSummary.textContent = '';
+      accountSignature = null;
+      hasPayload = false;
+    }
+    function schedulePoll() {
+      clearTimeout(pollTimer);
+      if (!document.hidden && !mutationPending) pollTimer = setTimeout(() => load(false, true), 15000);
+    }
+    document.addEventListener('visibilitychange', () => {
+      clearTimeout(pollTimer);
+      if (!document.hidden && !mutationPending) { updateCountdowns(); load(false, true); }
+    });
+    tokenInput.addEventListener('input', () => {
+      ++loadGeneration;
+      activeLoadController?.abort();
+      clearTimeout(pollTimer);
+      restoreLoadControls();
+      clearAuthenticatedData();
+      usageStatus.textContent = 'Use token to load this account.';
+    });
     function restoreLoadControls() {
       const refresh = document.getElementById('refresh');
       const force = document.getElementById('force');
@@ -543,6 +628,7 @@
       force.textContent = 'Refresh Live';
     }
     function renderPayload(payload) {
+      hasPayload = true;
       const accounts = payload.accounts || [];
       const balancer = payload.balancer || {};
       const progress = payload.refreshProgress || {};
@@ -579,6 +665,7 @@
     }
     async function pollRefresh(generation, signal, deadline) {
       while (generation === loadGeneration && !signal.aborted) {
+        if (document.hidden) return;
         if (Date.now() >= deadline) {
           showError('UI polling stopped after 45 seconds; server refresh may still be running.');
           return;
@@ -588,20 +675,29 @@
         const payload = await fetchJson('/api/codex/usage', { headers: headers(), signal: signal });
         if (generation !== loadGeneration || signal.aborted) return;
         renderPayload(payload);
-        if (!payload.refreshing) return;
+        const progress = payload.refreshProgress?.status;
+        if (!payload.refreshing && progress !== 'discovering' && progress !== 'running') return;
       }
     }
-    async function load(force = false) {
+    async function load(force = false, background = false) {
+      if (mutationPending) return;
+      clearTimeout(pollTimer);
+      if (renderedCredential !== tokenInput.value.trim()) {
+        renderedCredential = tokenInput.value.trim();
+        clearAuthenticatedData();
+      }
       const generation = ++loadGeneration;
       if (activeLoadController) activeLoadController.abort();
       restoreLoadControls();
       const controller = new AbortController();
       activeLoadController = controller;
       const refreshButton = document.getElementById(force ? 'force' : 'refresh');
-      refreshButton.disabled = true;
-      refreshButton.textContent = force ? 'Refreshing live…' : 'Loading…';
+      if (!background) {
+        refreshButton.disabled = true;
+        refreshButton.textContent = force ? 'Refreshing live…' : 'Loading…';
+      }
       if (!accountsEl.children.length) {
-        accountsEl.innerHTML = '<div class="panel skeleton" role="status" aria-busy="true">Loading saved balances…</div>';
+        stableHTML(accountsEl, '<div class="panel skeleton" role="status" aria-busy="true">Loading saved balances…</div>');
       }
       try {
         const requestOptions = force
@@ -613,14 +709,20 @@
         );
         if (generation !== loadGeneration || controller.signal.aborted) return;
         renderPayload(payload);
-        if (payload.refreshing) {
+        if (payload.refreshing || ['discovering', 'running'].includes(payload.refreshProgress?.status)) {
           await pollRefresh(generation, controller.signal, Date.now() + 45000);
         }
       } catch (error) {
-        if (generation === loadGeneration && !controller.signal.aborted) showError(error.message);
+        if (generation === loadGeneration && !controller.signal.aborted) {
+          showError(error.message);
+          usageStatus.textContent = hasPayload ? 'Update failed · showing last successful data' : 'Balances unavailable. Refresh to retry.';
+          if (!hasPayload) stableHTML(accountsEl, '<div class="panel muted" role="status">Balances unavailable. Refresh to retry.</div>');
+        }
       } finally {
         if (generation === loadGeneration) {
           restoreLoadControls();
+          activeLoadController = null;
+          schedulePoll();
         }
       }
     }

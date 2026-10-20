@@ -94,28 +94,6 @@
       const unknown = Number(comparisons.unknown || 0) + Number(comparisons.unattributed || 0);
       return `${native.requests} native checks · ${compatible} compatible · ${Number(comparisons.changed || 0)} changed · ${unknown} unknown · cache data ${Number(native.cacheReadKnownRequests || 0)}/${Number(native.usageRequests || 0)}`;
     }
-    function nativeCacheDetail(native) {
-      if (!native || native.version !== 2) return 'Legacy cache heuristic; native request comparison unavailable';
-      const labels = {replay: 'same structured request', append: 'history extended', changed: 'request changed',
-        no_predecessor: 'no completed predecessor for this cache key', unattributed: 'comparison scope unavailable', unknown: 'comparison unknown'};
-      const parts = [labels[native.comparison] || labels.unknown];
-      if (native.changed_components?.length) parts.push(native.changed_components.join(', '));
-      const conversation = native.conversation_trace;
-      if (conversation?.comparison === 'continued') {
-        parts.push('conversation continued');
-        if (conversation.cache_key_changed === true) parts.push('cache key changed');
-        if (conversation.changed_components?.length) parts.push(conversation.changed_components.map(name => `${name} changed`).join(', '));
-      } else if (conversation?.comparison === 'unknown') {
-        parts.push('conversation comparison unavailable');
-      }
-      if (conversation?.overlap === true) parts.push('overlapping conversation requests');
-      if (native.overlap) parts.push('overlapping requests');
-      if (native.predecessor_gap_ms != null) parts.push(`predecessor completed ${Math.round(native.predecessor_gap_ms / 1000)}s before send`);
-      parts.push(native.cache_write_tokens == null ? 'cache writes unknown' : `${native.cache_write_tokens} cache-write tokens`);
-      if (native.ttft_ms != null) parts.push(`${native.ttft_ms}ms to first output`);
-      if (native.provider?.type) parts.push(`provider: ${native.provider.type}`);
-      return parts.join(' · ');
-    }
     function cacheLowSummary(low, likely) {
       return likely ? `${num(low)}/${num(likely)} low in legacy estimate` : '';
     }
@@ -128,8 +106,8 @@
         : tokenCachePercent(metrics.cacheLikelyCachedInputTokens, input);
       return `${percent} legacy likely cache`;
     }
-    function fact(label, value, tone = '') {
-      return `<span class="fact ${tone}"><span class="fact-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
+    function fact(label, value, tone = '', title = '') {
+      return `<span class="fact ${tone}"${title ? ` title="${esc(title)}"` : ''}><span class="fact-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
     }
     function reasoningSummary(metrics = {}) {
       const efforts = metrics.reasoningEfforts || {};
@@ -159,7 +137,7 @@
       return [
         fact('Model', models.join(', ') || 'unknown'),
         fact('Cache', cache),
-        fact('Cache checks', nativeCacheSummary(metrics.nativeCache)),
+        fact('Cache checks', metrics.nativeCache?.requests ? `${num(metrics.nativeCache.requests)} checks` : 'none yet', '', nativeCacheSummary(metrics.nativeCache)),
         fact('Est. usage', usageUnitSummary(metrics)),
         fact('Reasoning', reasoningSummary(metrics)),
         fact('Tools', toolSummary(metrics)),
@@ -170,107 +148,130 @@
       const preview = String(item?.promptPreview || '').trim();
       return preview || fallback;
     }
-    function requestPreview(row) {
-      const preview = row.promptPreview || tracePreview(row);
-      return preview && preview !== 'No preview' ? preview : 'No user-message preview recorded';
-    }
-    function tracePreview(row) {
-      const items = row.context?.request_trace?.delta?.items || [];
-      if (!Array.isArray(items) || items.length === 0) {
-        return row.promptPreview || 'No preview';
-      }
-      return items.map(item => {
-        const role = item.role || 'unknown';
-        if (Array.isArray(item.toolCalls) && item.toolCalls.length) {
-          const calls = item.toolCalls.map(call => `${call.name || 'tool'}(${(call.argumentKeys || []).join(', ') || `${call.argumentChars || 0} chars`})`).join('; ');
-          return `${role}: ${calls}`;
+    let detailScriptPromise = null;
+    const turnLoads = new Map();
+    function detailRenderer() {
+      if (window.SpartanRouteDetails) return Promise.resolve(window.SpartanRouteDetails);
+      if (detailScriptPromise) return detailScriptPromise;
+      detailScriptPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        const timer = setTimeout(() => fail(), 5000);
+        function fail() {
+          clearTimeout(timer);
+          script.remove();
+          reject(new Error('Turn details could not load. Close and reopen the turn to retry.'));
         }
-        return `${role}: ${item.preview || `${item.chars || 0} chars`}`;
-      }).join('\n');
+        script.src = '/dashboard-assets/dashboard-details.js';
+        script.onload = () => {
+          clearTimeout(timer);
+          if (window.SpartanRouteDetails) resolve(window.SpartanRouteDetails);
+          else fail();
+        };
+        script.onerror = fail;
+        document.head.appendChild(script);
+      }).catch(error => { detailScriptPromise = null; throw error; });
+      return detailScriptPromise;
     }
-    function renderTraceItems(row) {
-      const items = row.context?.request_trace?.delta?.items || [];
-      if (!Array.isArray(items) || items.length === 0) {
-        return '<div class="trace-items"><div class="trace-item">No recorded trace items.</div></div>';
+    async function getJson(path, signal = undefined, retry = true) {
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      if (signal?.aborted) abort();
+      else signal?.addEventListener('abort', abort, { once: true });
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 5000);
+      try {
+        const response = await fetch(path, { headers: headers(), signal: controller.signal });
+        const payload = await response.json();
+        if (!response.ok) {
+          const error = new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
+          error.transient = response.status >= 500;
+          throw error;
+        }
+        return payload;
+      } catch (error) {
+        if (retry && !signal?.aborted && (timedOut || error.transient || error instanceof TypeError)) {
+          return getJson(path, signal, false);
+        }
+        if (timedOut) throw new Error('Request timed out after 5 seconds. Refresh to retry.');
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
       }
-      return `<div class="trace-items">${items.map(item => {
-        const tools = (item.toolCalls || []).map(call => {
-          const keys = (call.argumentKeys || []).join(', ') || `${call.argumentChars || 0} chars`;
-          return `<div class="trace-tool">tool ${esc(call.name || 'tool')}(${esc(keys)})</div>`;
-        }).join('');
-        return `<div class="trace-item"><span class="trace-role">${esc(item.role || 'unknown')}</span><span class="trace-preview">${esc(item.preview || `${item.chars || 0} chars`)}</span>${tools}</div>`;
-      }).join('')}</div>`;
     }
-    function renderRequest(row) {
-      const preview = requestPreview(row);
-      const slot = row.selectedCodexSlotIndex ?? '-';
-      const account = row.selectedCodexAccountKey || '';
-      const total = row.totalResponseTimeMs || 0;
-      const latencyKind = row.latencySource === 'legacy_response_time' ? 'legacy' : 'first';
-      const cachePercent = row.context?.native_cache?.version === 2 && !row.context.native_cache.cache_read_known ? 'unknown' : tokenCachePercent(row.cachedInputTokens, row.inputTokens);
-      const reasoning = row.requestedReasoningEffort || row.context?.requested_reasoning_effort || 'default';
-      const tools = row.actualToolCallCount == null ? 'unknown'
-        : `${row.actualToolCallCount}${row.toolTelemetryComplete === false ? '+ calls · partial' : ' calls'}`;
-      const toolNames = Array.isArray(row.actualToolNames) ? row.actualToolNames : [];
-      return `<details class="request${row.error ? ' error' : ''}">
-        <summary title="${esc(preview)}">
-          <span class="request-primary"><strong class="${row.error ? 'bad' : ''}">${esc(row.error ? 'Error' : 'OK')}</strong><span class="muted">${esc(fmtTime(row.timestamp))}</span></span>
-          <span class="request-field request-model"><span class="field-label">Model</span>${esc(row.actualModel)}</span>
-          <span class="request-field request-cache"><span class="field-label">Cache</span>${esc(cachePercent)}</span>
-          <span class="request-field request-reasoning"><span class="field-label">Reasoning</span>${esc(reasoning)}</span>
-          <span class="request-field request-tools"><span class="field-label">Tools</span>${esc(tools)}</span>
-          <span class="request-field request-latency"><span class="field-label">Latency</span>${esc(row.responseTimeMs || 0)}ms ${esc(latencyKind)} · ${esc(total)}ms total</span>
-        </summary>
-        <div class="request-detail">
-          <div class="request-preview">${esc(preview)}</div>
-          <div class="request-meta">
-            <span class="meta-pill">${esc(row.originalModel)} to ${esc(row.routedModel)}</span>
-            <span class="meta-pill">${esc(row.tier || 'unknown')}</span>
-            <span class="meta-pill">${num(row.inputTokens)} in · ${num(row.cachedInputTokens)} cached · ${num(row.outputTokens)} out</span>
-            ${row.toolsAvailable ? '<span class="meta-pill">tools offered</span>' : ''}
-            ${toolNames.length ? `<span class="meta-pill">called ${esc(toolNames.join(', '))}</span>` : ''}
-            ${row.context?.request_trace?.delta?.phase ? `<span class="meta-pill">${esc(row.context.request_trace.delta.phase)}</span>` : ''}
-          </div>
-          <p class="muted">${esc(nativeCacheDetail(row.context?.native_cache))}</p>
-          ${renderTraceItems(row)}
-          <details class="diagnostics">
-            <summary>Technical identifiers</summary>
-            <div class="diagnostic-list">
-              <span>request ${esc(row.requestId || 'unavailable')}</span>
-              <button type="button" data-copy="${esc(row.requestId || '')}">Copy request ID</button>
-              <span>slot ${esc(slot)}${account ? ` · account ${esc(account)}` : ''}</span>
-            </div>
-          </details>
-        </div>
-      </details>`;
+    function cancelTurnLoads() {
+      for (const entry of turnLoads.values()) entry.controller.abort();
+      turnLoads.clear();
     }
-    async function getJson(path, signal = undefined) {
-      const response = await fetch(path, { headers: headers(), signal });
-      let payload = null;
-      try { payload = await response.json(); } catch (_error) { payload = null; }
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
-      }
-      return payload;
-    }
-    async function loadTurn(turnId, target) {
-      target.innerHTML = '<p class="muted">Loading turn...</p>';
-      const payload = await getJson(`/api/routing/turns/${encodeURIComponent(turnId)}`);
-      const rows = payload.requests || [];
-      target.innerHTML = `<div class="request-list">${rows.map(renderRequest).join('') || '<div class="muted">No request detail is available.</div>'}</div>`;
+    function loadTurn(turnId, target, item) {
+      const existing = turnLoads.get(turnId);
+      if (existing && existing.target === target) return existing.promise;
+      existing?.controller.abort();
+      const controller = new AbortController();
+      const credential = tokenInput.value.trim();
+      const version = item.dataset.detailVersion;
+      const entry = { controller, target, promise: null };
+      target.setAttribute('aria-busy', 'true');
+      if (!target.children.length) target.innerHTML = '<p class="muted">Loading turn...</p>';
+      const current = () => !controller.signal.aborted && credential === tokenInput.value.trim()
+        && target.isConnected && item.dataset.detailVersion === version && turnLoads.get(turnId) === entry;
+      entry.promise = Promise.all([
+        detailRenderer(),
+        getJson(`/api/routing/turns/${encodeURIComponent(turnId)}`, controller.signal),
+      ]).then(([renderer, payload]) => {
+        if (!current()) return;
+        const rows = payload.requests || [];
+        renderer.renderRequests(target, rows);
+        item.dataset.loaded = '1';
+      }).catch(error => {
+        if (current()) target.innerHTML = `<p class="bad" role="alert">${esc(error.message)}</p>`;
+      }).finally(() => {
+        if (turnLoads.get(turnId) === entry) {
+          turnLoads.delete(turnId);
+          target.setAttribute('aria-busy', 'false');
+        }
+      });
+      turnLoads.set(turnId, entry);
+      return entry.promise;
     }
     function wireLazyTurns() {
       sessionsEl.querySelectorAll('details.turn').forEach(item => {
-        item.addEventListener('toggle', async () => {
-          if (!item.open || item.dataset.loaded === '1') return;
-          const target = item.querySelector('.turn-requests');
-          try {
-            await loadTurn(item.dataset.turnId, target);
-            item.dataset.loaded = '1';
-          } catch (error) {
-            target.innerHTML = `<p class="bad">${esc(error.message)}</p>`;
-          }
-        });
+        if (!item.dataset.wired) {
+          item.dataset.wired = '1';
+          item.addEventListener('toggle', () => {
+            if (item.open && item.dataset.loaded !== '1') loadTurn(item.dataset.turnId, item.querySelector('.turn-requests'), item);
+          });
+        }
+        if (item.open && item.dataset.loaded !== '1') loadTurn(item.dataset.turnId, item.querySelector('.turn-requests'), item);
+      });
+    }
+    const renderedMarkup = new WeakMap();
+    function stableHTML(element, markup) {
+      if (renderedMarkup.get(element) === markup) return;
+      element.innerHTML = markup;
+      renderedMarkup.set(element, markup);
+    }
+    function retainDetails(incoming, previous, selector, key) {
+      const existing = new Map([...previous.querySelectorAll(selector)].map(item => [item.dataset[key], item]));
+      incoming.querySelectorAll(selector).forEach(next => {
+        const old = existing.get(next.dataset[key]);
+        if (!old) return;
+        const summary = old.querySelector('summary');
+        const nextSummary = next.querySelector('summary');
+        if (summary.innerHTML !== nextSummary.innerHTML) summary.innerHTML = nextSummary.innerHTML;
+        if (key === 'sessionId') {
+          retainDetails(next, old, 'details.turn', 'turnId');
+          // Keep the session node and its disclosure state while reusing its turns.
+          const diagnostic = old.querySelector('.session-diagnostics');
+          if (diagnostic) next.querySelector('.session-diagnostics').replaceWith(diagnostic);
+          old.querySelector('.turn-list').replaceChildren(...next.querySelector('.turn-list').childNodes);
+        } else if (old.dataset.detailVersion !== next.dataset.detailVersion) {
+          old.dataset.detailVersion = next.dataset.detailVersion;
+          delete old.dataset.loaded;
+          const entry = turnLoads.get(old.dataset.turnId);
+          if (entry) { entry.controller.abort(); turnLoads.delete(old.dataset.turnId); }
+        }
+        next.replaceWith(old);
       });
     }
     function renderStats(stats) {
@@ -300,18 +301,18 @@
         nativeCacheSummary(totals.nativeCache),
         cacheLowSummary(allLow, allLikely),
       ].filter(Boolean).join(' · ');
-      metricsEl.innerHTML = [
+      stableHTML(metricsEl, [
         metric('Today requests', today.loggedRequests || 0, `${today.usageSeenRequests || 0} with usage`),
         metric('Today usage cache', today.usageSeenRequests ? cacheUsagePercent(today.inputTokens, today.cachedInputTokens, today.nativeCache) : 'unknown', todayCacheDetail),
         metric(firstLabel, latency.avg == null ? '-' : `${latency.avg}ms`, latencyExtra),
         metric('Total duration', totalLatency.avg == null ? '-' : `${totalLatency.avg}ms`, `p90 ${totalLatency.p90 == null ? '-' : `${totalLatency.p90}ms`}`),
         metric('Today errors', today.errors || 0, `${today.usageMissingRequests || 0} missing usage`),
         metric('All usage cache', totals.usageSeenRequests ? cacheUsagePercent(totals.inputTokens, totals.cachedInputTokens, totals.nativeCache) : 'unknown', allCacheDetail),
-      ].join('');
+      ].join(''));
     }
     function populateFilter(select, values, allLabel, pending = '') {
       const current = select.value || pending;
-      select.innerHTML = `<option value="">${esc(allLabel)}</option>${(values || []).map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('')}`;
+      stableHTML(select, `<option value="">${esc(allLabel)}</option>${(values || []).map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('')}`);
       if ([...select.options].some(option => option.value === current)) select.value = current;
       select.dataset.pending = '';
     }
@@ -327,17 +328,17 @@
     function renderSessions(payload) {
       const sessions = payload.sessions || [];
       statusEl.textContent = `${sessions.length} shown of ${payload.matchingSessions ?? sessions.length}${payload.hasMoreSessions ? ', more matches' : ''}`;
-      sessionsEl.innerHTML = sessions.map((session, index) => {
+      const markup = sessions.map((session, index) => {
         const turns = session.turns || [];
         const latestTurn = turns[0] || {};
         const title = activityTitle(latestTurn, `Session at ${fmtTime(session.lastAt)}`);
-        return `<details class="panel session-card" ${index === 0 ? 'open' : ''}>
+        return `<details class="panel session-card" data-session-id="${esc(session.id)}" ${index === 0 ? 'open' : ''}>
           <summary class="session-summary">
             <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(title)}</strong><span class="muted">${esc(fmtTime(session.lastAt))} · ${esc(session.turnCount || turns.length)} turns</span></span>
             <span class="summary-metrics">${metricLine(session.metrics, session.models)}</span>
           </summary>
           <div class="turn-list">
-            ${turns.map(turn => `<details class="turn" data-turn-id="${esc(turn.id)}">
+            ${turns.map(turn => `<details class="turn" data-turn-id="${esc(turn.id)}" data-detail-version="${esc(JSON.stringify([turn.lastAt, turn.metrics]))}">
               <summary class="turn-summary">
                 <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(activityTitle(turn, 'Turn without preview'))}</strong><span class="muted">${esc(fmtTime(turn.lastAt))}</span></span>
                 <span class="summary-metrics">${metricLine(turn.metrics, turn.models)}</span>
@@ -356,6 +357,15 @@
           </div>
         </details>`;
       }).join('') || '<div class="panel muted" role="status">No sessions recorded yet. New routed requests will appear here.</div>';
+      if (renderedMarkup.get(sessionsEl) === markup) return;
+      const template = document.createElement('template');
+      template.innerHTML = markup;
+      retainDetails(template.content, sessionsEl, 'details.session-card', 'sessionId');
+      sessionsEl.replaceChildren(...template.content.childNodes);
+      renderedMarkup.set(sessionsEl, markup);
+      for (const [id, entry] of turnLoads) {
+        if (!entry.target.isConnected) { entry.controller.abort(); turnLoads.delete(id); }
+      }
       wireLazyTurns();
     }
     sessionsEl.addEventListener('click', async event => {
@@ -370,13 +380,43 @@
         button.textContent = 'Copy failed';
       }
     });
-    async function load() {
+    let pollTimer = null;
+    let renderedCredential = tokenInput.value.trim();
+    function schedulePoll() {
+      clearTimeout(pollTimer);
+      if (!document.hidden) pollTimer = setTimeout(() => load(true), 15000);
+    }
+    document.addEventListener('visibilitychange', () => {
+      clearTimeout(pollTimer);
+      if (!document.hidden) load(true);
+    });
+    tokenInput.addEventListener('input', () => {
+      ++loadGeneration;
+      activeLoadController?.abort();
+      cancelTurnLoads();
+      sessionsEl.replaceChildren();
+      metricsEl.replaceChildren();
+      renderedMarkup.delete(sessionsEl);
+      renderedMarkup.delete(metricsEl);
+      clearTimeout(pollTimer);
+      statusEl.textContent = 'Use token to load this account.';
+    });
+    async function load(background = false) {
+      clearTimeout(pollTimer);
+      if (renderedCredential !== tokenInput.value.trim()) {
+        renderedCredential = tokenInput.value.trim();
+        cancelTurnLoads();
+        sessionsEl.replaceChildren();
+        metricsEl.replaceChildren();
+        renderedMarkup.delete(sessionsEl);
+        renderedMarkup.delete(metricsEl);
+      }
       const generation = ++loadGeneration;
       if (activeLoadController) activeLoadController.abort();
       const controller = new AbortController();
       activeLoadController = controller;
       try {
-        statusEl.textContent = 'Loading...';
+        if (!background) statusEl.textContent = 'Loading...';
         const filters = selectedFilters();
         const query = new URLSearchParams({ sessionLimit: '30', turnLimit: '12' });
         for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
@@ -390,8 +430,9 @@
         renderSessions(live);
       } catch (error) {
         if (generation !== loadGeneration || controller.signal.aborted) return;
-        statusEl.textContent = '';
-        sessionsEl.innerHTML = `<div class="panel bad">${esc(error.message)}</div>`;
+        statusEl.textContent = `${error.message}${sessionsEl.children.length ? ' · showing last successful data' : ''}`;
+      } finally {
+        if (generation === loadGeneration) { activeLoadController = null; schedulePoll(); }
       }
     }
     load();

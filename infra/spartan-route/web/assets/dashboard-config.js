@@ -46,18 +46,28 @@
     }
 
     async function request(path, options = {}) {
-      const response = await fetch(path, options);
-      let payload = null;
-      try { payload = await response.json(); } catch (_error) { payload = null; }
-      if (!response.ok) {
-        const message = payload?.error?.message || `${path} HTTP ${response.status}`;
-        const error = new Error(message);
-        error.status = response.status;
-        error.code = payload?.error?.code || 'request_failed';
-        error.etag = response.headers.get('ETag');
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 5000);
+      try {
+        const response = await fetch(path, { ...options, signal: controller.signal });
+        let payload = null;
+        try { payload = await response.json(); } catch (_error) { payload = null; }
+        if (!response.ok) {
+          const message = payload?.error?.message || `${path} HTTP ${response.status}`;
+          const error = new Error(message);
+          error.status = response.status;
+          error.code = payload?.error?.code || 'request_failed';
+          error.etag = response.headers.get('ETag');
+          throw error;
+        }
+        return { payload, etag: response.headers.get('ETag') || payload?.etag || null };
+      } catch (error) {
+        if (timedOut) throw new Error('Request timed out after 5 seconds. Reload before retrying; your edits are preserved.');
         throw error;
+      } finally {
+        clearTimeout(timer);
       }
-      return { payload, etag: response.headers.get('ETag') || payload?.etag || null };
     }
 
     function markDirty(next) {

@@ -59,19 +59,24 @@ function harness() {
   const elements = new Map();
   const requests = [];
   const events = {};
+  const timers = new Map();
+  let timerId = 0;
   const context = vm.createContext({
+    AbortController,
+    setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
+    clearTimeout(id) { timers.delete(id); },
     document: {
       getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
       createElement(tag) { return new Element(tag); },
     },
     window: { addEventListener(type, handler) { events[type] = handler; } },
     sessionStorage: { getItem() { return 'old-token'; }, setItem() {} },
-    fetch(path, options) { return new Promise(resolve => requests.push({path, options, resolve})); },
+    fetch(path, options) { return new Promise((resolve, reject) => { options.signal.addEventListener('abort', () => reject(new Error('aborted'))); requests.push({path, options, resolve}); }); },
   });
   vm.runInContext(script, context);
   const run = code => vm.runInContext(code, context);
   const respond = (request, payload, status = 200) => request.resolve({ok: status < 400, status, json: async () => payload, headers: {get: () => payload.etag || 'etag'}});
-  return { context, run, requests, elements, events, respond };
+  return { context, run, requests, elements, events, timers, respond };
 }
 const routing = {effective: {simple: 'base'}, editableTiers: [], fileDefaults: {}, sources: {}, overrides: {}, models, enabled: true};
 const variants = {variants: [{model: 'base', contextWindow: 282000, id: 'base-282kcontext', available: true}], models, configured: false, etag: 'variants-etag'};
@@ -268,4 +273,19 @@ test('long generated v1 alias names stay editable within the migration bound', a
   const id = `${'b'.repeat(256)}-2000000context`;
   assert.equal(helpers.validateVariants([{id, model: 'base', contextWindow: 282000}], models, []), '');
   assert.equal(h.elements.get('variants').querySelectorAll('input')[0].maxLength, 272);
+});
+
+
+test('a timed-out save retains the draft and ETag, restores controls, and never retries writes', async () => {
+  const h = await loaded();
+  h.run("draft.simple = 'other'; markDirty(true); save();");
+  assert.equal(h.requests.length, 3);
+  for (const callback of h.timers.values()) callback();
+  await flush();
+  assert.equal(h.requests.length, 3);
+  assert.equal(h.run('draft.simple'), 'other');
+  assert.equal(h.run('dirty'), true);
+  assert.equal(h.run('etag'), 'etag');
+  assert.equal(h.run('busy'), false);
+  assert.match(h.elements.get('error').textContent, /timed out/);
 });

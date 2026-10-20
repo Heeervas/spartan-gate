@@ -5,6 +5,8 @@ const vm = require('node:vm');
 const html = fs.readFileSync(`${__dirname}/web/assets/dashboard.js`, 'utf8');
 const context = {};
 vm.runInNewContext(html.slice(html.indexOf('    function cacheUsagePercent('), html.indexOf('    function cacheLowSummary(')), context);
+const details = fs.readFileSync(`${__dirname}/web/assets/dashboard-details.js`, 'utf8');
+vm.runInNewContext(details.slice(details.indexOf('    function nativeCacheDetail('), details.indexOf('// Loaded on the first turn expansion')), context);
 
 test('native checks report missing observations without inventing zero cache writes', () => {
   assert.equal(context.nativeCacheSummary(), 'no native comparisons yet');
