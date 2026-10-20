@@ -271,7 +271,7 @@ def main(argv=None) -> int:
     parser.add_argument('command', choices=['set'])
     parser.add_argument('key', nargs='?')
     choice = parser.add_mutually_exclusive_group()
-    choice.add_argument('--apply', action='store_true', help='recreate only Hermes after saving')
+    choice.add_argument('--apply', action='store_true', help='ask before recreating only Hermes after saving')
     choice.add_argument('--no-apply', action='store_true', help='save for later without an apply prompt')
     args = parser.parse_args(argv)
     try:
@@ -299,9 +299,9 @@ def main(argv=None) -> int:
                 print('Secret is unchanged; Hermes was not recreated.')
                 return 0
             print('Saved shared tool secret with a private backup.')
-            apply = args.apply
-            if not args.apply and not args.no_apply:
-                writer.write('1) Recreate only Hermes now\n2) Save for later\nChoice [2]: ')
+            apply = False
+            if not args.no_apply:
+                writer.write('Recreating Hermes interrupts active work.\n1) Recreate only Hermes now\n2) Save for later\nChoice [2]: ')
                 writer.flush()
                 answer = reader.readline().strip()
                 if answer not in {'', '1', '2'}:

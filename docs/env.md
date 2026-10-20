@@ -123,7 +123,9 @@ menu option to recreate only Hermes immediately, or save for a later
 recreation. The hidden prompt requires a controlling terminal; run the command
 from an interactive terminal. Saving and applying have no free-space gate.
 `sg-hermes env set TOOL_API_KEY --no-apply` saves without applying;
-`sg-hermes env set TOOL_API_KEY --apply` requests immediate application.
+`sg-hermes env set TOOL_API_KEY --apply` also shows the confirmation menu.
+Only choosing `1` recreates Hermes; Enter or `2` saves for later. An invalid
+choice or interrupted prompt leaves the saved value pending without recreation.
 
 The helper requires a running Hermes container for native key and dotenv
 validation, and updates the existing administrator-managed dotenv mounted

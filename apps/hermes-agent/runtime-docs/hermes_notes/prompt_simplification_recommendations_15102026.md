@@ -1,0 +1,15 @@
+# Hermes prompt simplification recommendations
+
+Date: 2026-10-15 (Europe/Madrid). Status: **pending recommendation, not an applied policy**. No prompt, profile, memory, skill, permission, or service setting was changed by this research.
+
+Hermes assembles identity, project context, skill metadata, memory snapshots and runtime guidance into session prompts. Profile-specific instruction files with custom names may be references to read rather than automatically injected context. Persisted sessions can retain older prompt text after an on-disk edit. File size alone therefore does not establish effective prompt cost or instruction coverage.
+
+The proposed simplification keeps a small common authority and execution contract, a short role identity per profile, stable user preferences and factual memory. Detailed project and operational procedures belong with their existing owners and should be selected when relevant. Required repository gates and platform security controls remain in force. A low skill-use count alone is not grounds for removal.
+
+Curator usage counters describe recorded activity, not task success. Historical usage entries may differ from the current skill inventory. In the inspected implementation, disabling a skill also prevents loading it through skill_view; this is not equivalent to reducing its catalog description while keeping access.
+
+A future approved pilot should compare new sessions with matched model, reasoning, tools and memory, observing the assembled prompt, tool calls, task outcomes and latency. Moving role rules into SOUL changes both text and loading behavior, so such a trial evaluates the package rather than proving an effect from word count alone. An unchanged authorization remains valid within its scope; evaluation should test both appropriate restraint and completion of already authorized work.
+
+The proposal has since been revised into conservative, balanced and minimal variants. The conservative candidate is the proposed first pilot: user preferences move into identity and user cards, operational role contracts remain available, and detailed procedures have explicit task triggers. Memory files remain unchanged. Textual coverage and size measurements are available in the private review artifacts; they do not establish behavioral equivalence or authorize activation.
+
+A further review adds an ultra-conservative alternative and the Designer profile. This alternative preserves every original nonblank entry, moves only a few preferences literally from AGENTS to SOUL, and leaves Designer unchanged; it is an organizational baseline, not a meaningful context reduction. Four alternatives are now available for all five profiles in a private interactive comparison, with source/destination spans, exact-versus-section mapping labels, and separate main-file/reference size metrics. Factual memory remains unchanged. The comparison was published privately for operator review; no Hermes instruction, skill or profile was activated. Designer runtime observations use only two persisted prompts and must not be generalized as a benchmark.

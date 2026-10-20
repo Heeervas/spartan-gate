@@ -334,19 +334,30 @@ class HermesEnvFlowTests(unittest.TestCase):
         self.assertEqual([args for args, _ in self.calls], [("config", "--format", "json")])
 
     def test_apply_revalidates_and_recreates_only_hermes_without_building(self):
-        result, _, _, _ = self.run_main(["set", "TOOL_API_KEY", "--apply"])
+        result, _, _, _ = self.run_main(["set", "TOOL_API_KEY", "--apply"], menu="1\n")
         self.assertEqual(result, 0)
         self.assertEqual([args for args, _ in self.calls][-2:], [
             ("config", "--quiet"),
             ("up", "-d", "--no-build", "--no-deps", "--force-recreate", "hermes")])
 
-    def test_menu_choices_save_or_apply(self):
-        for menu, applies in (("1\n", True), ("2\n", False), ("\n", False)):
-            with self.subTest(menu=menu):
+    def test_menu_choices_save_or_apply_even_with_apply_flag(self):
+        for flags in ([], ["--apply"]):
+            for menu, applies in (("1\n", True), ("2\n", False), ("\n", False), ("", False)):
+                with self.subTest(flags=flags, menu=menu):
+                    self.calls.clear()
+                    result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", *flags], menu=menu)
+                    self.assertEqual(result, 0)
+                    update.assert_called_once()
+                    self.assertEqual(any(args[0] == "up" for args, _ in self.calls), applies)
+
+    def test_invalid_menu_choice_keeps_save_without_recreating(self):
+        for flags in ([], ["--apply"]):
+            with self.subTest(flags=flags):
                 self.calls.clear()
-                result, _, _, _ = self.run_main(["set", "TOOL_API_KEY"], menu=menu)
-                self.assertEqual(result, 0)
-                self.assertEqual(any(args[0] == "up" for args, _ in self.calls), applies)
+                result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", *flags], menu="invalid\n")
+                self.assertEqual(result, 1)
+                update.assert_called_once()
+                self.assertFalse(any(args[0] == "up" for args, _ in self.calls))
 
     def test_unchanged_never_recreates_even_with_apply(self):
         result, _, _, _ = self.run_main(["set", "TOOL_API_KEY", "--apply"], changed=False)
@@ -372,7 +383,7 @@ class HermesEnvFlowTests(unittest.TestCase):
             for mode in ("--no-apply", "--apply"):
                 with self.subTest(mode=mode):
                     self.calls.clear()
-                    result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", mode])
+                    result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", mode], menu="1\n")
                     self.assertEqual(result, 0)
                     update.assert_called_once()
                     self.assertEqual(any(args[0] == "up" for args, _ in self.calls), mode == "--apply")
@@ -391,7 +402,7 @@ class HermesEnvFlowTests(unittest.TestCase):
         update.assert_not_called()
 
     def test_apply_failure_is_redacted_and_retains_completed_save(self):
-        result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", "--apply"], apply_error=True)
+        result, update, _, _ = self.run_main(["set", "TOOL_API_KEY", "--apply"], menu="1\n", apply_error=True)
         self.assertEqual(result, 1)
         update.assert_called_once()
 

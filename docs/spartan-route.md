@@ -254,7 +254,11 @@ Kept in v1:
 - Per-key Codex cache leases, rate-limit cooldowns, transient 5xx cooldowns,
   and retry across slots/accounts.
 - Codex image generation and image edits, including multipart PNG alpha masks
-  translated to Responses `input_image_mask`. Edits set `action=edit` and
+  translated to Responses `input_image_mask`. The outer Codex model is selected
+  by the Route service environment variable `CODEX_IMAGE_HOST_MODEL` (alias:
+  `SPARTAN_ROUTE_CODEX_IMAGE_HOST_MODEL`); it is independent of the plugin image
+  model. Set an available model with verified image-tool support when the bundled
+  host default is retired. Edits set `action=edit` and
   forward validated `input_fidelity=low|high`; coordinates in prompt text are
   not a pixel boundary. OpenAI image endpoint passthrough remains active when
   `OPENAI_API_KEY` is available. The Codex-auth image fallback accepts OpenAI

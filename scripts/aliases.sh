@@ -140,6 +140,18 @@ sg_spartan_route_data_migrate() {
     sg_spartan_route_data_check
 }
 
+sg_workstation_state_preflight() {
+    local operation="$1"
+    shift
+    case "$operation" in
+        up|start|restart|run|create)
+            SPARTAN_WORKSTATION_STATE_DIR="${SPARTAN_WORKSTATION_STATE_DIR:-$(sg_env_value SPARTAN_WORKSTATION_STATE_DIR "")}" \
+                python3 "$SPARTAN_GATE_DIR/scripts/workstation-bridge.py" \
+                prepare-state -- "$@"
+            ;;
+    esac
+}
+
 sg_compose() {
     local private_compose="$SPARTAN_GATE_DIR/private/compose.local.yml"
     local env_file
@@ -171,6 +183,7 @@ sg_compose() {
     if [[ "${1:-}" == "up" ]]; then
         sg_spartan_route_data_preflight || return 1
     fi
+    sg_workstation_state_preflight "${1:-}" "${args[@]}" -- "$@" || return 1
     docker compose "${args[@]}" "$@"
 }
 
@@ -443,6 +456,7 @@ sg_tier_compose() {
     if [[ "$tier" == "L4" && "${1:-}" == "up" ]]; then
         sg_spartan_route_data_preflight || return 1
     fi
+    sg_workstation_state_preflight "${1:-}" "${args[@]}" -- "$@" || return 1
     docker compose "${args[@]}" "$@"
 }
 
@@ -700,6 +714,8 @@ Usage:
   sg-disk docker                     Docker system df plus host filesystem summary
   sg-disk spartan                    Spartan Gate repo/runtime/cache usage
   sg-disk clean-cache                remove known Spartan Hermes cache directories
+  sg-disk codex-clean [--dry-run|--yes] [--keep N]
+                                    clean old host Codex builds; keep selected/running + 1 older
 
 Compatibility aliases:
   sg-docker-df, sg-cache-top, sg-cache-live, sg-cache-clean
@@ -948,7 +964,8 @@ sg_workstation() {
         validate|repin|up|restart-terminal|status|test|down)
             shift
             gateway="$(sg_spartan_internal_gateway)" || return 1
-            python3 "$SPARTAN_GATE_DIR/scripts/workstation-bridge.py" \
+            SPARTAN_WORKSTATION_STATE_DIR="${SPARTAN_WORKSTATION_STATE_DIR:-$(sg_env_value SPARTAN_WORKSTATION_STATE_DIR "")}" \
+                python3 "$SPARTAN_GATE_DIR/scripts/workstation-bridge.py" \
                 "$command" --config "$config" --gateway "$gateway" "$@"
             ;;
         *)
@@ -2521,8 +2538,7 @@ sg_connectivity_check() {
 # -----------------------------------------------------------------------------
 # Diagnostics, ports, disk, and cache
 #
-# These helpers are read-only except sg_cache_clean/sg_disk clean-cache, which
-# intentionally removes known Hermes cache directories and npm transient files.
+# These helpers are read-only except clean-cache and the guarded codex-clean.
 
 sg_caddy_validate() { sg_compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile; }
 sg_ports() {
@@ -2633,6 +2649,7 @@ sg_disk() {
         docker) shift; sg_disk_docker "$@" ;;
         spartan) shift; sg_disk_spartan "$@" ;;
         clean-cache) shift; sg_cache_clean "$@" ;;
+        codex-clean) shift; python3 "$SPARTAN_GATE_DIR/scripts/codex-clean.py" "$@" ;;
         *)
             printf 'Unknown sg-disk command: %s\n\n' "$command" >&2
             sg_disk_help >&2

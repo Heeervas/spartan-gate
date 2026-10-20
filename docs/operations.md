@@ -163,6 +163,11 @@ Tailscale-connected PC while Hermes remains on `spartan_internal`. Configuration
 keys, host-key verification, profile setup, Blender risk, and teardown are
 documented in [Bounded Workstation Access](workstation.md).
 
+With the optional broker bind configured, `sg` automatically prepares its
+owner-only host directory before Hermes creation, startup, or restart. Unsafe
+existing directories stop the operation before Docker changes containers; their
+metadata is left untouched. Workstation bridges and gateway trust remain manual.
+
 `sg-workstation status` distinguishes PID liveness from terminal and app-tunnel
 readiness. Only the app-tunnel SSH child is automatically restarted; its
 execution, Blender, application-relay, and terminal peers remain untouched. The
@@ -305,7 +310,27 @@ sg-disk overview
 sg-disk top /var 2 30
 sg-disk apport
 sg-disk spartan
+sg-disk codex-clean --dry-run
 ```
+
+`sg-disk codex-clean` previews obsolete host Codex executable releases and asks
+before removing them. Use `--dry-run` for inspection or `--yes` to apply without
+the prompt. Noninteractive calls without `--yes` only preview. The helper checks
+the shared installation, `~/.codex`, `~/.codex_*`, and `CODEX_HOME` installation
+selectors; it does not scan profile histories, caches, credentials, or Hermes.
+Selected builds, builds referenced by visible same-user processes, newer
+downloaded builds, and one additional older unused build per installation are
+retained. `--keep N` changes the number of extra older builds retained.
+
+The estimate deduplicates shared installations and hard links, crediting file
+blocks only when every link is removed. Missing selectors, unexpected paths,
+unreadable same-user process metadata (except named systemd/PAM/sshd login
+services), and changed candidates stop cleanup. Excluded services are reported.
+Run without sudo and avoid updating or launching Codex during cleanup: process
+inspection and deletion cannot be atomic with an independent launcher, and
+other-user/container references may not be visible. Removed builds lose their
+rollback availability; retained application data is untouched. No Docker or
+package-manager cleanup is performed.
 
 ### Host connectivity status
 

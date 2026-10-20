@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Preserve reviewed operator updates: guarded cleanup of obsolete host Codex
+  builds, safe workstation mount preparation, explicit Hermes recreation
+  confirmation, shared MASTER prompt loading, and accompanying operational
+  guidance. Runtime activation remains subject to each feature's documented
+  acceptance steps.
+
 - Recover Codex model eligibility through bounded shared catalog refreshes and
   report model-specific selection diagnostics without bypassing account,
   reasoning, identity, or quota restrictions. Keep removed discovered models

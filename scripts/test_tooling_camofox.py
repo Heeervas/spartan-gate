@@ -401,6 +401,8 @@ class AliasHelpTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         shutil.copy2(ROOT / "scripts" / "aliases.sh", self.root / "scripts")
         shutil.copy2(ROOT / "scripts" / "spartan-route-data.py", self.root / "scripts")
+        for name in ("workstation-bridge.py", "workstation_gateway_trust.py"):
+            shutil.copy2(ROOT / "scripts" / name, self.root / "scripts")
         (self.root / "infra" / "compose" / "tiers").mkdir(parents=True)
         (self.root / "runtime" / "spartan-route").mkdir(parents=True, mode=0o700)
         shutil.copy2(ROOT / "scripts" / "update-private-env-secret.py", self.root / "scripts")
@@ -649,6 +651,15 @@ sg-browser camofox-live main https://accounts.google.com
         for name in ("sg-cache-top", "sg-cache-live", "sg-cache-clean", "sg-docker-df", "sg-disk", "sg-gog-login"):
             self.assertIn(name, result.stdout)
 
+    def test_codex_clean_dispatches_arguments_and_is_discoverable(self):
+        (self.root / "scripts/codex-clean.py").write_text(
+            "import sys\nprint('cleaner:', '|'.join(sys.argv[1:]))\n"
+        )
+        result = self.run_sourced("sg-disk -h; sg-disk codex-clean --dry-run --keep 2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sg-disk codex-clean", result.stdout)
+        self.assertIn("cleaner: --dry-run|--keep|2", result.stdout)
+
     def test_private_alias_hook_is_optional_and_ignored_by_default(self):
         result = self.run_sourced("declare -F sg-disk-private >/dev/null")
         self.assertNotEqual(result.returncode, 0)
@@ -788,6 +799,9 @@ sg-browser camofox-live main https://accounts.google.com
 printf 'docker' >> {log}
 printf ' %s' "$@" >> {log}
 printf '\\n' >> {log}
+if [[ " $* " == *" config --format json "* ]]; then
+  printf '%s\\n' '{{"services": {{}}}}'
+fi
 if [[ "$1" == "exec" && "$2" == "-u" && "$3" == "root" ]]; then
   printf '{runtime_user}\\n'
 fi

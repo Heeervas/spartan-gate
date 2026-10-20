@@ -305,6 +305,135 @@ def state_dir() -> Path:
     return path
 
 
+def prepare_compose_state(config: dict[str, Any], command: list[str]) -> None:
+    """Prepare only the optional broker mount, without reading keys or trust."""
+    if not command or command[0] not in {"up", "start", "restart", "run", "create"}:
+        return
+    services = require_object(config.get("services"), "Compose services")
+    value_options = {"--timeout", "-t", "--wait-timeout", "--scale", "--pull",
+                     "--exit-code-from", "--attach", "--no-attach", "--name",
+                     "--entrypoint", "--user", "-u", "--workdir", "-w", "--env",
+                     "-e", "--env-from-file", "--volume", "-v", "--publish", "-p",
+                     "--label", "-l", "--cap-add", "--cap-drop"}
+    selected = []
+    no_deps = False
+    arguments = iter(command[1:])
+    for arg in arguments:
+        if arg in value_options:
+            next(arguments, None)
+        elif arg in {"--help", "-h"}:
+            return
+        elif arg == "--no-deps":
+            no_deps = True
+        elif arg.startswith("-"):
+            continue
+        elif arg in services:
+            selected.append(arg)
+            if command[0] == "run":
+                break
+        else:
+            # Unknown positional arguments are left to Compose; conservatively
+            # preflight the full project rather than accidentally skip Hermes.
+            selected = []
+            break
+    pending = list(selected or services)
+    visited = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        if not no_deps:
+            dependencies = require_object(services[name].get("depends_on", {}),
+                                          "Compose dependencies")
+            for dependency, settings in dependencies.items():
+                if dependency not in services:
+                    if require_object(settings, "Compose dependency").get("required", True):
+                        fail("required Compose dependency is missing during workstation preflight")
+                    continue
+                pending.append(dependency)
+    if "hermes" not in visited:
+        return
+    hermes = services["hermes"]
+    mounts = [mount for mount in hermes.get("volumes", [])
+              if mount.get("target") == "/run/spartan-workstation"]
+    if not mounts:
+        return
+    if len(mounts) != 1:
+        fail("workstation broker requires exactly one state directory mount")
+    mount = mounts[0]
+    if (mount.get("type") != "bind" or mount.get("read_only") is not True
+            or mount.get("bind", {}).get("create_host_path", False) is not False):
+        fail("workstation state mount must be read-only with create_host_path: false")
+    source = Path(require_string(mount.get("source"), "workstation mount source"))
+    if not source.is_absolute() or source != state_dir() or ".." in source.parts:
+        fail("workstation mount source must match SPARTAN_WORKSTATION_STATE_DIR; "
+             "align the Compose and sg-workstation state paths")
+    prepare_state_dir(source)
+
+
+def prepare_state_dir(path: Path) -> None:
+    """Open existing parents without following links; create only the leaf."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent_fd = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:-1]:
+            next_fd = os.open(part, flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+            info = os.fstat(parent_fd)
+            sticky_root = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if (info.st_uid not in {0, os.getuid()}
+                    or (info.st_mode & 0o022 and not sticky_root)):
+                fail("workstation state parent has unsafe ownership or permissions")
+        # mkdir is atomic and never chmods/chowns an existing directory.
+        created = False
+        try:
+            os.mkdir(path.name, mode=0o700, dir_fd=parent_fd)
+            created = True
+        except FileExistsError:
+            pass
+        state_fd = os.open(path.name, flags, dir_fd=parent_fd)
+        try:
+            info = os.fstat(state_fd)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                fail("workstation state directory must be operator-owned and owner-only; "
+                     "existing metadata was left unchanged")
+        finally:
+            os.close(state_fd)
+        if created:
+            print("workstation-state: prepared")
+    except OSError as exc:
+        fail("cannot prepare workstation state directory; require an existing safe "
+             f"parent and a real directory ({exc.strerror})")
+    finally:
+        os.close(parent_fd)
+
+
+def command_prepare_state(compose_args: list[str]) -> None:
+    if compose_args[:1] == ["--"]:
+        compose_args = compose_args[1:]
+    try:
+        separator = compose_args.index("--")
+    except ValueError:
+        fail("prepare-state requires Compose options followed by -- and the operation")
+    options, command = compose_args[:separator], compose_args[separator + 1:]
+    try:
+        rendered = subprocess.run(
+            ["docker", "compose", *options, "config", "--format", "json"],
+            text=True, capture_output=True, check=False,
+        )
+    except OSError:
+        fail("cannot invoke Docker Compose for workstation state preparation")
+    if rendered.returncode:
+        fail("cannot render Compose for workstation state preparation; run sg config --quiet")
+    try:
+        config = json.loads(rendered.stdout)
+    except ValueError:
+        fail("invalid Compose JSON during workstation state preparation")
+    prepare_compose_state(require_object(config, "Compose configuration"), command)
+
+
 def ensure_state_dir(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     validate_state_dir(path)
@@ -1240,6 +1369,8 @@ def parser() -> argparse.ArgumentParser:
         description="Operate fail-closed Hermes-to-workstation relays."
     )
     subparsers = result.add_subparsers(dest="command", required=True)
+    prepare = subparsers.add_parser("prepare-state")
+    prepare.add_argument("compose", nargs=argparse.REMAINDER)
     commands = (
         "validate",
         "up",
@@ -1259,7 +1390,9 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
-        if args.command == "validate":
+        if args.command == "prepare-state":
+            command_prepare_state(args.compose)
+        elif args.command == "validate":
             load_config(args.config)
             validate_gateway(args.gateway)
             print(f"Workstation configuration valid: {args.config}")

@@ -205,6 +205,8 @@ class SpartanRouteAliasPreflightTests(unittest.TestCase):
         (self.root / "private" / "env").mkdir(parents=True)
         shutil.copy2(ALIASES, self.root / "scripts" / "aliases.sh")
         shutil.copy2(SCRIPT, self.root / "scripts" / "spartan-route-data.py")
+        for name in ("workstation-bridge.py", "workstation_gateway_trust.py"):
+            shutil.copy2(ROOT / "scripts" / name, self.root / "scripts")
         self.data = self.root / "route-data"
         self.data.mkdir(mode=0o700)
         self.log = self.root / "docker.log"
@@ -214,6 +216,7 @@ class SpartanRouteAliasPreflightTests(unittest.TestCase):
         docker.write_text(
             "#!/usr/bin/env bash\n"
             f"printf '%s\\n' \"$*\" >> {self.log}\n"
+            "case \" $* \" in *' config --format json '*) printf '%s\\n' '{\"services\": {}}' ;; esac\n"
             "exit 0\n",
             encoding="utf-8",
         )

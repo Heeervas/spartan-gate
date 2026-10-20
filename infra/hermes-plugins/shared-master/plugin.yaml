@@ -1,0 +1,4 @@
+name: shared-master
+version: "0.1.0"
+description: Loads the shared MASTER.md into eligible Hermes system prompts.
+kind: standalone

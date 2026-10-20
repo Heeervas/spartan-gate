@@ -114,15 +114,26 @@ services:
           create_host_path: false
 ```
 
-Create the host directory as the operator before starting or recreating Hermes:
+The `sg` helpers automatically prepare the host directory as the operator before
+creating, starting, or restarting Hermes, including dependency starts. An existing
+directory must already be operator-owned and owner-only; helpers never repair
+its permissions or ownership. Preparation leaves sockets and broker state intact
+and does not start bridges or approve gateway trust.
+
+For raw Docker Compose operations, create the directory manually first:
 
 ```sh
 install -d -m 700 "${SPARTAN_WORKSTATION_STATE_DIR:-/run/user/$(id -u)/spartan-gate-workstation}"
 ```
 
-The Compose source must match this path (set `SPARTAN_WORKSTATION_STATE_DIR`
-for a different UID or location). `/run/user` is temporary, so repeat this
-step after reboot before `sg up -d`. Keep `create_host_path: false`: a
+The Compose source must match the broker state path. Set
+`SPARTAN_WORKSTATION_STATE_DIR` in the shell or selected env file for a different
+UID or location; both `sg` and `sg-workstation` honor that value. The parent
+directory must exist, contain no symlink components, and be owned by the operator
+or root without group/other write access (root-owned sticky directories such as
+`/tmp` are allowed). `/run/user` is temporary; `sg` recreates the leaf directory
+when needed after reboot. Raw Compose users must repeat the manual step.
+Keep `create_host_path: false`: a
 short-form bind mount silently creates a missing directory as root, which
 `sg-workstation` correctly rejects. Do not bypass its ownership checks or
 recursively change ownership of existing state.

@@ -124,6 +124,12 @@ hook. A symlink or list entry alone is insufficient. This new-profile
 completion requirement does not retroactively override existing intentional
 exceptions or change the [explicit runtime activation policy](spartan-route.md). Do not bulk-enable domain plugins to satisfy it.
 
+The local profile baseline also uses the shared `shared-master` plugin for
+eligible profiles. Link and enable it so new sessions receive the common
+`/opt/data/MASTER.md`; keep one source instead of profile-local copies. Follow
+the private runtime authority for installation-specific exclusions, then verify
+prompt inclusion in a new session after the gateway reload.
+
 For Reader, link and enable `web-spartan-reader` and set
 `web.extract_backend: spartan-reader`; verify the effective provider selection. Preserve explicit
 plugin disables, particularly `prompt-load-bridge`, and existing peer tool

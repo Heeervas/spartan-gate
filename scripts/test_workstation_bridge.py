@@ -1,4 +1,5 @@
 import fcntl
+import importlib.util
 import base64
 import hashlib
 import json
@@ -10,6 +11,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -709,6 +711,209 @@ class WorkstationAliasTests(unittest.TestCase):
         self.assertIn("sg-workstation", source)
         self.assertIn("sg_workstation()", source)
         self.assertIn('"$SPARTAN_GATE_DIR/scripts/workstation-bridge.py"', source)
+
+
+class WorkstationStatePreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.state = self.root / "state"
+        spec = importlib.util.spec_from_file_location("workstation_prepare_test", TOOL)
+        self.bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.bridge)
+        self.environment = patch.dict(os.environ, {"SPARTAN_WORKSTATION_STATE_DIR": str(self.state)})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.config = {"services": {
+            "hermes": {"volumes": [{"type": "bind", "source": str(self.state),
+                "target": "/run/spartan-workstation", "read_only": True,
+                "bind": {"create_host_path": False}}]},
+            "caddy": {"depends_on": {"hermes": {"condition": "service_healthy"}}},
+            "proxy": {},
+        }}
+
+    def prepare(self, *args):
+        return self.bridge.prepare_compose_state(self.config, list(args or ("up", "-d")))
+
+    def test_missing_directory_is_prepared_without_starting_broker(self):
+        self.prepare()
+        self.assertTrue(self.state.is_dir())
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.state.stat().st_uid, os.getuid())
+        self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_repeated_preparation_preserves_socket_and_directory(self):
+        self.prepare()
+        listener = socket.socket(socket.AF_UNIX)
+        self.addCleanup(listener.close)
+        listener.bind(str(self.state / "broker.sock"))
+        before = self.state.stat().st_ino
+        self.prepare("restart", "hermes")
+        self.assertEqual(self.state.stat().st_ino, before)
+        self.assertTrue((self.state / "broker.sock").is_socket())
+
+    def test_unsafe_existing_state_is_rejected_without_repair(self):
+        self.state.mkdir(mode=0o770)
+        self.state.chmod(0o770)
+        with self.assertRaises(self.bridge.WorkstationError):
+            self.prepare()
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o770)
+
+    def test_symlink_and_regular_file_are_rejected(self):
+        self.state.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(self.bridge.WorkstationError):
+            self.prepare()
+        self.state.unlink()
+        self.state.write_text("keep")
+        with self.assertRaises(self.bridge.WorkstationError):
+            self.prepare()
+        self.assertEqual(self.state.read_text(), "keep")
+
+    def test_symlink_parent_and_missing_parent_are_rejected(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        for path in (alias / "state", self.root / "missing" / "state"):
+            with self.subTest(path=path), patch.dict(os.environ, {"SPARTAN_WORKSTATION_STATE_DIR": str(path)}):
+                self.config["services"]["hermes"]["volumes"][0]["source"] = str(path)
+                with self.assertRaises(self.bridge.WorkstationError):
+                    self.prepare()
+        self.assertFalse(self.state.exists())
+        self.assertFalse((self.root / "missing").exists())
+
+    def test_wrong_owner_is_rejected(self):
+        self.state.mkdir(mode=0o700)
+        with patch.object(self.bridge.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(self.bridge.WorkstationError):
+                self.prepare()
+
+    def test_mount_contract_and_path_mismatch_fail_before_creation(self):
+        mount = self.config["services"]["hermes"]["volumes"][0]
+        for key, value in (("read_only", False), ("type", "volume"),
+                           ("bind", {"create_host_path": True}), ("source", str(self.root / "different"))):
+            with self.subTest(key=key):
+                original = mount[key]
+                mount[key] = value
+                with self.assertRaises(self.bridge.WorkstationError):
+                    self.prepare()
+                mount[key] = original
+                self.assertFalse(self.state.exists())
+
+    def test_absent_mount_and_unrelated_or_inspection_commands_do_nothing(self):
+        for args in (("up", "proxy"), ("up", "--no-deps", "caddy"),
+                     ("config",), ("down",), ("logs", "hermes"), ("up", "--help"),
+                     ("run", "--name", "hermes", "proxy", "echo", "hermes")):
+            self.prepare(*args)
+            self.assertFalse(self.state.exists())
+        self.config["services"]["hermes"]["volumes"] = []
+        self.prepare()
+        self.assertFalse(self.state.exists())
+
+    def test_inactive_optional_dependencies_do_not_break_preparation(self):
+        self.config["services"]["hermes"]["depends_on"] = {
+            "inactive-browser": {"required": False, "condition": "service_started"}}
+        self.prepare()
+        self.assertTrue(self.state.is_dir())
+
+    def test_missing_required_dependency_fails_before_creation(self):
+        self.config["services"]["hermes"]["depends_on"] = {"missing": {}}
+        with self.assertRaises(self.bridge.WorkstationError):
+            self.prepare()
+        self.assertFalse(self.state.exists())
+
+    def test_dependency_start_and_run_prepare_hermes(self):
+        for args in (("up", "caddy"), ("run", "--rm", "hermes", "setup"),
+                     ("start", "hermes"), ("create", "hermes"),
+                     ("run", "caddy", "echo", "--no-deps"),
+                     ("up", "--attach", "proxy")):
+            with self.subTest(args=args):
+                self.prepare(*args)
+                self.assertTrue(self.state.is_dir())
+                self.state.rmdir()
+
+
+class WorkstationStartupAliasTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "scripts").mkdir()
+        (self.root / "bin").mkdir()
+        (self.root / "private" / "env").mkdir(parents=True)
+        for name in ("aliases.sh", "workstation-bridge.py", "workstation_gateway_trust.py"):
+            shutil.copy2(ROOT / "scripts" / name, self.root / "scripts")
+        self.state = self.root / "state"
+        self.log = self.root / "docker.log"
+        self.config = self.root / "compose.json"
+        self.config.write_text(json.dumps({"services": {
+            "hermes": {"volumes": [{"type": "bind", "source": str(self.state),
+                "target": "/run/spartan-workstation", "read_only": True, "bind": {}}]},
+            "caddy": {"depends_on": {"hermes": {}}}, "proxy": {}}}))
+        (self.root / "private" / "env" / "local.env").write_text(
+            f"SPARTAN_WORKSTATION_STATE_DIR={self.state}\n")
+        docker = self.root / "bin" / "docker"
+        docker.write_text("#!/usr/bin/env python3\n" +
+            "import json, os, pathlib, sys\n"
+            "root = pathlib.Path(os.environ['WORKSTATION_STARTUP_TEST_ROOT'])\n"
+            "with (root / 'docker.log').open('a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[-3:] == ['config', '--format', 'json']:\n"
+            "    if os.environ.get('WORKSTATION_TEST_BAD_CONFIG'): sys.exit(1)\n"
+            "    print((root / 'compose.json').read_text())\n")
+        docker.chmod(0o755)
+        self.env = os.environ.copy()
+        self.env.pop("SPARTAN_WORKSTATION_STATE_DIR", None)
+        self.env["PATH"] = str(self.root / "bin") + os.pathsep + self.env["PATH"]
+        self.env["WORKSTATION_STARTUP_TEST_ROOT"] = str(self.root)
+
+    def run_alias(self, command):
+        return subprocess.run(["bash", "-c", "source scripts/aliases.sh; "
+            "sg_spartan_route_data_preflight() { return 0; }; " + command],
+            cwd=self.root, env=self.env, capture_output=True, text=True)
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_startup_wrappers_prepare_before_lifecycle(self):
+        for command in ("sg up -d", "sg restart hermes", "sg-restart-hermes",
+                        "sg start hermes", "sg create hermes", "sg run --rm hermes setup",
+                        "sg-tier up", "sg up -d caddy"):
+            with self.subTest(command=command):
+                result = self.run_alias(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(self.state.is_dir())
+                calls = self.calls()
+                self.assertEqual(calls[-2][-3:], ["config", "--format", "json"])
+                self.state.rmdir()
+                self.log.unlink()
+
+    def test_failure_blocks_lifecycle_without_changing_unsafe_directory(self):
+        self.state.mkdir(mode=0o755)
+        result = self.run_alias("sg restart hermes")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIn("owner-only", result.stderr)
+
+    def test_render_failure_prevents_directory_and_lifecycle(self):
+        self.env["WORKSTATION_TEST_BAD_CONFIG"] = "1"
+        result = self.run_alias("sg up -d")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.state.exists())
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_read_only_shutdown_and_unrelated_targets_do_not_prepare(self):
+        for command in ("sg config --quiet", "sg down", "sg logs hermes", "sg restart proxy"):
+            result = self.run_alias(command)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(self.state.exists())
+
+    def test_broker_wrapper_uses_same_env_file_override_without_preparing(self):
+        result = self.run_alias('python3() { printf "%s" "$SPARTAN_WORKSTATION_STATE_DIR"; }; '
+                                'sg_spartan_internal_gateway() { printf "127.0.0.1"; }; '
+                                'sg-workstation status')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, str(self.state))
+        self.assertFalse(self.state.exists())
 
 
 if __name__ == "__main__":
