@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const html = fs.readFileSync(`${__dirname}/web/dashboard.html`, 'utf8');
+const html = fs.readFileSync(`${__dirname}/web/assets/dashboard.js`, 'utf8');
 const context = {};
 vm.runInNewContext(html.slice(html.indexOf('    function cacheUsagePercent('), html.indexOf('    function cacheLowSummary(')), context);
 

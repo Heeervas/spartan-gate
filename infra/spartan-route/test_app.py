@@ -2442,8 +2442,15 @@ class AppStreamingTelemetryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DashboardStaticTests(unittest.TestCase):
+    def source(self, name: str) -> str:
+        web = Path(__file__).resolve().parent / "web"
+        paths = [web / f"{name}.html", web / "assets" / f"{name}.js", web / "assets" / "dashboard.css"]
+        if name == "dashboard":
+            paths.append(web / "assets" / "dashboard-details.js")
+        return "\n".join(path.read_text(encoding="utf-8") for path in paths if path.exists())
+
     def test_routing_dashboard_uses_expandable_request_details(self) -> None:
-        html = (Path(__file__).resolve().parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+        html = self.source("dashboard")
 
         self.assertNotIn("<th>Content</th>", html)
         self.assertIn('class="request-list"', html)
@@ -2471,9 +2478,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("Copy session ID", html)
 
     def test_codex_dashboard_superseded_load_restores_both_refresh_controls(self) -> None:
-        html = (
-            Path(__file__).resolve().parent / "web" / "dashboard-codex.html"
-        ).read_text(encoding="utf-8")
+        html = self.source("dashboard-codex")
 
         helper_start = html.find("function restoreLoadControls")
         self.assertGreaterEqual(helper_start, 0)
@@ -2493,9 +2498,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("restoreLoadControls()", load[finally_start:])
 
     def test_codex_dashboard_uses_progressive_post_abort_and_bounded_polling(self) -> None:
-        html = (
-            Path(__file__).resolve().parent / "web" / "dashboard-codex.html"
-        ).read_text(encoding="utf-8")
+        html = self.source("dashboard-codex")
 
         self.assertIn("/api/codex/usage/refresh", html)
         self.assertIn("method: 'POST'", html)
@@ -2518,7 +2521,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("server refresh may still be running", html)
 
     def test_codex_dashboard_uses_threshold_colored_rings(self) -> None:
-        html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
+        html = self.source("dashboard-codex")
 
         self.assertIn("function balanceTone", html)
         self.assertIn("value >= 90", html)
@@ -2538,7 +2541,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("function pollRefresh", html)
 
     def test_codex_dashboard_supports_capacity_and_model_estimates(self) -> None:
-        html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
+        html = self.source("dashboard-codex")
 
         self.assertIn('data-action="capacity"', html)
         self.assertIn('value="1"', html)
@@ -2568,7 +2571,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn(".efficiency-table th:nth-child(5)", html)
 
     def test_codex_dashboard_merges_usage_and_slot_cards_with_countdowns(self) -> None:
-        html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
+        html = self.source("dashboard-codex")
 
         self.assertIn("function renderAccountCards", html)
         self.assertIn("function latencyCell", html)
@@ -2591,9 +2594,9 @@ class DashboardStaticTests(unittest.TestCase):
 
     def test_dashboard_navigation_and_config_contract_are_consistent(self) -> None:
         web_dir = Path(__file__).resolve().parent / "web"
-        routing = (web_dir / "dashboard.html").read_text(encoding="utf-8")
-        codex = (web_dir / "dashboard-codex.html").read_text(encoding="utf-8")
-        config = (web_dir / "dashboard-config.html").read_text(encoding="utf-8")
+        routing = self.source("dashboard")
+        codex = self.source("dashboard-codex")
+        config = self.source("dashboard-config")
 
         for html in (routing, codex, config):
             self.assertIn('href="/dashboard-config"', html)
@@ -2608,7 +2611,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("[mode, payload.warning].filter(Boolean)", config)
 
     def test_codex_dashboard_marks_only_backend_failed_health_red(self) -> None:
-        html = (Path(__file__).resolve().parent / "web" / "dashboard-codex.html").read_text(encoding="utf-8")
+        html = self.source("dashboard-codex")
 
         self.assertIn(".account.health-failed", html)
         self.assertIn("function accountHealth", html)
