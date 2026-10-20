@@ -2568,11 +2568,11 @@ async def health(request: web.Request) -> web.Response:
 
 async def stats(request: web.Request) -> web.Response:
     state = get_state(request)
-    rows, error = read_daily_cache_rows(state)
+    rows, error = await asyncio.to_thread(read_daily_cache_rows, state)
     if error is not None or rows is None:
         return telemetry_unavailable_response()
     try:
-        today = state.telemetry.today_summary()
+        today = await asyncio.to_thread(state.telemetry.today_summary)
     except Exception as exc:
         record_telemetry_failure(state, "read", "today_summary", exc)
         return telemetry_unavailable_response()
@@ -2605,7 +2605,7 @@ async def stats(request: web.Request) -> web.Response:
     })
 
 
-def attach_routing_usage_units(
+async def attach_routing_usage_units(
     state: SpartanRouteState,
     payload: dict[str, Any],
 ) -> None:
@@ -2621,7 +2621,7 @@ def attach_routing_usage_units(
                 for slot in state.codex.slot_status()
                 if isinstance(slot, Mapping) and slot.get("accountKey")
             }
-            estimate = state.telemetry.codex_usage_estimate(account_keys)
+            estimate = await asyncio.to_thread(state.telemetry.codex_usage_estimate, account_keys)
         except Exception as exc:
             record_telemetry_failure(state, "read", "routing_usage_estimate", exc)
             estimate = {
@@ -2680,7 +2680,8 @@ async def api_routing_live(request: web.Request) -> web.Response:
                 "invalid_request_error",
             )
     try:
-        payload = state.telemetry.live_sessions(
+        payload = await asyncio.to_thread(
+            state.telemetry.live_sessions,
             limit=limit,
             session_limit=session_limit,
             turn_limit=turn_limit,
@@ -2691,7 +2692,7 @@ async def api_routing_live(request: web.Request) -> web.Response:
         return telemetry_unavailable_response()
     state.telemetry.record_health_success("read", "routing_live")
     payload["cacheDiagnostics"] = {"version": 2, "epoch": state.native_cache.epoch, "startedAt": state.native_cache.started_at}
-    attach_routing_usage_units(state, payload)
+    await attach_routing_usage_units(state, payload)
     return web.json_response(payload)
 
 
@@ -2709,7 +2710,7 @@ async def api_routing_turn(request: web.Request) -> web.Response:
     if not valid_turn_id(turn_id):
         return response_json_error("Invalid turn id", 400, "invalid_turn_id", "invalid_request_error")
     try:
-        payload = state.telemetry.turn_requests(turn_id)
+        payload = await asyncio.to_thread(state.telemetry.turn_requests, turn_id)
     except Exception as exc:
         record_telemetry_failure(state, "read", "routing_turn", exc)
         return telemetry_unavailable_response()
@@ -2719,7 +2720,7 @@ async def api_routing_turn(request: web.Request) -> web.Response:
 
 async def api_codex_cache_day(request: web.Request) -> web.Response:
     state = get_state(request)
-    rows, error = read_daily_cache_rows(state)
+    rows, error = await asyncio.to_thread(read_daily_cache_rows, state)
     if error is not None or rows is None:
         return telemetry_unavailable_response()
     return web.json_response({"days": rows})
@@ -2871,11 +2872,11 @@ def codex_slots_with_health(
     return rows
 
 
-def attach_codex_telemetry(
+async def attach_codex_telemetry(
     state: SpartanRouteState,
     payload: dict[str, Any],
 ) -> None:
-    rows, error = read_daily_cache_rows(state)
+    rows, error = await asyncio.to_thread(read_daily_cache_rows, state)
     if error is not None or rows is None:
         payload["cacheDaily"] = []
         add_telemetry_error(payload, error or telemetry_error("daily_cache"))
@@ -2910,11 +2911,8 @@ def attach_codex_telemetry(
         if isinstance(slot, Mapping) and slot.get("accountKey")
     )
     try:
-        multipliers = {
-            account_key: state.telemetry.codex_capacity_multiplier(account_key)
-            for account_key in account_keys
-        }
-        estimate = state.telemetry.codex_usage_estimate(account_keys)
+        multipliers = await asyncio.to_thread(state.telemetry.codex_capacity_multipliers, account_keys)
+        estimate = await asyncio.to_thread(state.telemetry.codex_usage_estimate, account_keys)
     except Exception as exc:
         record_telemetry_failure(state, "read", "codex_usage_estimate", exc)
         add_telemetry_error(payload, telemetry_error("codex_usage_estimate"))
@@ -2956,7 +2954,7 @@ async def api_codex_usage(request: web.Request) -> web.Response:
     if state.codex is None:
         return response_json_error("Codex router is not ready", 503, "codex_unavailable")
     payload = await state.codex.usage_snapshot(force=request.query.get("force") == "true")
-    attach_codex_telemetry(state, payload)
+    await attach_codex_telemetry(state, payload)
     return web.json_response(payload)
 
 
@@ -2965,7 +2963,7 @@ async def api_codex_usage_refresh(request: web.Request) -> web.Response:
     if state.codex is None:
         return response_json_error("Codex router is not ready", 503, "codex_unavailable")
     payload = state.codex.trigger_usage_refresh()
-    attach_codex_telemetry(state, payload)
+    await attach_codex_telemetry(state, payload)
     return web.json_response(payload, status=202)
 
 
@@ -2977,7 +2975,7 @@ async def api_codex_usage_slot(request: web.Request) -> web.Response:
     if not any(slot.index == slot_index for slot in state.codex.slots):
         return response_json_error("Codex slot not found", 404, "slot_not_found", "invalid_request_error")
     payload = await state.codex.usage_snapshot(force=True, slot_indexes={slot_index})
-    attach_codex_telemetry(state, payload)
+    await attach_codex_telemetry(state, payload)
     return web.json_response(payload)
 
 
@@ -3080,7 +3078,7 @@ async def api_codex_account_capacity(request: web.Request) -> web.Response:
         return telemetry_unavailable_response()
     state.telemetry.record_health_success("write", "capacity_multiplier")
     payload = await state.codex.usage_snapshot()
-    attach_codex_telemetry(state, payload)
+    await attach_codex_telemetry(state, payload)
     return web.json_response(payload)
 
 
@@ -3096,12 +3094,40 @@ async def dashboard_file(request: web.Request) -> web.StreamResponse:
     path = (state.config.web_dir / name).resolve()
     if not path.exists() or not path.is_file():
         return response_json_error(f"Dashboard file not found: {name}", 404, "dashboard_not_found")
-    return web.FileResponse(path)
+    return web.FileResponse(path, headers={"Cache-Control": "private, no-cache"})
+
+
+DASHBOARD_ASSETS = frozenset({
+    "dashboard.css", "dashboard.js", "dashboard-codex.js",
+    "dashboard-config.js", "dashboard-details.js",
+})
+
+
+async def dashboard_asset(request: web.Request) -> web.StreamResponse:
+    name = request.match_info["name"]
+    if name not in DASHBOARD_ASSETS:
+        return response_json_error("Dashboard asset not found", 404, "dashboard_not_found")
+    root = (get_state(request).config.web_dir / "assets").resolve()
+    path = (root / name).resolve()
+    if path.parent != root or not path.is_file():
+        return response_json_error("Dashboard asset not found", 404, "dashboard_not_found")
+    return web.FileResponse(path, headers={"Cache-Control": "private, no-cache"})
 
 
 async def unsupported(request: web.Request) -> web.Response:
     del request
     return response_json_error("Endpoint is not supported by spartan-route v1.", 400, "unsupported_endpoint", "invalid_request_error")
+
+
+@web.middleware
+async def dashboard_cache_middleware(
+    request: web.Request,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+) -> web.StreamResponse:
+    response = await handler(request)
+    if request.path == "/stats" or request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @web.middleware
@@ -3204,8 +3230,9 @@ async def cleanup(app: web.Application) -> None:
 def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetryStore | None = None) -> web.Application:
     config = config or load_config()
     telemetry = telemetry or TelemetryStore(config.db_path)
-    app = web.Application(middlewares=[auth_middleware], client_max_size=64 * 1024 * 1024)
+    app = web.Application(middlewares=[dashboard_cache_middleware, auth_middleware], client_max_size=64 * 1024 * 1024)
     app.router.add_get("/dashboard-config", dashboard_file)
+    app.router.add_get("/dashboard-assets/{name}", dashboard_asset)
     app.router.add_get("/api/config/model-variants", api_config_model_variants_get)
     app.router.add_put("/api/config/model-variants", api_config_model_variants_put)
     app.router.add_get("/api/config/routing", api_config_routing_get)

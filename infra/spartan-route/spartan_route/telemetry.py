@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import os
 import sqlite3
@@ -104,6 +105,7 @@ class TelemetryStore:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         self._health_lock = threading.Lock()
+        self._today_summary_cache: tuple[tuple[str, int, int], dict[str, Any]] | None = None
         self._health_failures = {
             "read": 0,
             "write": 0,
@@ -929,6 +931,10 @@ class TelemetryStore:
     def today_summary(self, day: str | None = None) -> dict[str, Any]:
         current_day = day or datetime.now(timezone.utc).date().isoformat()
         with self._lock:
+            revision = (current_day, self._conn.total_changes,
+                        int(self._conn.execute("PRAGMA data_version").fetchone()[0]))
+            if self._today_summary_cache is not None and self._today_summary_cache[0] == revision:
+                return copy.deepcopy(self._today_summary_cache[1])
             rows = self._conn.execute(
                 """
                 SELECT input_tokens, cached_input_tokens, output_tokens, response_time_ms,
@@ -982,7 +988,7 @@ class TelemetryStore:
                 total_latencies.append(total_latency)
             if legacy:
                 legacy_latency_requests += 1
-        return {
+        result = {
             "day": current_day,
             "loggedRequests": len(items),
             "nativeCache": public_native_metrics(native_metrics),
@@ -1010,6 +1016,12 @@ class TelemetryStore:
             "legacyLatencyRequests": legacy_latency_requests,
             "splitLatencyRequests": split_latency_requests,
         }
+        with self._lock:
+            current_revision = (current_day, self._conn.total_changes,
+                                int(self._conn.execute("PRAGMA data_version").fetchone()[0]))
+            if current_revision == revision:
+                self._today_summary_cache = (revision, copy.deepcopy(result))
+        return result
 
     def routing_filter_options(self) -> dict[str, list[str]]:
         with self._lock:
@@ -1080,18 +1092,6 @@ class TelemetryStore:
                 WHERE {where_sql}
                 GROUP BY session_id, effective_turn_id
             ),
-            ranked_turns AS (
-                SELECT
-                    session_id,
-                    effective_turn_id,
-                    last_match_id,
-                    row_number() OVER (
-                        PARTITION BY session_id ORDER BY last_match_id DESC
-                    ) AS turn_rank,
-                    count(*) OVER (PARTITION BY session_id) AS matching_turn_count,
-                    count(*) OVER () AS total_matching_turns
-                FROM matching_turns
-            ),
             ranked_sessions AS (
                 SELECT session_id, max(last_match_id) AS last_match_id
                 FROM matching_turns
@@ -1105,18 +1105,40 @@ class TelemetryStore:
                 FROM ranked_sessions
                 ORDER BY last_match_id DESC
                 LIMIT ?
+            ),
+            ranked_turns AS (
+                SELECT
+                    matching_turns.session_id,
+                    effective_turn_id,
+                    matching_turns.last_match_id,
+                    row_number() OVER (
+                        PARTITION BY matching_turns.session_id ORDER BY matching_turns.last_match_id DESC
+                    ) AS turn_rank,
+                    count(*) OVER (PARTITION BY session_id) AS matching_turn_count,
+                    (SELECT count(*) FROM matching_turns) AS total_matching_turns
+                FROM matching_turns
+                JOIN limited_sessions USING(session_id)
+            ),
+            selected_turns AS (
+                SELECT
+                    turns.session_id,
+                    turns.effective_turn_id,
+                    turns.last_match_id,
+                    turns.matching_turn_count,
+                    turns.total_matching_turns,
+                    sessions.total_sessions
+                FROM ranked_turns turns
+                JOIN limited_sessions sessions USING(session_id)
+                WHERE turns.turn_rank <= ?
             )
-            SELECT
-                turns.session_id,
-                turns.effective_turn_id,
-                turns.last_match_id,
-                turns.matching_turn_count,
-                turns.total_matching_turns,
-                sessions.total_sessions
-            FROM ranked_turns turns
-            JOIN limited_sessions sessions USING(session_id)
-            WHERE turns.turn_rank <= ?
-            ORDER BY sessions.last_match_id DESC, turns.last_match_id DESC
+            SELECT logs.*, turns.effective_turn_id, turns.last_match_id,
+                   turns.matching_turn_count, turns.total_matching_turns,
+                   turns.total_sessions
+            FROM selected_turns turns
+            JOIN routing_log logs ON logs.session_id = turns.session_id
+                AND coalesce(nullif(logs.turn_id, ''), nullif(logs.request_id, ''), 'unknown')
+                    = turns.effective_turn_id
+            ORDER BY logs.id DESC
         """
         with self._lock:
             selected_rows = self._conn.execute(
@@ -1127,15 +1149,7 @@ class TelemetryStore:
                 (str(row["session_id"]), str(row["effective_turn_id"])): dict(row)
                 for row in selected_rows
             }
-            session_ids = list(dict.fromkeys(str(row["session_id"]) for row in selected_rows))
-            if session_ids:
-                placeholders = ",".join("?" for _ in session_ids)
-                rows = self._conn.execute(
-                    f"SELECT * FROM routing_log WHERE session_id IN ({placeholders}) ORDER BY id DESC",
-                    session_ids,
-                ).fetchall()
-            else:
-                rows = []
+            rows = selected_rows
 
         sessions: dict[str, dict[str, Any]] = {}
         for raw_row in rows:
@@ -1691,6 +1705,15 @@ class TelemetryStore:
             except Exception:
                 self._conn.rollback()
                 raise
+
+    def codex_capacity_multipliers(self, account_keys: set[str]) -> dict[str, int]:
+        # Read the small override table once, including defaults for active accounts.
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT account_key, capacity_multiplier FROM codex_account_capacity_overrides"
+            ).fetchall()
+        overrides = {str(row["account_key"]): int(row["capacity_multiplier"]) for row in rows}
+        return {key: overrides.get(key, 1) for key in account_keys}
 
     def codex_capacity_multiplier(self, account_key: str) -> int:
         with self._lock:
