@@ -3488,6 +3488,7 @@ class CodexRouter:
         persisted_reset: dict[str, Any] | None,
         clear_recovered_limit: bool,
     ) -> dict[str, Any]:
+        generation = int(getattr(self, "_usage_generation", 0))
         slot = slots[0]
         slot_paths = [path for path in (self.slot_path_label(item) for item in slots) if path]
         row = {
@@ -3569,7 +3570,11 @@ class CodexRouter:
                     "source": "none",
                     "message": "Codex usage payload contained an invalid reported window",
                 }
-            elif clear_recovered_limit and live_usage_allows_recovery(usage_result):
+            elif (
+                clear_recovered_limit
+                and generation == int(getattr(self, "_usage_generation", 0))
+                and live_usage_allows_recovery(usage_result)
+            ):
                 for item in slots:
                     if item.rate_limited_until > 0:
                         item.rate_limited_until = 0

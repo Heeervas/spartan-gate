@@ -336,3 +336,34 @@ class DashboardRefreshRaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.reset_credit_snapshots()[self.auth.account_key]["availableCount"], 2)
         latest = await self.router.usage_snapshot()
         self.assertEqual(latest["accounts"][0]["weekly"]["usedPercent"], 80)
+
+    async def test_retired_account_fetch_does_not_clear_new_generation_cache(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_get = self.router.session.get
+        old_slot = self.router.slots[0]
+        old_slot.rate_limited_until = 9999999999
+
+        def delayed_get(url, **kwargs):
+            response = original_get(url, **kwargs)
+            original_json = response.json
+            async def delayed_json():
+                if "rate-limit-reset-credits" not in url:
+                    entered.set()
+                    await release.wait()
+                return await original_json()
+            response.json = delayed_json
+            return response
+
+        self.router.session.get = delayed_get
+        task = asyncio.create_task(self.router._fetch_usage_account(
+            self.auth.account_key, self.auth, [old_slot], None, True,
+        ))
+        await asyncio.wait_for(entered.wait(), 1)
+        with patch.object(self.router, "_init_slots", lambda: None):
+            self.router.reset_state()
+        newer_cache = {"new-generation": True}
+        self.router._usage_cache = newer_cache
+        release.set()
+        await asyncio.wait_for(task, 1)
+        self.assertIs(self.router._usage_cache, newer_cache)
+        self.assertEqual(old_slot.rate_limited_until, 9999999999)
