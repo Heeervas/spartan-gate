@@ -2556,7 +2556,8 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("generation === loadGeneration", capacity_handler)
         self.assertIn('class="expected-table"', html)
         self.assertIn('id="model-usage"', html)
-        self.assertIn(".expected-table th:nth-child(4)", html)
+        self.assertIn('href="/dashboard-assets/dashboard.css"', html)
+        self.assertIn('class="table-frame"', html)
         self.assertIn("weeklyModelUsage", html)
         self.assertIn("expectedUnits", html)
         self.assertIn("x1EquivalentPercent", html)
@@ -2568,7 +2569,6 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("function renderEfficiency", html)
         self.assertIn("averageMillionTokensPerSession", html)
         self.assertIn("percentPerMillionTokens", html)
-        self.assertIn(".efficiency-table th:nth-child(5)", html)
 
     def test_codex_dashboard_merges_usage_and_slot_cards_with_countdowns(self) -> None:
         html = self.source("dashboard-codex")

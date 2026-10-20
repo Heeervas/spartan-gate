@@ -257,3 +257,16 @@ test('refresh waits for completed progress and reliably restores both controls',
   assert.equal(h.elements.get('refresh').disabled, false);
   assert.equal(h.elements.get('force').textContent, 'Refresh Live');
 });
+
+
+test('changed routing reconciliation restores surviving focus without scrolling', () => {
+  const h = harness();
+  const calls = [];
+  const element = {isConnected: true, focus(options) { calls.push(options.preventScroll); }};
+  h.context.element = element;
+  h.run('restoreFocus(element)');
+  assert.deepEqual(calls, [true]);
+  element.isConnected = false;
+  h.run('restoreFocus(element)');
+  assert.deepEqual(calls, [true]);
+});

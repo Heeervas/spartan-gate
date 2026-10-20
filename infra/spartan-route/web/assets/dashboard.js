@@ -251,6 +251,9 @@
       element.innerHTML = markup;
       renderedMarkup.set(element, markup);
     }
+    function restoreFocus(element) {
+      if (element?.isConnected && document.activeElement !== element) element.focus({ preventScroll: true });
+    }
     function retainDetails(incoming, previous, selector, key) {
       const existing = new Map([...previous.querySelectorAll(selector)].map(item => [item.dataset[key], item]));
       incoming.querySelectorAll(selector).forEach(next => {
@@ -358,10 +361,12 @@
         </details>`;
       }).join('') || '<div class="panel muted" role="status">No sessions recorded yet. New routed requests will appear here.</div>';
       if (renderedMarkup.get(sessionsEl) === markup) return;
+      const focusedElement = document.activeElement;
       const template = document.createElement('template');
       template.innerHTML = markup;
       retainDetails(template.content, sessionsEl, 'details.session-card', 'sessionId');
       sessionsEl.replaceChildren(...template.content.childNodes);
+      restoreFocus(focusedElement);
       renderedMarkup.set(sessionsEl, markup);
       for (const [id, entry] of turnLoads) {
         if (!entry.target.isConnected) { entry.controller.abort(); turnLoads.delete(id); }
