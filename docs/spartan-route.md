@@ -89,10 +89,14 @@ provider quota observation has arrived; check the snapshot/progress status.
 Mutations are not automatically replayed after a network error.
 
 The session query materializes only requests belonging to the selected turns,
-preserving whole-turn metrics, literal filters and exact matching counts. Its
-selection still examines retained history, so the retained dataset and active
-filters continue to affect query time. Capacity multipliers are read in a
-batch. Today's summary processes newly appended requests incrementally; a day
+preserving whole-turn metrics, literal filters and exact matching counts. It
+selects turn metadata first, then scans each selected session once for those
+turns; the two phases share one read snapshot. A covering index keeps selection
+and filters on metadata and prompt-preview pages instead of full context payloads.
+The first startup after this update creates that index; allow extra startup
+time and disk space for its retained metadata and previews. Its selection still
+examines retained history, so the retained dataset and active filters continue
+to affect query time. Capacity multipliers are read in a batch. Today's summary processes newly appended requests incrementally; a day
 change, retention rebuild or external database update invalidates that cache.
 The first summary and exact latency percentiles still depend on the day's data.
 `infra/spartan-route/benchmark_dashboard.py` provides an offline synthetic

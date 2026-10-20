@@ -370,6 +370,11 @@ class TelemetryStore:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_routing_log_session ON routing_log(session_id, id);
+                -- Keep dashboard turn selection on narrow index pages instead
+                -- of loading large context payloads from every log row.
+                CREATE INDEX IF NOT EXISTS idx_routing_log_session_turn_cover
+                    ON routing_log(session_id, turn_id, request_id, id,
+                                   actual_model, requested_reasoning_effort, prompt_preview);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_turn ON routing_log(turn_id, id);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_time ON routing_log(timestamp);
                 CREATE INDEX IF NOT EXISTS idx_routing_log_codex_account_time
@@ -1178,16 +1183,14 @@ class TelemetryStore:
                 JOIN limited_sessions sessions USING(session_id)
                 WHERE turns.turn_rank <= ?
             )
-            SELECT logs.*, turns.effective_turn_id, turns.last_match_id,
-                   turns.matching_turn_count, turns.total_matching_turns,
-                   turns.total_sessions
-            FROM selected_turns turns
-            JOIN routing_log logs ON logs.session_id = turns.session_id
-                AND coalesce(nullif(logs.turn_id, ''), nullif(logs.request_id, ''), 'unknown')
-                    = turns.effective_turn_id
-            ORDER BY logs.id DESC
+            SELECT * FROM selected_turns
+            ORDER BY last_match_id DESC
         """
         with self._dashboard_connection() as connection:
+            # Both phases must observe the same rows if telemetry is appended or
+            # pruned between selecting turns and reading their complete requests.
+            if self.db_path != ":memory:":
+                connection.execute("BEGIN")
             selected_rows = connection.execute(
                 selection_sql,
                 (*params, safe_limit, safe_turn_limit),
@@ -1196,7 +1199,24 @@ class TelemetryStore:
                 (str(row["session_id"]), str(row["effective_turn_id"])): dict(row)
                 for row in selected_rows
             }
-            rows = selected_rows
+            session_turns: dict[str, list[str]] = {}
+            for sid, turn_id in selected:
+                session_turns.setdefault(sid, []).append(turn_id)
+            rows = []
+            for sid, turn_ids in session_turns.items():
+                placeholders = ",".join("?" for _ in turn_ids)
+                # A join driven by selected turns rescans the entire session for
+                # each turn: the session index has no effective-turn expression.
+                # Scan each selected session once and materialize only its chosen
+                # complete turns, including requests that did not match filters.
+                rows.extend(connection.execute(
+                    f"""SELECT * FROM routing_log
+                        WHERE session_id = ?
+                          AND coalesce(nullif(turn_id, ''), nullif(request_id, ''), 'unknown')
+                              IN ({placeholders})
+                        ORDER BY id DESC""",
+                    (sid, *turn_ids),
+                ).fetchall())
 
         sessions: dict[str, dict[str, Any]] = {}
         for raw_row in rows:

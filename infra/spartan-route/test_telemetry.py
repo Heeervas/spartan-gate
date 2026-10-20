@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sqlite3
 import sys
 import tempfile
@@ -34,6 +35,99 @@ def routing_entry(timestamp: str, request_id: str | None = None) -> RoutingLogEn
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_live_sessions_metadata_uses_covering_index_for_filters(self):
+        store = TelemetryStore(":memory:")
+        self.addCleanup(store.close)
+        store.log_routing(RoutingLogEntry(
+            timestamp="2026-10-20", original_model="auto",
+            routed_model="codex/test", actual_model="codex/test", tier="complex",
+            session_id="session", turn_id="turn", request_id="request",
+            requested_reasoning_effort="high", prompt_preview="literal_%",
+        ))
+        for filters in ({}, {"model": "codex/test"}, {"reasoning": "high"},
+                        {"reasoning": "default"},
+                        {"model": "codex/test", "reasoning": "high"},
+                        {"prompt": "literal_%"},
+                        {"model": "codex/test", "reasoning": "high", "prompt": "literal_%"}):
+            with self.subTest(filters=filters):
+                queries = []
+                store._conn.set_trace_callback(queries.append)
+                try:
+                    result = store.live_sessions(**filters)
+                finally:
+                    store._conn.set_trace_callback(None)
+                self.assertEqual(result["matchingSessions"],
+                                 0 if filters.get("reasoning") == "default" else 1)
+                metadata = next(sql for sql in queries if "WITH matching_turns" in sql)
+                plan = store._conn.execute("EXPLAIN QUERY PLAN " + metadata).fetchall()
+                reads = [row["detail"] for row in plan if "routing_log" in row["detail"]]
+                self.assertEqual(len(reads), 1)
+                self.assertIn("USING COVERING INDEX idx_routing_log_session_turn_cover", reads[0])
+
+    def test_live_sessions_selection_and_details_share_file_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "routing.db")
+            store = TelemetryStore(path)
+            self.addCleanup(store.close)
+            store.log_routing(RoutingLogEntry(
+                timestamp="2026-10-20", original_model="auto",
+                routed_model="codex/test", actual_model="codex/test", tier="complex",
+                session_id="session", turn_id="turn", request_id="first",
+            ))
+            original = store._dashboard_connection
+            changed = False
+            def change_before_detail(sql):
+                nonlocal changed
+                if changed or "SELECT * FROM routing_log" not in sql:
+                    return
+                changed = True
+                with sqlite3.connect(path) as external:
+                    external.execute("DELETE FROM routing_log")
+            @contextlib.contextmanager
+            def connection():
+                with original() as reader:
+                    reader.set_trace_callback(change_before_detail)
+                    yield reader
+            with patch.object(store, "_dashboard_connection", connection):
+                result = store.live_sessions()
+            self.assertTrue(changed)
+            self.assertEqual(result["matchingSessions"], 1)
+            self.assertEqual(result["sessions"][0]["metrics"]["requests"], 1)
+            self.assertEqual(store.live_sessions()["matchingSessions"], 0)
+
+    def test_live_sessions_does_not_rescan_long_sessions_per_selected_turn(self):
+        store = TelemetryStore(":memory:")
+        self.addCleanup(store.close)
+        with store._conn:
+            store._conn.executemany(
+                """INSERT INTO routing_log (
+                    timestamp, original_model, routed_model, actual_model, tier,
+                    session_id, turn_id, request_id
+                ) VALUES ('2026-10-20', 'auto', 'codex/test', 'codex/test',
+                          'complex', 'long-session', ?, ?)""",
+                ((f"turn-{turn}", f"request-{turn}") for turn in range(5000)),
+            )
+        # Count virtual-machine work instead of relying on host wall-clock speed.
+        # Selection and detail retrieval must scan this session a bounded number
+        # of times, independent of the number of selected turns.
+        def work(turn_limit):
+            instructions = 0
+            def progress():
+                nonlocal instructions
+                instructions += 1000
+                return 0
+            store._conn.set_progress_handler(progress, 1000)
+            try:
+                result = store.live_sessions(session_limit=1, turn_limit=turn_limit)
+            finally:
+                store._conn.set_progress_handler(None, 0)
+            self.assertEqual(len(result["sessions"][0]["turns"]), turn_limit)
+            self.assertEqual(result["matchingTurns"], 5000)
+            return instructions
+        few_turns = work(1)
+        many_turns = work(20)
+        self.assertLess(many_turns, few_turns * 2)
+
     def test_websocket_event_latency_does_not_pollute_http_header_rollups(self) -> None:
         store = TelemetryStore(":memory:")
         try:
