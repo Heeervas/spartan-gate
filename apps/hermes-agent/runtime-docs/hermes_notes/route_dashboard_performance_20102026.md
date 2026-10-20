@@ -4,6 +4,13 @@ Date: 2026-10-20 (Europe/Madrid).
 Status: source changes applied; runtime activation remains pending. No service
 was rebuilt or restarted during this work.
 
+The obsolete private Route image pin has been removed after a backed-up,
+validated Compose edit. The main-stack command
+`sg up -d --build spartan-route` now builds the repository's Route source and
+selects the resulting Compose image. All other effective service settings are
+unchanged. This configuration fix is applied; the build and live UI acceptance
+are still pending. Ensure the normal 5 GB free-space floor before building.
+
 Routing, Codex and Config now share a responsive operator layout. Codex quota
 rings show raw used percentages, with capacity-weighted units alongside and
 locally ticking reset/expiry counters. A moving countdown is not a fresh

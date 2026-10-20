@@ -11,7 +11,9 @@ All notable changes to Spartan Gate are documented here.
   prevent stale reads or retired quota refreshes from overwriting newer state.
   Bound telemetry materialization to selected turns, batch account lookups,
   isolate heavy SQLite readers and update today's summary incrementally.
-  Source validation is complete; runtime deployment remains pending.
+  Source validation is complete; runtime deployment remains pending. Record
+  the applied private image-pin correction so the normal Route build command
+  can select the current source.
 
 - Preserve reviewed operator updates: guarded cleanup of obsolete host Codex
   builds, safe workstation mount preparation, explicit Hermes recreation
