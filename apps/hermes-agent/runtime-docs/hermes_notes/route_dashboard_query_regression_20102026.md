@@ -2,6 +2,12 @@
 
 Status: source fix applied; runtime activation remains pending.
 
+The dashboard now publishes sessions and summary independently. A timed-out
+read waits for the next scheduled poll instead of immediately replaying work
+that may still be running on the server. Returning to a visible tab reuses an
+active background read. The five-second deadline and stale-response guards
+remain in place.
+
 The live-session detail join repeated a session index scan for each selected
 turn. The default 30-session, 20-turn view amplified work that the earlier
 10-session, 5-turn synthetic benchmark understated. The corrected reader first
@@ -19,6 +25,11 @@ focused tests preserve complete-turn metrics and incremental summary behavior.
 Source-only validation uses existing dependencies without a build or restart.
 
 The live authenticated sessions endpoint took 18.084 seconds before this fix.
+The exact browser query (30 sessions, 12 turns) took 13.540 seconds. Health
+remained responsive during the slow query, and active logs showed no errors.
+The reported inference slowdown has not been independently attributed to a
+specific inference-path defect; this correction removes measured dashboard
+database work and duplicate timeout requests.
 A read-only same-snapshot comparison of the detail-scan correction alone took
 11.738 seconds and preserved the baseline payload hash; retained metadata
 selection remained the main cost. A read-only experiment copied real metadata
@@ -27,5 +38,6 @@ into RAM and indexed only that projection: the complete candidate query took
 and index creation took 11.123 seconds. These projected timings demonstrate the
 query mechanism; they are not deployed latency or first-startup guarantees.
 
-Validation: all 441 Route Python tests passed using the existing offline image;
-48 telemetry/query tests also passed after adding prompt-preview index coverage.
+Validation: the final integrated 441 Route Python tests and 41 dashboard
+JavaScript tests passed using existing dependencies. Independent review checked
+covering-index plans, legacy migration, snapshot consistency and bounded work.

@@ -7,7 +7,9 @@ All notable changes to Spartan Gate are documented here.
 - Fix repeated Spartan Route dashboard session scans when selecting multiple
   turns. Read selected-turn metadata and complete requests in one snapshot,
   scanning each selected session once, with a covering metadata index to avoid
-  loading retained context payloads during selection and filtering.
+  loading retained context payloads during selection and filtering. Publish
+  sessions and summary independently, avoid immediate timeout replay, and reuse
+  active background reads when returning to a tab.
 
 - Redesign Spartan Route's Routing, Codex and Config dashboards with responsive
   navigation, quota percentage rings and live countdowns. Preserve expanded

@@ -1,5 +1,27 @@
 # Current State
 
+## Spartan Route sessions regression corrected in source (2026-10-20)
+
+After the dashboard deployment, the exact browser sessions query took 13.540
+seconds, exceeding its five-second client deadline. Active logs had no errors,
+and health remained responsive. Investigation confirmed repeated scans of each
+selected session and a non-covering metadata scan over wide context rows.
+The earlier synthetic benchmark did not represent this production cost.
+
+The fix adds a covering selection/filter index, reads complete selected turns
+once per session within one snapshot, avoids immediate timeout replay and
+publishes sessions independently of summary reads. Real metadata projected into
+an indexed RAM table completed the candidate query in 0.449 seconds; this is
+mechanism validation, not a deployed latency guarantee. The final integrated
+441 Python and 41 JavaScript tests passed, with independent review.
+
+Source fixes are locally committed. Runtime activation awaits a separate
+low-disk exception: the normal 5 GB floor is unavailable and the earlier
+exception covered only source/tests. A small offline image patch can reuse the
+installed runtime and replace the two reviewed files, followed by Route-only
+recreation and live acceptance. The reported inference slowdown has not yet
+been attributed to an inference-path defect.
+
 ## Spartan Route dashboard source completed (2026-10-20)
 
 Reviewed existing operator changes were committed with user approval before
