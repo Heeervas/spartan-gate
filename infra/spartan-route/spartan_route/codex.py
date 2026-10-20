@@ -3397,6 +3397,7 @@ class CodexRouter:
         return result
 
     async def _fetch_usage_snapshot(self, slot_indexes: set[int] | None = None) -> dict[str, Any]:
+        generation = int(getattr(self, "_usage_generation", 0))
         telemetry_errors: list[dict[str, str]] = []
         try:
             persisted_reset = self.telemetry.reset_credit_snapshots()
@@ -3446,26 +3447,29 @@ class CodexRouter:
         usage_records = [record for item in fetched for record in item["usageRecords"]]
         reset_records = [item["resetRecord"] for item in fetched if item.get("resetRecord")]
 
-        for operation, persist in (
-            (
-                "usage_snapshots",
-                lambda: self.telemetry.upsert_usage_snapshots(
-                    usage_records,
-                    current_account_keys=set(groups),
-                    full_pool_refresh=slot_indexes is None,
+        # reset_state can retire this targeted operation while its network
+        # fetch is pending. Validate before either durable write, not only before
+        # publishing the final memory cache. There are no awaits in this batch.
+        if generation == int(getattr(self, "_usage_generation", 0)):
+            for operation, persist in (
+                (
+                    "usage_snapshots",
+                    lambda: self.telemetry.upsert_usage_snapshots(
+                        usage_records,
+                        current_account_keys=set(groups),
+                        full_pool_refresh=slot_indexes is None,
+                    ),
                 ),
-            ),
-            ("reset_credit_snapshots", lambda: self.telemetry.upsert_reset_credits(reset_records)),
-        ):
-            try:
-                persist()
-            except Exception as exc:
-                self.telemetry.record_health_failure("write", operation)
-                print(f"[spartan-route] telemetry {operation} write failed ({type(exc).__name__})", file=sys.stderr)
-                telemetry_errors.append({"code": "telemetry_persistence_failed", "operation": operation})
-            else:
-                self.telemetry.record_health_success("write", operation)
-
+                ("reset_credit_snapshots", lambda: self.telemetry.upsert_reset_credits(reset_records)),
+            ):
+                try:
+                    persist()
+                except Exception as exc:
+                    self.telemetry.record_health_failure("write", operation)
+                    print(f"[spartan-route] telemetry {operation} write failed ({type(exc).__name__})", file=sys.stderr)
+                    telemetry_errors.append({"code": "telemetry_persistence_failed", "operation": operation})
+                else:
+                    self.telemetry.record_health_success("write", operation)
         result = {
             "accounts": accounts,
             "slotErrors": slot_errors,

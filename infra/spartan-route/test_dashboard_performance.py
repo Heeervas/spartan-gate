@@ -300,3 +300,39 @@ class DashboardRefreshRaceTests(unittest.IsolatedAsyncioTestCase):
         latest = await self.router.usage_snapshot()
         self.assertNotIn("refreshError", latest)
         self.assertEqual(latest["accounts"][0]["weekly"]["usedPercent"], 80)
+
+    async def test_reset_retires_targeted_persistence_before_new_full_completes(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def fetch(key, auth, slots, persisted, clear):
+            nonlocal calls
+            calls += 1
+            reading = calls
+            if reading == 1:
+                entered.set()
+                await release.wait()
+            result = self.fixture.live_usage_result(key, slots, used_percent=20 if reading == 1 else 80)
+            result["resetRecord"] = {
+                "account_key": key, "slot_index": 0, "available_count": reading,
+                "details_available": False, "credits": [],
+            }
+            return result
+
+        self.router._fetch_usage_account = fetch
+        old_target = asyncio.create_task(self.router.usage_snapshot(force=True, slot_indexes={0}))
+        await asyncio.wait_for(entered.wait(), 1)
+        try:
+            with patch.object(self.router, "_init_slots", lambda: None):
+                self.router.reset_state()
+            self.router.slots = [CodexSlot(0, auth=self.auth)]
+            self.router.trigger_usage_refresh()
+            await asyncio.wait_for(asyncio.shield(self.router._usage_refresh_task), 1)
+            self.assertEqual(self.store.usage_snapshots()[0]["used_percent"], 80)
+        finally:
+            release.set()
+            await asyncio.wait_for(old_target, 1)
+        self.assertEqual(self.store.usage_snapshots()[0]["used_percent"], 80)
+        self.assertEqual(self.store.reset_credit_snapshots()[self.auth.account_key]["availableCount"], 2)
+        latest = await self.router.usage_snapshot()
+        self.assertEqual(latest["accounts"][0]["weekly"]["usedPercent"], 80)
