@@ -1,5 +1,31 @@
 # Native external skill links validation
 
+## Optional quality CLI image acceptance
+
+The build/recreation and runtime canary contract is documented in
+`docs/operations.md` under Optional quality CLIs; accepted evidence is in
+`docs/reviews/hermes-quality-cli-20261021.md`. These are explicit operational
+checks, not a new native lint/quality gate. Use the reviewed deployment's actual
+runtime UID/GID, writable scratch/cache and read-only root. Preserve profile
+disables/membership and existing networking/resource policy. Optional missing
+analyzers remain reported coverage gaps.
+
+Proven operator build/activation commands, after source review and capacity gates:
+
+```sh
+sg build hermes
+# Run the isolated image canary before activation.
+sg up -d --no-deps --no-build --pull never --force-recreate hermes
+```
+
+The image canary must exercise canonical Qlty commands, pinned version/ownership,
+Desloppify import isolation, actual Bandit detection and preparation. Repeat the
+bounded local check in the live container and verify ordinary/login-shell
+availability and native controls before accepting deployment. The 2026-10-21
+canary used `--skip-slow` for explicitly omitted optional duplication coverage.
+
+## Native external skill links checks
+
 Scope: the external-skill sync build-time patch, its focused regression tests, and Dockerfile integration. TOP quality floor; immutable baseline `75651cc0c5baa1db5a6523b790564988698f2a43`. This scoped policy does not claim repository-wide enforcement.
 
 The external canonical measurement dependency is builder-assurance v1.1.0, resolved at `$HOME/.agents/skills/shared/builder-assurance` after canonical activation. Before activation its unchanged measurement implementation resolves at `$HOME/.agents/skills/shared-builder-assurance`; use that existing path for preparation checks. Its schema is vendored unchanged. Run from the repository root after activation:

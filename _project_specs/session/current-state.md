@@ -1,5 +1,20 @@
 # Current State
 
+## Optional Hermes quality CLIs deployed (2026-10-21)
+
+Qlty 0.659.0 and Desloppify 1.0 are baked into the rebuilt, healthy Hermes
+container. Actual native Pi Builder/Reviewer handled implementation, independent
+findings, correction and source re-review. Image and live runtime-user canaries
+passed canonical commands, import isolation, Qlty analysis, Bandit detection and
+review preparation. Only Hermes changed identity during this cutover; existing
+profile controls, mounts, networks, limits and browser variant were preserved.
+
+Desloppify's slow duplication coverage requires an optional analyzer not installed
+here. Bounded `--skip-slow` scans retain Python security checks and report the
+omission. See the runtime note `quality_tools_21102026.md` and
+`docs/reviews/hermes-quality-cli-20261021.md`. No automatic quality gate, skill
+enrollment, trusted subjective score import or publication was added.
+
 ## Spartan Route sessions regression corrected and deployed (2026-10-20)
 
 After the dashboard deployment, the exact browser sessions query took 13.540

@@ -1,9 +1,10 @@
 # Quality tools — 21 October 2026
 
-Status: applied to image source; build, recreation and live acceptance pending.
+Status: applied, rebuilt, recreated and live-verified on 21 October 2026.
 
-Hermes image source now installs Qlty 0.659.0 and Desloppify 1.0. Availability
-requires a reviewed image rebuild and Hermes recreation, not a gateway restart.
+The running Hermes image contains Qlty 0.659.0 and Desloppify 1.0. Native Pi
+Builder prepared the source; independent Pi Reviewer found three integration
+defects, which Builder corrected and Reviewer rechecked before the build.
 
 - `qlty` on PATH preserves native CLI syntax and global-option placement.
   Telemetry is forced off and upgrade checks are skipped without duplicating
@@ -16,8 +17,9 @@ requires a reviewed image rebuild and Hermes recreation, not a gateway restart.
   process, restricts PYTHONPATH to root-owned policy bootstrap, and enables safe
   startup imports. Mutable Hermes extra-site/project paths cannot shadow pinned
   dependencies through inherited PYTHONPATH. Proxy/environment behavior remains;
-  global Hermes configuration and distributions are unchanged. Other external
-  analyzers and model runners are not added.
+  the launcher changes only its own process environment and installs tool
+  packages outside Hermes' venv. Other external analyzers and model runners are
+  not added.
 - Qlty is advisory supporting evidence. Desloppify deep audits require explicit
   scope and the shared manual prepare/import method; there is no native
   Pi/Hermes runner integration or trusted-score claim.
@@ -28,6 +30,19 @@ requires a reviewed image rebuild and Hermes recreation, not a gateway restart.
   wheel metadata and `/usr/local/share/licenses/desloppify/LICENSE`. Review
   redistribution terms before publishing images or third-party services.
 
-Pending acceptance: check versions, actual runtime UIDs, ordinary/login shells,
-root ownership and non-writability, isolated full-extra imports and a disposable
-local analysis fixture. See the optional quality CLI section in operations docs.
+Acceptance passed: no-network/read-only-root image canary, actual runtime UID/GID,
+ordinary/login shells, ownership/non-writability, hostile-import resistance,
+Qlty initialization/metrics/SARIF, actual Bandit B602 detection and Desloppify
+review preparation. The live container repeated the bounded local-analysis
+canary and is healthy. Default/Builder/Reviewer inventories, disables and native
+resolution remain unchanged; CLI installation does not enroll new profile skills.
+
+Optional `jscpd` is not installed. Desloppify's full scan can attempt an npx
+fallback for duplication detection; this is not permission to download it. Use
+an explicitly bounded `scan --path . --skip-slow --no-badge` to omit slow
+duplication checks while retaining Python security checks, or separately approve
+and provision the missing analyzer. Do not report omitted coverage as clean.
+
+Only Hermes changed container identity during this cutover. Existing mounts,
+networks, resource limits, read-only root and Camofox-only mode were preserved.
+The prior image and private recovery receipts were retained. No push occurred.

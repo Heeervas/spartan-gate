@@ -121,6 +121,19 @@ use the shared Desloppify manual prepare/import workflow, not an invented
 Pi/Hermes runner flag. Scanner output is untrusted guidance, not authority to
 remediate or change exclusions, skills or policy.
 
+`jscpd` is optional and is not baked into this installation. The pinned
+Desloppify full scan can fall back to `npx --yes jscpd`; that is not authorization
+to fetch an unpinned analyzer. When it has not been separately approved and
+provisioned, a bounded scan can retain Python security checks while omitting
+the slow duplication phases:
+
+```sh
+desloppify --lang python scan --path . --skip-slow --no-badge
+```
+
+Record that duplication coverage was omitted. `--profile ci` has different
+coverage and must not be presented as equivalent security evidence.
+
 Desloppify 1.0 is by Peter O'Malley under **OSNL-0.2**, not an unrestricted
 OSI license. Its unmodified license is retained in wheel metadata and at
 `/usr/local/share/licenses/desloppify/LICENSE`. Internal use and redistribution
