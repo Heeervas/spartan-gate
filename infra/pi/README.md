@@ -91,8 +91,9 @@ Keep the existing authorization expression. The marker must be configured in
 the provider's assembled transport headers; merely testing the selected model
 is insufficient for redirected/virtual calls. The extension adds session/origin
 headers only to marker-bearing requests, after awaited server registration.
-Reload Pi after installing or updating. Remove the entry and helper directory
-and reload to uninstall. The separate cache extension can remain installed.
+Restart the Pi process after installing or updating; `/reload` can retain cached
+`.mjs` helper imports after an update. Remove the entry and helper directory and
+restart to uninstall. The separate cache extension can remain installed.
 
 The versioned `gateway.py` preserves `header`, `catalog`, and `check` commands
 from the local discovery helper and adds JSON-only `status`, `register`, and

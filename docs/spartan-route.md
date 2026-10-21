@@ -6,6 +6,9 @@ as the full-stack OpenAI-compatible router while keeping the existing
 runtime profiles for compatibility. `packages/clawroute/` remains in the repo
 for the legacy lower-tier addon and source-package work.
 
+For Pi's compact quota display and persistent session consumption, see
+[Pi session usage through Spartan Route](pi-route-usage.md).
+
 ## Implementation Choice
 
 Options considered:

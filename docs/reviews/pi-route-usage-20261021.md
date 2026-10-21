@@ -21,7 +21,7 @@ the integrated production candidate, plus behavioral checks and renewed review.
 ## Implementation acceptance
 
 Backend and client implementation passed integrated checks and independent batch
-reviews. Installation, deployment and live acceptance remain pending below.
+reviews. Installation, Route-only deployment and live acceptance are complete.
 
 
 ## Bounded legacy integration allowances
@@ -82,3 +82,50 @@ have no strong findings. The reviewed client SHA-256 is
 `f73eb48f87d9eb2c48df31a001a06e6c896409eb2f4558040dd78e53c4c5914f`;
 core SHA-256 is
 `3cb2ec16770144e36d8bf0ab28bb68cef4962e5c14f36a1bba1ba1f4c7ced4e4`.
+
+## Deployed and live acceptance
+
+The final display polish replaces unsupported reset glyphs with plain-text
+separators. Its focused native checks, renewed independent review and fresh
+all-scope TOP report pass with the same five legacy allowances. Final core
+SHA-256: `969af444cb11f980b61d45ef80be06605213dd385ac025a060866627f1de427d`.
+
+The production image uses the existing Route runtime base and copies only the
+reviewed backend package. Image identity:
+`sha256:39ea71ee2c3a42dc69c9c9753358c0adc5ad1f0296c6df60e06bb1658fc404c7`;
+revision label `e9e25285eaaa2674a42fdcc7d5dbb7904ded22c2`. All five changed
+production-module hashes match the reviewed source. All 460 Python tests pass
+inside its Python 3.12 runtime, using the image's own package and static assets.
+
+Before cutover, the SQLite backup passed quick_check and provider/private Compose
+backups were guarded against concurrent edits. The independently reviewed
+operation changed only the private Route image pin, validated Compose and used
+the normal main-stack helper for a graceful Route-only stop and recreation.
+The old process exited cleanly without OOM. The new process is healthy with zero
+database failures. Hermes, Camofox and Caddy container identities are unchanged.
+The prior image and database remain available for recovery; rollback must not
+replace newer live accounting with the older database backup.
+
+The installed Pi files match the reviewed source; the existing provider gained
+only its constant marker. Authentication and global Pi settings are unchanged.
+Actual native Pi TUI views were exercised in a separate synthetic HTTPS session
+at 80 and 100 columns, including pool, accounts, lease and numeric details.
+The native footer remains visible, and the plain reset labels remove the missing
+glyph seen in the original capture. These are terminal captures rendered for
+inspection, not browser screenshots. A fresh Pi process is required after helper
+updates because native reload can retain cached `.mjs` imports.
+
+Bounded real Pi RPC acceptance used two short prompts, manual native compaction,
+then a fresh process resuming the same persisted session and one final prompt.
+Warming and native/provider retries were disabled in the disposable agent only.
+Exactly four observed attempts reported usage, with no missing/incomplete attempts
+or tracking gaps. Tokens progressed 469 → 969 → 1428 during compaction; resume
+preserved 1428 exactly, then the final prompt raised the total to 2068. A separate
+read-only SQLite connection confirmed the durable total and attempt counts.
+The authenticated live endpoint returned an active session lease and a calibrated
+unit estimate; shared refresh admission also succeeded without credit redemption.
+These measurements validate observed accounting, not billing-exact consumption.
+
+Operational review also corrected the acceptance script's default retries,
+bounded subprocess cleanup and exact target-image guard before execution. Private
+logs and sanitized evidence are retained with the operator's local backups.

@@ -5,8 +5,10 @@ to the existing Spartan Route provider. It uses native Pi extension hooks and th
 existing authenticated gateway. Pi itself is unchanged.
 
 See [the Pi extension instructions](../infra/pi/README.md) for installation and
-focused checks. Select a `spartan-route` Chat Completions model and reload Pi after
-installing or updating the managed extension files and provider marker.
+focused checks. Select a `spartan-route` Chat Completions model and restart Pi after
+installing or updating the managed extension files and provider marker. A full
+process restart also clears Node's cached helper imports; `/reload` alone can
+retain an older `.mjs` helper after an update.
 
 ## Display and commands
 
