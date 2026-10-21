@@ -210,6 +210,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_async_completion_scope.py \
     && python3 /opt/hermes/patches/patch_lsp_sdk_repair.py \
     && python3 /opt/hermes/patches/patch_cron_thread_diagnostic.py \
+    && python3 /opt/hermes/patches/patch_external_skill_links.py \
     && python3 /opt/hermes/patches/patch_stage2_image_dependencies.py \
     && python3 /opt/hermes/patches/freeze_image_features.py \
     && if [ -f /etc/spartan/hermes-browser-mode ]; then \
