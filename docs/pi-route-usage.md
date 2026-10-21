@@ -31,6 +31,14 @@ have 500 units. Unknown accounts and unavailable windows remain visible as cover
 gaps. A pool reset countdown refers to the next account reset, not a simultaneous
 reset of the entire pool.
 
+When full-pool coverage is incomplete, the footer labels the display `partial`
+and shows the balance of observed accounts only, weighted separately for each
+window. Details disclose known and unknown sources and their known capacity.
+Unknown capacity stays unknown; the display does not turn this subset into a
+full-pool percentage. Fully missing or expired observations remain unavailable.
+Small positive session estimates use extra precision or `<0.001u` instead of
+rounding down to zero.
+
 Lease scope reads the actual affinity recorded for tagged requests, including
 explicit prompt-cache keys. It never selects or prolongs a lease. A global lease
 is labeled global; disabled, expired and not-yet-observed bindings are unavailable.

@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Show explicitly partial Pi quota balances when some enabled sources lack
+  windows or known capacity, preserving unknown full-pool totals. Keep tiny
+  positive session estimates visible instead of rounding them to zero.
+
 - Add Pi's minimal Route quota display with pool, account and exact lease views,
   persistent session consumption, calibrated unit estimates and bounded outage
   recovery. Preserve native compaction, resume and separate subagent sessions.

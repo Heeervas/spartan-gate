@@ -71,10 +71,62 @@ function quotaFooter(windows, now) {
   const stale = top.stale || bottom.stale ? '~' : '';
   return `[${barCells(top, bottom)}]${stale} 5h:${resetCountdown(windows.fiveHour.resetAt, now)} wk:${resetCountdown(windows.weekly.resetAt, now)}`;
 }
+function quotaUnits(value) {
+  if (!Number.isFinite(value) || value < 0) return '~?u';
+  if (value === 0) return '0.00u';
+  if (value < 0.001) return '<0.001u';
+  return `~${value.toFixed(value < 0.01 ? 3 : 2)}u`;
+}
+function uniqueAccounts(accounts) {
+  const unique = new Map();
+  for (const account of accounts) {
+    if (!unique.has(account.id)) unique.set(account.id, account);
+  }
+  return [...unique.values()];
+}
+function subsetSources(accounts, key, age, now) {
+  return accounts.flatMap((account) => {
+    const capacity = account.capacityMultiplier;
+    const window = agedWindows(account, age)[key];
+    if (!Number.isFinite(capacity) || capacity <= 0 || !window) return [];
+    if (!Number.isFinite(Date.parse(window.updatedAt)) || !Number.isFinite(Date.parse(window.resetAt))) return [];
+    const usable = percentage(window, now);
+    if (!usable || window.remainingPercent < 0 || window.remainingPercent > 100) return [];
+    const ageSeconds = window.ageSeconds ?? (now - Date.parse(window.updatedAt)) / 1000;
+    return [{ window: { ...window, ageSeconds, stale: usable.stale }, capacity }];
+  });
+}
+function subsetWindow(sources) {
+  const capacity = sources.reduce((sum, source) => sum + source.capacity, 0);
+  if (!Number.isFinite(capacity) || capacity <= 0) return null;
+  const remaining = sources.reduce((sum, source) => sum + source.window.remainingPercent / 100 * source.capacity, 0);
+  return { remainingPercent: remaining / capacity * 100,
+    ageSeconds: Math.max(...sources.map(({ window }) => window.ageSeconds)),
+    updatedAt: new Date(Math.min(...sources.map(({ window }) => Date.parse(window.updatedAt)))).toISOString(),
+    resetAt: new Date(Math.min(...sources.map(({ window }) => Date.parse(window.resetAt)))).toISOString(),
+    stale: sources.some(({ window }) => window.stale) };
+}
+function poolDisplay(document, windows, age, now) {
+  const accounts = uniqueAccounts(document.accounts ?? []);
+  const unresolved = (document.unresolvedSlots ?? []).length;
+  const result = { windows: { ...windows }, partial: false, coverage: [] };
+  for (const [key, label] of [['fiveHour', '5h'], ['weekly', 'weekly']]) {
+    const sources = subsetSources(accounts, key, age, now);
+    const capacity = sources.reduce((sum, source) => sum + source.capacity, 0);
+    const unknown = accounts.length - sources.length + unresolved;
+    result.coverage.push(`${label}: ${sources.length} known / ${unknown} unknown sources; known capacity ${compact(capacity)}x`);
+    if (windows[key]?.remainingPercent !== null) continue;
+    const subset = subsetWindow(sources);
+    if (subset) { result.windows[key] = subset; result.partial = true; }
+  }
+  const unavailable = !percentage(windows.fiveHour, now) || !percentage(windows.weekly, now);
+  const incomplete = Object.values(windows).some((window) => window?.capacityIncomplete);
+  result.details = `${unavailable ? 'Full-pool percentage unavailable; ' : ''}${incomplete ? 'capacity incomplete; ' : ''}${result.coverage.join('\n')}`;
+  return result;
+}
 function sessionCounters(session, fallback) {
   const totals = session.totals ?? fallback;
-  const units = Number.isFinite(session.estimatedQuotaUnits) ? session.estimatedQuotaUnits.toFixed(2) : '?';
-  return { totals, label: `${compact(totals.totalTokens)} tok ~${units}u` };
+  return { totals, label: `${compact(totals.totalTokens)} tok ${quotaUnits(session.estimatedQuotaUnits)}` };
 }
 function trackingLabel(coverage) {
   return coverage.trackingIncomplete || coverage.usageMissingAttempts || coverage.incompleteAttempts ? ' incomplete' : '';
@@ -91,10 +143,12 @@ export function presentation(snapshot, view, fallback, offline = false, now = Da
   const session = document.session ?? {};
   const scope = scopeView(document, view);
   const age = Math.max(0, (now - (document.receivedAt ?? now)) / 1000);
-  const windows = agedWindows(scope.windows, age);
+  const sourceWindows = agedWindows(scope.windows, age);
+  const pool = view === 'lease' ? { windows: sourceWindows, partial: false, details: '' } : poolDisplay(document, sourceWindows, age, now);
+  const windows = pool.windows;
   const counters = sessionCounters(session, fallback);
   const flags = `${offline ? ' offline' : ''}${document.session ? '' : ' native fallback'}${trackingLabel(session.coverage ?? {})}`;
-  const status = `Route${scope.prefix} ${quotaFooter(windows, now)} · ${counters.label}${flags}`;
+  const status = `Route${scope.prefix} ${quotaFooter(windows, now)}${pool.partial ? ' partial' : ''} · ${counters.label}${flags}`;
   const rows = view === 'accounts' ? accountRows(document.accounts ?? [], age, now) : undefined;
-  return { status, rows, details: usageDetails(status, windows, session, counters.totals, now) };
+  return { status, rows, details: usageDetails(status, windows, session, counters.totals, now) + `\n${pool.details}` };
 }

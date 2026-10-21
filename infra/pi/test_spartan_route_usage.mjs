@@ -311,3 +311,85 @@ test('expired resets, stale compact bar, single window and global lease state re
   assert.match(presentation(snapshot, 'lease', {}, false, now).status, /lease global active/);
   assert.match(presentation(snapshot, 'accounts', {}, false, now).rows[0], /rate_limited/);
 });
+
+function partialSnapshot(now) {
+  const observed = (remainingPercent) => ({ remainingPercent, ageSeconds: 10,
+    updatedAt: new Date(now - 10000).toISOString(), resetAt: new Date(now + 3600000).toISOString() });
+  return { ...canonical(), receivedAt: now,
+    pool: { fiveHour: { ...observed(null), capacityUnits: 700, remainingUnits: 87, accounts: 2, unknownAccounts: 2, capacityIncomplete: true },
+      weekly: { ...observed(null), capacityUnits: 700, remainingUnits: 522, accounts: 3, unknownAccounts: 1, capacityIncomplete: true } },
+    accounts: [
+      { id: 'account-a', capacityMultiplier: 1, fiveHour: observed(50), weekly: observed(75) },
+      { id: 'account-b', capacityMultiplier: 5, fiveHour: null, weekly: observed(75) },
+      { id: 'account-c', capacityMultiplier: 1, fiveHour: observed(37), weekly: observed(72) },
+    ], unresolvedSlots: [{ slotIndex: 9, state: 'identity_unknown' }] };
+}
+
+test('partial pool shows capacity-weighted observed subset and explicitly incomplete full-pool coverage', () => {
+  const now = Date.parse('2026-01-01T00:00:00Z');
+  const snapshot = partialSnapshot(now);
+  const before = structuredClone(snapshot);
+  const display = presentation(snapshot, 'pool', {}, false, now);
+  assert.match(display.status, /partial/);
+  assert.doesNotMatch(display.status, /quota n\/a/);
+  assert.match(display.details, /5h 44% wk 75%/);
+  assert.match(display.details, /5h: 2 known \/ 2 unknown sources; known capacity 2x/);
+  assert.match(display.details, /weekly: 3 known \/ 1 unknown sources; known capacity 7x/);
+  assert.match(display.details, /Full-pool percentage unavailable/);
+  assert.match(display.details, /capacity incomplete/);
+  assert.deepEqual(snapshot, before);
+});
+
+test('partial eligibility applies receipt aging, expiry, timestamp validation, capacity validity and account deduplication', () => {
+  const now = Date.parse('2026-01-01T00:00:00Z');
+  const snapshot = partialSnapshot(now);
+  snapshot.accounts.push(structuredClone(snapshot.accounts[0]));
+  const baseline = presentation(snapshot, 'pool', {}, false, now);
+  assert.match(baseline.details, /5h: 2 known \/ 2 unknown sources; known capacity 2x/);
+  assert.match(presentation(snapshot, 'pool', {}, false, now + 121000).status, /\]~.*partial/);
+  assert.match(presentation(snapshot, 'pool', {}, false, now + 3601000).status, /quota n\/a/);
+  for (const capacity of [NaN, Infinity, -1, 0, '5']) {
+    const invalid = partialSnapshot(now);
+    invalid.accounts[0].capacityMultiplier = capacity;
+    invalid.accounts[2].fiveHour.resetAt = new Date(now - 1).toISOString();
+    assert.match(presentation(invalid, 'pool', {}, false, now).details, /5h: 0 known \/ 4 unknown sources; known capacity 0x/);
+  }
+  const timestampAge = partialSnapshot(now);
+  for (const account of timestampAge.accounts) {
+    if (account.fiveHour) { delete account.fiveHour.ageSeconds; account.fiveHour.updatedAt = new Date(now - 121000).toISOString(); }
+  }
+  assert.match(presentation(timestampAge, 'pool', {}, false, now).status, /\]~.*partial/);
+  const malformed = partialSnapshot(now);
+  malformed.accounts[0].fiveHour.updatedAt = 'invalid';
+  malformed.accounts[2].fiveHour.resetAt = null;
+  assert.match(presentation(malformed, 'pool', {}, false, now).details, /5h: 0 known/);
+});
+
+test('authoritative pool percentages stay unchanged and entirely missing coverage explains quota n/a', () => {
+  const now = Date.parse('2026-01-01T00:00:00Z');
+  const snapshot = partialSnapshot(now);
+  snapshot.pool.fiveHour.remainingPercent = 60;
+  snapshot.pool.weekly.remainingPercent = 80;
+  const display = presentation(snapshot, 'pool', {}, false, now);
+  assert.doesNotMatch(display.status, /partial/);
+  assert.match(display.details, /5h 60% wk 80%/);
+  snapshot.pool.fiveHour.remainingPercent = null;
+  snapshot.pool.weekly.remainingPercent = null;
+  for (const account of snapshot.accounts) { account.fiveHour = null; account.weekly = null; }
+  const missing = presentation(snapshot, 'pool', {}, false, now);
+  assert.match(missing.status, /quota n\/a/);
+  assert.doesNotMatch(missing.status, /partial/);
+  assert.match(missing.details, /5h: 0 known \/ 4 unknown sources/);
+  assert.match(missing.details, /Full-pool percentage unavailable/);
+});
+
+test('quota estimate formatting preserves tiny positive values and rejects invalid estimates', () => {
+  const cases = [[0, '0.00u'], [0.004, '~0.004u'], [0.001, '~0.001u'], [0.0002, '<0.001u'], [0.03, '~0.03u'], [-0.1, '~?u'], [NaN, '~?u'], [Infinity, '~?u']];
+  for (const [estimate, expected] of cases) {
+    const snapshot = canonical();
+    snapshot.session.estimatedQuotaUnits = estimate;
+    const status = presentation(snapshot, 'pool', {}, false).status;
+    assert.ok(status.includes(expected), `${estimate}: ${status}`);
+    if (estimate > 0 && estimate < 0.01) assert.doesNotMatch(status, /~0\.00u/);
+  }
+});

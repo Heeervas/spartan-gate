@@ -28,3 +28,11 @@ remain unchanged. Preserve newer Route data if rolling back the image.
 
 See `docs/pi-route-usage.md`, `infra/pi/README.md` and the dated review evidence
 under `docs/reviews/` for the contract, installation, limitations and recovery.
+
+Applied display correction: incomplete pool coverage now shows a clearly marked
+partial balance for observed accounts, weighted separately by window. Unknown
+capacity is not assumed available; details retain per-window coverage and the
+unknown full-pool percentage. Tiny positive unit estimates retain precision.
+The installed helper passed independent review, focused checks and native
+terminal comparison. This correction changes no routing or session accounting;
+restart existing Pi processes to load it.

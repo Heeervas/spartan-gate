@@ -130,6 +130,15 @@ have no polling timers; headless requests still attempt origin registration.
 operations and all polling; a later explicit Route provider request still
 attempts lazy registration. Other selected providers have no usage polling or
 Route status. The actual assembled marker remains the transport boundary.
+When full-pool percentages are unknown, valid reported account windows can
+provide a capacity-weighted known subset. The footer labels this `partial`; it
+does not represent the full pool. `/spartan-usage` reports per-window known and
+unknown source counts and observed capacity, while full-pool coverage remains
+unavailable. Unresolved slots count as sources, since they may share an account.
+Missing, expired, malformed or invalid-capacity sources never enter the subset.
+If no valid sources remain, quota stays unavailable. Positive quota estimates
+below 0.01 units keep three decimals; values below 0.001 display `<0.001u`.
+
 Single known windows show their percentage explicitly; absent or expired windows
 show unavailable. Global lease scope and nonready account states remain visible.
 Quota older than 120 seconds is stale, and older than one hour is unavailable.
