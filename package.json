@@ -18,9 +18,13 @@
     "whitelist": "bash scripts/whitelist-domain.sh",
     "add-port": "bash scripts/add-port.sh",
     "clawroute:build": "npm --prefix packages/clawroute run build",
-    "clawroute:test": "npm --prefix packages/clawroute test"
+    "clawroute:test": "npm --prefix packages/clawroute test",
+    "pi:quality": "bash scripts/check-pi-route-quality.sh"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "oxlint": "1.80.0"
   }
 }

@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: '1.0'
 policy_id: repository-quality
 minimum_quality_expected: top
 change_scope:
@@ -6,7 +6,13 @@ change_scope:
   include_untracked: true
   detect_file_renames: true
 scope:
-  include: ["apps/hermes-agent/patches/patch_external_skill_links.py", "apps/hermes-agent/test_external_skill_links_patch.py", "apps/hermes-agent/Dockerfile"]
+  include:
+  - apps/hermes-agent/patches/patch_external_skill_links.py
+  - apps/hermes-agent/test_external_skill_links_patch.py
+  - apps/hermes-agent/Dockerfile
+  - infra/pi/**
+  - infra/spartan-route/**
+  - scripts/check-pi-route-quality.sh
   exclude: []
   languages: []
 baseline:
@@ -14,23 +20,45 @@ baseline:
   ref: 75651cc0c5baa1db5a6523b790564988698f2a43
   unavailable: error
 adapters:
-  - id: core-source
-    type: builtin
-    implementation: core_source_v1
-    languages: []
-    required_at: soft
-  - id: python-ast
-    type: builtin
-    implementation: python_ast_v1
-    languages: [python]
-    required_at: standard
+- id: core-source
+  type: builtin
+  implementation: core_source_v1
+  languages: []
+  required_at: soft
+- id: python-ast
+  type: builtin
+  implementation: python_ast_v1
+  languages:
+  - python
+  required_at: standard
+- id: oxlint-complexity
+  type: external_json
+  implementation: external_metrics_v2
+  paths:
+  - .agents/oxlint-metrics.json
+  languages:
+  - javascript
+  - typescript
+  required_at: standard
 thresholds:
-  python_ast_v1.function_logical_lines: {warning: 40, strong: 80}
-  python_ast_v1.cyclomatic_v1: {warning: 10, strong: 15}
-  python_ast_v1.max_nesting: {warning: 4, strong: 6}
-  python_ast_v1.parameter_count: {warning: 5, strong: 8}
-  python_ast_v1.file_logical_lines: {warning: 500, strong: 900}
-  oxlint_v1.cyclomatic: {warning: 10, strong: 15}
+  python_ast_v1.function_logical_lines:
+    warning: 40
+    strong: 80
+  python_ast_v1.cyclomatic_v1:
+    warning: 10
+    strong: 15
+  python_ast_v1.max_nesting:
+    warning: 4
+    strong: 6
+  python_ast_v1.parameter_count:
+    warning: 5
+    strong: 8
+  python_ast_v1.file_logical_lines:
+    warning: 500
+    strong: 900
+  oxlint_v1.cyclomatic:
+    warning: 10
+    strong: 15
 policy:
   changed_code_only: true
   untouched_existing_debt: report

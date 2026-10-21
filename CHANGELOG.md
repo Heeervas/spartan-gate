@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add scoped TOP quality measurement for the Pi/Route usage implementation,
+  preserving the existing Hermes checks and pinning the TypeScript analyzer.
+
 - Preserve selective links to registered canonical skill packages during native
   bundled sync, including byte-identical bundles, while retaining containment
   guards for unrelated targets. Limit the shared skill bind mount to its
