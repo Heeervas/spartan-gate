@@ -105,16 +105,27 @@ Changed Compose environment or mounts require recreation instead.
 ### Shared host skills (opt-in)
 
 Hermes can discover a host-owned skill library through `skills.external_dirs`.
-Prepare the host's `~/.agents/skills` directory first, then add this bind mount
+Prepare the host's `~/.agents/skills/shared` directory first, then add this bind mount
 to the Hermes service in the private Compose override. Before editing, back up
 that override and each Hermes configuration being enrolled.
+
+Export only the dedicated shared subtree. Keep desktop, KDE and other host-only
+skills outside it; catalog filters do not prevent direct file reads. Do not mount
+the parent library or include links that escape the exported subtree.
+
+Each shared method has one physical package with its original name and mandatory
+runtime references. Use selective compatibility links and per-profile external
+roots to preserve existing membership and disabled controls. The image's native
+sync patch preserves links only when they resolve to a registered external
+package for that same name; deletion containment remains enforced for other
+targets. This requires the rebuilt image, independently of the mount change.
 
 ```yaml
 services:
   hermes:
     volumes:
       - type: bind
-        source: ${HOME}/.agents/skills
+        source: ${HOME}/.agents/skills/shared
         target: /opt/shared-skills
         read_only: false
         bind:
@@ -128,7 +139,7 @@ On SELinux hosts, `z` requests a shared container label. Some Compose versions
 do not apply it when `create_host_path: false` selects Docker's Mount API;
 verify the actual label and non-root access, not just the rendered setting.
 For a dedicated empty library root, a narrowly scoped host preparation is
-`chcon -t container_file_t "$HOME/.agents/skills"`, without recursive or parent
+`chcon -t container_file_t "$HOME/.agents/skills/shared"`, without recursive or parent
 relabeling. This temporary label can be reset by `restorecon` or a filesystem
 relabel; persistent `semanage fcontext` host policy is a separate decision.
 See the [upstream Compose explanation](https://github.com/docker/compose/issues/13396).

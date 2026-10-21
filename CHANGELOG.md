@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Preserve selective links to registered canonical skill packages during native
+  bundled sync, including byte-identical bundles, while retaining containment
+  guards for unrelated targets. Limit the shared skill bind mount to its
+  dedicated export so host desktop skills stay outside the Hermes filesystem.
+
 - Add a Pi extension that supplies an explicit session prompt-cache key for
   Spartan Route Chat Completions requests while preserving existing keys, with
   installation guidance and focused regression checks. Provider cache hits and
