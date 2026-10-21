@@ -28,6 +28,7 @@ from .native_cache import NativeCacheDiagnostics, Observation, request_diagnosti
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected, PROBE_HEADER
 from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realtime_model, register as register_realtime, voice_dispatch
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
+from .pi_usage import CorrelationError, PiUsage, observe_chat, register_routes as register_pi_routes
 from .transport import create_client_session
 from .sse import frames as parse_sse_frames
 from .util import (
@@ -77,6 +78,7 @@ class ExecutionResult:
     _responses_telemetry: CodexCallResult | None = field(default=None, repr=False)
     _actual_tool_call_keys: set[str] = field(default_factory=set, repr=False)
     usage_seen: bool = False
+    stream_completed: bool = False
     usage_event_type: str | None = None
     upstream_response_time_ms: int | None = None
     total_response_time_ms: int | None = None
@@ -111,9 +113,11 @@ class SpartanRouteState:
     cache_guard: dict[str, dict[str, Any]] = field(default_factory=dict)
     native_cache: NativeCacheDiagnostics = field(default_factory=NativeCacheDiagnostics)
     cache_experiments: CacheExperiments = field(init=False)
+    pi_usage: PiUsage = field(init=False)
 
     def __post_init__(self) -> None:
         self.cache_experiments = CacheExperiments(Path(self.config.db_path).parent, self.native_cache.epoch, self.telemetry)
+        self.pi_usage = PiUsage(self.telemetry.pi_usage, self.telemetry)
 
 
 STATE_KEY = web.AppKey("spartan_route_state", SpartanRouteState)
@@ -371,12 +375,29 @@ def extract_usage(payload: Any) -> tuple[int, int, int]:
     return prompt, cached, output
 
 
+def reported_token_value(source: Any, *keys: str) -> int | None:
+    if isinstance(source, dict):
+        for key in keys:
+            value = source.get(key)
+            if type(value) is int and value >= 0:
+                return value
+    return None
+
+
 def apply_usage(result: ExecutionResult, payload: Any) -> None:
     source = payload.get("response") if isinstance(payload, dict) and isinstance(payload.get("response"), dict) else payload
-    prompt, cached, output = extract_usage(source)
-    result.input_tokens = prompt or result.input_tokens
-    result.cached_input_tokens = cached or result.cached_input_tokens
-    result.output_tokens = output or result.output_tokens
+    if isinstance(source, dict) and isinstance(source.get("usage"), dict):
+        usage = source["usage"]
+        prompt = reported_token_value(usage, "prompt_tokens", "input_tokens")
+        output = reported_token_value(usage, "completion_tokens", "output_tokens")
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+        cached = reported_token_value(details, "cached_tokens")
+        if cached is None:
+            cached = reported_token_value(usage, "cached_tokens")
+        for attribute, value in (("input_tokens", prompt), ("output_tokens", output), ("cached_input_tokens", cached)):
+            if value is not None:
+                setattr(result, attribute, value)
+        result.usage_seen |= prompt is not None or output is not None
     if isinstance(source, dict):
         _prompt, _cached, _output, reasoning = usage_values(source.get("usage"))
         if reasoning is not None:
@@ -426,6 +447,8 @@ async def provider_stream(response: Any, result: ExecutionResult) -> AsyncIterat
     try:
         async for event, data, raw in iter_sse_payloads(response.content.iter_chunked(8192)):
             del event
+            if data == "[DONE]":
+                result.stream_completed = True
             if data and data != "[DONE]":
                 parsed = parse_json_bytes(data.encode("utf-8"))
                 if isinstance(parsed, dict):
@@ -1796,11 +1819,22 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
         route = route_request(state.config, body, policy.tier_models if policy else None, state.model_variants.snapshot(state.config, reserved_ids=state.variant_reserved_ids)[1])
     except InvalidContextVariant:
         return response_json_error(f"The model '{body['model']}' does not exist", 404, "model_not_found", "invalid_request_error")
-    result = await execute_chat(state, body, route, bool(body.get("stream")), session_id, effective_prompt_cache_key, request_id)
+    try:
+        result, finish_pi = await observe_chat(
+            state.pi_usage, request.headers, route.provider,
+            lambda: execute_chat(state, body, route, bool(body.get("stream")), session_id, effective_prompt_cache_key, request_id),
+        )
+    except CorrelationError as exc:
+        return response_json_error(str(exc), 409, "pi_origin_invalid", "invalid_request_error")
+
+    def done() -> None:
+        finish_pi()
+        log_request(state, body, route, result, started, request_id, session_id, turn_id, "chat_completions")
+
     return await write_execution_response(
         request,
         result,
-        on_done=lambda: log_request(state, body, route, result, started, request_id, session_id, turn_id, "chat_completions"),
+        on_done=done,
     )
 
 
@@ -3251,6 +3285,7 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
         model_variants=VariantPolicy.load(telemetry),
     )
     register_realtime(app, RealtimeConfig.from_env(config.token))
+    register_pi_routes(app, get_state)
     app[STATE_KEY].variant_reserved_ids = frozenset({app[RT_KEY].config.model})
     app.on_startup.append(startup)
     app.on_shutdown.append(shutdown_realtime)

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .util import now_iso
+from .pi_usage_store import PiUsageStore
 from .cache_metrics import empty_metrics as empty_native_metrics, add_request as add_native_request, merge_metrics as merge_native_metrics, public_metrics as public_native_metrics
 
 DEFAULT_RETENTION_DAYS = 30
@@ -121,6 +122,7 @@ class TelemetryStore:
         self._last_failure_code: str | None = None
         self._retention_status: dict[str, Any] = {}
         self._init_schema()
+        self.pi_usage = PiUsageStore(self._conn, self._lock)
         try:
             self.enforce_routing_retention(force_rebuild=True)
         except Exception:

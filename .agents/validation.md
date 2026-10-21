@@ -41,3 +41,16 @@ package; set `PI_CODING_AGENT_DIR` to its package directory for non-global layou
 Route API tests require loopback socket access and its pinned requirements.
 The quality runner collects snapshot-bound metrics immediately before reporting;
 behavioral checks and independent review remain separate acceptance gates.
+
+
+### Reviewed partial commits
+
+For a reviewed staged batch while an independent worker's untracked candidate
+remains in the integration tree, collect and report the exact index candidate.
+This does not replace the final all-scope feature gate. Use the same immutable
+baseline and policy, and verify staged source bytes match the tested/reviewed ones:
+
+```sh
+python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/collect_oxlint_metrics.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope index --oxlint ./node_modules/.bin/oxlint --output .agents/oxlint-metrics.json
+python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/quality_report.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope index --level top --config .agents/quality.yaml --format json --output .agents/pi-route-quality.json
+```

@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add durable Pi session origins and cumulative observed Chat Completions usage,
+  with passive sanitized quota views, exact lease lookup and shared refresh
+  admission. Preserve reported zero values and account for retries and streams.
+
 - Add scoped TOP quality measurement for the Pi/Route usage implementation,
   preserving the existing Hermes checks and pinning the TypeScript analyzer.
 

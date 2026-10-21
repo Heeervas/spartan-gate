@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
+from .pi_usage import CURRENT_REQUEST
 
 from .telemetry import TelemetryStore
 from .transport import CodexTransport, TransportError, observe_event
@@ -1776,6 +1777,9 @@ class CodexRouter:
             reasoning_effort = request.get("reasoning_effort") or (reasoning.get("effort") if isinstance(reasoning, dict) else None)
         upstream_cache_key = resolve_prompt_cache_key(request, session_id, prompt_cache_key)
         affinity_key = resolve_affinity_key(request, session_id, prompt_cache_key)
+        pi_request = CURRENT_REQUEST.get()
+        if pi_request is not None:
+            pi_request.affinity(affinity_key)
         body = build_codex_request_body(request, model_name, upstream_cache_key)
         slot_count = max(1, len(self.slots))
         initial_state = await self.slot_availability()
@@ -1796,13 +1800,18 @@ class CodexRouter:
                 slot, auth = chosen
                 slot.in_flight += 1
                 slot.last_selected_at = time.time()
+                pi_attempt = pi_request.start("codex") if pi_request is not None else None
                 try:
                     result = await self._single_chat_call(body, model_id, model_name, wants_stream, slot, auth)
                 except BaseException:
                     slot.in_flight = max(0, slot.in_flight - 1)
+                    if pi_attempt is not None:
+                        pi_attempt.finish(incomplete=True)
                     raise
                 if result.stream is None:
                     slot.in_flight = max(0, slot.in_flight - 1)
+                    if pi_attempt is not None:
+                        pi_attempt.finish(result, incomplete=bool(result.error) or not result.completed)
                 else:
                     source = result.stream
                     source_cleanup = result.stream_cleanup
@@ -1821,6 +1830,8 @@ class CodexRouter:
                                     await source_cleanup()
                             finally:
                                 slot.in_flight = max(0, slot.in_flight - 1)
+                                if pi_attempt is not None:
+                                    pi_attempt.finish(result, incomplete=bool(result.error) or not result.completed)
 
                     async def stream_with_inflight_guard() -> AsyncIterator[bytes]:
                         try:
@@ -1840,7 +1851,8 @@ class CodexRouter:
                 result.selection_diagnostics = selection_diagnostics or None
                 result.slot_index = slot.index
                 result.account_key = auth.account_key
-                result.input_tokens = token_count_estimate(request)
+                if not result.usage_seen:
+                    result.input_tokens = token_count_estimate(request)
                 if not result.retry_allowed:
                     return result
                 if result.status not in {401, 429, 500, 502}:
@@ -2177,7 +2189,10 @@ class CodexRouter:
         if not isinstance(usage, dict):
             return
         state.usage.update(usage)
-        state.usage_seen = True
+        state.usage_seen |= any(
+            type(usage.get(key)) is int and usage[key] >= 0
+            for key in ("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens")
+        )
         if event and not state.usage_event_type:
             state.usage_event_type = event
 
