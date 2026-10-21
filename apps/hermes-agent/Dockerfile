@@ -252,21 +252,23 @@ RUN set -eux; \
     install -m 0644 "/tmp/qlty/qlty-${QLTY_TARGET}/LICENSE.md" /usr/local/share/licenses/qlty/LICENSE.md; \
     rm -rf /tmp/qlty /tmp/qlty.tar.xz
 
-# v0.659.0 has no no-install mode for check/fmt. Expose only local analysis,
-# help and version; never bootstrap plugins, fetch sources or prompt upgrades.
-# The raw binary is retained for provenance, not placed on PATH.
+# Transparent native CLI syntax; avoid passing the singleton global flag twice.
+# Plugin/cloud operations still require separate method/project authorization.
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'set -eu' \
     'export QLTY_TELEMETRY=off' \
-    'case "${1:---help}" in' \
-    '    metrics|smells|version|--version|-V|--help|-h|help) ;;' \
-    '    *) echo "qlty: only local metrics/smells, help and version are enabled; plugin/cloud/install commands are not supported in this image" >&2; exit 64 ;;' \
-    'esac' \
+    'for arg do' \
+    '    if [ "$arg" = "--no-upgrade-check" ]; then' \
+    '        exec /opt/quality-tools/qlty/qlty "$@"' \
+    '    fi' \
+    'done' \
     'exec /opt/quality-tools/qlty/qlty --no-upgrade-check "$@"' \
     > /usr/local/bin/qlty \
     && chmod 0755 /usr/local/bin/qlty
 
+# The process-local launcher retains the immutable proxy bootstrap, excludes
+# mutable Hermes/project imports, and exposes pinned analyzers to discovery.
 # Keep the full extra set and its dependency versions matched to the validated
 # Python 3.14 installation. The primary wheel is hash-verified by uv; dependency
 # versions are pinned, but this is not a hash lock of their transitive artifacts.
@@ -279,7 +281,15 @@ RUN uv venv --python /opt/hermes/.venv/bin/python /opt/quality-tools/desloppify 
     && uv pip check --python /opt/quality-tools/desloppify/bin/python \
     && mkdir -p /usr/local/share/licenses/desloppify \
     && /opt/quality-tools/desloppify/bin/python -c 'from importlib.metadata import distribution; from pathlib import Path; d = distribution("desloppify"); p = next(p for p in d.files if str(p).endswith("licenses/LICENSE")); Path("/usr/local/share/licenses/desloppify/LICENSE").write_bytes(d.locate_file(p).read_bytes())' \
-    && ln -s /opt/quality-tools/desloppify/bin/desloppify /usr/local/bin/desloppify \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        'export PATH="/opt/quality-tools/desloppify/bin:$PATH"' \
+        'export PYTHONPATH=/opt/hermes/bootstrap' \
+        'export PYTHONSAFEPATH=1' \
+        'exec /opt/quality-tools/desloppify/bin/desloppify "$@"' \
+        > /usr/local/bin/desloppify \
+    && chmod 0755 /usr/local/bin/desloppify \
     && chmod -R a+rX,go-w /opt/quality-tools \
     && /opt/quality-tools/desloppify/bin/python -c 'from importlib.metadata import version; import sys; assert version("desloppify") == "1.0"; assert sys.version_info[:2] == (3, 14); assert sys.prefix == "/opt/quality-tools/desloppify"' \
     && setpriv --reuid=65534 --regid=65534 --clear-groups sh -c 'qlty --version && desloppify --version' \

@@ -5,13 +5,19 @@ Status: applied to image source; build, recreation and live acceptance pending.
 Hermes image source now installs Qlty 0.659.0 and Desloppify 1.0. Availability
 requires a reviewed image rebuild and Hermes recreation, not a gateway restart.
 
-- `qlty` on PATH permits only local `metrics`, `smells`, help and version.
-  Telemetry is forced off, upgrade checks are skipped, and commands that can
-  install plugins or require cloud services are rejected. The underlying binary
-  is retained for provenance, not as a supported bypass.
-- `desloppify` includes the full optional Python extras in a separate venv.
-  Its packages do not replace Hermes runtime distributions. External analyzers
-  and model runners are not added by this installation.
+- `qlty` on PATH preserves native CLI syntax and global-option placement.
+  Telemetry is forced off and upgrade checks are skipped without duplicating
+  an explicit flag. This is not a command-security sandbox: plugin installation,
+  cloud operations and initialization still need separate authorization. For an
+  authorized disposable fixture or adoption, minimal init is supported:
+  `qlty init --yes --skip-plugins --skip-default-source --no-upgrade-check`.
+- `desloppify` includes full optional Python extras in a separate venv. Its
+  launcher exposes its own pinned analyzers (including Bandit) only within the
+  process, restricts PYTHONPATH to root-owned policy bootstrap, and enables safe
+  startup imports. Mutable Hermes extra-site/project paths cannot shadow pinned
+  dependencies through inherited PYTHONPATH. Proxy/environment behavior remains;
+  global Hermes configuration and distributions are unchanged. Other external
+  analyzers and model runners are not added.
 - Qlty is advisory supporting evidence. Desloppify deep audits require explicit
   scope and the shared manual prepare/import method; there is no native
   Pi/Hermes runner integration or trusted-score claim.

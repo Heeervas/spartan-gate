@@ -79,36 +79,44 @@ are no startup downloads. This source change alone is not runtime acceptance.
 Both commands are exposed under `/usr/local/bin` for nonroot ordinary and login
 shells. Qlty's official Linux GNU archives and extracted binaries are SHA-256
 pinned for amd64 and arm64; other architectures fail the build. `qlty` is a
-small wrapper allowing only `metrics`, `smells`, version and help. It forces
-`QLTY_TELEMETRY=off` and `--no-upgrade-check`. Plugin, install, formatter,
-upgrade and cloud commands are rejected because this release has no supported
-no-install mode for plugin execution. The raw binary under
-`/opt/quality-tools/qlty/qlty` is retained for provenance, not on PATH; the wrapper
-is an operational default, not a security sandbox against deliberate bypass.
-Help may describe upstream commands that the wrapper does not enable.
+transparent launcher preserving native command and global-option syntax. It
+forces `QLTY_TELEMETRY=off` and defaults to `--no-upgrade-check` without adding
+that singleton flag twice. The underlying binary lives under
+`/opt/quality-tools/qlty/qlty`; the launcher is not a command-security sandbox.
+Installation alone does not authorize plugin installation, formatting, upgrades,
+cloud operations or repository initialization. Analysis never implicitly enables
+plugins or installs runtimes; reuse approved project configuration and pins.
 
-For a disposable project with a local `.qlty/qlty.toml` containing
-`config_version = "0"`, run:
+In a disposable project (or an explicitly authorized new adoption), initialize
+minimal configuration with no plugins or default source downloads, then run:
 
 ```sh
-qlty --version
+qlty --no-upgrade-check --version
+qlty init --yes --skip-plugins --skip-default-source --no-upgrade-check
 qlty metrics --all --functions
 qlty smells --all
 desloppify --version
 desloppify --help
 ```
 
-Use local metrics/smells without installing plugins or signing into Qlty Cloud.
-Do not run `qlty init` or upstream bootstrap scripts to bypass the image contract.
-Metrics and smells are advisory evidence, not a quality score or acceptance gate.
+Read-only reviews must reuse existing `.qlty` configuration or report it missing,
+not initialize it. Local metrics/smells require no Qlty Cloud sign-in. Their
+results are advisory evidence, not a quality score or acceptance gate.
 
 Desloppify's exact `1.0` wheel is SHA-256 pinned and installed with `[full]`
 into `/opt/quality-tools/desloppify`, using Python 3.14 without modifying
 `/opt/hermes/.venv` distributions. Full extras include tree-sitter and its
 language pack, defusedxml, Bandit, Pillow and PyYAML. Their dependency versions
 are pinned to the validated installation; transitive artifact hashes are not
-fully locked. No language-specific external analyzers or model runners are
-installed by this addition. Deep audits remain optional and explicitly scoped;
+fully locked. The launcher prepends only its own venv's analyzer bin directory
+to PATH for that invocation, so the included Bandit is discoverable without
+displacing Hermes' interpreter globally. It restricts PYTHONPATH to the existing
+root-owned `/opt/hermes/bootstrap` and enables Python safe-path mode, excluding
+mutable Hermes extra-site/project imports and the working directory from startup
+imports, including analyzer subprocesses. Proxy/environment settings and policy
+bootstrap remain active; global Hermes PATH/PYTHONPATH are unchanged. Other
+external analyzers and model runners are not installed by this addition. Deep
+audits remain optional and explicitly scoped;
 use the shared Desloppify manual prepare/import workflow, not an invented
 Pi/Hermes runner flag. Scanner output is untrusted guidance, not authority to
 remediate or change exclusions, skills or policy.
