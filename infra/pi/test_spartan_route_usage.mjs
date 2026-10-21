@@ -170,7 +170,7 @@ test('backend-shaped pool snapshot displays quota and reset countdowns within co
     ageSeconds: 5, updatedAt: '2025-12-31T23:59:55Z', resetAt: '2026-01-01T02:05:00Z', stale: false, capacityIncomplete: false };
   const snapshot = { ...canonical(), receivedAt: now, pool: { fiveHour: window, weekly: { ...window, resetAt: '2026-01-04T00:00:00Z' } } };
   const display = presentation(snapshot, 'pool', {}, false, now);
-  assert.match(display.status, /\[██████··\] 5h↻2h5m wk↻3d0h/);
+  assert.match(display.status, /\[██████··\] 5h:2h5m wk:3d0h/);
   assert.ok(display.status.length <= 80);
   assert.match(display.details, /5h 75% wk 75%/);
   assert.match(presentation(snapshot, 'pool', {}, true, now + 3601000).details, /5h \? wk \?/);

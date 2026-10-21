@@ -66,10 +66,10 @@ function scopeView(snapshot, view) {
 function quotaFooter(windows, now) {
   const top = percentage(windows.fiveHour, now), bottom = percentage(windows.weekly, now);
   if (!top && !bottom) return 'quota n/a';
-  if (!top) return `wk ${percentLabel(bottom)} ↻${resetCountdown(windows.weekly.resetAt, now)}`;
-  if (!bottom) return `5h ${percentLabel(top)} ↻${resetCountdown(windows.fiveHour.resetAt, now)}`;
+  if (!top) return `wk ${percentLabel(bottom)} reset ${resetCountdown(windows.weekly.resetAt, now)}`;
+  if (!bottom) return `5h ${percentLabel(top)} reset ${resetCountdown(windows.fiveHour.resetAt, now)}`;
   const stale = top.stale || bottom.stale ? '~' : '';
-  return `[${barCells(top, bottom)}]${stale} 5h↻${resetCountdown(windows.fiveHour.resetAt, now)} wk↻${resetCountdown(windows.weekly.resetAt, now)}`;
+  return `[${barCells(top, bottom)}]${stale} 5h:${resetCountdown(windows.fiveHour.resetAt, now)} wk:${resetCountdown(windows.weekly.resetAt, now)}`;
 }
 function sessionCounters(session, fallback) {
   const totals = session.totals ?? fallback;
