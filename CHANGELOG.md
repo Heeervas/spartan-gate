@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add Pi's minimal Route quota display with pool, account and exact lease views,
+  persistent session consumption, calibrated unit estimates and bounded outage
+  recovery. Preserve native compaction, resume and separate subagent sessions.
+
 - Add durable Pi session origins and cumulative observed Chat Completions usage,
   with passive sanitized quota views, exact lease lookup and shared refresh
   admission. Preserve reported zero values and account for retries and streams.

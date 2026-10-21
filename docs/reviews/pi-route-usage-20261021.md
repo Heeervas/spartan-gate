@@ -20,8 +20,8 @@ the integrated production candidate, plus behavioral checks and renewed review.
 
 ## Implementation acceptance
 
-Pending: backend/client implementation, integrated quality and behavioral checks,
-independent batch reviews, installation, deployment and live acceptance.
+Backend and client implementation passed integrated checks and independent batch
+reviews. Installation, deployment and live acceptance remain pending below.
 
 
 ## Bounded legacy integration allowances
@@ -63,3 +63,22 @@ reviewed test SHA-256 is
 `aba902a9386ba20153901cfb8da77130805ceea52aa4b8e20a8a67bdcbcd74aa`.
 The partial commit's index quality gate is separate from the pending client
 candidate; final feature acceptance still requires all-scope measurement.
+
+## Client and integrated source acceptance
+
+Independent re-review approved the revised client with no remaining P1/P2. The
+review reproduced and then verified corrections for generic refresh acknowledgments,
+bounded reconnect, polling ownership during provider switches, pending gaps across
+reload, and expired/stale quota rendering. The per-session pending-gap marker
+contains no origin, baseline or credentials and clears only after the server
+acknowledges incomplete coverage. Filesystem failure remains visibly incomplete.
+
+Integrated native Pi loader/cache/usage checks pass, including 15 usage contracts
+and the existing cache assertions. All four Python gateway tests and Route's
+JavaScript suite pass. The all-scope TOP report returns
+`QUALITY_PASS_WITH_EXCEPTION`: all required adapters succeed, no evidence gaps,
+and only the five approved legacy backend allowances apply. New client functions
+have no strong findings. The reviewed client SHA-256 is
+`f73eb48f87d9eb2c48df31a001a06e6c896409eb2f4558040dd78e53c4c5914f`;
+core SHA-256 is
+`3cb2ec16770144e36d8bf0ab28bb68cef4962e5c14f36a1bba1ba1f4c7ced4e4`.
