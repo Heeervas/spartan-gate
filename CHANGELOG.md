@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Bake hash-pinned Qlty 0.659.0 and Desloppify 1.0 into Hermes for optional
+  local analysis. Restrict Qlty's PATH entry to metrics/smells/help/version with
+  telemetry and upgrade checks off; isolate Desloppify's full extras from the
+  Hermes venv and preserve license notices. Rebuild/recreation and live
+  nonroot profile acceptance remain required; no new native quality gate.
+
 - Show explicitly partial Pi quota balances when some enabled sources lack
   windows or known capacity, preserving unknown full-pool totals. Keep tiny
   positive session estimates visible instead of rounding them to zero.

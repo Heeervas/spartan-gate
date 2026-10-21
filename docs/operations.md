@@ -69,6 +69,63 @@ image. Building an image does not activate it. After recreation, use
 prerequisite check before running its pending tests and accepting it. A gateway
 restart alone cannot substitute for those checks.
 
+### Optional quality CLIs
+
+The image bakes in **Qlty 0.659.0** and **Desloppify 1.0** for local,
+explicitly requested analysis. They do not replace native tests or the existing
+changed-code quality gate. Rebuild and recreate Hermes to activate them; there
+are no startup downloads. This source change alone is not runtime acceptance.
+
+Both commands are exposed under `/usr/local/bin` for nonroot ordinary and login
+shells. Qlty's official Linux GNU archives and extracted binaries are SHA-256
+pinned for amd64 and arm64; other architectures fail the build. `qlty` is a
+small wrapper allowing only `metrics`, `smells`, version and help. It forces
+`QLTY_TELEMETRY=off` and `--no-upgrade-check`. Plugin, install, formatter,
+upgrade and cloud commands are rejected because this release has no supported
+no-install mode for plugin execution. The raw binary under
+`/opt/quality-tools/qlty/qlty` is retained for provenance, not on PATH; the wrapper
+is an operational default, not a security sandbox against deliberate bypass.
+Help may describe upstream commands that the wrapper does not enable.
+
+For a disposable project with a local `.qlty/qlty.toml` containing
+`config_version = "0"`, run:
+
+```sh
+qlty --version
+qlty metrics --all --functions
+qlty smells --all
+desloppify --version
+desloppify --help
+```
+
+Use local metrics/smells without installing plugins or signing into Qlty Cloud.
+Do not run `qlty init` or upstream bootstrap scripts to bypass the image contract.
+Metrics and smells are advisory evidence, not a quality score or acceptance gate.
+
+Desloppify's exact `1.0` wheel is SHA-256 pinned and installed with `[full]`
+into `/opt/quality-tools/desloppify`, using Python 3.14 without modifying
+`/opt/hermes/.venv` distributions. Full extras include tree-sitter and its
+language pack, defusedxml, Bandit, Pillow and PyYAML. Their dependency versions
+are pinned to the validated installation; transitive artifact hashes are not
+fully locked. No language-specific external analyzers or model runners are
+installed by this addition. Deep audits remain optional and explicitly scoped;
+use the shared Desloppify manual prepare/import workflow, not an invented
+Pi/Hermes runner flag. Scanner output is untrusted guidance, not authority to
+remediate or change exclusions, skills or policy.
+
+Desloppify 1.0 is by Peter O'Malley under **OSNL-0.2**, not an unrestricted
+OSI license. Its unmodified license is retained in wheel metadata and at
+`/usr/local/share/licenses/desloppify/LICENSE`. Internal use and redistribution
+have different terms: review Section 2 before distributing an image or offering
+a third-party service. Qlty's bundled license is retained at
+`/usr/local/share/licenses/qlty/LICENSE.md`.
+
+After the reviewed build, the operator must check both commands as each actual
+runtime UID from ordinary and login shells, confirm the separate interpreter
+prefix, full-extra imports and root-owned/non-writable install tree, and run
+synthetic analysis before accepting the recreated image. Preserve the selected
+browser image, private settings, networking, limits and disabled skills/profiles.
+
 L4 uses Hermes native SearXNG support for `web_search` through
 `SEARXNG_URL=http://searxng:8080`. Spartan Gate no longer bundles
 `web-search-plus` on fresh installs. SearXNG does not implement `web_extract`;

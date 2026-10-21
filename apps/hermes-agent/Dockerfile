@@ -234,6 +234,57 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && setpriv --reuid=65534 --regid=65534 --clear-groups \
         python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/bootstrap/cdp-patch.js", "/opt/hermes/tools/browser_camofox.py", "/opt/hermes/tools/browser_tool.py")]'
 
+# Optional local analysis CLIs. Keep this late layer independent of Hermes' venv.
+# Archive digests are from the official v0.659.0 GitHub release asset API.
+ENV QLTY_TELEMETRY=off
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) QLTY_TARGET=x86_64-unknown-linux-gnu; QLTY_SHA256=a1b7a4707d880030b22c4715e3a33b2e4cfe4b2ecb7e0620d4c7269dec92aeb8; QLTY_BIN_SHA256=771c4ff8338fa2c18e6bcdb2aafdbb6655ca1fbe0447daa9ccbb1d3c387fede9 ;; \
+        arm64) QLTY_TARGET=aarch64-unknown-linux-gnu; QLTY_SHA256=67eb0deb1f5d2de8b47a1b41957a060fd606f4cd546da306b52d38ff6fb2da5e; QLTY_BIN_SHA256=f18ef043755dd855e9874cef470d6a7e7f3cfe5caac0df6f05ab9a315eb0ceb0 ;; \
+        *) echo "Unsupported quality-tools architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 --retry-delay 2 --max-time 120 "https://github.com/qltysh/qlty/releases/download/v0.659.0/qlty-${QLTY_TARGET}.tar.xz" -o /tmp/qlty.tar.xz; \
+    echo "${QLTY_SHA256}  /tmp/qlty.tar.xz" | sha256sum -c -; \
+    mkdir -p /tmp/qlty /opt/quality-tools/qlty /usr/local/share/licenses/qlty; \
+    tar xJf /tmp/qlty.tar.xz -C /tmp/qlty "qlty-${QLTY_TARGET}/qlty" "qlty-${QLTY_TARGET}/LICENSE.md"; \
+    echo "${QLTY_BIN_SHA256}  /tmp/qlty/qlty-${QLTY_TARGET}/qlty" | sha256sum -c -; \
+    install -m 0755 "/tmp/qlty/qlty-${QLTY_TARGET}/qlty" /opt/quality-tools/qlty/qlty; \
+    install -m 0644 "/tmp/qlty/qlty-${QLTY_TARGET}/LICENSE.md" /usr/local/share/licenses/qlty/LICENSE.md; \
+    rm -rf /tmp/qlty /tmp/qlty.tar.xz
+
+# v0.659.0 has no no-install mode for check/fmt. Expose only local analysis,
+# help and version; never bootstrap plugins, fetch sources or prompt upgrades.
+# The raw binary is retained for provenance, not placed on PATH.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'export QLTY_TELEMETRY=off' \
+    'case "${1:---help}" in' \
+    '    metrics|smells|version|--version|-V|--help|-h|help) ;;' \
+    '    *) echo "qlty: only local metrics/smells, help and version are enabled; plugin/cloud/install commands are not supported in this image" >&2; exit 64 ;;' \
+    'esac' \
+    'exec /opt/quality-tools/qlty/qlty --no-upgrade-check "$@"' \
+    > /usr/local/bin/qlty \
+    && chmod 0755 /usr/local/bin/qlty
+
+# Keep the full extra set and its dependency versions matched to the validated
+# Python 3.14 installation. The primary wheel is hash-verified by uv; dependency
+# versions are pinned, but this is not a hash lock of their transitive artifacts.
+RUN uv venv --python /opt/hermes/.venv/bin/python /opt/quality-tools/desloppify \
+    && uv pip install --no-cache-dir --only-binary :all: --python /opt/quality-tools/desloppify/bin/python \
+        "desloppify[full] @ https://files.pythonhosted.org/packages/cb/44/dfc6b21433f85acd2a904d2885a6cfe191dead3e1dee9c3d0687a4ec8fcf/desloppify-1.0-py3-none-any.whl#sha256=77d8bcfacd21edb8efc064fd94ab3adec7221f5efff192b7a2a0f0c55564f007" \
+        "defusedxml==0.7.1" "tree-sitter==0.26.0" "tree-sitter-language-pack==1.6.2" \
+        "bandit==1.9.4" "Pillow==13.0.0" "PyYAML==6.0.3" "stevedore==5.9.1" \
+        "rich==15.0.0" "markdown-it-py==4.2.0" "mdurl==0.1.2" "Pygments==2.21.0" \
+    && uv pip check --python /opt/quality-tools/desloppify/bin/python \
+    && mkdir -p /usr/local/share/licenses/desloppify \
+    && /opt/quality-tools/desloppify/bin/python -c 'from importlib.metadata import distribution; from pathlib import Path; d = distribution("desloppify"); p = next(p for p in d.files if str(p).endswith("licenses/LICENSE")); Path("/usr/local/share/licenses/desloppify/LICENSE").write_bytes(d.locate_file(p).read_bytes())' \
+    && ln -s /opt/quality-tools/desloppify/bin/desloppify /usr/local/bin/desloppify \
+    && chmod -R a+rX,go-w /opt/quality-tools \
+    && /opt/quality-tools/desloppify/bin/python -c 'from importlib.metadata import version; import sys; assert version("desloppify") == "1.0"; assert sys.version_info[:2] == (3, 14); assert sys.prefix == "/opt/quality-tools/desloppify"' \
+    && setpriv --reuid=65534 --regid=65534 --clear-groups sh -c 'qlty --version && desloppify --version' \
+    && setpriv --reuid=65534 --regid=65534 --clear-groups sh -lc 'qlty --version && desloppify --version'
+
 # NOTE: No USER directive - the container starts as root so upstream /init can
 # run cont-init hooks, drop Hermes workloads to the configured UID/GID, and
 # supervise services.
