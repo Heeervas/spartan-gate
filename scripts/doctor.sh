@@ -5,6 +5,23 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 TMPDIR=${TMPDIR:-/tmp}
 
+# Compose renders can contain interpolated credentials. Keep every diagnostic
+# in one exclusively created owner-only directory, never a shared filename.
+umask 077
+SCRATCH=$(mktemp -d "$TMPDIR/spartan-gate-doctor.XXXXXXXXXX") || exit 1
+compose_pid=
+cleanup() {
+  if test -n "$compose_pid"; then
+    kill -KILL "$compose_pid" 2>/dev/null || true
+    wait "$compose_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$SCRATCH"
+}
+trap cleanup 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 fail() {
   printf 'doctor: %s\n' "$1" >&2
   exit 1
@@ -20,9 +37,9 @@ scan_with_grep() {
   shift 2
   : >"$out"
   found=1
-  files="$TMPDIR/spartan-gate-scan-files.$$"
-  tmp="$TMPDIR/spartan-gate-scan-grep.$$"
-  err="$TMPDIR/spartan-gate-scan-error.$$"
+  files="$SCRATCH/spartan-gate-scan-files.$$"
+  tmp="$SCRATCH/spartan-gate-scan-grep.$$"
+  err="$SCRATCH/spartan-gate-scan-error.$$"
   : >"$files"
 
   for path in "$@"; do
@@ -235,11 +252,11 @@ validate_private_env() {
       }
     }
     END { exit !found }
-  ' "$env_file" >"$TMPDIR/spartan-gate-env-placeholders.txt"; then
-    cat "$TMPDIR/spartan-gate-env-placeholders.txt" >&2
+  ' "$env_file" >"$SCRATCH/spartan-gate-env-placeholders.txt"; then
+    cat "$SCRATCH/spartan-gate-env-placeholders.txt" >&2
     fail "private env still contains placeholder values: $env_file"
   fi
-  for key in BROWSERLESS_EDGE_TOKEN CADDY_CAMOFOX_EDGE_TOKEN CADDY_WS_EDGE_TOKEN; do
+  for key in CADDY_CAMOFOX_EDGE_TOKEN CADDY_WS_EDGE_TOKEN; do
     value=$(env_value "$env_file" "$key")
     test -n "$value" || fail "missing required private edge token: $key in $env_file"
     case "$key" in
@@ -251,7 +268,7 @@ validate_private_env() {
   websocket_edge_token=$(env_value "$env_file" CADDY_WS_EDGE_TOKEN)
   test "$camofox_edge_token" != "$websocket_edge_token" || fail "Caddy edge tokens must differ: CADDY_CAMOFOX_EDGE_TOKEN and CADDY_WS_EDGE_TOKEN"
 
-  for key in SPARTAN_HERMES_DATA_PATH SPARTAN_CLAWROUTE_DATA_PATH SPARTAN_ROUTE_DATA_PATH SPARTAN_GOGCLI_DATA_PATH SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CAMOFOX_ADDONS_PATH; do
+  for key in SPARTAN_HERMES_DATA_PATH SPARTAN_ROUTE_DATA_PATH SPARTAN_GOGCLI_DATA_PATH SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CAMOFOX_ADDONS_PATH; do
     case "$key" in
       SPARTAN_CAMOFOX_*) test -n "$camofox_enabled" || continue ;;
     esac
@@ -285,14 +302,12 @@ need_dir() {
 }
 
 need_dir apps/hermes-agent
-need_dir packages/clawroute
 need_dir infra/spartan-route
 need_dir infra/compose
 need_dir infra/caddy
 need_dir infra/dns
 need_dir infra/outbound-proxy
 need_dir infra/reader
-need_dir infra/browserless
 need_dir config/clawroute
 need_dir config/searxng
 need_dir private.example
@@ -302,8 +317,6 @@ need_file .env.example
 need_file infra/compose/compose.yml
 need_file infra/outbound-proxy/Dockerfile
 need_file infra/outbound-proxy/entrypoint.sh
-need_file packages/clawroute/package.json
-need_file packages/clawroute/Dockerfile
 
 test ! -e .gitmodules || fail ".gitmodules must not exist"
 
@@ -312,23 +325,23 @@ if test -d .git; then
     fail ".env must stay local and untracked"
   fi
 
-  if git ls-files | grep -E '^(AGENTS\.md|\.agents/|\.github/(agents|hooks|prompts|skills)/)' >"$TMPDIR/spartan-gate-tracked-agent-packs.txt"; then
-    cat "$TMPDIR/spartan-gate-tracked-agent-packs.txt" >&2
+  if git ls-files | grep -E '^(AGENTS\.md|\.agents/|\.github/(agents|hooks|prompts|skills)/)' >"$SCRATCH/spartan-gate-tracked-agent-packs.txt"; then
+    cat "$SCRATCH/spartan-gate-tracked-agent-packs.txt" >&2
     fail "local agent instructions and packs must stay untracked"
   fi
 
-  if git ls-files | grep -E '(^|/)node_modules/|(^|/)dist/' >/tmp/spartan-gate-tracked-builds.txt; then
-    cat /tmp/spartan-gate-tracked-builds.txt >&2
+  if git ls-files | grep -E '(^|/)node_modules/|(^|/)dist/' >"$SCRATCH/spartan-gate-tracked-builds.txt"; then
+    cat "$SCRATCH/spartan-gate-tracked-builds.txt" >&2
     fail "dependency or build output is tracked"
   fi
 
-  if git ls-files | grep -E '^(private|runtime)/' >"$TMPDIR/spartan-gate-tracked-local.txt"; then
-    cat "$TMPDIR/spartan-gate-tracked-local.txt" >&2
+  if git ls-files | grep -E '^(private|runtime)/' >"$SCRATCH/spartan-gate-tracked-local.txt"; then
+    cat "$SCRATCH/spartan-gate-tracked-local.txt" >&2
     fail "private or runtime state is tracked"
   fi
 
-  if git ls-files | grep -E '(^|/)\.env($|\.)' | grep -Ev '(^|/)\.env\.example$' >"$TMPDIR/spartan-gate-tracked-env.txt"; then
-    cat "$TMPDIR/spartan-gate-tracked-env.txt" >&2
+  if git ls-files | grep -E '(^|/)\.env($|\.)' | grep -Ev '(^|/)\.env\.example$' >"$SCRATCH/spartan-gate-tracked-env.txt"; then
+    cat "$SCRATCH/spartan-gate-tracked-env.txt" >&2
     fail "local env file is tracked"
   fi
 
@@ -343,23 +356,23 @@ if find . \( -path './.git' -o -path './private' -o -path './runtime' -o -path '
   fail "nested .git directory found"
 fi
 
-if scan_repo '/home/|/Users/|\\\\Users\\\\|~/.codex|~/.custom_claw|\\.custom_claw' /tmp/spartan-gate-path-scan.txt; then
-  cat /tmp/spartan-gate-path-scan.txt >&2
+if scan_repo '/home/|/Users/|\\\\Users\\\\|~/.codex|~/.custom_claw|\\.custom_claw' "$SCRATCH/spartan-gate-path-scan.txt"; then
+  cat "$SCRATCH/spartan-gate-path-scan.txt" >&2
   fail "personal host path found in public runtime files"
 fi
 
-if scan_repo 'private/env/[a][l]berto\.env|[a][l]berto\.env' /tmp/spartan-gate-old-env-name-scan.txt; then
-  cat /tmp/spartan-gate-old-env-name-scan.txt >&2
+if scan_repo 'private/env/[a][l]berto\.env|[a][l]berto\.env' "$SCRATCH/spartan-gate-old-env-name-scan.txt"; then
+  cat "$SCRATCH/spartan-gate-old-env-name-scan.txt" >&2
   fail "old private env filename found"
 fi
 
-if scan_repo 'ghp_[A-Za-z0-9_]{10,}|sk-[A-Za-z0-9_-]{20,}|sess-[A-Za-z0-9_-]{10,}|BEGIN (RSA |OPENSSH |PRIVATE )?KEY' /tmp/spartan-gate-secret-scan.txt; then
-  cat /tmp/spartan-gate-secret-scan.txt >&2
+if scan_repo 'ghp_[A-Za-z0-9_]{10,}|sk-[A-Za-z0-9_-]{20,}|sess-[A-Za-z0-9_-]{10,}|BEGIN (RSA |OPENSSH |PRIVATE )?KEY' "$SCRATCH/spartan-gate-secret-scan.txt"; then
+  cat "$SCRATCH/spartan-gate-secret-scan.txt" >&2
   fail "secret-like material found"
 fi
 
-if scan_paths 'tls internal|skip_install_trust|https://localhost' /tmp/spartan-gate-http-scan.txt infra/caddy infra/compose docs README.md .env.example; then
-  cat /tmp/spartan-gate-http-scan.txt >&2
+if scan_paths 'tls internal|skip_install_trust|https://localhost' "$SCRATCH/spartan-gate-http-scan.txt" infra/caddy infra/compose docs README.md .env.example; then
+  cat "$SCRATCH/spartan-gate-http-scan.txt" >&2
   fail "public edge is HTTP-only; stale HTTPS/TLS config found"
 fi
 
@@ -451,10 +464,10 @@ check_safe_port_binds() {
       check_item()
       exit bad
     }
-  ' "$config_file" >"$TMPDIR/spartan-gate-compose-$label-ports.txt"; then
+  ' "$config_file" >"$SCRATCH/spartan-gate-compose-$label-ports.txt"; then
     :
   else
-    cat "$TMPDIR/spartan-gate-compose-$label-ports.txt" >&2
+    cat "$SCRATCH/spartan-gate-compose-$label-ports.txt" >&2
     fail "unsafe public port bind in Compose config: $label"
   fi
 }
@@ -481,13 +494,13 @@ check_subnet_conflicts() {
   subnet=$(awk '/subnet:/ {print $NF; exit}' "$config_file")
   test -n "${subnet:-}" || return 0
 
-  docker network ls --format '{{.Name}}' >"$TMPDIR/spartan-gate-networks-$label.txt" || fail "could not list Docker networks"
+  docker network ls --format '{{.Name}}' >"$SCRATCH/spartan-gate-networks-$label.txt" || fail "could not list Docker networks"
   while IFS= read -r network; do
     test -n "$network" || continue
     if network_is_own_project "$network" "$project"; then
       continue
     fi
-    docker network inspect "$network" --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' >"$TMPDIR/spartan-gate-network-$label-subnets.txt" || fail "could not inspect Docker network: $network"
+    docker network inspect "$network" --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' >"$SCRATCH/spartan-gate-network-$label-subnets.txt" || fail "could not inspect Docker network: $network"
     while IFS= read -r other_subnet; do
       test -n "$other_subnet" || continue
       case "$subnet" in *:*) continue ;; esac
@@ -498,32 +511,32 @@ check_subnet_conflicts() {
         status=$?
         test "$status" -eq 1 || fail "invalid Docker subnet while checking overlap: $label ($subnet / $other_subnet)"
       fi
-    done <"$TMPDIR/spartan-gate-network-$label-subnets.txt"
-  done <"$TMPDIR/spartan-gate-networks-$label.txt"
+    done <"$SCRATCH/spartan-gate-network-$label-subnets.txt"
+  done <"$SCRATCH/spartan-gate-networks-$label.txt"
 }
 
 port_owned_by_project() {
   project=$1
   port=$2
-  docker ps --filter "label=com.docker.compose.project=$project" --format '{{.Ports}}' >"$TMPDIR/spartan-gate-project-ports.txt" 2>/dev/null || return 1
-  tr ',' '\n' <"$TMPDIR/spartan-gate-project-ports.txt" \
+  docker ps --filter "label=com.docker.compose.project=$project" --format '{{.Ports}}' >"$SCRATCH/spartan-gate-project-ports.txt" 2>/dev/null || return 1
+  tr ',' '\n' <"$SCRATCH/spartan-gate-project-ports.txt" \
     | sed -n 's/.*:\([0-9][0-9]*\)\(-\([0-9][0-9]*\)\)\{0,1\}->.*/\1 \3/p' \
-    >"$TMPDIR/spartan-gate-project-port-ranges.txt"
+    >"$SCRATCH/spartan-gate-project-port-ranges.txt"
   while read -r start end; do
     test -n "${start:-}" || continue
     test -n "${end:-}" || end=$start
     if test "$port" -ge "$start" && test "$port" -le "$end"; then
       return 0
     fi
-  done <"$TMPDIR/spartan-gate-project-port-ranges.txt"
+  done <"$SCRATCH/spartan-gate-project-port-ranges.txt"
   return 1
 }
 
 port_listening() {
   port=$1
   if command -v ss >/dev/null 2>&1; then
-    ss -H -ltn >"$TMPDIR/spartan-gate-listeners.txt" || fail "could not inspect listening TCP ports with ss"
-    awk -v port=":$port" '{ if ($4 ~ port "$") found = 1 } END { exit !found }' "$TMPDIR/spartan-gate-listeners.txt"
+    ss -H -ltn >"$SCRATCH/spartan-gate-listeners.txt" || fail "could not inspect listening TCP ports with ss"
+    awk -v port=":$port" '{ if ($4 ~ port "$") found = 1 } END { exit !found }' "$SCRATCH/spartan-gate-listeners.txt"
     return $?
   fi
   if command -v lsof >/dev/null 2>&1; then
@@ -542,7 +555,7 @@ check_port_conflicts() {
   label=$1
   config_file=$2
   project=$3
-  ports_file="$TMPDIR/spartan-gate-compose-$label-published-ports.txt"
+  ports_file="$SCRATCH/spartan-gate-compose-$label-published-ports.txt"
   extract_published_ports "$config_file" "$ports_file"
   while read -r host port; do
     test -n "${port:-}" || continue
@@ -555,11 +568,22 @@ check_port_conflicts() {
   done <"$ports_file"
 }
 
+render_compose() {
+  # Waiting on an asynchronous child lets POSIX shells run signal traps
+  # immediately even if Compose is stalled. Cleanup reaps only our child.
+  docker compose "$@" config &
+  compose_pid=$!
+  status=0
+  wait "$compose_pid" || status=$?
+  compose_pid=
+  return "$status"
+}
+
 check_compose_config() {
   label=$1
   shift
-  out="$TMPDIR/spartan-gate-compose-$label.yml"
-  docker compose "$@" config >"$out" || fail "docker compose config failed: $label"
+  out="$SCRATCH/spartan-gate-compose-$label.yml"
+  render_compose "$@" >"$out" || fail "docker compose config failed: $label"
   project=$(project_name_from_config "$out")
   test -n "$project" || fail "could not determine Compose project name: $label"
   check_safe_port_binds "$label" "$out"
@@ -568,8 +592,8 @@ check_compose_config() {
 check_effective_runtime_config() {
   label=$1
   shift
-  out="$TMPDIR/spartan-gate-compose-$label.yml"
-  docker compose "$@" config >"$out" || fail "docker compose config failed: $label"
+  out="$SCRATCH/spartan-gate-compose-$label.yml"
+  render_compose "$@" >"$out" || fail "docker compose config failed: $label"
   project=$(project_name_from_config "$out")
   test -n "$project" || fail "could not determine Compose project name: $label"
   check_safe_port_binds "$label" "$out"

@@ -26,6 +26,7 @@ import ssl
 import http.client
 import queue
 import threading
+import time
 import urllib.error
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -328,6 +329,8 @@ class BoundedHTTPServer(HTTPServer):
     ):
         super().__init__(server_address, handler_class)
         self._closing = threading.Event()
+        self._connections_lock = threading.Lock()
+        self._connections = {}
         self._capacity = threading.BoundedSemaphore(max_workers + max_pending)
         self._requests = queue.Queue(maxsize=max_workers + max_pending)
         self._workers = [
@@ -340,16 +343,50 @@ class BoundedHTTPServer(HTTPServer):
         ]
         for worker in self._workers:
             worker.start()
+        self._watchdog = threading.Thread(
+            target=self._expire_connections, name="reader-deadlines", daemon=False,
+        )
+        self._watchdog.start()
 
     def process_request(self, request, client_address):
-        if self._closing.is_set() or not self._capacity.acquire(blocking=False):
-            self._reject_overload(request)
-            return
+        # Admission and close share a lock: no socket can arrive behind drain.
+        with self._connections_lock:
+            if not self._closing.is_set() and self._capacity.acquire(blocking=False):
+                request.settimeout(REQUEST_TIMEOUT)
+                self._connections[request] = time.monotonic() + REQUEST_TIMEOUT
+                self._requests.put_nowait((request, client_address))
+                return
+        self._reject_overload(request)
+
+    @staticmethod
+    def _interrupt_connection(request):
+        # shutdown, not close: the worker still owns the descriptor and files.
         try:
-            self._requests.put_nowait((request, client_address))
-        except queue.Full:
-            self._capacity.release()
-            self._reject_overload(request)
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _expire_connections(self):
+        # One watchdog for the bounded pool, not one timer/thread per client.
+        # A socket inactivity timeout alone lets a header drip live forever.
+        while not self._closing.wait(0.05):
+            with self._connections_lock:
+                now = time.monotonic()
+                for request, deadline in self._connections.items():
+                    if deadline <= now:
+                        self._interrupt_connection(request)
+
+
+    def connection_expired(self, request):
+        with self._connections_lock:
+            deadline = self._connections.get(request, 0)
+            return self._closing.is_set() or deadline <= time.monotonic()
+
+    def _release_connection(self, request):
+        with self._connections_lock:
+            self._connections.pop(request, None)
+        self.shutdown_request(request)
+        self._capacity.release()
 
     def _worker_loop(self):
         while True:
@@ -360,11 +397,12 @@ class BoundedHTTPServer(HTTPServer):
                 request, client_address = item
                 try:
                     self.finish_request(request, client_address)
+                except (TimeoutError, ConnectionError):
+                    pass  # Expected for expired or disconnected clients.
                 except Exception:
                     self.handle_error(request, client_address)
                 finally:
-                    self.shutdown_request(request)
-                    self._capacity.release()
+                    self._release_connection(request)
             finally:
                 self._requests.task_done()
 
@@ -388,7 +426,13 @@ class BoundedHTTPServer(HTTPServer):
             self.shutdown_request(request)
 
     def server_close(self):
-        self._closing.set()
+        with self._connections_lock:
+            if self._closing.is_set():
+                return
+            self._closing.set()
+            for request in self._connections:
+                self._interrupt_connection(request)
+        self._watchdog.join()
         super().server_close()
 
         while True:
@@ -396,8 +440,7 @@ class BoundedHTTPServer(HTTPServer):
                 request, _client_address = self._requests.get_nowait()
             except queue.Empty:
                 break
-            self.shutdown_request(request)
-            self._capacity.release()
+            self._release_connection(request)
             self._requests.task_done()
 
         for _worker in self._workers:
@@ -408,6 +451,14 @@ class BoundedHTTPServer(HTTPServer):
 
 class ReaderHandler(BaseHTTPRequestHandler):
     """HTTP Handler – GET only."""
+
+    def parse_request(self):
+        parsed = super().parse_request()
+        # http.client accepts EOF as the end of headers. A watchdog-induced
+        # EOF must not dispatch an incomplete /fetch after its budget expires.
+        if isinstance(self.server, BoundedHTTPServer):
+            return parsed and not self.server.connection_expired(self.connection)
+        return parsed
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)

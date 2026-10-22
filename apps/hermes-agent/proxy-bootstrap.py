@@ -22,25 +22,19 @@ PROXY_AUDIT_LOG = os.environ.get('SPARTAN_PROXY_AUDIT_LOG', 'stderr').strip()
 MAX_QUERY_LEN = 500  # Prevent data exfiltration via search queries
 BRAVE_SEARCH_HOST = 'api.search.brave.com'
 
-import re as _re
-# Redact secrets from URLs before logging (bot tokens, API keys, bearer tokens)
-_REDACT_PATTERNS = _re.compile(
-    r'(/bot)[A-Za-z0-9:_-]{20,}(/)'       # Telegram bot tokens: /bot<token>/
-    r'|([?&](?:key|token|apikey|api_key|secret|password|access_token)=)[^&\s]+'
-    r'|(Bearer\s+)[^\s]+',                # Authorization headers
-    _re.IGNORECASE
-)
 def _redact_url(url):
-    """Replace secrets in URLs with [REDACTED] for safe logging."""
-    def _sub(m):
-        if m.group(1):  # Telegram /bot<token>/
-            return f'{m.group(1)}[REDACTED]{m.group(2)}'
-        if m.group(3):  # query param key=value
-            return f'{m.group(3)}[REDACTED]'
-        if m.group(4):  # Bearer token
-            return f'{m.group(4)}[REDACTED]'
+    """Keep only the destination origin; paths and query keys can be secrets too."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if parsed.scheme not in {'http', 'https', 'ws', 'wss'} or not host:
+            return '[REDACTED]'
+        host = f'[{host}]' if ':' in host else host
+        port = f':{parsed.port}' if parsed.port is not None else ''
+        origin = f'{parsed.scheme}://{host}{port}'
+        return origin[:200] + '…' if len(origin) > 200 else origin
+    except (TypeError, ValueError):
         return '[REDACTED]'
-    return _REDACT_PATTERNS.sub(_sub, url)
 
 def _audit_sink(line):
     if not PROXY_AUDIT_LOG or PROXY_AUDIT_LOG.lower() == 'stderr':
@@ -55,10 +49,15 @@ def _audit_sink(line):
     except Exception:
         print(line, file=sys.stderr)
 
-def _audit_log(route, method, url, extra=''):
-    ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    safe_url = _redact_url(url[:200] + '…' if len(url) > 200 else url)
-    _audit_sink(f'[proxy-audit] {ts} {route} {method} {safe_url} {extra}')
+def _audit_log(route, method, url):
+    # No free-text extras: original request URLs must never bypass minimization.
+    event = {
+        'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        'route': route,
+        'method': method,
+        'url': _redact_url(url),
+    }
+    _audit_sink('[proxy-audit] ' + json.dumps(event, ensure_ascii=True))
 
 def _should_bypass_explicit_proxy(url):
     host = (urlparse(url).hostname or '').strip('[]').lower()
@@ -97,7 +96,7 @@ try:
             params = parse_qs(parsed.query)
             q = params.get('q', [''])[0][:MAX_QUERY_LEN]
             searxng_target = f'{SEARXNG_URL}/search?{urlencode({"q": q, "format": "json"})}'
-            _audit_log('BRAVE→SEARXNG', 'GET', searxng_target, f'(original: {url_str[:100]})')
+            _audit_log('BRAVE→SEARXNG', 'GET', searxng_target)
             return _orig_urlopen(searxng_target, *args, **kwargs)
         _audit_log('URLOPEN', 'GET', url_str)
         return _orig_urlopen(url, *args, **kwargs)
@@ -111,37 +110,6 @@ try:
     import requests as _req
     _orig_send = _req.Session.send
 
-    # --- CDP URL rewriting helpers ---
-    # browserless /json/version returns webSocketDebuggerUrl: ws://0.0.0.0:3000/
-    # which is unreachable from other Docker containers.
-    _CDP_BASE = os.environ.get('BROWSER_CDP_URL', '').strip()
-    _CDP_LOCAL_HOSTS = {'0.0.0.0', 'localhost', '127.0.0.1', '::1'}
-    _cdp_base_parsed = None
-    if _CDP_BASE:
-        from urllib.parse import urlparse as _urlparse_cdp
-        _cdp_base_parsed = _urlparse_cdp(_CDP_BASE)
-
-    def _rewrite_cdp_ws(ws_url):
-        """Rewrite ws://0.0.0.0:… → ws://browserless:… using BROWSER_CDP_URL.
-        Also copies the token query param from BROWSER_CDP_URL if not present."""
-        if not ws_url or not _cdp_base_parsed:
-            return ws_url
-        from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
-        parsed = urlparse(ws_url)
-        if parsed.hostname not in _CDP_LOCAL_HOSTS:
-            return ws_url
-        netloc = f'{_cdp_base_parsed.hostname}:{_cdp_base_parsed.port}' if _cdp_base_parsed.port else _cdp_base_parsed.hostname
-        # Merge token from BROWSER_CDP_URL into the rewritten URL
-        base_params = parse_qs(_cdp_base_parsed.query)
-        ws_params = parse_qs(parsed.query)
-        if 'token' in base_params and 'token' not in ws_params:
-            ws_params['token'] = base_params['token']
-        new_query = urlencode({k: v[0] for k, v in ws_params.items()})
-        rewritten = urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, new_query, parsed.fragment))
-        if rewritten != ws_url:
-            _audit_log('CDP-REWRITE', 'WS', rewritten, f'(was: {ws_url})')
-        return rewritten
-
     def _patched_send(self, request, **kwargs):
         url = request.url or ''
         if _is_brave_search_url(url):
@@ -153,27 +121,11 @@ try:
             request.headers.pop('X-Subscription-Token', None)
             _audit_log('BRAVE→SEARXNG', request.method, request.url)
         elif _is_searxng_search_url(url):
-            _audit_log('DIRECT-SEARXNG', request.method, url, '⚠️ direct access detected')
+            _audit_log('DIRECT-SEARXNG', request.method, url)
         else:
             _audit_log('SEND', request.method, url)
 
-        response = _orig_send(self, request, **kwargs)
-
-        # Rewrite webSocketDebuggerUrl in /json/version responses
-        if _cdp_base_parsed and '/json/version' in url:
-            try:
-                data = response.json()
-                ws = data.get('webSocketDebuggerUrl', '')
-                rewritten = _rewrite_cdp_ws(ws)
-                if rewritten != ws:
-                    data['webSocketDebuggerUrl'] = rewritten
-                    new_body = json.dumps(data).encode('utf-8')
-                    response._content = new_body
-                    response.headers['Content-Length'] = str(len(new_body))
-            except Exception:
-                pass  # Not JSON or parse error — pass through unchanged
-
-        return response
+        return _orig_send(self, request, **kwargs)
 
     _req.Session.send = _patched_send
 except ImportError:

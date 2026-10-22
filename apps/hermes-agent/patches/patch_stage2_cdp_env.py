@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build-time patcher: expose Spartan browser env before s6 services start."""
+"""Build-time patcher: migrate gateway state before s6 reconciliation.
+
+The historical filename is retained for Dockerfile compatibility. No browser
+service or CDP environment is prepared here.
+"""
 
 from __future__ import annotations
 
@@ -8,20 +12,13 @@ from pathlib import Path
 
 
 TARGET = Path("/opt/hermes/docker/stage2-hook.sh")
-MARKER = "# Spartan Gate patch: browser runtime for supervised services"
+MARKER = "# Spartan Gate patch: gateway state for supervised services"
 ANCHOR = "# --- Discover agent-browser's Chromium binary ---"
+ALTERNATE_ANCHOR = "# --- Point agent-browser at the pinned Chromium binary ---"
+END_MARKER = "# End Spartan Gate supervised gateway state"
 
-
-NEW_BLOCK = '''# Spartan Gate patch: browser runtime for supervised services
-# The profile reconciler starts supervised gateway services after this hook and
-# before entrypoint-wrapper.sh runs. Materialize Spartan Gate's browser/CDP
-# contract now so with-contenv injects it into supervised services.
-camofox_browser_mode_enabled() {
-    [ -n "${CAMOFOX_URL:-}" ]
-}
-
-mkdir -p /run/s6/container_environment
-
+NEW_BLOCK = '''# Spartan Gate patch: gateway state for supervised services
+# Required before the native profile reconciler starts supervised gateways.
 seed_legacy_autostart_profile_state() {
     [ -n "${HERMES_AUTOSTART_PROFILES:-}" ] || return 0
 
@@ -79,182 +76,47 @@ seed_spartan_default_gateway_state() {
     esac
 }
 
-seed_spartan_supervise_skeleton() {
-    svc_dir="$1"
-    mkdir -p "$svc_dir/event" "$svc_dir/supervise" "$svc_dir/supervise/event"
-    chmod 3730 "$svc_dir/event" "$svc_dir/supervise/event" 2>/dev/null || true
-    chmod 755 "$svc_dir/supervise" 2>/dev/null || true
-    if [ ! -p "$svc_dir/supervise/control" ]; then
-        rm -f "$svc_dir/supervise/control"
-        mkfifo "$svc_dir/supervise/control" 2>/dev/null || true
-    fi
-    chmod 660 "$svc_dir/supervise/control" 2>/dev/null || true
-    chown -R 0:0 "$svc_dir/event" "$svc_dir/supervise"
-
-    if [ -d "$svc_dir/log" ]; then
-        mkdir -p "$svc_dir/log/event" "$svc_dir/log/supervise" "$svc_dir/log/supervise/event"
-        chmod 3730 "$svc_dir/log/event" "$svc_dir/log/supervise/event" 2>/dev/null || true
-        chmod 755 "$svc_dir/log/supervise" 2>/dev/null || true
-        if [ ! -p "$svc_dir/log/supervise/control" ]; then
-            rm -f "$svc_dir/log/supervise/control"
-            mkfifo "$svc_dir/log/supervise/control" 2>/dev/null || true
-        fi
-        chmod 660 "$svc_dir/log/supervise/control" 2>/dev/null || true
-        chown -R 0:0 "$svc_dir/log/event" "$svc_dir/log/supervise"
-    fi
-}
-
-register_spartan_browserless_cdp_broker_service() {
-    if camofox_browser_mode_enabled; then
-        return 0
-    fi
-    if [ "${BROWSERLESS_CDP_BROKER_ENABLED:-true}" != "true" ]; then
-        return 0
-    fi
-    if [ ! -f "$INSTALL_DIR/bootstrap/browserless-cdp-url.js" ] || \
-            [ ! -f "$INSTALL_DIR/bootstrap/browserless-cdp-broker.py" ]; then
-        return 0
-    fi
-
-    broker_port="${BROWSERLESS_CDP_BROKER_PORT:-9229}"
-    broker_url="ws://127.0.0.1:${broker_port}"
-    export BROWSERLESS_CDP_BROKER_PORT="$broker_port"
-    export BROWSER_CDP_MAIN_URL="${BROWSER_CDP_MAIN_URL:-$broker_url}"
-    export BROWSER_CDP_URL="${BROWSER_CDP_URL:-$BROWSER_CDP_MAIN_URL}"
-
-    service_dir="/run/service/spartan-browserless-cdp-broker"
-    tmp_dir="${service_dir}.tmp"
-    rm -rf "$tmp_dir"
-    mkdir -p "$tmp_dir/log"
-    printf 'longrun\\n' > "$tmp_dir/type"
-    cat > "$tmp_dir/run" <<'EOF'
-#!/command/with-contenv sh
-set -eu
-
-export HOME=/opt/data
-export BROWSERLESS_PROFILE="${BROWSERLESS_PROFILE:-main}"
-export BROWSERLESS_CDP_BROKER_PORT="${BROWSERLESS_CDP_BROKER_PORT:-9229}"
-export BROWSER_CDP_MAIN_URL="${BROWSER_CDP_MAIN_URL:-ws://127.0.0.1:${BROWSERLESS_CDP_BROKER_PORT}}"
-export BROWSER_CDP_URL="${BROWSER_CDP_URL:-$BROWSER_CDP_MAIN_URL}"
-
-if [ "$(id -u)" = 0 ]; then
-    if [ -n "${SPARTAN_HERMES_RUN_UID:-}${SPARTAN_HERMES_RUN_GID:-}" ]; then
-        exec /command/s6-applyuidgid \
-            -u "${SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}" \
-            -g "${SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}" "$0" "$@"
-    fi
-    exec /command/s6-setuidgid hermes "$0" "$@"
-fi
-
-retry_seconds="${BROWSERLESS_CDP_BROKER_RETRY_SECONDS:-30}"
-case "$retry_seconds" in
-    ''|*[!0-9]*) retry_seconds=30 ;;
-esac
-
-while :; do
-    export BROWSER_CDP_LAUNCH_URL
-    if BROWSER_CDP_LAUNCH_URL="$(node /opt/hermes/bootstrap/browserless-cdp-url.js --profile "$BROWSERLESS_PROFILE")" && \
-            [ -n "$BROWSER_CDP_LAUNCH_URL" ]; then
-        exec /opt/hermes/.venv/bin/python /opt/hermes/bootstrap/browserless-cdp-broker.py
-    fi
-    echo "[broker] Browserless CDP launch URL generation failed; retrying in ${retry_seconds}s" >&2
-    sleep "$retry_seconds"
-done
-EOF
-    chmod 755 "$tmp_dir/run"
-    cat > "$tmp_dir/log/run" <<'EOF'
-#!/command/with-contenv sh
-set -eu
-
-: "${HERMES_HOME:=/opt/data}"
-log_dir="$HERMES_HOME/logs/browserless-cdp-broker"
-mkdir -p "$log_dir"
-chown "${SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}:${SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}" "$log_dir" 2>/dev/null || true
-if [ "$(id -u)" = 0 ]; then
-    if [ -n "${SPARTAN_HERMES_RUN_UID:-}${SPARTAN_HERMES_RUN_GID:-}" ]; then
-        exec /command/s6-applyuidgid \
-            -u "${SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}" \
-            -g "${SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}" s6-log 1 n10 s1000000 T "$log_dir"
-    fi
-    exec /command/s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"
-fi
-exec s6-log 1 n10 s1000000 T "$log_dir"
-EOF
-    chmod 755 "$tmp_dir/log/run"
-    seed_spartan_supervise_skeleton "$tmp_dir"
-    rm -rf "$service_dir"
-    mv "$tmp_dir" "$service_dir"
-    echo "[stage2] Browserless CDP broker registered under s6 (${BROWSER_CDP_MAIN_URL})"
-}
-
 seed_spartan_default_gateway_state
 seed_legacy_autostart_profile_state
-
-if camofox_browser_mode_enabled; then
-    unset BROWSER_CDP_URL
-    unset BROWSER_CDP_MAIN_URL
-    unset BROWSER_CDP_LAUNCH_URL
-    echo "[stage2] CAMOFOX_URL set; Browserless CDP env skipped for supervised services"
-elif [ -z "${BROWSER_CDP_LAUNCH_URL:-}" ] && [ -f "$INSTALL_DIR/bootstrap/browserless-cdp-url.js" ]; then
-    browser_cdp_launch_url="$(node "$INSTALL_DIR/bootstrap/browserless-cdp-url.js" 2>/dev/null)" || browser_cdp_launch_url=""
-    if [ -n "$browser_cdp_launch_url" ]; then
-        export BROWSER_CDP_LAUNCH_URL="$browser_cdp_launch_url"
-    else
-        echo "[stage2] Warning: Browserless launch CDP URL could not be prepared"
-    fi
-fi
-
-if ! camofox_browser_mode_enabled && [ "${BROWSERLESS_CDP_BROKER_ENABLED:-true}" = "true" ]; then
-    export BROWSERLESS_CDP_BROKER_PORT="${BROWSERLESS_CDP_BROKER_PORT:-9229}"
-    if [ -z "${BROWSER_CDP_MAIN_URL:-}" ]; then
-        export BROWSER_CDP_MAIN_URL="ws://127.0.0.1:${BROWSERLESS_CDP_BROKER_PORT}"
-    fi
-    if ! camofox_browser_mode_enabled && [ -n "${BROWSER_CDP_MAIN_URL:-}" ]; then
-        export BROWSER_CDP_URL="$BROWSER_CDP_MAIN_URL"
-    fi
-elif ! camofox_browser_mode_enabled && [ -z "${BROWSER_CDP_URL:-}" ] && [ -n "${BROWSER_CDP_LAUNCH_URL:-}" ]; then
-    export BROWSER_CDP_URL="$BROWSER_CDP_LAUNCH_URL"
-fi
-
-rm -f /run/s6/container_environment/BROWSER_CDP_LAUNCH_URL
-rm -f /run/s6/container_environment/BROWSER_CDP_MAIN_URL
-rm -f /run/s6/container_environment/BROWSER_CDP_URL
-rm -f /run/s6/container_environment/BROWSERLESS_CDP_BROKER_ENABLED
-rm -f /run/s6/container_environment/BROWSERLESS_CDP_BROKER_PORT
-
-if [ -n "${BROWSER_CDP_LAUNCH_URL:-}" ]; then
-    printf '%s' "$BROWSER_CDP_LAUNCH_URL" > /run/s6/container_environment/BROWSER_CDP_LAUNCH_URL
-fi
-if [ -n "${BROWSER_CDP_MAIN_URL:-}" ]; then
-    printf '%s' "$BROWSER_CDP_MAIN_URL" > /run/s6/container_environment/BROWSER_CDP_MAIN_URL
-fi
-if ! camofox_browser_mode_enabled && [ -n "${BROWSER_CDP_URL:-}" ]; then
-    printf '%s' "$BROWSER_CDP_URL" > /run/s6/container_environment/BROWSER_CDP_URL
-    echo "[stage2] Browserless CDP env prepared for supervised services"
-fi
-if [ -n "${BROWSERLESS_CDP_BROKER_ENABLED:-}" ]; then
-    printf '%s' "$BROWSERLESS_CDP_BROKER_ENABLED" > /run/s6/container_environment/BROWSERLESS_CDP_BROKER_ENABLED
-fi
-if [ -n "${BROWSERLESS_CDP_BROKER_PORT:-}" ]; then
-    printf '%s' "$BROWSERLESS_CDP_BROKER_PORT" > /run/s6/container_environment/BROWSERLESS_CDP_BROKER_PORT
-fi
-
-register_spartan_browserless_cdp_broker_service
+# End Spartan Gate supervised gateway state
 
 '''
 
 
+def _insertion_index(source: str) -> int:
+    anchors = [anchor for anchor in (ANCHOR, ALTERNATE_ANCHOR) if anchor in source]
+    if len(anchors) != 1 or source.count(anchors[0]) != 1:
+        raise ValueError("expected exactly one supported agent-browser discovery anchor")
+    return source.index(anchors[0])
+
+
 def patch_source(source: str) -> str:
+    index = _insertion_index(source)
+    # Exact generated-block validation intentionally rejects partial/modified
+    # guards instead of trusting a marker or guessing how to repair shell code.
     if MARKER in source:
+        if source.count(MARKER) != 1 or source.count(NEW_BLOCK) != 1:
+            raise ValueError("incomplete or modified supervised gateway state patch")
+        start = source.index(NEW_BLOCK)
+        if start + len(NEW_BLOCK) != index:
+            raise ValueError("supervised gateway state patch is not before discovery")
+        remainder = source[:start] + source[index:]
+        _validate_pristine(remainder)
         return source
 
-    index = source.find(ANCHOR)
-    if index == -1:
-        index = source.find("# --- Point agent-browser at the pinned Chromium binary ---")
-    if index == -1:
-        raise ValueError("agent-browser discovery anchor not found")
+    _validate_pristine(source)
+    patched = source[:index] + NEW_BLOCK + source[index:]
+    if patched.count(NEW_BLOCK) != 1:
+        raise ValueError("supervised gateway state patch postcondition failed")
+    return patched
 
-    return source[:index] + NEW_BLOCK + source[index:]
+
+def _validate_pristine(source: str) -> None:
+    if any(fragment in source for fragment in (
+        "# Spartan Gate patch: browser runtime for supervised services", END_MARKER,
+        "seed_legacy_autostart_profile_state", "seed_spartan_default_gateway_state",
+    )):
+        raise ValueError("incompatible or partial Spartan stage2 patch")
 
 
 def main() -> None:
@@ -270,11 +132,11 @@ def main() -> None:
         sys.exit(1)
 
     if patched == source:
-        print(f"SKIP: {TARGET} already prepares Browserless CDP env")
+        print(f"SKIP: {TARGET} already prepares supervised gateway state")
         return
 
     TARGET.write_text(patched, encoding="utf-8")
-    print(f"Patched: {TARGET} - Spartan browser runtime prepared before supervised services")
+    print(f"Patched: {TARGET} - gateway state prepared before supervised services")
 
 
 if __name__ == "__main__":
