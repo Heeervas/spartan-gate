@@ -81,6 +81,13 @@ class WhitelistDomainTests(unittest.TestCase):
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
         env["FAKE_DOCKER_LOG"] = str(log)
         env["FAKE_DOCKER_RELOAD_FAIL_SERVICE"] = fail_service
+        # Model an installed stack without depending on ignored operator env
+        # files. An absent env makes the tier lookup fail under shell errexit.
+        env_file = pathlib.Path(self.tmp.name) / "stack.env"
+        env_file.write_text("SPARTAN_TIER=L4\n", encoding="utf-8")
+        env["SPARTAN_ENV_FILE"] = str(env_file)
+        env["SPARTAN_TIER"] = "L4"
+        env["SPARTAN_PRIVATE_COMPOSE"] = str(pathlib.Path(self.tmp.name) / "absent.yml")
         env["SPARTAN_WHITELIST_FILE"] = str(self.whitelist)
         env["SPARTAN_WHITELIST_NOW"] = str(NOW)
         if extra_env:

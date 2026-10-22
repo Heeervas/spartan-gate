@@ -19,7 +19,11 @@ Builds/canaries and live acceptance remain unexecuted.
 
 Remote CI at `2a338eb` exposed a clean-checkout test dependency on an ignored
 private directory. The fixture now retains read-only mount assertions without
-requiring operator state. Route now pins aiohttp 3.14.4; dependency regressions
+requiring operator state. Subsequent clean-runner failures were corrected by
+provisioning pinned native Caddy in both CI lanes and isolating test stack/UID
+fixtures. All 492 script tests pass in a clean checkout and under runner UID
+1001 (one existing skip); production ownership checks remain unchanged.
+Route now pins aiohttp 3.14.4; dependency regressions
 fail on 3.14.3 and pass on 3.14.4. Updated Route evidence: 476 Python and 41 JS;
 mandatory native Hermes 75 and Camofox 53 pass without skips. TOP assurance
 retains the existing bounded exceptions. No deployed-version claim is made.

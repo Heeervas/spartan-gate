@@ -39,6 +39,25 @@ jobs:
           npm run test:pi
       - name: Hermes fixtures (native source lane is separately required)
         run: npm run test:hermes
+      - name: Provision pinned native Caddy for operator fixtures
+        run: &provision-caddy |
+          mkdir -p .agents/native
+          docker pull caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
+          docker image save caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794 -o .agents/native/caddy-image.tar
+          python3 - <<'PY'
+          import io, json, pathlib, tarfile
+          with tarfile.open('.agents/native/caddy-image.tar') as image:
+              manifest = json.load(image.extractfile('manifest.json'))
+              for layer in manifest[0]['Layers']:
+                  with tarfile.open(fileobj=io.BytesIO(image.extractfile(layer).read())) as archive:
+                      for member in archive:
+                          if member.name.lstrip('./') == 'usr/bin/caddy':
+                              target = pathlib.Path('.agents/native/caddy')
+                              target.write_bytes(archive.extractfile(member).read())
+                              target.chmod(0o755)
+          PY
+          echo "CADDY_BIN=$PWD/.agents/native/caddy" >> "$GITHUB_ENV"
+          .agents/native/caddy version
       - name: Operator helpers and full public Compose matrix
         run: npm run test:scripts
       - name: Reader, edge and Camofox fixtures
@@ -95,23 +114,9 @@ jobs:
         run: |
           npm run test:hermes:native
           npm run test:camofox:native
-      - name: Provision native Caddy and exercise HTTP/WebSocket security
+      - name: Provision pinned native Caddy
+        run: *provision-caddy
+      - name: Exercise HTTP/WebSocket security
         run: |
-          docker pull caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
-          docker image save caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794 -o .agents/native/caddy-image.tar
-          python3 - <<'PY'
-          import io, json, pathlib, tarfile
-          with tarfile.open('.agents/native/caddy-image.tar') as image:
-              manifest = json.load(image.extractfile('manifest.json'))
-              for layer in manifest[0]['Layers']:
-                  with tarfile.open(fileobj=io.BytesIO(image.extractfile(layer).read())) as archive:
-                      for member in archive:
-                          if member.name.lstrip('./') == 'usr/bin/caddy':
-                              target = pathlib.Path('.agents/native/caddy')
-                              target.write_bytes(archive.extractfile(member).read())
-                              target.chmod(0o755)
-          PY
-          export CADDY_BIN="$PWD/.agents/native/caddy"
-          "$CADDY_BIN" version
           python3 -m unittest discover -s infra/caddy -p 'test_*.py'
           python3 -m unittest scripts.test_add_port scripts.test_migrate_caddy_safari_session

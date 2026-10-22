@@ -717,7 +717,11 @@ sg-browser camofox-live main https://accounts.google.com
         bin_dir, log = self.write_docker_stub("1000:1000")
         (self.root / "private" / "env").mkdir(parents=True)
         env_file = self.root / "private" / "env" / "local.env"
-        env_file.write_text("SPARTAN_ROUTE_EDGE_PORT=18792\n", encoding="utf-8")
+        env_file.write_text(
+            f"SPARTAN_ROUTE_EDGE_PORT=18792\nSPARTAN_ROUTE_UID={os.getuid()}\n"
+            f"SPARTAN_ROUTE_GID={os.getgid()}\n",
+            encoding="utf-8",
+        )
         private_compose = self.root / "private" / "compose.local.yml"
         private_compose.write_text("services: {}\n", encoding="utf-8")
 
