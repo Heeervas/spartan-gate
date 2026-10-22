@@ -194,3 +194,13 @@ baseline and policy, and verify staged source bytes match the tested/reviewed on
 python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/collect_oxlint_metrics.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope index --oxlint ./node_modules/.bin/oxlint --output .agents/oxlint-metrics.json
 python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/quality_report.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope index --level top --config .agents/quality.yaml --format json --output .agents/pi-route-quality.json
 ```
+
+## Portable native planning entrypoint
+
+The native `/plan` prompt patch preserves plan-only execution and routes enabled shared planning through its Hermes adapter. Run the focused real-source regression before adoption:
+
+```sh
+HERMES_UPSTREAM_SOURCE=<actual pinned upstream checkout> PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/hermes-agent -p test_portable_plan_patch.py -v
+```
+
+Use the actual pinned-source path from the existing native-source gate above; an absent source yields an incomplete boundary, not acceptance. The native suite includes this test. A successful source test does not activate the running image; build/recreation stays separately controlled.

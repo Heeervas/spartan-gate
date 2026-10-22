@@ -1,37 +1,13 @@
-# Revisión adversarial e implementación en paralelo
+# Adversarial review and implementation
 
-Realiza una revisión adversarial del alcance indicado en esta sesión siguiendo
-AGENTS.md y las skills aplicables. Si el alcance no está definido, solicítalo
-antes de activar el goal. Busca fallos reales, regresiones y riesgos de seguridad;
-prioriza los hallazgos y evita ampliar el trabajo con mejoras ajenas al objetivo.
+Use the enabled shared `rev-impl` skill as a thin invocation of `agent-team-orchestration` with review_policy=adversarial. Read shared-skills core/current adapter, then rev-impl core/current adapter and its required enabled supports through native discovery. This prompt cannot bypass a disabled method.
 
-Antes de activar el goal, comprueba que Git y los worktrees de trabajo estén
-limpios. Si hay cambios previos, presérvalos y resuelve su tratamiento conmigo;
-no los descartes ni los incluyas en commits sin autorización.
+Outcome/scope: the current explicitly requested task. Entry: infer the earliest unmet obligation or resume its checkpoint. Stop after: the requested endpoint; full authorized implementation ends at verified local closeout. Continuation: autonomous within that scope, with proportionate sequential/parallel work. Preserve selected plan-only/review-only boundaries.
 
-Usa `set goal` (o la herramienta equivalente disponible) para registrar el
-objetivo. Tú orquestas la revisión, la integración y la validación. Delega la
-implementación en subagentes GPT-6.1 Sol con razonamiento medium, utilizando
-worktrees paralelos y tareas con límites claros para evitar conflictos. Si ese
-modelo no está disponible, avísame antes de sustituirlo.
+Project execution preferences: when delegation is justified, use GPT-6.1 Sol medium for implementation unless the current user instruction selects another available model; report unavailable required models before substitution. Follow AGENTS.md and project validation. The shared adversarial procedure owns independent plan review, preserved dirty inputs, clean task worktrees, integrated verification and coherent local commits. No push.
 
-Implementa los cambios necesarios en pequeñas unidades verificables. No
-sobreoptimices con tests: usa las comprobaciones mínimas que aporten evidencia
-real, con regresiones focalizadas cuando corresponda y verificación fail-closed
-para cambios de seguridad. Integra y revisa los resultados de los subagentes.
+Project-only goal opt-in, active only when this prompt is explicitly invoked for this repository: use `set goal` or the available native equivalent to register exactly the authorized task and selected endpoint. Resolve undefined scope before activation. First verify Git and the task worktrees are clean; preserve inherited changes and resolve their treatment with the user without discarding or including them in commits without authorization. An isolated clean worktree does not make the original checkout clean. If the required clean baseline or goal capability is unavailable, report that activation gate. Mark the goal complete only when no required work remains for its recorded outcome; plan-only or review-only scope never grants implementation authority. The shared portable method does not infer goal activation from this local preference.
 
-Si es necesario reconstruir Hermes o Camofox, tienes autorización para eliminar
-primero sus imágenes actuales y reconstruirlas. Identifica las imágenes exactas
-y limita la eliminación a ellas; conserva volúmenes, perfiles y datos. Haz los
-builds uno a uno, solo cuando la revisión y las comprobaciones previas den la
-máxima confianza razonable en los cambios. Respeta los requisitos de espacio y
-las demás restricciones operativas de AGENTS.md.
+Project-only operational override, active only when this prompt is explicitly invoked for this repository: if Hermes or Camofox rebuilding is necessary within the authorized task, the operator permits deletion of the exact identified current images before rebuilding. Preserve volumes, profiles and data; build serially only after review/checks and within AGENTS.md space/lifecycle restrictions. This authority stays local and does not authorize unrelated deployment or service interruption.
 
-Al terminar, deja los cambios completados en commits locales, Git limpio y los
-worktrees utilizados limpios; retira los worktrees temporales creados para esta
-tarea una vez integrado su trabajo. No hagas push. Marca el goal como completado
-solo cuando no quede trabajo requerido pendiente.
-
-Avísame cuando todo esté acabado con un resumen breve de los hallazgos, los
-cambios, las validaciones y builds realizados, el estado de Git y los worktrees,
-y cualquier limitación concreta que quede pendiente.
+Deliver a brief result with findings, changed behavior, checks/builds actually performed, local commits, Git/worktree state and concrete remaining limits. A report or plan endpoint may finish while product implementation remains unaccepted; do not mark the full target complete prematurely.
