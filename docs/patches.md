@@ -63,13 +63,14 @@ extension points.
 | Camofox `patch-vault-evaluate.js` | Adds the authenticated secret transport with bounded parsing before generic reporters, scope and tracing checks, sanitized count-only results, and lifecycle-coordinated timeout cleanup. |
 | `proxy-bootstrap.py` | Routes selected web/search traffic through Spartan Gate controls and logs audited egress. |
 | `freeze_image_features.py` | Inventories the image's actually installed native extras and writes Hermes's feature metadata after dependency installation. This preserves shipped optional features when PM creates its first writable generation; it does not declare arbitrary plugin dependencies. |
-| `browserless-cdp-broker.py` | Shares one persistent Browserless profile session across local CDP clients. |
-| `browserless-cdp-url.js` and `cdp-patch.js` | Normalize Browserless CDP URLs for container networking and auth. |
+| `patch_gateway_service_cdp_env.py` | Compatibility filename: propagates Camofox settings and preserves numeric workload drops/root-owned supervision. No CDP broker fallback. |
+| `patch_chrome_devtools_ws_auth.py` | Compatibility filename: removes only managed retired CDP settings at boot; preserves custom configuration and never reads browser profiles. |
 
 ## Archived Patches
 
-`patch_chrome_devtools_ws_auth.py` remains in the patch directory for reference
-but is not invoked by the current Dockerfile.
+Browserless broker/URL/debugger adapters were removed with the retired source.
+Google Meet retains Camofox caption transcription only; realtime/CDP workflows
+are unsupported. See [the migration contract](layers.md).
 
 | Patch | Decision |
 | --- | --- |
@@ -90,7 +91,7 @@ hooks are stable enough.
 
 | Patch | Candidate shape |
 | --- | --- |
-| `patch_google_meet_cdp.py` | Google Meet browser backend selector. |
+| `patch_google_meet_cdp.py` | Compatibility filename for Camofox Meet transcription and retired-CDP denial. |
 | `patch_google_meet_transcript.py` | Google Meet transcript and muted-join behavior. |
 | `patch_prompt_load_callback.py` | Telegram prompt-load callback handler with the upstream chat/thread/user authorization gate applied before any synthetic event. Upstream now ships Telegram as a platform plugin, so this remains a candidate for extraction when an equivalent callback hook is available. |
 | `patch_checkpoint_rollback_scan.py` | Adds only conservative workdir selection to native rollback handlers. Native listing, restore, backend restrictions and chat undo remain upstream-owned. Ambiguous scopes require explicit selection. |

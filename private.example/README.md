@@ -17,9 +17,11 @@ python3 scripts/private-permissions.py check \\
   --private-dir private --env-file private/env/local.env
 ```
 
-Browserless profiles intentionally use owner/group mode 0770 and the configured
-`BROWSERLESS_PROFILES_GID`; other governed credential/data roots are 0700.
-The checker never traverses browser or Codex store contents.
+Governed credential/data roots use mode 0700. The checker never traverses browser
+or Codex store contents. Retired Browserless profiles and legacy ClawRoute data
+are no longer governed or modified; leave them untouched. Before activation,
+remove retired service/mount/port definitions from your private override after
+reviewing [the migration contract](../docs/layers.md).
 
 Use `compose.local.yml` for overrides that should not be public. The public Compose already marks fields as `required`, `recommended`, or `private/local` so it is clear what belongs here.
 
@@ -33,5 +35,5 @@ Private runbooks and local decisions belong in `private/docs/`. Use `private.exa
 Use isolated data paths by default. Only point these variables at old stack data when you are intentionally migrating:
 
 - `SPARTAN_HERMES_DATA_PATH`
-- `SPARTAN_CLAWROUTE_DATA_PATH`
+- `SPARTAN_ROUTE_DATA_PATH`
 - `SPARTAN_GOGCLI_DATA_PATH`

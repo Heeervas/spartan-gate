@@ -11,8 +11,9 @@ Camofox is a REST service around Camoufox, a Firefox-derived anti-detection
 browser. Spartan Gate selects it for every Hermes profile when the deployment
 sets `CAMOFOX_URL`. This administrator policy overrides profile cloud/CDP
 settings and keeps the built-in `browser_*` tools; `browser_exec` is unavailable
-in this mode. Camofox and Browserless are separate modes; do not assume
-Chrome/CDP features are available while Camofox is selected.
+in this mode. Camofox is the supported persistent browser; Browserless/CDP
+workflows are retired, not an alternate mode. Google Meet supports caption
+transcription only, not realtime audio. No Chrome/CDP replacement is implied.
 
 The endpoint and authentication are provided through Hermes' native managed
 secret scope. Their absence from the terminal environment does not identify the

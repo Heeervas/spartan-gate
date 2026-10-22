@@ -13,7 +13,6 @@ COMPOSE_FILES = (
     ROOT / "infra/compose/tiers/compose.l1.yml",
     ROOT / "infra/compose/tiers/compose.l2.yml",
     ROOT / "infra/compose/tiers/compose.l3.yml",
-    ROOT / "infra/compose/tiers/compose.clawroute.yml",
     ROOT / "infra/compose/tiers/compose.spartan-route.yml",
 )
 EXPECTED_LOGGING = {

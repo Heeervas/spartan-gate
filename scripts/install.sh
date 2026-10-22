@@ -9,7 +9,7 @@ HERMES_MODE=""
 
 usage() {
     cat <<'EOF'
-Usage: scripts/install.sh --tier L0|L1|L2|L3|L4 [--with clawroute] [--hermes free|gated|full]
+Usage: scripts/install.sh --tier L0|L1|L2|L3|L4 [--hermes free|gated|full]
 
 Creates private/env/local.env, generates local secrets, runs `hermes setup`,
 and starts the selected Spartan Gate tier.
@@ -53,7 +53,8 @@ normalize_addons() {
     for addon in $raw; do
         case "$addon" in
             clawroute)
-                [[ " $out " == *" clawroute "* ]] || out="${out:+$out }clawroute"
+                printf 'ClawRoute addon retired; select L3 or L4 for Spartan Route, and clear SPARTAN_ADDONS after reviewing your configuration.\n' >&2
+                return 1
                 ;;
             none|"")
                 ;;
@@ -67,7 +68,7 @@ normalize_addons() {
 
 default_addons() {
     case "$TIER" in
-        L3) printf 'clawroute\n' ;;
+        L3) printf '\n' ;;
         *) printf '\n' ;;
     esac
 }
@@ -114,9 +115,6 @@ done
 if [[ "$TIER" == "L3" ]]; then
     ADDONS="$(default_addons)"
 fi
-if [[ "$TIER" == "L4" ]] && has_addon clawroute; then
-    die "ClawRoute is not part of L4; use L0/L1/L2 --with clawroute for the legacy addon"
-fi
 [[ -n "$HERMES_MODE" ]] || HERMES_MODE="$(default_hermes_mode)"
 
 tier_lower="$(printf '%s' "$TIER" | tr '[:upper:]' '[:lower:]')"
@@ -130,18 +128,7 @@ private_codex_home="$private_dir/codex-home"
 
 compose_args_for_tier() {
     case "$TIER" in
-        L0)
-            printf '%s\n' -f "$ROOT/infra/compose/tiers/compose.l0.yml"
-            has_addon clawroute && printf '%s\n' -f "$ROOT/infra/compose/tiers/compose.clawroute.yml"
-            ;;
-        L1)
-            printf '%s\n' -f "$ROOT/infra/compose/tiers/compose.l1.yml"
-            has_addon clawroute && printf '%s\n' -f "$ROOT/infra/compose/tiers/compose.clawroute.yml"
-            ;;
-        L2)
-            printf '%s\n' -f "$ROOT/infra/compose/tiers/compose.l2.yml"
-            has_addon clawroute && printf '%s\n' -f "$ROOT/infra/compose/tiers/compose.l3.yml"
-            ;;
+        L0|L1|L2) printf '%s\n' -f "$ROOT/infra/compose/tiers/compose.${tier_lower}.yml" ;;
         L3) printf '%s\n' -f "$ROOT/infra/compose/tiers/compose.l2.yml" -f "$ROOT/infra/compose/tiers/compose.l3.yml" ;;
         L4) printf '%s\n' -f "$ROOT/infra/compose/compose.yml" -f "$private_compose_file" ;;
     esac
@@ -240,13 +227,11 @@ quote_env() {
 
 write_env_file() {
     local tmp managed_keys key caddy_password caddy_hash camofox_edge_token websocket_edge_token camofox_disable_default_addons
-    local browserless_image browserless_base_image
     mkdir -p "$(dirname "$env_file")"
-    mkdir -p "$data_root/hermes" "$data_root/camofox" "$data_root/clawroute" "$data_root/spartan-route" "$data_root/browserless-profiles" "$data_root/gogcli"
     [[ -f "$env_file" ]] || : > "$env_file"
 
     managed_keys=(
-        SPARTAN_TIER SPARTAN_ADDONS SPARTAN_HERMES_MODE
+        SPARTAN_TIER SPARTAN_ADDONS SPARTAN_HERMES_MODE SPARTAN_PRIVATE_WHITELIST_PATH SPARTAN_CADDY_LOCAL_DIR
         COMPOSE_PROJECT_NAME COMPOSE_PROFILES
         SPARTAN_BIND_LOCALHOST SPARTAN_GATE_PORT CLAWROUTE_EDGE_PORT
         BROWSERLESS_DEBUG_PORT HERMES_DASHBOARD_PORT HERMES_API_PORT
@@ -265,7 +250,7 @@ write_env_file() {
         HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
         HERMES_DASHBOARD_BASIC_AUTH_SECRET
         CLAWROUTE_TOKEN SPARTAN_REASONING_BINDING_SECRET BROWSERLESS_TOKEN BROWSERLESS_EDGE_TOKEN CADDY_CAMOFOX_EDGE_TOKEN CADDY_WS_EDGE_TOKEN CADDY_AUTH_USER CADDY_AUTH_HASH
-        SPARTAN_CADDY_PASSWORD
+        SPARTAN_CADDY_PASSWORD CADDY_SESSION_SERVICE_KEY
         CLOUDFLARE_API_TOKEN
         CAMOFOX_URL CAMOFOX_API_KEY CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID
         CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB CAMOFOX_DISABLE_DEFAULT_ADDONS CAMOFOX_ENABLE_VNC
@@ -280,7 +265,7 @@ write_env_file() {
             for (i in key_list) managed[key_list[i]] = 1
         }
         /^[A-Za-z_][A-Za-z0-9_]*=/ {
-            if ($1 in managed) next
+            if ($1 in managed || $1 ~ /^BROWSERLESS_/ || $1 ~ /^BROWSER_CDP_/ || $1 ~ /^HERMES_MEET_CDP_/) next
         }
         { print }
     ' "$env_file" > "$tmp"
@@ -295,7 +280,7 @@ write_env_file() {
     append_env SPARTAN_ADDONS "$ADDONS"
     append_env SPARTAN_HERMES_MODE "$HERMES_MODE"
     append_env COMPOSE_PROJECT_NAME "spartan-gate"
-    if [[ "$TIER" == "L4" ]]; then
+    if [[ "$TIER" != "L0" ]]; then
         append_env COMPOSE_PROFILES "camofox"
     else
         append_env COMPOSE_PROFILES ""
@@ -303,7 +288,6 @@ write_env_file() {
     append_env SPARTAN_BIND_LOCALHOST "127.0.0.1"
     append_env SPARTAN_GATE_PORT "${SPARTAN_GATE_PORT:-18789}"
     append_env CLAWROUTE_EDGE_PORT "${CLAWROUTE_EDGE_PORT:-18790}"
-    append_env BROWSERLESS_DEBUG_PORT "${BROWSERLESS_DEBUG_PORT:-3005}"
     append_env HERMES_DASHBOARD_PORT "${HERMES_DASHBOARD_PORT:-9119}"
     append_env HERMES_API_PORT "${HERMES_API_PORT:-8642}"
     append_env CAMOFOX_API_PORT "${CAMOFOX_API_PORT:-9377}"
@@ -311,22 +295,27 @@ write_env_file() {
     append_env SPARTAN_INTERNAL_SUBNET "${SPARTAN_INTERNAL_SUBNET:-172.28.0.0/24}"
     append_env SPARTAN_DNS_IP "${SPARTAN_DNS_IP:-172.28.0.253}"
     append_env SPARTAN_ALLOW_EXISTING_STACK_PATHS "false"
-    append_env SPARTAN_HERMES_DATA_PATH "$data_root/hermes"
-    append_env SPARTAN_CLAWROUTE_DATA_PATH "$data_root/clawroute"
-    append_env SPARTAN_ROUTE_DATA_PATH "$data_root/spartan-route"
-    append_env SPARTAN_GOGCLI_DATA_PATH "$data_root/gogcli"
-    append_env SPARTAN_BROWSERLESS_PROFILES_PATH "$data_root/browserless-profiles"
-    append_env SPARTAN_CAMOFOX_DATA_PATH "$data_root/camofox"
-    append_env SPARTAN_CODEX_HOME_PATH "$private_codex_home"
+    for key in SPARTAN_HERMES_DATA_PATH SPARTAN_ROUTE_DATA_PATH SPARTAN_GOGCLI_DATA_PATH SPARTAN_CAMOFOX_DATA_PATH SPARTAN_CODEX_HOME_PATH; do
+        current_path="$(env_value "$key" || true)"
+        if [[ -z "$current_path" ]]; then
+            case "$key" in
+                SPARTAN_HERMES_DATA_PATH) current_path="$data_root/hermes" ;;
+                SPARTAN_ROUTE_DATA_PATH) current_path="$data_root/spartan-route" ;;
+                SPARTAN_GOGCLI_DATA_PATH) current_path="$data_root/gogcli" ;;
+                SPARTAN_CAMOFOX_DATA_PATH) current_path="$data_root/camofox" ;;
+                SPARTAN_CODEX_HOME_PATH) current_path="$private_codex_home" ;;
+            esac
+        fi
+        append_env "$key" "$current_path"
+    done
+    append_env SPARTAN_PRIVATE_WHITELIST_PATH "$private_whitelist_file"
+    append_env SPARTAN_CADDY_LOCAL_DIR "$private_dir/caddy.local.d"
     append_env SPARTAN_CADDY_UID "$(id -u)"
     append_env SPARTAN_CADDY_GID "$(id -g)"
     append_env SPARTAN_ROUTE_UID "$(id -u)"
     append_env SPARTAN_ROUTE_GID "$(id -g)"
-    append_env SPARTAN_CLAWROUTE_UID "$(id -u)"
-    append_env SPARTAN_CLAWROUTE_GID "$(id -g)"
     append_env HERMES_UID "$(id -u)"
     append_env HERMES_GID "$(id -g)"
-    append_env BROWSERLESS_PROFILES_GID "$(id -g)"
     append_env SPARTAN_HERMES_RUN_UID "$(id -u)"
     append_env SPARTAN_HERMES_RUN_GID "$(id -g)"
     append_env HERMES_API_KEY "$(get_or_generate HERMES_API_KEY 32)"
@@ -337,8 +326,6 @@ write_env_file() {
     append_env HERMES_DASHBOARD_BASIC_AUTH_SECRET "$(get_or_generate HERMES_DASHBOARD_BASIC_AUTH_SECRET 32)"
     append_env CLAWROUTE_TOKEN "$(get_or_generate CLAWROUTE_TOKEN 32)"
     append_env SPARTAN_REASONING_BINDING_SECRET "$(get_or_generate SPARTAN_REASONING_BINDING_SECRET 32)"
-    append_env BROWSERLESS_TOKEN "$(get_or_generate BROWSERLESS_TOKEN 32)"
-    append_env BROWSERLESS_EDGE_TOKEN "$(get_or_generate BROWSERLESS_EDGE_TOKEN 32)"
     camofox_edge_token="$(get_or_generate_edge_token CADDY_CAMOFOX_EDGE_TOKEN)"
     websocket_edge_token="$(get_or_generate_edge_token CADDY_WS_EDGE_TOKEN)"
     if [[ "$camofox_edge_token" == "$websocket_edge_token" ]]; then
@@ -346,6 +333,9 @@ write_env_file() {
     fi
     append_env CADDY_CAMOFOX_EDGE_TOKEN "$camofox_edge_token"
     append_env CADDY_WS_EDGE_TOKEN "$websocket_edge_token"
+    service_key="$(get_or_generate_edge_token CADDY_SESSION_SERVICE_KEY)"
+    while [[ "$service_key" == "$websocket_edge_token" || "$service_key" == "$camofox_edge_token" ]]; do service_key="$(random_hex 32)"; done
+    append_env CADDY_SESSION_SERVICE_KEY "$service_key"
     append_env CADDY_AUTH_USER "admin"
     caddy_password="$(env_value SPARTAN_CADDY_PASSWORD || true)"
     caddy_hash="$(env_value CADDY_AUTH_HASH || true)"
@@ -380,17 +370,6 @@ write_env_file() {
     append_env CAMOFOX_VNC_PASSWORD "$(get_or_generate CAMOFOX_VNC_PASSWORD 24)"
     append_env CAMOFOX_IMAGE "spartan-gate-camofox:1.15.0"
     append_env CAMOFOX_BASE_IMAGE "ghcr.io/jo-inc/camofox-browser:1.15.0@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae"
-    browserless_image="$(env_value BROWSERLESS_IMAGE || true)"
-    browserless_base_image="$(env_value BROWSERLESS_BASE_IMAGE || true)"
-    if [[ "$browserless_image" == ghcr.io/browserless/chromium:* || "$browserless_image" == ghcr.io/browserless/chromium@* ]]; then
-        [[ -n "$browserless_base_image" ]] || browserless_base_image="$browserless_image"
-        browserless_image="spartan-gate-browserless:2.51.0"
-    else
-        [[ -n "$browserless_base_image" ]] || browserless_base_image="ghcr.io/browserless/chromium:v2.51.0"
-        [[ -n "$browserless_image" ]] || browserless_image="spartan-gate-browserless:2.51.0"
-    fi
-    append_env BROWSERLESS_IMAGE "$browserless_image"
-    append_env BROWSERLESS_BASE_IMAGE "$browserless_base_image"
     append_env HERMES_IMAGE "spartan-gate-hermes:latest"
 
     mv "$tmp" "$env_file"
@@ -399,8 +378,6 @@ write_env_file() {
 
 write_private_compose() {
     [[ "$TIER" == "L4" ]] || return 0
-    mkdir -p "$(dirname "$private_whitelist_file")" "$private_dir/caddy.local.d" "$private_codex_home"
-    [[ -f "$private_whitelist_file" ]] || : > "$private_whitelist_file"
     [[ -f "$private_compose_file" ]] && return 0
 
     cat > "$private_compose_file" <<'EOF'
@@ -409,15 +386,11 @@ write_private_compose() {
 services:
   proxy:
     volumes:
-      - ../../private/outbound-proxy/whitelist.private.txt:/etc/tinyproxy/whitelist.private.txt:ro
+      - ${SPARTAN_PRIVATE_WHITELIST_PATH}:/etc/tinyproxy/whitelist.private.txt:ro
 
   dns:
     volumes:
-      - ../../private/outbound-proxy/whitelist.private.txt:/etc/dns-whitelist.private.txt:ro
-
-  browserless:
-    volumes:
-      - ${SPARTAN_BROWSERLESS_PROFILES_PATH:-../../runtime/browserless/profiles}:/profiles:Z
+      - ${SPARTAN_PRIVATE_WHITELIST_PATH}:/etc/dns-whitelist.private.txt:ro
 
   camofox:
     volumes:
@@ -427,18 +400,17 @@ services:
     ports:
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_GATE_PORT:-18789}:18789"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
-      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${BROWSERLESS_DEBUG_PORT:-3005}:3005"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CAMOFOX_NOVNC_PORT:-26080}:26080"
+      # scripts/add-port.sh inserts below this line.
     volumes:
-      - ../../private/caddy.local.d:/etc/caddy/local.d:ro
+      - ${SPARTAN_CADDY_LOCAL_DIR}:/etc/caddy/local.d:ro
 
   hermes:
     volumes:
       - ${SPARTAN_HERMES_DATA_PATH:-../../runtime/hermes}:/opt/data:Z
       - ${SPARTAN_GOGCLI_DATA_PATH:-../../runtime/gogcli}:/opt/data/.config/gogcli:Z
-      - ${SPARTAN_BROWSERLESS_PROFILES_PATH:-../../runtime/browserless/profiles}:/profiles:Z
-      - ../../private/outbound-proxy/whitelist.private.txt:/etc/proxy-whitelist.private.txt:ro
+      - ${SPARTAN_PRIVATE_WHITELIST_PATH}:/etc/proxy-whitelist.private.txt:ro
 
   spartan-route:
     volumes:
@@ -469,12 +441,54 @@ EOF
 }
 
 require_docker
-mkdir -p "$private_codex_home"
+if [[ -f "$env_file" ]]; then
+    normalize_addons "$(env_value SPARTAN_ADDONS || true)" >/dev/null || die "persisted addon retired; clear SPARTAN_ADDONS and select L3/L4"
+fi
+mkdir -p "$(dirname "$env_file")"
+[[ ! -L "${env_file}.config.lock" ]] || die "unsafe configuration lock"
+exec 9>"${env_file}.config.lock"
+flock -x -w 30 9 || die "configuration busy"
+# Render an unpublished env candidate before changing the selected configuration.
+final_env_file="$env_file"
+stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
+if [[ -f "$env_file" ]]; then
+    normalize_addons "$(env_value SPARTAN_ADDONS || true)" >/dev/null || die "persisted addon retired; clear SPARTAN_ADDONS and select L3/L4"
+    cp -p "$env_file" "$stage/local.env"
+fi
+env_file="$stage/local.env"
+original_compose_file="$private_compose_file"
+if [[ ! -f "$private_compose_file" && "$TIER" == L4 ]]; then
+    private_compose_file="$stage/compose.local.yml"
+    write_private_compose
+fi
 write_env_file
+compose config --quiet
+private_compose_file="$original_compose_file"
+# Preserve previous configuration until publication and permission checks finish.
+final_state_file="$state_file"
+final_compose_file="$private_compose_file"
+for name in env state compose; do
+    case "$name" in env) target="$final_env_file" ;; state) target="$state_file" ;; compose) target="$private_compose_file" ;; esac
+    [[ ! -L "$target" && ( ! -e "$target" || -f "$target" ) ]] || die "unsafe configuration target"
+    [[ ! -f "$target" ]] || cp -p "$target" "$stage/backup-$name"
+done
+rollback() {
+    for name in env state compose; do
+        case "$name" in env) target="$final_env_file" ;; state) target="$final_state_file" ;; compose) target="$final_compose_file" ;; esac
+        if [[ -f "$stage/backup-$name" ]]; then cp -p "$stage/backup-$name" "$target"; else rm -f "$target"; fi
+    done
+    rm -rf "$stage"
+}
+trap rollback EXIT
+mkdir -p "$(dirname "$final_env_file")" "$private_codex_home" "$data_root/hermes" "$data_root/camofox" "$data_root/spartan-route" "$data_root/gogcli" "$private_dir/caddy.local.d" "$(dirname "$private_whitelist_file")"
+[[ -f "$private_whitelist_file" ]] || : > "$private_whitelist_file"
+cp "$env_file" "$final_env_file"
+env_file="$final_env_file"
 write_private_compose
 write_state
 python3 "$ROOT/scripts/private-permissions.py" fix --private-dir "$private_dir" --env-file "$env_file"
-if [[ "$TIER" == "L4" ]]; then
+if [[ "$TIER" == "L3" || "$TIER" == "L4" ]]; then
     route_data_path="$(env_value SPARTAN_ROUTE_DATA_PATH)"
     route_uid="$(env_value SPARTAN_ROUTE_UID)"
     route_gid="$(env_value SPARTAN_ROUTE_GID)"
@@ -483,6 +497,7 @@ if [[ "$TIER" == "L4" ]]; then
         || die "legacy Spartan Route SQLite state requires sg-spartan-route-data-migrate before L4 can start"
 fi
 
+trap 'rm -rf "$stage"' EXIT
 printf 'Spartan Gate tier %s configured for %s.\n' "$TIER" "$(detect_platform)"
 printf 'Env file: %s\n' "$env_file"
 printf 'Running Hermes setup, then starting the selected tier.\n'

@@ -52,8 +52,7 @@ class PocketTTSComposeContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn(
-            "COPY --chown=0:0 browserless-profile-live.js browserless-cdp-broker.py "
-            "pocket-tts-client.py wrangler-auth.py /opt/hermes/bootstrap/",
+            "COPY --chown=0:0 pocket-tts-client.py wrangler-auth.py /opt/hermes/bootstrap/",
             dockerfile,
         )
         self.assertIn(

@@ -137,8 +137,9 @@ Activation, live runtime canaries and actual savings measurement are separate
 operator steps. Validate fresh and inherited synthetic PM state, prohibited
 browser installations without network activity, resident-worker dispatch,
 Camofox-only startup, retained non-browser tools and document workflows before
-selecting this image for production. Browserless requires the full variant.
-Removing this overlay restores the full default on a subsequent approved build;
+selecting this image for production. Browserless/CDP workflows are retired in
+all supported variants; the full variant does not restore them. Removing this
+overlay restores the full dependency variant on a subsequent approved build;
 changing a build argument alone does not replace an already running container.
 
 ## Boot Using The Validated Image Environment

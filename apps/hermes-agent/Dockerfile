@@ -123,11 +123,7 @@ RUN uv pip install --no-cache-dir --no-deps --python /opt/hermes/.venv/bin/pytho
 # Loaded via PYTHONPATH=/opt/hermes/bootstrap → sitecustomize.py
 COPY --chown=0:0 proxy-bootstrap.py /opt/hermes/bootstrap/sitecustomize.py
 
-# CDP patch: rewrites browserless 0.0.0.0 WebSocket URLs → Docker hostname
-# Loaded via NODE_OPTIONS=--require=/opt/hermes/bootstrap/cdp-patch.js
-COPY --chown=0:0 cdp-patch.js /opt/hermes/bootstrap/cdp-patch.js
-COPY --chown=0:0 browserless-cdp-url.js /opt/hermes/bootstrap/browserless-cdp-url.js
-COPY --chown=0:0 browserless-profile-live.js browserless-cdp-broker.py pocket-tts-client.py wrangler-auth.py /opt/hermes/bootstrap/
+COPY --chown=0:0 pocket-tts-client.py wrangler-auth.py /opt/hermes/bootstrap/
 
 # Install gogcli (Google CLI — Gmail, Calendar, Drive, Docs, Sheets, etc.)
 # https://github.com/openclaw/gogcli
@@ -232,7 +228,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_camofox.py)" = "0:0" \
     && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_tool.py)" = "0:0" \
     && setpriv --reuid=65534 --regid=65534 --clear-groups \
-        python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/bootstrap/cdp-patch.js", "/opt/hermes/tools/browser_camofox.py", "/opt/hermes/tools/browser_tool.py")]'
+        python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/tools/browser_camofox.py", "/opt/hermes/tools/browser_tool.py")]'
 
 # Optional local analysis CLIs. Keep this late layer independent of Hermes' venv.
 # Archive digests are from the official v0.659.0 GitHub release asset API.

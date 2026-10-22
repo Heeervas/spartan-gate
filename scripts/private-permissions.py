@@ -24,14 +24,12 @@ CONFIG_TREES = (
 CONFIG_FILES = ("compose.local.yml", "install-state.json", "aliases.local.sh")
 DATA_ROOT_MODES = {
     "SPARTAN_HERMES_DATA_PATH": 0o700,
-    "SPARTAN_CLAWROUTE_DATA_PATH": 0o700,
     "SPARTAN_ROUTE_DATA_PATH": 0o700,
     "SPARTAN_GOGCLI_DATA_PATH": 0o700,
     "SPARTAN_CAMOFOX_DATA_PATH": 0o700,
     "SPARTAN_CAMOFOX_ADDONS_PATH": 0o700,
     "SPARTAN_CODEX_HOME_PATH": 0o700,
     "SPARTAN_CADDY_CERTS_PATH": 0o700,
-    "SPARTAN_BROWSERLESS_PROFILES_PATH": 0o770,
 }
 MAX_ENV_BYTES = 1024 * 1024
 
@@ -187,20 +185,11 @@ def collect_targets(private_dir: Path, env_file: Path) -> list[Target]:
     values = _parse_env(env_file)
     expected_uid = _numeric_setting(values, "HERMES_UID", os.getuid())
     expected_gid = _numeric_setting(values, "HERMES_GID", os.getgid())
-    browser_gid = _numeric_setting(
-        values,
-        "BROWSERLESS_PROFILES_GID",
-        expected_gid,
-    )
 
     service_identities = {
         "SPARTAN_ROUTE_DATA_PATH": (
             _numeric_setting(values, "SPARTAN_ROUTE_UID", expected_uid),
             _numeric_setting(values, "SPARTAN_ROUTE_GID", expected_gid),
-        ),
-        "SPARTAN_CLAWROUTE_DATA_PATH": (
-            _numeric_setting(values, "SPARTAN_CLAWROUTE_UID", expected_uid),
-            _numeric_setting(values, "SPARTAN_CLAWROUTE_GID", expected_gid),
         ),
         "SPARTAN_CADDY_CERTS_PATH": (
             _numeric_setting(values, "SPARTAN_CADDY_UID", expected_uid),
@@ -234,8 +223,6 @@ def collect_targets(private_dir: Path, env_file: Path) -> list[Target]:
         if not os.path.lexists(path):
             raise PermissionPolicyError(key, "target is missing")
         uid, gid = service_identities.get(key, (expected_uid, expected_gid))
-        if key == "SPARTAN_BROWSERLESS_PROFILES_PATH":
-            gid = browser_gid
         targets.append(_target(path, key, expected_mode, uid, gid, True))
 
     deduplicated: dict[Path, Target] = {}

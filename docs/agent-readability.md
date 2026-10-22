@@ -51,4 +51,6 @@ or include:
 The wiki should preserve the same ownership map used in `llms.txt`: Hermes
 consumes services, Spartan Route owns L4 model routing, ClawRoute owns legacy
 routing when enabled, Tinyproxy/DNS own egress, Reader owns bounded GET
-retrieval, Browserless/Camofox own browser modes, and Caddy owns edge exposure.
+retrieval, Camofox owns supported persistent browsing, and Caddy owns edge exposure.
+Browserless/CDP workflows and the legacy ClawRoute application are retired;
+shared Route configuration names remain supported.

@@ -7,6 +7,11 @@ x-spartan-logging: &spartan-logging
     max-file: "${SPARTAN_LOG_MAX_FILES:-3}"
 
 services:
+  edge-sessions:
+    logging: *spartan-logging
+    extends:
+      file: edge-sessions.yml
+      service: edge-sessions
   proxy:
     logging: *spartan-logging
     build:
@@ -209,8 +214,8 @@ services:
       https_proxy: http://proxy:8888
       HTTP_PROXY: http://proxy:8888
       HTTPS_PROXY: http://proxy:8888
-      NO_PROXY: localhost,127.0.0.1,::1,hermes,spartan-route,proxy,caddy,searxng,reader,browserless,camofox
-      no_proxy: localhost,127.0.0.1,::1,hermes,spartan-route,proxy,caddy,searxng,reader,browserless,camofox
+      NO_PROXY: localhost,127.0.0.1,::1,hermes,spartan-route,proxy,caddy,searxng,reader,camofox
+      no_proxy: localhost,127.0.0.1,::1,hermes,spartan-route,proxy,caddy,searxng,reader,camofox
     volumes:
       # required: isolated public runtime data. Change this line for a different Spartan Route data path.
       - ${SPARTAN_ROUTE_DATA_PATH:-../../runtime/spartan-route}:/app/data
@@ -225,73 +230,6 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18790/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-
-  browserless:
-    logging: *spartan-logging
-    profiles:
-      - browserless
-    build:
-      context: ../browserless
-      args:
-        BROWSERLESS_BASE_IMAGE: ${BROWSERLESS_BASE_IMAGE:-ghcr.io/browserless/chromium:v2.51.0}
-    image: ${BROWSERLESS_IMAGE:-spartan-gate-browserless:2.51.0}
-    container_name: spartan_gate_browserless
-    restart: unless-stopped
-    mem_limit: 1g
-    pids_limit: 512
-    tmpfs:
-      - /tmp
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - FOWNER
-      - SETGID
-      - SETUID
-    security_opt:
-      - no-new-privileges:true
-    # Browserless runs as blessuser (999); grant write access to the host-owned profile mount.
-    group_add:
-      - ${BROWSERLESS_PROFILES_GID:-1000}
-    dns:
-      - ${SPARTAN_DNS_IP:-172.28.0.253}
-    environment:
-      # required: CDP token shared with Hermes and Caddy.
-      TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
-
-      # recommended: local Browserless debugger URL; private override may add Tailscale.
-      EXTERNAL: http://localhost:${BROWSERLESS_DEBUG_PORT:-3005}
-      ENABLE_DEBUGGER: "true"
-      # required for Hermes' broker-owned persistent browser; maximum standard Node timer (~24.8 days).
-      TIMEOUT: ${BROWSERLESS_SESSION_TIMEOUT_MS:-2147483647}
-      SCREEN_WIDTH: 1280
-      SCREEN_HEIGHT: 720
-      TZ: ${BROWSERLESS_TZ:-Europe/Madrid}
-
-      # required: Chromium egress goes through Tinyproxy, internal Docker names bypass it.
-      DEFAULT_LAUNCH_ARGS: "--proxy-server=http://proxy:8888 --proxy-bypass-list=<local>;127.0.0.1;${SPARTAN_INTERNAL_SUBNET:-172.28.0.0/24} --disable-crash-reporter --no-crashpad"
-      http_proxy: http://proxy:8888
-      https_proxy: http://proxy:8888
-      HTTP_PROXY: http://proxy:8888
-      HTTPS_PROXY: http://proxy:8888
-      NO_PROXY: localhost,127.0.0.1,::1,browserless,hermes,proxy,caddy,searxng,reader,spartan-route
-      no_proxy: localhost,127.0.0.1,::1,browserless,hermes,proxy,caddy,searxng,reader,spartan-route
-    volumes:
-      # required: persistent Chromium profiles for Browserless sessions.
-      - ../../runtime/browserless/profiles:/profiles
-    networks:
-      - spartan_internal
-    depends_on:
-      proxy:
-        condition: service_healthy
-      dns:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/pressure?token=$$TOKEN || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -381,10 +319,10 @@ services:
       https_proxy: http://proxy:8888
       HTTP_PROXY: http://proxy:8888
       HTTPS_PROXY: http://proxy:8888
-      NO_PROXY: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,spartan-route,browserless
-      no_proxy: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,spartan-route,browserless
+      NO_PROXY: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,spartan-route
+      no_proxy: localhost,127.0.0.1,::1,camofox,hermes,proxy,caddy,searxng,reader,spartan-route
     volumes:
-      # required: Camofox storageState, cookies, and traces. Do not share Browserless profiles.
+      # required: isolated Camofox storageState, cookies, and traces.
       - ../../runtime/camofox:/root/.camofox
       - camofox_watchdog:/var/lib/spartan-camofox-watchdog
     networks:
@@ -511,9 +449,6 @@ services:
         condition: service_healthy
       spartan-route:
         condition: service_healthy
-      browserless:
-        condition: service_healthy
-        required: false
       camofox:
         condition: service_healthy
         required: false
@@ -586,30 +521,6 @@ services:
       SPARTAN_REASONING_REALM: ${SPARTAN_REASONING_REALM:-codex_subscription}
 
       # required: controlled browser/search/reader integrations.
-      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
-      BROWSERLESS_EDGE_TOKEN: ${BROWSERLESS_EDGE_TOKEN:-change-me-browserless-edge-token}
-      BROWSERLESS_PROFILE: ${BROWSERLESS_PROFILE:-main}
-      BROWSERLESS_PROFILE_ROOT: /profiles
-      BROWSERLESS_WS_BASE: ws://browserless:3000/chromium
-      BROWSERLESS_DEBUG_PORT: ${BROWSERLESS_DEBUG_PORT:-3005}
-      BROWSERLESS_DEBUG_ORIGIN: ${BROWSERLESS_DEBUG_ORIGIN:-}
-      BROWSERLESS_SCREEN_WIDTH: 1280
-      BROWSERLESS_SCREEN_HEIGHT: 720
-      BROWSERLESS_LANG: ${BROWSERLESS_LANG:-es-ES}
-      BROWSERLESS_HEADLESS: ${BROWSERLESS_HEADLESS:-true}
-      BROWSERLESS_STEALTH: "true"
-      BROWSERLESS_STEALTH_ENDPOINT: ${BROWSERLESS_STEALTH_ENDPOINT:-true}
-      BROWSERLESS_ROUTE: ${BROWSERLESS_ROUTE:-chromium}
-      BROWSERLESS_STEALTH_ROUTE: ${BROWSERLESS_STEALTH_ROUTE:-chromium}
-      BROWSERLESS_USER_AGENT: ${BROWSERLESS_USER_AGENT:-}
-      BROWSERLESS_CDP_BROKER_ENABLED: ${BROWSERLESS_CDP_BROKER_ENABLED:-true}
-      BROWSERLESS_CDP_BROKER_PORT: ${BROWSERLESS_CDP_BROKER_PORT:-9229}
-      BROWSERLESS_CDP_BROKER_TRACE: ${BROWSERLESS_CDP_BROKER_TRACE:-false}
-      BROWSERLESS_HTTP_BASE: http://browserless:3000
-      BROWSERLESS_IGNORE_DEFAULT_ARGS: ${BROWSERLESS_IGNORE_DEFAULT_ARGS:-false}
-      BROWSERLESS_LIVE_TIMEOUT_MS: ${BROWSERLESS_LIVE_TIMEOUT_MS:-900000}
-      BROWSERLESS_LIVE_QUALITY: ${BROWSERLESS_LIVE_QUALITY:-90}
-      BROWSERLESS_LIVE_RESIZABLE: ${BROWSERLESS_LIVE_RESIZABLE:-false}
       CAMOFOX_URL: ${CAMOFOX_URL:-}
       # Upstream Hermes reads CAMOFOX_API_KEY for Camofox bearer auth. Spartan
       # Gate maps that client-side value to the protected-route access key.
@@ -619,10 +530,7 @@ services:
       CAMOFOX_SESSION_KEY: ${CAMOFOX_SESSION_KEY:-}
       HERMES_MEET_CAMOFOX_SESSION_KEY: ${HERMES_MEET_CAMOFOX_SESSION_KEY:-}
       CAMOFOX_ADOPT_EXISTING_TAB: ${CAMOFOX_ADOPT_EXISTING_TAB:-false}
-      HERMES_MEET_CDP_PROFILE: ${HERMES_MEET_CDP_PROFILE:-guest}
-      HERMES_MEET_CDP_URL: ${HERMES_MEET_CDP_URL:-}
       SPARTAN_INTERNAL_SUBNET: ${SPARTAN_INTERNAL_SUBNET:-172.28.0.0/24}
-      NODE_OPTIONS: --require=/opt/hermes/bootstrap/cdp-patch.js
       PYTHONPATH: /opt/hermes/bootstrap:/opt/data/hermes-extra-site-py314:/opt/hermes
       SEARXNG_INSTANCE_URL: http://searxng:8080
       SEARXNG_URL: http://searxng:8080
@@ -635,8 +543,8 @@ services:
       https_proxy: http://proxy:8888
       HTTP_PROXY: http://proxy:8888
       HTTPS_PROXY: http://proxy:8888
-      NO_PROXY: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,spartan-route,ollama,browserless,camofox,pocket-tts
-      no_proxy: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,spartan-route,ollama,browserless,camofox,pocket-tts
+      NO_PROXY: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,spartan-route,ollama,camofox,pocket-tts
+      no_proxy: localhost,127.0.0.1,::1,host.docker.internal,hermes,proxy,caddy,searxng,reader,spartan-route,ollama,camofox,pocket-tts
     volumes:
       # required: isolated public runtime data. Change this line for a different Hermes data path.
       - ../../runtime/hermes:/opt/data
@@ -660,8 +568,6 @@ services:
           create_host_path: false
       # required: versioned runtime guidance, exposed directly to Hermes as read-only data.
       - ../../apps/hermes-agent/runtime-docs:/opt/data/brain/runtime_docs:ro
-      # required: broker can clear stale Chromium Singleton locks after confirming Browserless is idle.
-      - ../../runtime/browserless/profiles:/profiles
       # required: agent can inspect but not modify the public proxy whitelist fragment.
       - ../outbound-proxy/whitelist.txt:/etc/proxy-whitelist.public.txt:ro
       # optional: Spartan Route cache-lineage plugin, enabled by user-owned Hermes config.
@@ -705,7 +611,6 @@ services:
       # recommended: public edge is local-only. Tailscale bind is added in private/compose.local.yml.
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_GATE_PORT:-18789}:18789"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
-      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${BROWSERLESS_DEBUG_PORT:-3005}:3005"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
     environment:
       # recommended: auth still applies even on local/Tailscale HTTP.
@@ -713,22 +618,25 @@ services:
       CADDY_AUTH_HASH: ${CADDY_AUTH_HASH:-$$2a$$14$$UMuSzA3WdVqcAwE3yvFeCO.CesMjqqGDVrxpL1s87FsWM/NRrADi2}
 
       # required: upstream bearer tokens injected by Caddy.
-      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-change-me-browserless-token}
-      BROWSERLESS_EDGE_TOKEN: ${BROWSERLESS_EDGE_TOKEN:-change-me-browserless-edge-token}
       CADDY_CAMOFOX_EDGE_TOKEN: ${CADDY_CAMOFOX_EDGE_TOKEN:-}
       CADDY_WS_EDGE_TOKEN: ${CADDY_WS_EDGE_TOKEN:-}
+      CADDY_SESSION_SERVICE_KEY: ${CADDY_SESSION_SERVICE_KEY:-}
       CLAWROUTE_TOKEN: ${CLAWROUTE_TOKEN:-change-me-clawroute-token}
       HERMES_API_PORT: ${HERMES_API_PORT:-8642}
     volumes:
       # required: public HTTP edge config and static debugger/portal assets.
       - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../caddy/route.d:/etc/caddy/route.d:ro
       - ../caddy/entrypoint.sh:/usr/local/bin/spartan-caddy-entrypoint:ro
       - ../caddy/local.d:/etc/caddy/local.d:ro
-      - ../caddy/browserless-debugger-router.js:/srv/browserless-debugger/router.js:ro
       - ../caddy/portal.html:/srv/portal.html:ro
+    depends_on:
+      edge-sessions:
+        condition: service_healthy
     networks:
       - spartan_internal
       - spartan_external
+      - spartan_edge_auth
     healthcheck:
       test: ["CMD-SHELL", "caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 && wget -S -O /dev/null http://127.0.0.1:18789/ 2>&1 | grep -Eq 'HTTP/[0-9.]+ (400|401)'"]
       interval: 30s
@@ -737,6 +645,8 @@ services:
       start_period: 10s
 
 networks:
+  spartan_edge_auth:
+    internal: true
   spartan_internal:
     driver: bridge
     internal: true

@@ -12,8 +12,9 @@ validate_edge_token() {
 
 validate_edge_token CADDY_CAMOFOX_EDGE_TOKEN
 validate_edge_token CADDY_WS_EDGE_TOKEN
+validate_edge_token CADDY_SESSION_SERVICE_KEY
 
-if [ "$CADDY_CAMOFOX_EDGE_TOKEN" = "$CADDY_WS_EDGE_TOKEN" ]; then
+if [ "$CADDY_CAMOFOX_EDGE_TOKEN" = "$CADDY_WS_EDGE_TOKEN" ] || [ "$CADDY_SESSION_SERVICE_KEY" = "$CADDY_WS_EDGE_TOKEN" ] || [ "$CADDY_SESSION_SERVICE_KEY" = "$CADDY_CAMOFOX_EDGE_TOKEN" ]; then
     printf "[caddy] CADDY_CAMOFOX_EDGE_TOKEN and CADDY_WS_EDGE_TOKEN must differ\n" >&2
     exit 1
 fi

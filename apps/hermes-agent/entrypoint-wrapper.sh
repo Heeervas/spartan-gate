@@ -42,25 +42,10 @@ persist_cdp_env_for_with_contenv() {
         fi
     done
 
-    if camofox_browser_mode_enabled; then
-        rm -f "${env_dir}/HERMES_MEET_CDP_PROFILE"
-        rm -f "${env_dir}/HERMES_MEET_CDP_URL"
-    fi
-
-    rm -f "${env_dir}/BROWSER_CDP_LAUNCH_URL"
-    if [ -n "${BROWSER_CDP_LAUNCH_URL:-}" ]; then
-        printf '%s' "$BROWSER_CDP_LAUNCH_URL" > "${env_dir}/BROWSER_CDP_LAUNCH_URL"
-    fi
-
-    rm -f "${env_dir}/BROWSER_CDP_URL"
-    if [ -n "${BROWSER_CDP_URL:-}" ]; then
-        printf '%s' "$BROWSER_CDP_URL" > "${env_dir}/BROWSER_CDP_URL"
-    fi
-
-    rm -f "${env_dir}/BROWSER_CDP_MAIN_URL"
-    if [ -n "${BROWSER_CDP_MAIN_URL:-}" ]; then
-        printf '%s' "$BROWSER_CDP_MAIN_URL" > "${env_dir}/BROWSER_CDP_MAIN_URL"
-    fi
+    # Retired CDP values must not survive an inherited s6 environment.
+    for key in HERMES_MEET_CDP_PROFILE HERMES_MEET_CDP_URL BROWSER_CDP_LAUNCH_URL BROWSER_CDP_URL BROWSER_CDP_MAIN_URL; do
+        rm -f "${env_dir}/${key}"
+    done
 }
 
 sync_openai_base_url_for_with_contenv() {
@@ -136,31 +121,8 @@ for _rc in "$HERMES_HOME/.bashrc" "$HERMES_HOME/.profile"; do
     fi
 done
 
-if camofox_browser_mode_enabled; then
-    unset BROWSER_CDP_URL
-    unset BROWSER_CDP_MAIN_URL
-    unset BROWSER_CDP_LAUNCH_URL
-    unset HERMES_MEET_CDP_PROFILE
-    unset HERMES_MEET_CDP_URL
-    echo "[entrypoint] CAMOFOX_URL set; Browserless CDP launch and main broker skipped"
-elif [ -z "${BROWSER_CDP_LAUNCH_URL:-}" ] && [ -f "$INSTALL_DIR/bootstrap/browserless-cdp-url.js" ]; then
-    export BROWSER_CDP_LAUNCH_URL
-    BROWSER_CDP_LAUNCH_URL="$(node "$INSTALL_DIR/bootstrap/browserless-cdp-url.js")"
-    echo "[entrypoint] Browserless launch CDP: ephemeral launch"
-fi
-
-if ! camofox_browser_mode_enabled \
-    && [ -z "${BROWSER_CDP_URL:-}" ] \
-    && [ -n "${BROWSER_CDP_LAUNCH_URL:-}" ]; then
-    export BROWSER_CDP_URL="$BROWSER_CDP_LAUNCH_URL"
-fi
-
-if ! camofox_browser_mode_enabled && [ -z "${BROWSER_CDP_MAIN_URL:-}" ]; then
-    if [ -n "${BROWSER_CDP_LAUNCH_URL:-}" ]; then
-        export BROWSER_CDP_URL="$BROWSER_CDP_LAUNCH_URL"
-    fi
-fi
-
+unset BROWSER_CDP_URL BROWSER_CDP_MAIN_URL BROWSER_CDP_LAUNCH_URL
+unset HERMES_MEET_CDP_PROFILE HERMES_MEET_CDP_URL
 run_user_patch "$INSTALL_DIR/patches/patch_chrome_devtools_ws_auth.py"
 
 persist_cdp_env_for_with_contenv

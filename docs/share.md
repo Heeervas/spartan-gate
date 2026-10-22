@@ -26,15 +26,9 @@ scripts/doctor.sh
 
 For the simplest setup, start colleagues at L0 or L1. Use L4 only when they
 need the full proxy, DNS, reader, Spartan Route, Caddy, and browser boundary.
-If they need ClawRoute routing but not the rest of the gate, enable it as an
-addon:
-
-```sh
-scripts/install.sh --tier L1 --with clawroute
-```
-
-Send them [layers.md](layers.md) when they need to choose between L0-L4 or
-understand what changes when ClawRoute is added to L0/L1.
+Use L3 for internal Spartan Route with the gated services; the legacy router
+addon is retired. Send them [layers.md](layers.md) to choose between L0-L4 and
+[development.md](development.md) for reproducible checks and native prerequisites.
 
 The filename `local.env` is only a convention from this repo. A colleague can keep it, or use another file and set:
 
@@ -48,7 +42,7 @@ export SPARTAN_ENV_FILE=/absolute/path/to/their.env
 source scripts/aliases.sh
 sg-tier list
 sg-tier set L1
-# Optional ClawRoute addon: sg-tier set L1 --with clawroute --hermes free
+# Internal Spartan Route: sg-tier set L3 --hermes gated
 sg-tier show
 sg-up
 sg-status

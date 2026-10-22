@@ -2,10 +2,8 @@
 """Runtime patcher: select the Google Meet browser backend.
 
 Upstream google_meet launches a local Playwright-managed Chromium. Spartan Gate
-already provides Browserless endpoints, including an optional persistent main
-profile broker, and can also run generic browser work through Camofox. This
-patch keeps Browserless/CDP behavior intact and routes transcribe-mode Meet
-sessions through Camofox when CAMOFOX_URL is configured.
+supports Camofox transcription only. Retired CDP overrides must not select a
+local browser or silently restore the removed Browserless service.
 """
 
 from __future__ import annotations
@@ -33,31 +31,11 @@ def _meet_camofox_mode_enabled() -> bool:
 
 
 def _resolve_meet_cdp() -> tuple[str, str]:
-    """Return (cdp_url, profile_mode) for the Meet browser.
-
-    When CAMOFOX_URL is configured, Meet runs through Camofox and stale CDP
-    values are ignored. Realtime/audio remains Browserless/CDP-only; run_bot()
-    downgrades realtime requests in Camofox mode to transcribe.
-
-    HERMES_MEET_CDP_URL is an explicit override. Otherwise
-    HERMES_MEET_CDP_PROFILE=main, or the configured BROWSERLESS_PROFILE name,
-    selects the Browserless persistent-profile broker. Guest/empty selects the
-    normal ephemeral Browserless launch.
-    """
+    """Select Camofox transcription; reject retired CDP overrides."""
     # Spartan Gate patch: Google Meet CDP browser selection
     if _meet_camofox_mode_enabled():
         return "", "camofox"
-
-    explicit = os.environ.get("HERMES_MEET_CDP_URL", "").strip()
-    if explicit:
-        return explicit, "custom"
-
-    profile = os.environ.get("HERMES_MEET_CDP_PROFILE", "guest").strip().lower()
-    browserless_profile = os.environ.get("BROWSERLESS_PROFILE", "main").strip().lower()
-    if profile == "main" or (browserless_profile and profile == browserless_profile):
-        return os.environ.get("BROWSER_CDP_MAIN_URL", "").strip(), "main"
-
-    return os.environ.get("BROWSER_CDP_URL", "").strip(), "guest"
+    raise RuntimeError("Google Meet requires CAMOFOX_URL; CDP workflows are retired")
 
 
 def _camofox_request_headers() -> dict:
@@ -476,61 +454,17 @@ MEET_BOT_OLD_IMPORT_BLOCK = '''    try:
         return 3
 '''
 
-MEET_BOT_NEW_IMPORT_BLOCK = '''    if _meet_camofox_mode_enabled():
-        sync_playwright = _camofox_sync_playwright
-    else:
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError as e:
-            state.set(error=f"playwright not installed: {e}", exited=True)
-            sys.stderr.write(
-                "google_meet bot: playwright is not installed. Run "
-                "`pip install playwright && python -m playwright install chromium`\\n"
-            )
-            if rt["bridge"]:
-                rt["bridge"].teardown()
-            return 3
+MEET_BOT_NEW_IMPORT_BLOCK = '''    if not _meet_camofox_mode_enabled():
+        state.set(error="Google Meet requires CAMOFOX_URL; CDP workflows are retired", exited=True)
+        return 3
+    sync_playwright = _camofox_sync_playwright
 '''
 
-MEET_BOT_NEW_LAUNCH_BLOCK = '''    cdp_url, cdp_profile = _resolve_meet_cdp()
-    cdp_shared_context = False
-
+MEET_BOT_NEW_LAUNCH_BLOCK = '''    _resolve_meet_cdp()  # requires the supported Camofox backend
     try:
-        with sync_playwright() as pw:
-            context_args = {
-                "viewport": {"width": 1280, "height": 800},
-                "permissions": ["microphone", "camera"],
-            }
-            if cdp_url:
-                # Spartan Gate patch: Google Meet CDP browser selection
-                browser = pw.chromium.connect_over_cdp(cdp_url)
-                if browser.contexts:
-                    context = browser.contexts[0]
-                    cdp_shared_context = True
-                else:
-                    if auth_state and Path(auth_state).is_file():
-                        context_args["storage_state"] = auth_state
-                    context = browser.new_context(**context_args)
-                try:
-                    context.grant_permissions(["microphone", "camera"], origin="https://meet.google.com")
-                except Exception:
-                    pass
-            else:
-                # Playwright's launch() doesn't take env; we set PULSE_SOURCE
-                # via the process env before launch so the child Chrome inherits it.
-                for k, v in chrome_env.items():
-                    os.environ[k] = v
-                browser = pw.chromium.launch(
-                    headless=not headed,
-                    args=chrome_args,
-                )
-                context_args["user_agent"] = (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                )
-                if auth_state and Path(auth_state).is_file():
-                    context_args["storage_state"] = auth_state
-                context = browser.new_context(**context_args)
+        with _camofox_sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            context = browser.new_context()
             page = context.new_page()
 '''
 
@@ -538,22 +472,8 @@ MEET_BOT_OLD_TEARDOWN_BLOCK = '''            context.close()
             browser.close()
 '''
 
-MEET_BOT_NEW_TEARDOWN_BLOCK = '''            try:
-                page.close()
-            except Exception:
-                pass
-            if cdp_url:
-                # Leave persistent Browserless contexts open; closing the page
-                # is enough for shared main-profile sessions. Ephemeral/custom
-                # CDP sessions close the browser connection to release Browserless.
-                if cdp_profile != "main":
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
-            else:
-                context.close()
-                browser.close()
+MEET_BOT_NEW_TEARDOWN_BLOCK = '''            context.close()
+            browser.close()
 '''
 MEET_BOT_LOCALE_MARKER = '# Spartan Gate patch: Google Meet localized join diagnostics'
 MEET_BOT_STATE_FIELDS_ANCHOR = '        self.lobby_waiting = False\n        self.join_attempted_at: Optional[float] = None\n'
@@ -600,17 +520,7 @@ def _resolve_meet_cdp() -> tuple[str, str]:
     # Spartan Gate patch: Google Meet setup accepts Browserless CDP
     if _meet_camofox_mode_enabled():
         return "", "camofox"
-
-    explicit = os.environ.get("HERMES_MEET_CDP_URL", "").strip()
-    if explicit:
-        return explicit, "custom"
-
-    profile = os.environ.get("HERMES_MEET_CDP_PROFILE", "guest").strip().lower()
-    browserless_profile = os.environ.get("BROWSERLESS_PROFILE", "main").strip().lower()
-    if profile == "main" or (browserless_profile and profile == browserless_profile):
-        return os.environ.get("BROWSER_CDP_MAIN_URL", "").strip(), "main"
-
-    return os.environ.get("BROWSER_CDP_URL", "").strip(), "guest"
+    raise RuntimeError("Google Meet requires CAMOFOX_URL; CDP workflows are retired")
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +589,7 @@ CLI_OLD_SETUP_BLOCK = '''def _cmd_setup() -> int:
 '''
 
 CLI_NEW_SETUP_BLOCK = '''def _cmd_setup() -> int:
+    # Spartan Gate patch: Google Meet setup accepts Browserless CDP
     import platform as _p
 
     print("google_meet preflight")
@@ -715,114 +626,8 @@ CLI_NEW_SETUP_BLOCK = '''def _cmd_setup() -> int:
         print("not ready yet - fix Camofox health/API access.")
         return 1
 
-    system = _p.system()
-    system_ok = system in ("Linux", "Darwin")
-    print(f"  platform       : {system}  [{'ok' if system_ok else 'unsupported'}]")
-
-    try:
-        import playwright  # noqa: F401
-        pw_ok = True
-        pw_msg = "installed"
-    except ImportError:
-        pw_ok = False
-        pw_msg = "NOT installed — run: pip install playwright"
-    print(f"  playwright     : {pw_msg}")
-
-    cdp_url, cdp_profile = _resolve_meet_cdp()
-    cdp_ok = False
-    cdp_msg = "not configured"
-    chromium_ok = False
-    chromium_msg = "unknown"
-    google_signed_in = None
-    if pw_ok and cdp_url:
-        try:
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as p:
-                browser = p.chromium.connect_over_cdp(cdp_url)
-                try:
-                    contexts = len(browser.contexts)
-                    if cdp_profile in {"main", "custom"} and browser.contexts:
-                        sign_in_cookie_names = {
-                            "SID",
-                            "HSID",
-                            "SSID",
-                            "APISID",
-                            "SAPISID",
-                            "__Secure-1PSID",
-                            "__Secure-3PSID",
-                            "LSID",
-                        }
-                        cookies = browser.contexts[0].cookies([
-                            "https://accounts.google.com",
-                            "https://google.com",
-                            "https://meet.google.com",
-                        ])
-                        google_signed_in = any(cookie.get("name") in sign_in_cookie_names for cookie in cookies)
-                finally:
-                    if cdp_profile != "main":
-                        try:
-                            browser.close()
-                        except Exception:
-                            pass
-                cdp_ok = True
-                cdp_msg = f"ok ({cdp_profile}, contexts={contexts})"
-                chromium_ok = True
-                chromium_msg = "not required — using external CDP"
-        except Exception as e:
-            cdp_msg = f"connect failed: {e}"
-
-    if pw_ok and not cdp_ok:
-        try:
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as p:
-                try:
-                    exe = p.chromium.executable_path
-                    if exe and Path(exe).exists():
-                        chromium_ok = True
-                        chromium_msg = f"ok ({exe})"
-                    else:
-                        chromium_msg = (
-                            "not installed — run: "
-                            "python -m playwright install chromium"
-                        )
-                except Exception as e:
-                    chromium_msg = f"probe failed: {e}"
-        except Exception as e:
-            chromium_msg = f"probe failed: {e}"
-    print(f"  browser cdp    : {cdp_msg}")
-    print(f"  chromium       : {chromium_msg}")
-
-    auth_path = _auth_state_path()
-    auth_ok = auth_path.is_file()
-    if cdp_ok and cdp_profile in {"main", "custom"}:
-        browserless_profile = os.environ.get("BROWSERLESS_PROFILE", "main").strip() or "main"
-        auth_msg = f"Browserless profile {browserless_profile}" if cdp_profile == "main" else "custom CDP profile"
-        if google_signed_in is True:
-            auth_msg += " (Google sign-in detected)"
-        elif google_signed_in is False:
-            auth_msg += (
-                " (Google sign-in not detected - run on host: "
-                "sg stop hermes && "
-                f"sg-browserless-profile-chrome {browserless_profile} https://accounts.google.com; "
-                "close Chrome after login; sg up -d hermes"
-                ")"
-            )
-    elif auth_ok:
-        auth_msg = f"ok ({auth_path})"
-    else:
-        auth_msg = "guest/no saved auth"
-    print("  google auth    : " + auth_msg)
-
-    print()
-    all_ok = system_ok and pw_ok and (cdp_ok or chromium_ok) and google_signed_in is not False
-    if all_ok:
-        print(
-            "ready. Join a meeting:  "
-            "hermes meet join https://meet.google.com/abc-defg-hij"
-        )
-    else:
-        print("not ready yet — fix the items above.")
-    return 0 if all_ok else 1
+    print("Google Meet requires CAMOFOX_URL; CDP and local Chromium workflows are retired.")
+    return 1
 
 
 '''
@@ -977,11 +782,11 @@ def patch_modular_meet_bot(source: str) -> str:
     source = source.replace('    if rt["enabled"]:\n        _setup_realtime(rt, cfg.realtime_api_key, state)',
         '    if rt["enabled"] and _meet_camofox_mode_enabled():\n        rt["enabled"] = False\n        state.set(realtime=False, error="Camofox supports transcribe mode; realtime audio disabled.")\n    if rt["enabled"]:\n        _setup_realtime(rt, cfg.realtime_api_key, state)', 1)
     old = '        from playwright.sync_api import sync_playwright\n'
-    source = source.replace(old, '        if _meet_camofox_mode_enabled():\n            sync_playwright = _camofox_sync_playwright\n        else:\n    ' + old, 1)
+    source = source.replace(old, '        _resolve_meet_cdp()\n        sync_playwright = _camofox_sync_playwright\n', 1)
     old = '    try:\n        with sync_playwright() as pw:\n'
     source = source.replace(old, '    cdp_url, cdp_profile = _resolve_meet_cdp()\n' + old, 1)
     launch = '            browser = pw.chromium.launch(\n                channel="chromium", executable_path=chromium_executable(),\n                headless=not cfg.headed, args=chrome_args,\n            )\n            context = browser.new_context(**context_args)\n'
-    replacement = '            if cdp_url:\n                browser = pw.chromium.connect_over_cdp(cdp_url)\n                context = browser.contexts[0] if browser.contexts else browser.new_context(**context_args)\n            else:\n                browser = pw.chromium.launch(\n                    channel="chromium", executable_path=chromium_executable(),\n                    headless=not cfg.headed, args=chrome_args,\n                )\n                context = browser.new_context(**context_args)\n'
+    replacement = '            browser = pw.chromium.launch()\n            context = browser.new_context()\n'
     source, _ = replace_once(source, launch, replacement, MEET_BOT_TARGET)
     source, _ = replace_once(source, MEET_BOT_OLD_TEARDOWN_BLOCK, MEET_BOT_NEW_TEARDOWN_BLOCK, MEET_BOT_TARGET)
     join = MEET_BOT_READY_JOIN_CALL_REPLACEMENT.replace('guest_name, state', 'cfg.guest_name, state')
@@ -1124,6 +929,21 @@ def patch_cli_source(source: str) -> str:
     return patched
 
 
+def retire_generated_cdp(source: str, *, cli: bool = False) -> str:
+    """Remove generated legacy CDP resolvers without touching upstream lifecycle."""
+    if 'def _resolve_meet_cdp()' in source:
+        resolver = '''def _resolve_meet_cdp() -> tuple[str, str]:
+    # Spartan Gate patch: Google Meet CDP browser selection
+    if _meet_camofox_mode_enabled():
+        return "", "camofox"
+    raise RuntimeError("Google Meet requires CAMOFOX_URL; CDP workflows are retired")
+'''
+        source = _replace_definition(source, '_resolve_meet_cdp', resolver)
+    if cli:
+        source = _replace_definition(source, '_cmd_setup', CLI_NEW_SETUP_BLOCK)
+    return source
+
+
 def patch_file(path: Path, patcher, label: str) -> str:
     if not path.exists():
         return f'Skip: {path} missing'
@@ -1131,6 +951,7 @@ def patch_file(path: Path, patcher, label: str) -> str:
     source = path.read_text(encoding='utf-8')
     try:
         patched = patcher(source)
+        patched = retire_generated_cdp(patched, cli=label == 'cli')
     except ValueError as exc:
         raise ValueError(f'{label}: {exc}') from exc
 

@@ -1,10 +1,10 @@
 # Spartan Route V1
 
-`infra/spartan-route/` is the current L4 router package. It replaces ClawRoute
+`infra/spartan-route/` is the current L3/L4 router package. It replaces ClawRoute
 as the full-stack OpenAI-compatible router while keeping the existing
 `CLAWROUTE_TOKEN`, `CLAWROUTE_EDGE_PORT`, model aliases, and `config/clawroute`
-runtime profiles for compatibility. `packages/clawroute/` remains in the repo
-for the legacy lower-tier addon and source-package work.
+runtime profiles for compatibility. The legacy TypeScript application and
+lower-tier addon are retired; the shared configuration is not.
 
 For Pi's compact quota display and persistent session consumption, see
 [Pi session usage through Spartan Route](pi-route-usage.md).
@@ -722,8 +722,7 @@ source scripts/aliases.sh
 sg up -d
 ```
 
-`sg route up -d` remains a compatibility alias for the same full-stack Compose
-path. Hermes points at `http://spartan-route:18790/v1`, and Caddy keeps the
+Use the main-stack command above, not a separate router stack. Hermes points at `http://spartan-route:18790/v1`, and Caddy keeps the
 router edge on `CLAWROUTE_EDGE_PORT` so existing local URLs continue to work.
 
 Lower-tier side-by-side overlay:

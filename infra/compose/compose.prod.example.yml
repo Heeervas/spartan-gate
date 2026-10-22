@@ -27,5 +27,4 @@ services:
       # recommended/prod: keep the public example local-only and put LAN/Tailscale binds in private/compose.local.yml.
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_GATE_PORT:-18789}:18789"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
-      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${BROWSERLESS_DEBUG_PORT:-3005}:3005"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"

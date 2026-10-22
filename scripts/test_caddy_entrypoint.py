@@ -17,6 +17,7 @@ class CaddyEntrypointTests(unittest.TestCase):
             CADDY_BIN="/bin/true",
             CADDY_CAMOFOX_EDGE_TOKEN=VALID_A,
             CADDY_WS_EDGE_TOKEN=VALID_B,
+            CADDY_SESSION_SERVICE_KEY='c' * 64,
         )
         env.update(overrides)
         return subprocess.run(
@@ -33,7 +34,7 @@ class CaddyEntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_or_empty_tokens_fail_closed(self):
-        for key in ("CADDY_CAMOFOX_EDGE_TOKEN", "CADDY_WS_EDGE_TOKEN"):
+        for key in ("CADDY_CAMOFOX_EDGE_TOKEN", "CADDY_WS_EDGE_TOKEN", "CADDY_SESSION_SERVICE_KEY"):
             with self.subTest(key=key):
                 result = self.run_entrypoint(**{key: ""})
                 self.assertNotEqual(result.returncode, 0)

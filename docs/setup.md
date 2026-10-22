@@ -9,7 +9,7 @@ Public setup docs intentionally avoid machine-specific values. Put personal path
 
 - Docker with the Compose plugin.
 - Git, `curl`, and basic shell tools.
-- Node.js 22 or newer for legacy ClawRoute development.
+- Python and Node.js as required by the surviving service development commands.
 - At least one LLM provider credential, or a private Codex/Ollama setup configured outside the public files.
 
 On Debian, Ubuntu, or Raspberry Pi OS, the shortest development bootstrap is:
@@ -45,19 +45,17 @@ Use the smallest tier that fits the machine:
 | L0 | Hermes only, free user-level Python/Node package installs |
 | L1 | Hermes + Camofox/noVNC, free user-level Python/Node package installs |
 | L2 | L1 + proxy, DNS, and Caddy edge |
-| L3 | L2 + ClawRoute internal LLM routing compatibility alias |
+| L3 | L2 + internal Spartan Route through proxy/Caddy |
 | L4 | Full Spartan Gate topology with Spartan Route |
 
 The installer creates ignored `private/env/local.env`, generates local secrets,
 runs `hermes setup`, starts the selected tier, and recreates Hermes once setup
 has completed. It does not print generated secrets.
 
-ClawRoute can be enabled independently on lower tiers without moving provider
-auth into Hermes:
-
-```sh
-scripts/install.sh --tier L1 --with clawroute
-```
+Legacy ClawRoute addons and Browserless/CDP workflows are retired. Select L3/L4
+for Spartan Route. Existing addon selections require explicit migration; shared
+Route config names remain. See [layers.md](layers.md) before switching existing
+private installations. Runtime profiles/databases are not removed.
 
 For the complete layer matrix, addon behavior, and switching commands, see
 [layers.md](layers.md).
@@ -94,7 +92,7 @@ The private example already shifts the common conflict points away from the publ
 
 Use isolated data paths for a fresh install. Do not point
 `SPARTAN_HERMES_DATA_PATH`, `SPARTAN_ROUTE_DATA_PATH`,
-`SPARTAN_CLAWROUTE_DATA_PATH`, `SPARTAN_GOGCLI_DATA_PATH`, or
+`SPARTAN_GOGCLI_DATA_PATH`, or
 `SPARTAN_CAMOFOX_DATA_PATH` at an old stack unless you are intentionally
 migrating.
 
@@ -164,7 +162,7 @@ Start or switch tiers:
 source scripts/aliases.sh
 sg-tier list
 sg-tier set L2
-# Optional addon shape: sg-tier set L1 --with clawroute --hermes free
+# L3 adds internal Spartan Route; no lower-tier addon is supported.
 sg-tier show
 sg-up
 sg-status
@@ -190,7 +188,6 @@ If a service stays in `starting` or turns `unhealthy`, inspect logs:
 
 ```sh
 sg-logs spartan-route
-sg-logs browserless
 sg-logs camofox
 sg-logs hermes
 ```

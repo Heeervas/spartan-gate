@@ -10,15 +10,14 @@ Spartan Gate separates agent execution from network reachability.
 - **DNS relay** resolves only whitelisted domains for internal workloads.
 - **Reader** fetches arbitrary public pages through a GET-only API, blocks every
   non-global target, and returns bounded text content.
-- **Browserless** provides Chromium/CDP sessions for Hermes without direct container egress.
-- **Camofox** provides an optional Camoufox/Firefox-based browser backend for Hermes browser tools.
+- **Camofox** provides the supported Camoufox/Firefox-based persistent browser.
 - **SearXNG** provides internal search.
 - **Caddy** exposes authenticated local edge ports.
 
 ## Network Model
 
 `spartan_internal` is an internal Docker network. Hermes, Spartan Route,
-Browserless, Camofox, DNS, reader, proxy, SearXNG, and Caddy can communicate
+Camofox, DNS, Reader, proxy, SearXNG and Caddy can communicate
 there.
 
 `spartan_external` is attached only to services that need egress or edge exposure:
@@ -27,8 +26,7 @@ exception to the Tinyproxy/DNS whitelist for arbitrary public page text; it is
 not published to the host.
 
 Hermes does not join the external network. It calls Spartan Route at
-`http://spartan-route:18790/v1`, uses Browserless for CDP-backed browsing, can opt
-into Camofox for Hermes browser tools, and relies on the reader/search services
+`http://spartan-route:18790/v1`, uses Camofox for browser tools, and relies on the Reader/search services
 for controlled retrieval.
 
 ## Whitelist Model
@@ -44,12 +42,12 @@ Tinyproxy and the DNS relay merge both fragments at container startup. The helpe
 ## Router Layout
 
 `infra/spartan-route/` is the current full-stack router source code and tests.
-`packages/clawroute/` is the legacy ClawRoute package. `config/clawroute/` is
-runtime routing config mounted into Spartan Route and legacy ClawRoute. See
+The legacy ClawRoute application is retired. `config/clawroute/` remains
+runtime routing config mounted into Spartan Route. See
 [spartan-route.md](spartan-route.md) and [clawroute.md](clawroute.md).
 
 ## Reader
 
 Reader is for static page text. It does not execute JavaScript, labels fetched
-text as untrusted content, and does not replace Browserless or Camofox. See
+text as untrusted content, and does not replace Camofox. See
 [reader.md](reader.md) for tests and agent prompts.

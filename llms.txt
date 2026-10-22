@@ -1,7 +1,7 @@
 # Spartan Gate
 
 Spartan Gate is defensive Docker infrastructure for private Hermes-class AI
-agents. It combines Hermes, ClawRoute, Caddy, Browserless/Camofox, Tinyproxy,
+agents. It combines Hermes, Spartan Route, Caddy, Camofox, Tinyproxy,
 dnsmasq, SearXNG, and a bounded Reader service to reduce direct network,
 credential, and browser exposure.
 
@@ -16,14 +16,15 @@ Read this first when orienting an LLM or coding agent to the repository.
 - [Environment](docs/env.md): public environment variables and operator-facing
   contracts.
 - [Operations](docs/operations.md): safe startup, helper aliases, profiles,
-  logs, Browserless, Camofox, and recovery workflows.
+  logs, Camofox, and recovery workflows.
 - [Publishing](docs/publishing.md): public/private split, OSS readiness checks,
   and current readiness posture.
 
 ## Architecture
 
 - [Architecture](docs/architecture.md): high-level service layout.
-- [ClawRoute](docs/clawroute.md): OpenAI-compatible LLM router behavior.
+- [Spartan Route](docs/spartan-route.md): current OpenAI-compatible LLM router.
+- [Routing compatibility](docs/clawroute.md): preserved configuration names.
 - [Reader](docs/reader.md): GET-only web reader and untrusted-content contract.
 - [Profiles](docs/profiles.md): Hermes and browser profile behavior.
 - [Patches](docs/patches.md): Hermes patch ownership and runtime adaptation.
@@ -33,14 +34,14 @@ Read this first when orienting an LLM or coding agent to the repository.
 
 - `apps/hermes-agent/`: Hermes image adaptation, runtime wrappers, patches, and
   tests.
-- `packages/clawroute/`: TypeScript LLM router, OpenAI-compatible API, provider
-  routing, dashboards, and Vitest suite.
+- `infra/spartan-route/`: Python LLM router, OpenAI-compatible API, provider
+  routing, dashboards, and current test suite.
 - `infra/compose/`: public Docker Compose topology and tier overlays.
 - `infra/caddy/`: authenticated local/private edge routing.
 - `infra/outbound-proxy/` and `infra/dns/`: whitelist-controlled HTTP and DNS
   egress.
 - `infra/reader/`: bounded Python GET-only web reader.
-- `infra/browserless/` and `infra/camofox/`: browser service integration.
+- `infra/camofox/`: supported browser service integration.
 - `config/clawroute/`: public runtime routing examples.
 - `scripts/`: installer, doctor, aliases, and operator helpers.
 - `private.example/`: publishable templates for ignored private configuration.
@@ -51,7 +52,7 @@ Read this first when orienting an LLM or coding agent to the repository.
   profile, OAuth, or token-bearing data unless the user explicitly asks for a
   safe local operation.
 - Preserve fail-closed behavior for network, auth, policy, Reader, Caddy, and
-  ClawRoute boundaries.
+  Spartan Route boundaries.
 - Keep Hermes off external networks in gated tiers; use Tinyproxy/DNS/Reader for
   controlled egress.
 - Update docs and `CHANGELOG.md` when operator-visible behavior changes.
@@ -61,15 +62,19 @@ Read this first when orienting an LLM or coding agent to the repository.
 ## Validation Shortcuts
 
 ```sh
-npm run clawroute:build
-npm run clawroute:test
-python3 -m unittest discover -s apps/hermes-agent -p "test_*.py"
-node --test apps/hermes-agent/test_*.js
-python3 -m unittest discover -s scripts -p "test_*.py"
-python3 -m unittest discover -s infra/reader -p "test_*.py"
+npm run test:route
+npm run test:hermes
+npm run test:pi
+npm run test:camofox
+npm run test:scripts
+npm run test:reader
 docker compose -f infra/compose/compose.yml config --quiet
 scripts/doctor.sh
 ```
+
+See Development for isolated test prerequisites. Mandatory pristine-source
+integration is separate from portable fixtures; missing source inputs and skipped
+tests are incomplete evidence, never native acceptance.
 
 ## Agent Readability Plan
 

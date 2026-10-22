@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Atomically migrate private Caddy listeners to Safari-safe cookie sessions."""
+"""Prepare, validate and publish signed Caddy sessions; never activate services."""
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import re
 import secrets
@@ -80,13 +81,21 @@ def app_listener(port: int, secure: bool) -> str:
         else ""
     )
     return f""":{port} {{
-{tls}\t@spartan_app_websocket {{
+{tls}\troute {{
+\trequest_header -X-Edge-Valid
+\trequest_header -X-Edge-Cookie
+\tforward_auth edge-sessions:9080 {{
+\t\turi /verify/apps
+\t\theader_up X-Edge-Service-Key {{$CADDY_SESSION_SERVICE_KEY}}
+\t\tcopy_headers X-Edge-Valid
+\t}}
+\t@spartan_app_websocket {{
 \t\theader Connection *Upgrade*
 \t\theader Upgrade websocket
 \t}}
 
 \t@spartan_app_session_authorized {{
-\t\tvars {{cookie.spartan_edge_apps}} {{$CADDY_WS_EDGE_TOKEN}}
+\t\theader X-Edge-Valid yes
 \t}}
 
 \t@spartan_app_only_edge_cookies {{
@@ -100,7 +109,11 @@ def app_listener(port: int, secure: bool) -> str:
 \t\t\trequest_header Cookie "^([ \\t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*(;[ \\t]*)?)+" ""
 \t\t\trequest_header Cookie ";[ \\t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*" ""
 \t\t\trequest_header -Authorization
-\t\t\treverse_proxy http://hermes:{port}
+\t\t\treverse_proxy http://hermes:{port} {{
+\t\t\t\theader_up -X-Edge-Valid
+\t\t\t\theader_up -X-Edge-Cookie
+\t\t\t\theader_up -X-Edge-Service-Key
+\t\t\t}}
 \t\t}}
 \t}}
 
@@ -113,16 +126,27 @@ def app_listener(port: int, secure: bool) -> str:
 \t\t\tbasic_auth {{
 \t\t\t\t{{$CADDY_AUTH_USER:admin}} {{$CADDY_AUTH_HASH}}
 \t\t\t}}
+\t\t\tforward_auth edge-sessions:9080 {{
+\t\t\t\turi /mint/apps
+\t\t\t\theader_up X-Edge-Service-Key {{$CADDY_SESSION_SERVICE_KEY}}
+\t\t\t\theader_up X-Edge-Secure {'yes' if secure else 'no'}
+\t\t\t\tcopy_headers X-Edge-Cookie
+\t\t\t}}
 \t\t\theader {{
-\t\t\t\t+Set-Cookie "spartan_edge_apps={{$CADDY_WS_EDGE_TOKEN}}; Path=/; Max-Age=3600; HttpOnly; SameSite=Strict{secure_attr}"
+\t\t\t\t+Set-Cookie "{{http.request.header.X-Edge-Cookie}}"
 \t\t\t\t+Set-Cookie "spartan_ws_edge=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{secure_attr}"
 \t\t\t}}
 \t\t\trequest_header @spartan_app_only_edge_cookies -Cookie
 \t\t\trequest_header Cookie "^([ \\t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*(;[ \\t]*)?)+" ""
 \t\t\trequest_header Cookie ";[ \\t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*" ""
 \t\t\trequest_header -Authorization
-\t\t\treverse_proxy http://hermes:{port}
+\t\t\treverse_proxy http://hermes:{port} {{
+\t\t\t\theader_up -X-Edge-Valid
+\t\t\t\theader_up -X-Edge-Cookie
+\t\t\t\theader_up -X-Edge-Service-Key
+\t\t\t}}
 \t\t}}
+\t}}
 \t}}
 }}"""
 
@@ -145,17 +169,24 @@ def migrate_ports(source: str, secure: bool) -> str:
             raise MigrationError(f"unmanaged content after add-port listener {port}")
         if f"reverse_proxy http://hermes:{port}" not in listener:
             raise MigrationError(f"add-port listener {port} targets an unexpected upstream")
-        if "CADDY_WS_EDGE_TOKEN" not in listener:
+        if "CADDY_WS_EDGE_TOKEN" not in listener and "/verify/apps" not in listener:
             raise MigrationError(f"add-port listener {port} has no edge token contract")
         output.append(f"# spartan-gate:add-port:{port}\n{app_listener(port, secure)}")
     return "\n\n".join(part for part in output if part) + "\n"
 
 
-def build_candidates(env_path: Path, caddy_path: Path, ports_path: Path, template_path: Path) -> list[Candidate]:
-    for path in (env_path, caddy_path, ports_path, template_path):
-        if not path.is_file():
-            raise MigrationError(f"required file is missing: {path}")
+def preflight_paths(paths: tuple[Path, ...]) -> None:
+    """Reject unsafe input and backup destinations before preparing secrets."""
+    for path in paths:
+        if path.is_symlink() or not path.is_file():
+            raise MigrationError(f"required regular file is missing or unsafe: {path}")
+        backup = path.with_name(path.name + '.safari-session.bak')
+        if backup.is_symlink() or (backup.exists() and not backup.is_file()):
+            raise MigrationError(f"unsafe backup target: {backup}")
 
+
+def build_candidates(env_path: Path, caddy_path: Path, ports_path: Path, template_path: Path) -> list[Candidate]:
+    preflight_paths((env_path, caddy_path, ports_path, template_path))
     env_text = env_path.read_text(encoding="utf-8")
     values = env_values(env_text)
     websocket_token = values.get("CADDY_WS_EDGE_TOKEN", "")
@@ -166,11 +197,19 @@ def build_candidates(env_path: Path, caddy_path: Path, ports_path: Path, templat
         camofox_token = secrets.token_hex(32)
     if camofox_token == websocket_token:
         camofox_token = secrets.token_hex(32)
+    service_key = values.get("CADDY_SESSION_SERVICE_KEY", "")
+    if not TOKEN_RE.fullmatch(service_key) or service_key in (websocket_token, camofox_token):
+        service_key = secrets.token_hex(32)
+    if len({websocket_token, camofox_token, service_key}) != 3:
+        raise MigrationError("session keys must be independent")
     env_candidate = set_env_value(env_text, "CADDY_CAMOFOX_EDGE_TOKEN", camofox_token)
+    env_candidate = set_env_value(env_candidate, "CADDY_SESSION_SERVICE_KEY", service_key)
 
     template_text = template_path.read_text(encoding="utf-8")
     _, _, camofox_template = extract_listener(template_text, ":26080")
-    if "spartan_edge_camofox" not in camofox_template or "CADDY_CAMOFOX_EDGE_TOKEN" not in camofox_template:
+    if not all(part in camofox_template for part in (
+        "/verify/camofox", "/mint/camofox", "CADDY_SESSION_SERVICE_KEY", "X-Edge-Valid",
+    )):
         raise MigrationError("HTTPS template does not contain the reviewed Camofox session contract")
 
     caddy_text = caddy_path.read_text(encoding="utf-8")
@@ -195,11 +234,10 @@ def run_command(command: list[str], cwd: Path, label: str) -> None:
         raise MigrationError(f"{label} failed: {detail}")
 
 
-def install_transaction(candidates: list[Candidate], validate_command: list[str], recreate_command: list[str]) -> None:
+def install_transaction(candidates: list[Candidate], validate_command: list[str]) -> None:
     originals = {candidate.path: candidate.path.read_bytes() for candidate in candidates}
     temp_paths: dict[Path, Path] = {}
     replaced_paths: list[Path] = []
-    fully_installed = False
     try:
         for candidate in candidates:
             fd, raw_path = tempfile.mkstemp(prefix=f".{candidate.path.name}.", dir=candidate.path.parent)
@@ -208,15 +246,16 @@ def install_transaction(candidates: list[Candidate], validate_command: list[str]
             temp_path.write_text(candidate.content, encoding="utf-8")
             os.chmod(temp_path, candidate.mode)
             temp_paths[candidate.path] = temp_path
+        # Validate only unpublished candidates. The command receives a staged
+        # env, main Caddyfile and ports file; no shell or Docker is invoked.
+        run_command(validate_command + [str(temp_paths[c.path]) for c in candidates], ROOT,
+                    "candidate Caddy validation")
         for candidate in candidates:
             backup = candidate.path.with_name(candidate.path.name + ".safari-session.bak")
             shutil.copy2(candidate.path, backup)
         for candidate in candidates:
             os.replace(temp_paths[candidate.path], candidate.path)
             replaced_paths.append(candidate.path)
-        fully_installed = True
-        run_command(validate_command, ROOT, "candidate Caddy validation")
-        run_command(recreate_command, ROOT, "Caddy recreate")
     except Exception as error:
         rollback_error = None
         for candidate in candidates:
@@ -227,11 +266,6 @@ def install_transaction(candidates: list[Candidate], validate_command: list[str]
                 os.chmod(candidate.path, candidate.mode)
             except Exception as restore_error:
                 rollback_error = restore_error
-        if fully_installed:
-            try:
-                run_command(recreate_command, ROOT, "Caddy rollback recreate")
-            except Exception as recreate_error:
-                rollback_error = rollback_error or recreate_error
         if rollback_error is not None:
             raise MigrationError(f"transaction failed and rollback was incomplete: {rollback_error}") from error
         if isinstance(error, MigrationError):
@@ -242,16 +276,23 @@ def install_transaction(candidates: list[Candidate], validate_command: list[str]
             temp_path.unlink(missing_ok=True)
 
 
-def default_compose_command(action: str, env_path: Path) -> list[str]:
-    base = [
-        "docker", "compose",
-        "-f", str(ROOT / "infra" / "compose" / "compose.yml"),
-        "-f", str(ROOT / "private" / "compose.local.yml"),
-        "--env-file", str(env_path),
-    ]
-    if action == "validate":
-        return base + ["run", "--rm", "--no-deps", "--entrypoint", "caddy", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
-    return base + ["up", "-d", "--no-deps", "--force-recreate", "caddy"]
+def validate_staged(env_path: Path, caddy_path: Path, ports_path: Path) -> None:
+    binary = os.environ.get("CADDY_BIN", "caddy")
+    if not shutil.which(binary):
+        raise MigrationError("native Caddy required; set CADDY_BIN")
+    env = {**os.environ, **env_values(env_path.read_text())}
+    with tempfile.TemporaryDirectory(prefix="spartan-caddy-validate-") as scratch:
+        for index, path in enumerate((caddy_path, ports_path)):
+            result = subprocess.run([binary, "adapt", "--adapter", "caddyfile", "--config", str(path)],
+                                    env=env, capture_output=True, text=True, check=False)
+            if result.returncode:
+                raise MigrationError("native Caddy adaptation failed; no files published")
+            adapted = Path(scratch) / f"{index}.json"
+            adapted.write_text(result.stdout)
+            result = subprocess.run([binary, "validate", "--config", str(adapted)],
+                                    env=env, capture_output=True, text=True, check=False)
+            if result.returncode:
+                raise MigrationError("native Caddy validation failed; check local TLS/import inputs")
 
 
 def parse_args() -> argparse.Namespace:
@@ -261,21 +302,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ports", type=Path, default=ROOT / "private" / "caddy.local.d" / "ports.caddy")
     parser.add_argument("--template", type=Path, default=ROOT / "private.example" / "caddy" / "Caddyfile.https.example")
     parser.add_argument("--validate-command", help="test override; shell-style command split without a shell")
-    parser.add_argument("--recreate-command", help="test override; shell-style command split without a shell")
+    parser.add_argument("--validate-staged", nargs=3, type=Path, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
-        candidates = build_candidates(args.env, args.caddy, args.ports, args.template)
-        validate_command = shlex.split(args.validate_command) if args.validate_command else default_compose_command("validate", args.env)
-        recreate_command = shlex.split(args.recreate_command) if args.recreate_command else default_compose_command("recreate", args.env)
-        install_transaction(candidates, validate_command, recreate_command)
-    except MigrationError as error:
+        if args.validate_staged:
+            validate_staged(*args.validate_staged)
+            return 0
+        lock_path = args.env.with_name(args.env.name + '.config.lock')
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            candidates = build_candidates(args.env, args.caddy, args.ports, args.template)
+            validate_command = (shlex.split(args.validate_command) if args.validate_command else
+                                [sys.executable, str(Path(__file__).resolve()), "--validate-staged"])
+            install_transaction(candidates, validate_command)
+    except (MigrationError, OSError) as error:
         print(f"[migrate-caddy-session] {error}", file=sys.stderr)
         return 1
-    print("[migrate-caddy-session] Safari session migration validated and Caddy recreated")
+    print("[migrate-caddy-session] Signed sessions validated and saved; no service changed. "
+          "Review private Compose verifier/network/key wiring before separately authorized activation.")
     return 0
 
 

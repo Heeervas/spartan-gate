@@ -11,16 +11,21 @@ This file is public and generic. Keep local acceptance notes, real ports, profil
 ```sh
 scripts/doctor.sh
 docker compose -f infra/compose/tiers/compose.l0.yml config --quiet
-docker compose -f infra/compose/tiers/compose.l0.yml -f infra/compose/tiers/compose.clawroute.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l1.yml config --quiet
-docker compose -f infra/compose/tiers/compose.l1.yml -f infra/compose/tiers/compose.clawroute.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l2.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l2.yml -f infra/compose/tiers/compose.l3.yml config --quiet
 docker compose -f infra/compose/compose.yml --env-file .env.example config
 docker compose -f infra/compose/compose.yml -f private/compose.local.yml --env-file private/env/local.env config
-npm --prefix packages/clawroute test
-npm --prefix packages/clawroute run build
+npm run test:route
+npm run test:scripts
+npm run test:hermes
 ```
+
+Run the complete portable and mandatory native-source gates in
+[development.md](development.md) before acceptance. Missing prerequisites and
+skips are not native PASS. Private renders above are operator-local only: never
+retain or share token-bearing output. None of this checklist grants deployment
+authority; stack smoke and cutover require separate explicit authorization.
 
 ## 2. Stack Smoke
 

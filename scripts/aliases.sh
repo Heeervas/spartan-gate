@@ -336,8 +336,7 @@ sg_current_hermes_mode() {
 
 sg_default_addons() {
     case "$1" in
-        L3) printf 'clawroute\n' ;;
-        L0|L1|L2|L4) printf '\n' ;;
+        L0|L1|L2|L3|L4) printf '\n' ;;
         *) return 1 ;;
     esac
 }
@@ -351,9 +350,8 @@ sg_normalize_addons() {
         case "$addon" in
             ""|none|None|NONE) ;;
             clawroute)
-                if [[ " ${normalized[*]} " != *" clawroute "* ]]; then
-                    normalized+=("clawroute")
-                fi
+                printf 'ClawRoute addon retired; select L3/L4 for Spartan Route and clear SPARTAN_ADDONS after reviewing your configuration.\n' >&2
+                return 1
                 ;;
             *)
                 printf 'Invalid Spartan Gate addon: %s\n' "$addon" >&2
@@ -392,17 +390,8 @@ sg_tier_compose_args() {
     local addons="${2:-$(sg_current_addons "$tier")}"
     local private_compose="$SPARTAN_GATE_DIR/private/compose.local.yml"
     case "$tier" in
-        L0)
-            printf '%s\n' -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.l0.yml"
-            sg_addons_has "$addons" clawroute && printf '%s\n' -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.clawroute.yml"
-            ;;
-        L1)
-            printf '%s\n' -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.l1.yml"
-            sg_addons_has "$addons" clawroute && printf '%s\n' -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.clawroute.yml"
-            ;;
-        L2)
-            printf '%s\n' -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.l2.yml"
-            sg_addons_has "$addons" clawroute && printf '%s\n' -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.l3.yml"
+        L0|L1|L2)
+            printf '%s\n' -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.${tier,,}.yml"
             ;;
         L3) printf '%s\n' -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.l2.yml" -f "$SPARTAN_GATE_DIR/infra/compose/tiers/compose.l3.yml" ;;
         L4)
@@ -483,8 +472,8 @@ Groups:
   sg-tmux -h                  tmux sessions, Codex, and Hermes launchers
   sg route -h                 Spartan Route compose helper
   sg-tier list                show tier descriptions
-  sg-browser -h               Browserless/Camofox mode and profile helpers
-  sg-meet -h                  Google Meet and host Chrome CDP helpers
+  sg-browser -h               Camofox browser and profile helpers
+  sg-meet -h                  Google Meet caption transcription helpers
   sg-disk -h                  PC, Docker, Apport, and Spartan cache usage
 
 Common commands:
@@ -590,7 +579,7 @@ Tier helpers
 
 Usage:
   sg-tier list                 show L0-L4 descriptions
-  sg-tier set L0|L1|L2|L3|L4 [--with clawroute] [--hermes free|gated|full]
+  sg-tier set L0|L1|L2|L3|L4 [--hermes free|gated|full]
                                persist the selected tier in private/env/local.env
   sg-tier show                 show selected tier, addons, and Hermes mode
   sg-tier up|apply             start the selected tier
@@ -603,11 +592,11 @@ Tiers:
   L0  Hermes only, free user-level package installs
   L1  Hermes + Camofox/noVNC, free user-level package installs
   L2  L1 + proxy, DNS, and Caddy edge
-  L3  L2 + ClawRoute internal LLM routing compatibility alias
+  L3  L2 + internal Spartan Route through proxy/Caddy
   L4  full Spartan Gate topology with Spartan Route
 
 Addons:
-  clawroute can be enabled on L0, L1, or L2 without moving provider auth into Hermes.
+  Legacy clawroute addon is retired. L3/L4 include Spartan Route.
 EOF
 }
 
@@ -667,8 +656,6 @@ Usage:
   sg-browser -h                              show this help
   sg-browser mode                            print selected browser mode
   sg-browser apply                           apply selected mode and recreate Hermes
-  sg-browser browserless-live <profile> [url]
-  sg-browser browserless-snapshot
   sg-browser camofox-live <profile> [url]
   sg-browser camofox-use <profile> [session-key]
   sg-browser camofox-save <profile>
@@ -682,7 +669,7 @@ Usage:
   sg-browser camofox-url
 
 Selection:
-  CAMOFOX_URL empty                  Browserless mode
+  CAMOFOX_URL empty                 No supported browser selected (no CDP fallback)
   CAMOFOX_URL=http://camofox:9377    Camofox mode
 EOF
 }
@@ -693,12 +680,13 @@ Meet helpers
 
 Usage:
   sg-meet -h                                      show this help
-  sg-meet chrome-profile <profile> [url] [port]   open host Chrome with CDP
+  Google Meet supports Camofox transcription only; host Chrome CDP is retired.
   sg-meet join <meet-id-or-url> [duration] [profile] [port]
   sg-meet plugin <setup|install|auth|join|status|transcript|say|stop|leave|node> [args...]
 
 Flat aliases remain available:
-  sg-hermes-chrome-profile, sg-hermes-meet-join, sg-hermes-meet
+  sg-hermes-meet-join, sg-hermes-meet
+  Retired host-Chrome/CDP commands fail with migration guidance.
 EOF
 }
 
@@ -782,10 +770,11 @@ sg_tier_list() {
 
 sg_tier_set() {
     if [[ "$#" -lt 1 ]]; then
-        printf 'Usage: sg-tier set L0|L1|L2|L3|L4 [--with clawroute] [--hermes free|gated|full]\n' >&2
+        printf 'Usage: sg-tier set L0|L1|L2|L3|L4 [--hermes free|gated|full]\n' >&2
         return 2
     fi
     local tier profiles addons hermes_mode arg configured_profiles
+    sg_normalize_addons "$(sg_env_value SPARTAN_ADDONS "")" >/dev/null || return 2
     tier="$(sg_normalize_tier "$1")" || {
         printf 'Invalid Spartan Gate tier: %s\n' "$1" >&2
         return 2
@@ -799,7 +788,7 @@ sg_tier_set() {
         case "$arg" in
             --with)
                 if [[ "$#" -lt 1 ]]; then
-                    printf 'Usage: --with clawroute\n' >&2
+                    printf 'Legacy addons are retired; select L3/L4 for Spartan Route.\n' >&2
                     return 2
                 fi
                 addons="$(sg_normalize_addons "$addons,$1")" || return 2
@@ -807,7 +796,7 @@ sg_tier_set() {
                 ;;
             --addons)
                 if [[ "$#" -lt 1 ]]; then
-                    printf 'Usage: --addons clawroute|none\n' >&2
+                    printf 'Usage: --addons none (legacy addons are retired)\n' >&2
                     return 2
                 fi
                 addons="$(sg_normalize_addons "$1")" || return 2
@@ -1064,11 +1053,9 @@ sg_restart_hermes() { sg_compose restart hermes; }
 sg_restart_caddy() { sg_compose restart caddy; }
 sg_restart_proxy() { sg_compose restart proxy dns; }
 sg_rebuild_hermes() { sg_compose build hermes && sg_compose up -d hermes; }
-sg_rebuild_clawroute() { sg_compose build clawroute && sg_compose up -d clawroute; }
 sg_rebuild_spartan_route() { sg_compose build spartan-route && sg_compose up -d spartan-route; }
 
 sg_logs_hermes() { sg_compose logs -f hermes "$@"; }
-sg_logs_clawroute() { sg_compose logs -f clawroute "$@"; }
 sg_logs_spartan_route() { sg_compose logs -f spartan-route "$@"; }
 
 # Hermes container helpers. Use these for shell access, profile management, and
@@ -1486,15 +1473,9 @@ sg_hermes_meet() {
         -e LOGNAME=hermes
     )
 
-    local meet_profile
-    local meet_cdp_url
-    meet_profile="$(sg_env_value HERMES_MEET_CDP_PROFILE "")"
-    meet_cdp_url="$(sg_env_value HERMES_MEET_CDP_URL "")"
-    if [[ "$camofox_mode" -eq 0 && -n "$meet_profile" ]]; then
-        docker_opts+=(-e "HERMES_MEET_CDP_PROFILE=$meet_profile")
-    fi
-    if [[ "$camofox_mode" -eq 0 && -n "$meet_cdp_url" ]]; then
-        docker_opts+=(-e "HERMES_MEET_CDP_URL=$meet_cdp_url")
+    if [[ "$camofox_mode" -eq 0 ]]; then
+        printf 'Meet requires CAMOFOX_URL; CDP workflows are retired.\n' >&2
+        return 1
     fi
 
     docker exec -u root -e HERMES_HOME=/opt/data spartan_gate_hermes sh -lc '
@@ -1512,7 +1493,6 @@ exec python -W ignore::RuntimeWarning -m plugins.google_meet.cli "$@"
 ' sh "$command" "$@"
 }
 
-sg_clawroute_shell() { docker exec -it spartan_gate_clawroute sh "$@"; }
 sg_whitelist_domain() { "$SPARTAN_GATE_DIR/scripts/whitelist-domain.sh" "$@"; }
 sg_add_port() { "$SPARTAN_GATE_DIR/scripts/add-port.sh" "$@"; }
 sg_reader_test() {
@@ -1539,7 +1519,8 @@ sg_browser_mode() {
     if [[ -n "$(sg_env_value CAMOFOX_URL "")" ]]; then
         printf 'camofox\n'
     else
-        printf 'browserless\n'
+        printf 'Error: Browserless retired; configure CAMOFOX_URL for the Camofox browser.\n' >&2
+        return 1
     fi
 }
 
@@ -1581,16 +1562,10 @@ sg_validate_compose_profiles_for_mode() {
 sg_browser_mode_apply() {
     local mode active inactive profiles configured
     local -a services
-    mode="$(sg_browser_mode)"
+    mode="$(sg_browser_mode)" || return 1
     sg_validate_compose_profiles_for_mode "$mode" || return 1
 
-    if [[ "$mode" == "camofox" ]]; then
-        active="camofox"
-        inactive="browserless"
-    else
-        active="browserless"
-        inactive="camofox"
-    fi
+    active="camofox"
     configured="$(sg_env_value COMPOSE_PROFILES "" | tr -d '[:space:]')"
     profiles="$mode"
     case ",$configured," in
@@ -1602,7 +1577,6 @@ sg_browser_mode_apply() {
     fi
 
     printf 'Applying Spartan Gate browser mode: %s\n' "$mode"
-    COMPOSE_PROFILES="$inactive" sg_compose stop "$inactive" >/dev/null 2>&1 || true
     services=(proxy dns searxng reader spartan-route caddy "$active")
     [[ "$profiles" == *",pocket-tts" ]] && services+=(pocket-tts)
     COMPOSE_PROFILES="$profiles" sg_compose up -d "${services[@]}" || return 1
@@ -2119,178 +2093,18 @@ sg_camofox_profile_reset() {
 }
 
 sg_browserless_snapshot() {
-    (cd "$SPARTAN_GATE_DIR" && bash scripts/browserless-snapshot.sh)
-}
-
-sg_browserless_profile_live() {
-    if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
-        printf 'Usage: sg-browserless-profile-live <profile> [url]\n' >&2
-        return 1
-    fi
-
-    local profile="$1"
-    local url="${2:-}"
-    local active_profile
-    local origins
-    active_profile="$(sg_env_value BROWSERLESS_PROFILE main)"
-
-    if [[ "$profile" == "$active_profile" ]] && sg_compose ps --status running --services hermes 2>/dev/null | grep -qx hermes; then
-        printf 'Error: hermes is running with BROWSERLESS_PROFILE=%s. Stop hermes before opening that Browserless profile in the debugger.\n' "$profile" >&2
-        return 1
-    fi
-
-    origins="$(sg_browserless_debug_origins)"
-    sg_compose up -d browserless caddy
-    sg_compose run --rm --no-deps --entrypoint node \
-        -e BROWSERLESS_DEBUG_ORIGIN= -e BROWSERLESS_DEBUG_ORIGINS="$origins" hermes \
-        /opt/hermes/bootstrap/browserless-profile-live.js "$profile" "$url"
-}
-
-sg_spartan_internal_gateway() {
-    local project gateway
-    project="$(sg_env_value COMPOSE_PROJECT_NAME spartan-gate)"
-    gateway="$(docker network inspect "${project}_spartan_internal" --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
-    if [[ -z "$gateway" ]]; then
-        gateway="$(sg_env_value SPARTAN_INTERNAL_SUBNET 172.28.0.0/24)"
-        gateway="${gateway%.*}.1"
-    fi
-    printf '%s\n' "$gateway"
-}
-
-sg_hermes_chrome_bin() {
-    local candidate
-    for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
-        if command -v "$candidate" >/dev/null 2>&1; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-    printf 'Error: google-chrome, google-chrome-stable, chromium, or chromium-browser was not found in PATH.\n' >&2
+    printf 'Browserless retired; legacy profiles were not modified. Use sg-browser camofox-live.\n' >&2
     return 1
 }
 
-sg_hermes_chrome_relay_start() {
-    local port="${1:-9222}"
-    local gateway
-    local pid_file
-    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-        printf 'Usage: sg-hermes-chrome-profile <profile> [url] [port]\n' >&2
-        return 1
-    fi
-    if ! command -v socat >/dev/null 2>&1; then
-        printf 'Error: socat is required for the Docker-to-host Chrome CDP relay.\n' >&2
-        return 1
-    fi
-    gateway="$(sg_spartan_internal_gateway)"
-    pid_file="${TMPDIR:-/tmp}/spartan-gate-hermes-chrome-relay-${port}.pid"
-
-    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-        return 0
-    fi
-    if ss -ltn "( sport = :$port )" 2>/dev/null | awk '{print $4}' | grep -qx "${gateway}:${port}"; then
-        return 0
-    fi
-
-    socat "TCP-LISTEN:${port},bind=${gateway},fork,reuseaddr" "TCP:127.0.0.1:${port}" \
-        >"/tmp/spartan-gate-hermes-chrome-relay-${port}.log" 2>&1 &
-    printf '%s\n' "$!" > "$pid_file"
-    sleep 0.2
-    if ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-        printf 'Error: Chrome CDP relay failed to start; see /tmp/spartan-gate-hermes-chrome-relay-%s.log\n' "$port" >&2
-        return 1
-    fi
-}
-
-sg_hermes_chrome_ws_url() {
-    local port="${1:-9222}"
-    local gateway
-    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-        printf 'Usage: sg-hermes-chrome-profile <profile> [url] [port]\n' >&2
-        return 1
-    fi
-    gateway="$(sg_spartan_internal_gateway)"
-    python3 -c 'import json, sys, urllib.request
-from urllib.parse import urlsplit, urlunsplit
-
-port = sys.argv[1]
-gateway = sys.argv[2]
-url = f"http://127.0.0.1:{port}/json/version"
-with urllib.request.urlopen(url, timeout=2) as response:
-    data = json.loads(response.read().decode("utf-8"))
-ws_url = data.get("webSocketDebuggerUrl", "")
-if not ws_url:
-    raise SystemExit(f"Chrome CDP did not publish webSocketDebuggerUrl at {url}")
-parts = urlsplit(ws_url)
-print(urlunsplit((parts.scheme, f"{gateway}:{port}", parts.path, parts.query, parts.fragment)))' "$port" "$gateway"
+sg_browserless_profile_live() {
+    printf 'Browserless retired; legacy profiles were not modified. Use sg-browser camofox-live.\n' >&2
+    return 1
 }
 
 sg_hermes_chrome_profile() {
-    if [[ "$#" -lt 1 || "$#" -gt 3 ]]; then
-        printf 'Usage: sg-hermes-chrome-profile <profile> [url] [port]\n' >&2
-        return 1
-    fi
-
-    local profile="$1"
-    local url="${2:-https://accounts.google.com}"
-    local port="${3:-9222}"
-    local profile_root
-    local profile_dir
-    local chrome_bin
-    local cdp_url=""
-    local i
-
-    if [[ ! "$profile" =~ ^[A-Za-z0-9._-]+$ || "$profile" == "." || "$profile" == ".." ]]; then
-        printf 'Error: invalid Chrome profile name: %s\n' "$profile" >&2
-        return 1
-    fi
-    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-        printf 'Usage: sg-hermes-chrome-profile <profile> [url] [port]\n' >&2
-        return 1
-    fi
-
-    chrome_bin="$(sg_hermes_chrome_bin)" || return 1
-    profile_root="$(sg_env_value HERMES_CHROME_PROFILES_ROOT "$HOME/.config/hermes-chrome-profiles")"
-    profile_dir="$profile_root/$profile"
-    mkdir -p "$profile_dir"
-
-    if sg_hermes_chrome_ws_url "$port" >/dev/null 2>&1; then
-        printf 'Error: Chrome CDP is already listening on 127.0.0.1:%s. Close it or choose another port.\n' "$port" >&2
-        return 1
-    fi
-
-    sg_hermes_chrome_relay_start "$port" || return 1
-
-    printf 'Opening Chrome profile %s at %s\n' "$profile" "$profile_dir"
-    "$chrome_bin" \
-        --remote-debugging-port="$port" \
-        --user-data-dir="$profile_dir" \
-        --profile-directory=Default \
-        --no-first-run \
-        --no-default-browser-check \
-        "$url" >/tmp/spartan-gate-hermes-chrome-${port}.log 2>&1 &
-
-    for i in {1..50}; do
-        if cdp_url="$(sg_hermes_chrome_ws_url "$port" 2>/dev/null)"; then
-            break
-        fi
-        sleep 0.2
-    done
-    if [[ -z "$cdp_url" ]]; then
-        printf 'Error: Chrome opened but CDP did not become ready on 127.0.0.1:%s. See /tmp/spartan-gate-hermes-chrome-%s.log\n' "$port" "$port" >&2
-        return 1
-    fi
-
-    printf '\nHermes Chrome profile is ready. Keep this Chrome window open.\n'
-    printf 'HERMES_MEET_CDP_PROFILE=%s\n' "$profile"
-    printf 'HERMES_MEET_CDP_URL=%s\n' "$cdp_url"
-    printf '\nThis command will wait while Chrome CDP is reachable. Press Ctrl-C to stop waiting; Chrome is left open.\n'
-
-    trap 'printf "\nStopped waiting; Chrome was left open.\n"; trap - INT; return 130' INT
-    while sg_hermes_chrome_ws_url "$port" >/dev/null 2>&1; do
-        sleep 2
-    done
-    trap - INT
-    printf 'Chrome CDP stopped.\n'
+    printf 'Host Chrome CDP workflow retired; no CDP replacement is supported. Camofox supports browser tools and Meet transcription only.\n' >&2
+    return 1
 }
 
 sg_hermes_meet_url() {
@@ -2316,43 +2130,6 @@ match = re.search(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", parsed.path, re.I)
 if not match:
     raise SystemExit(f"Error: no Meet ID found in: {raw}")
 print("https://meet.google.com/" + match.group(0).lower())' "$1"
-}
-
-sg_hermes_set_meet_env() {
-    if [[ "$#" -ne 2 ]]; then
-        printf 'Usage: sg_hermes_set_meet_env <profile> <cdp-url>\n' >&2
-        return 1
-    fi
-    local profile="$1"
-    local cdp_url="$2"
-    local env_file="$SPARTAN_GATE_DIR/private/env/local.env"
-    mkdir -p "$(dirname "$env_file")"
-    python3 -c 'from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-updates = {
-    "HERMES_MEET_CDP_PROFILE": sys.argv[2],
-    "HERMES_MEET_CDP_URL": sys.argv[3],
-}
-lines = path.read_text().splitlines() if path.exists() else []
-seen = set()
-out = []
-for line in lines:
-    stripped = line.lstrip()
-    replaced = False
-    for key, value in updates.items():
-        if stripped.startswith(f"{key}=") and not stripped.startswith("#"):
-            out.append(f"{key}={value}")
-            seen.add(key)
-            replaced = True
-            break
-    if not replaced:
-        out.append(line)
-for key, value in updates.items():
-    if key not in seen:
-        out.append(f"{key}={value}")
-path.write_text("\n".join(out) + "\n")' "$env_file" "$profile" "$cdp_url"
 }
 
 sg_hermes_meet_join() {
@@ -2395,20 +2172,8 @@ sg_hermes_meet_join() {
         sg_hermes_meet join "$meet_url" --duration "$duration" --mode transcribe
         return $?
     fi
-    if ! cdp_url="$(sg_hermes_chrome_ws_url "$port" 2>/dev/null)"; then
-        printf 'Error: Chrome CDP is not reachable on 127.0.0.1:%s. Start it first with:\n' "$port" >&2
-        printf '  sg-hermes-chrome-profile %s https://accounts.google.com %s\n' "$profile" "$port" >&2
-        return 1
-    fi
-    sg_hermes_chrome_relay_start "$port" || return 1
-    sg_hermes_set_meet_env "$profile" "$cdp_url" || return 1
-
-    printf 'Updated private/env/local.env for Meet profile %s.\n' "$profile"
-    printf 'Meet URL: %s\n' "$meet_url"
-    sg_compose up -d hermes --force-recreate || return 1
-
-    sg_hermes_meet setup || return 1
-    sg_hermes_meet join "$meet_url" --duration "$duration"
+    printf 'CDP Meet workflow retired; configure CAMOFOX_URL for transcription.\n' >&2
+    return 1
 }
 
 sg_edge_scheme() {
@@ -2434,64 +2199,23 @@ sg_remote_host() {
     printf '%s\n' "$host"
 }
 
-sg_browserless_debug_origins() {
-    local override scheme tailscale_host ip port label origin existing index
-    local -a labels origins
-    local add_origin
-    add_origin() {
-        label="$1"
-        origin="$2"
-        [[ -n "$origin" ]] || return 0
-        for existing in "${origins[@]}"; do
-            [[ "$existing" == "$origin" ]] && return 0
-        done
-        labels+=("$label")
-        origins+=("$origin")
-    }
-
-    override="$(sg_env_value BROWSERLESS_DEBUG_ORIGIN "")"
-    if [[ -n "$override" ]]; then
-        add_origin configured "$override"
-    fi
-
-    scheme="$(sg_edge_scheme)"
-    tailscale_host="$(sg_env_value TAILSCALE_HOST "")"
-    ip="$(sg_env_value TAILSCALE_IP "")"
-    port="$(sg_env_value BROWSERLESS_DEBUG_PORT 3005)"
-
-    add_origin local "${scheme}://localhost:${port}"
-    if [[ -n "$tailscale_host" && "$tailscale_host" != "localhost" ]]; then
-        add_origin tailscale-host "${scheme}://${tailscale_host}:${port}"
-    fi
-    if [[ -n "$ip" && "$ip" != "localhost" ]]; then
-        add_origin tailscale-ip "${scheme}://${ip}:${port}"
-    fi
-
-    for index in "${!origins[@]}"; do
-        printf '%s|%s\n' "${labels[$index]}" "${origins[$index]}"
-    done
-}
-
 sg_urls() {
-    local scheme host gate route browserless dashboard camofox_vnc camofox_enabled
+    local scheme host gate route dashboard camofox_vnc camofox_enabled
     scheme="$(sg_edge_scheme)"
     host="$(sg_remote_host)"
     gate="$(sg_env_value SPARTAN_GATE_PORT 18789)"
     route="$(sg_env_value CLAWROUTE_EDGE_PORT 18790)"
-    browserless="$(sg_env_value BROWSERLESS_DEBUG_PORT 3005)"
     dashboard="$(sg_env_value HERMES_DASHBOARD_PORT 9119)"
     camofox_vnc="$(sg_env_value CAMOFOX_NOVNC_PORT 26080)"
     camofox_enabled="$(sg_env_value CAMOFOX_ENABLE_VNC 0)"
     if [[ "$scheme" == "http" ]]; then
         printf 'Spartan Gate local:      http://localhost:%s\n' "$gate"
         printf 'Spartan Route local:     http://localhost:%s\n' "$route"
-        printf 'Browserless local:       http://localhost:%s\n' "$browserless"
         printf 'Hermes dashboard local:  http://localhost:%s\n' "$dashboard"
     fi
     if [[ "$host" != "localhost" || "$scheme" != "http" ]]; then
         printf 'Spartan Gate remote:     %s://%s:%s\n' "$scheme" "$host" "$gate"
         printf 'Spartan Route remote:    %s://%s:%s\n' "$scheme" "$host" "$route"
-        printf 'Browserless remote:      %s://%s:%s\n' "$scheme" "$host" "$browserless"
         printf 'Hermes dashboard remote: %s://%s:%s\n' "$scheme" "$host" "$dashboard"
     fi
     if [[ "$camofox_enabled" == "1" || "$camofox_enabled" == "true" ]]; then
@@ -2542,7 +2266,7 @@ sg_connectivity_check() {
 
 sg_caddy_validate() { sg_compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile; }
 sg_ports() {
-    ss -H -ltn '( sport = :18789 or sport = :18790 or sport = :3005 or sport = :9119 )' 2>/dev/null || sg_compose ps
+    ss -H -ltn '( sport = :18789 or sport = :18790 or sport = :9119 )' 2>/dev/null || sg_compose ps
 }
 sg_docker_root() {
     docker info --format '{{.DockerRootDir}}' 2>/dev/null || true
@@ -3037,12 +2761,10 @@ sg-restart-hermes() { sg_restart_hermes "$@"; }
 sg-restart-caddy() { sg_restart_caddy "$@"; }
 sg-restart-proxy() { sg_restart_proxy "$@"; }
 sg-rebuild-hermes() { sg_rebuild_hermes "$@"; }
-sg-rebuild-clawroute() { sg_rebuild_clawroute "$@"; }
 sg-rebuild-spartan-route() { sg_rebuild_spartan_route "$@"; }
 sg-spartan-route-data-check() { sg_spartan_route_data_check "$@"; }
 sg-spartan-route-data-migrate() { sg_spartan_route_data_migrate "$@"; }
 sg-logs-hermes() { sg_logs_hermes "$@"; }
-sg-logs-clawroute() { sg_logs_clawroute "$@"; }
 sg-logs-spartan-route() { sg_logs_spartan_route "$@"; }
 sg-logs-camofox() { sg_logs_camofox "$@"; }
 sg-hermes-shell() { sg_hermes_shell "$@"; }
@@ -3057,7 +2779,6 @@ sg-wrangler() { sg_wrangler "$@"; }
 sg-wrangler-login() { sg_wrangler_login "$@"; }
 sg-wrangler-token() { sg_wrangler_token "$@"; }
 sg-hermes-meet() { sg_hermes_meet "$@"; }
-sg-clawroute-shell() { sg_clawroute_shell "$@"; }
 sg-whitelist-domain() { sg_whitelist_domain "$@"; }
 sg-add-port() { sg_add_port "$@"; }
 sg-reader-test() { sg_reader_test "$@"; }

@@ -166,7 +166,6 @@ class PrivatePermissionsTests(unittest.TestCase):
         for path in (
             self.hermes,
             self.route,
-            self.clawroute,
             self.camofox,
             self.codex,
             self.caddy_certs,
@@ -174,7 +173,8 @@ class PrivatePermissionsTests(unittest.TestCase):
             self.assertEqual(mode(path), 0o700)
         self.assertEqual(mode(backup_dir), 0o700)
         self.assertEqual(mode(backup_root), 0o755)
-        self.assertEqual(mode(self.browserless), 0o770)
+        self.assertEqual(mode(self.browserless), 0o775)
+        self.assertEqual(mode(self.clawroute), 0o775)
         self.assertEqual(self.browserless.stat().st_gid, os.getgid())
         self.assertEqual(mode(profile_cookie), 0o666)
         self.assertEqual(mode(codex_auth), 0o666)
@@ -208,7 +208,6 @@ class PrivatePermissionsTests(unittest.TestCase):
         expected = {
             "SPARTAN_CADDY_CERTS_PATH": (4101, 4102),
             "SPARTAN_ROUTE_DATA_PATH": (4201, 4202),
-            "SPARTAN_CLAWROUTE_DATA_PATH": (4301, 4302),
         }
         for label, identity in expected.items():
             with self.subTest(label=label):
@@ -269,8 +268,8 @@ class PrivatePermissionsTests(unittest.TestCase):
     def test_configured_store_root_symlink_is_rejected_without_traversal(self):
         real_profiles = self.root / "real-profiles"
         real_profiles.mkdir()
-        self.browserless.rmdir()
-        self.browserless.symlink_to(real_profiles, target_is_directory=True)
+        self.camofox.rmdir()
+        self.camofox.symlink_to(real_profiles, target_is_directory=True)
         marker = real_profiles / "must-not-change"
         marker.write_text("credential-state\n", encoding="utf-8")
         marker.chmod(0o666)

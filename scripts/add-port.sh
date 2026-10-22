@@ -51,7 +51,7 @@ Usage: scripts/add-port.sh [--localhost|--tailscale] <container-port> [host-port
 
 Default bind is localhost. Use --tailscale to bind to ${TAILSCALE_IP}.
 If SPARTAN_EDGE_SCHEME=https, generated Caddy listeners include the manual TLS cert paths.
-The script writes only ignored private files and restarts Caddy only if it is already running.
+The script validates candidates before publication. Apply the new mapping explicitly with sg up -d --no-deps --force-recreate caddy.
 EOF
 }
 
@@ -90,32 +90,50 @@ for port in "$container_port" "$host_port"; do
     fi
 done
 
-if [[ ! -f "$PRIVATE_COMPOSE" ]]; then
-    mkdir -p "$(dirname "$PRIVATE_COMPOSE")"
+# Serialize cooperating config writers using one stable lock. Lock creation is
+# not publication; no listener or selection changes before validation.
+umask 077
+mkdir -p "$(dirname "$ENV_FILE")"
+[[ ! -L "${ENV_FILE}.config.lock" ]] || { printf '[add-port] Unsafe lock.\n' >&2; exit 1; }
+exec 9>"${ENV_FILE}.config.lock"
+flock -x -w 30 9 || { printf '[add-port] Configuration busy.\n' >&2; exit 1; }
+# Build both outputs privately. An absent insertion marker or invalid config
+# must not publish half a listener.
+umask 077
+original_compose="$PRIVATE_COMPOSE"
+original_ports="$CADDY_PORTS_FILE"
+stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
+PRIVATE_COMPOSE="$stage/compose.local.yml"
+CADDY_PORTS_FILE="$stage/ports.caddy"
+if [[ -f "$original_compose" ]]; then
+    cp -p "$original_compose" "$PRIVATE_COMPOSE"
+else
     cp "$ROOT/private.example/compose.local.yml" "$PRIVATE_COMPOSE"
-    printf '[add-port] Created private compose override: %s\n' "$PRIVATE_COMPOSE"
 fi
-
-mkdir -p "$CADDY_LOCAL_DIR"
-touch "$CADDY_PORTS_FILE"
+if [[ -f "$original_ports" ]]; then cp -p "$original_ports" "$CADDY_PORTS_FILE"; else : > "$CADDY_PORTS_FILE"; fi
 
 marker="# spartan-gate:add-port:${container_port}"
 edge_scheme="$(env_value SPARTAN_EDGE_SCHEME http)"
 tls_line=""
 cookie_secure=""
+edge_secure=no
 if [[ "$edge_scheme" == "https" ]]; then
     tls_line=$'\ttls {$SPARTAN_CADDY_TLS_CERT_FILE:/certs/cert.pem} {$SPARTAN_CADDY_TLS_KEY_FILE:/certs/key.pem}\n\n'
     cookie_secure="; Secure"
+    edge_secure=yes
 fi
 
 if grep -Fq "$marker" "$CADDY_PORTS_FILE"; then
     if ! awk -v marker="$marker" '
         $0 == marker { found = 1; in_block = 1; next }
         in_block && /^# spartan-gate:add-port:/ { exit }
-        in_block && /spartan_edge_apps/ { compatible = 1 }
-        END { exit !(found && compatible) }
+        in_block && /uri \/verify\/apps/ { verify = 1 }
+        in_block && /uri \/mint\/apps/ { mint = 1 }
+        in_block && /header_up X-Edge-Service-Key/ { secret = 1 }
+        END { exit !(found && verify && mint && secret) }
     ' "$CADDY_PORTS_FILE"; then
-        printf '[add-port] Existing listener for container port %s uses legacy or incomplete Safari session authentication.\n' "$container_port" >&2
+        printf '[add-port] Existing listener for container port %s uses legacy or incomplete Safari session authentication (signed server TTL required).\n' "$container_port" >&2
         printf '[add-port] Back up %s, remove only the %s block, then rerun this command to regenerate it safely.\n' \
             "$CADDY_PORTS_FILE" "$marker" >&2
         exit 1
@@ -126,13 +144,21 @@ else
 
 $marker
 :${container_port} {
-${tls_line}	@spartan_app_websocket {
+${tls_line}	route {
+	request_header -X-Edge-Valid
+	request_header -X-Edge-Cookie
+	forward_auth edge-sessions:9080 {
+		uri /verify/apps
+		header_up X-Edge-Service-Key {\$CADDY_SESSION_SERVICE_KEY}
+		copy_headers X-Edge-Valid
+	}
+	@spartan_app_websocket {
 		header Connection *Upgrade*
 		header Upgrade websocket
 	}
 
 	@spartan_app_session_authorized {
-		vars {cookie.spartan_edge_apps} {\$CADDY_WS_EDGE_TOKEN}
+		header X-Edge-Valid yes
 	}
 
 	@spartan_app_only_edge_cookies {
@@ -146,7 +172,11 @@ ${tls_line}	@spartan_app_websocket {
 			request_header Cookie "^([ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*(;[ \t]*)?)+" ""
 			request_header Cookie ";[ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*" ""
 			request_header -Authorization
-			reverse_proxy http://hermes:${container_port}
+			reverse_proxy http://hermes:${container_port} {
+				header_up -X-Edge-Valid
+				header_up -X-Edge-Cookie
+				header_up -X-Edge-Service-Key
+			}
 		}
 	}
 
@@ -159,16 +189,27 @@ ${tls_line}	@spartan_app_websocket {
 			basic_auth {
 				{\$CADDY_AUTH_USER:admin} {\$CADDY_AUTH_HASH}
 			}
+			forward_auth edge-sessions:9080 {
+				uri /mint/apps
+				header_up X-Edge-Service-Key {\$CADDY_SESSION_SERVICE_KEY}
+				header_up X-Edge-Secure ${edge_secure}
+				copy_headers X-Edge-Cookie
+			}
 			header {
-				+Set-Cookie "spartan_edge_apps={\$CADDY_WS_EDGE_TOKEN}; Path=/; Max-Age=3600; HttpOnly; SameSite=Strict${cookie_secure}"
+				+Set-Cookie "{http.request.header.X-Edge-Cookie}"
 				+Set-Cookie "spartan_ws_edge=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict${cookie_secure}"
 			}
 			request_header @spartan_app_only_edge_cookies -Cookie
 			request_header Cookie "^([ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*(;[ \t]*)?)+" ""
 			request_header Cookie ";[ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*" ""
 			request_header -Authorization
-			reverse_proxy http://hermes:${container_port}
+			reverse_proxy http://hermes:${container_port} {
+				header_up -X-Edge-Valid
+				header_up -X-Edge-Cookie
+				header_up -X-Edge-Service-Key
+			}
 		}
+	}
 	}
 }
 EOF
@@ -224,14 +265,34 @@ compose_cmd() {
     docker compose "${compose_args[@]}" "$@"
 }
 
-if command -v docker >/dev/null 2>&1; then
-    if compose_cmd ps --services --status running 2>/dev/null | grep -Fxq caddy; then
-        printf '[add-port] Restarting running Caddy service.\n'
-        compose_cmd restart caddy
-    else
-        printf '[add-port] Caddy is not running; no service was started.\n'
-    fi
-fi
+command -v docker >/dev/null 2>&1 || { printf '[add-port] Docker Compose is required for candidate validation.\n' >&2; exit 1; }
+compose_cmd config --quiet
+# Native adaptation catches listener syntax; never pull/start a container merely
+# to validate. Supply an already available Caddy binary explicitly when needed.
+caddy_bin="${CADDY_BIN:-caddy}"
+command -v "$caddy_bin" >/dev/null 2>&1 || { printf '[add-port] Native Caddy required; set CADDY_BIN to an existing binary.\n' >&2; exit 1; }
+CADDY_AUTH_USER="$(env_value CADDY_AUTH_USER admin)" CADDY_AUTH_HASH="$(env_value CADDY_AUTH_HASH)" \
+CADDY_SESSION_SERVICE_KEY="$(env_value CADDY_SESSION_SERVICE_KEY)" \
+SPARTAN_CADDY_TLS_CERT_FILE="$(env_value SPARTAN_CADDY_TLS_CERT_FILE /certs/cert.pem)" \
+SPARTAN_CADDY_TLS_KEY_FILE="$(env_value SPARTAN_CADDY_TLS_KEY_FILE /certs/key.pem)" \
+    "$caddy_bin" adapt --config "$CADDY_PORTS_FILE" --adapter caddyfile > "$stage/adapted.json"
+"$caddy_bin" validate --config "$stage/adapted.json"
+for target in "$original_compose" "$original_ports"; do
+    [[ ! -L "$target" && ( ! -e "$target" || -f "$target" ) ]] || { printf '[add-port] Unsafe configuration target.\n' >&2; exit 1; }
+done
+mkdir -p "$(dirname "$original_compose")" "$(dirname "$original_ports")"
+[[ ! -f "$original_compose" ]] || cp -p "$original_compose" "$stage/backup-compose"
+[[ ! -f "$original_ports" ]] || cp -p "$original_ports" "$stage/backup-ports"
+rollback() {
+    if [[ -f "$stage/backup-compose" ]]; then cp -p "$stage/backup-compose" "$original_compose"; else rm -f "$original_compose"; fi
+    if [[ -f "$stage/backup-ports" ]]; then cp -p "$stage/backup-ports" "$original_ports"; else rm -f "$original_ports"; fi
+    rm -rf "$stage"
+}
+trap rollback EXIT
+cp -p "$PRIVATE_COMPOSE" "$original_compose"
+cp -p "$CADDY_PORTS_FILE" "$original_ports"
+trap 'rm -rf "$stage"' EXIT
+printf '[add-port] Configuration saved; no service changed. Apply with: sg up -d --no-deps --force-recreate caddy\n'
 
 url_host="localhost"
 if [[ "$bind_mode" == "tailscale" ]]; then

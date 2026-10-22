@@ -114,50 +114,6 @@
 	}
 }
 
-:3005 {
-	tls {$SPARTAN_CADDY_TLS_CERT_FILE:/certs/cert.pem} {$SPARTAN_CADDY_TLS_KEY_FILE:/certs/key.pem}
-
-	@browserless_websocket {
-		header Connection *Upgrade*
-	}
-
-	@browserless_websocket_authorized {
-		header Connection *Upgrade*
-		query sgEdgeToken={$BROWSERLESS_EDGE_TOKEN:change-me-browserless-edge-token}
-	}
-
-	handle @browserless_websocket_authorized {
-		reverse_proxy http://browserless:3000 {
-			header_up Authorization "Bearer {$BROWSERLESS_TOKEN}"
-			header_up Host {host}
-		}
-	}
-
-	handle @browserless_websocket {
-		respond "Unauthorized" 401
-	}
-
-	handle {
-		basic_auth {
-			{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
-		}
-
-		@debugger_router path /debugger/router.js
-		handle @debugger_router {
-			rewrite * /router.js
-			root * /srv/browserless-debugger
-			file_server
-		}
-
-		handle {
-			reverse_proxy http://browserless:3000 {
-				header_up Authorization "Bearer {$BROWSERLESS_TOKEN}"
-				header_up Host {host}
-			}
-		}
-	}
-}
-
 :9119 {
 	tls {$SPARTAN_CADDY_TLS_CERT_FILE:/certs/cert.pem} {$SPARTAN_CADDY_TLS_KEY_FILE:/certs/key.pem}
 
@@ -182,14 +138,21 @@
 
 :26080 {
 	tls {$SPARTAN_CADDY_TLS_CERT_FILE:/certs/cert.pem} {$SPARTAN_CADDY_TLS_KEY_FILE:/certs/key.pem}
-
+	route {
+	request_header -X-Edge-Valid
+	request_header -X-Edge-Cookie
+	forward_auth edge-sessions:9080 {
+		uri /verify/camofox
+		header_up X-Edge-Service-Key {$CADDY_SESSION_SERVICE_KEY}
+		copy_headers X-Edge-Valid
+	}
 	@camofox_websocket {
 		header Connection *Upgrade*
 		header Upgrade websocket
 	}
 
 	@camofox_session_authorized {
-		vars {cookie.spartan_edge_camofox} {$CADDY_CAMOFOX_EDGE_TOKEN}
+		header X-Edge-Valid yes
 	}
 
 	@camofox_only_edge_cookies {
@@ -204,7 +167,11 @@
 			request_header Cookie "^([ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*(;[ \t]*)?)+" ""
 			request_header Cookie ";[ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*" ""
 			request_header -Authorization
-			reverse_proxy http://camofox:6080
+			reverse_proxy http://camofox:6080 {
+				header_up -X-Edge-Valid
+				header_up -X-Edge-Cookie
+				header_up -X-Edge-Service-Key
+			}
 		}
 	}
 
@@ -217,17 +184,28 @@
 			basic_auth {
 				{$CADDY_AUTH_USER:admin} {$CADDY_AUTH_HASH}
 			}
+			forward_auth edge-sessions:9080 {
+				uri /mint/camofox
+				header_up X-Edge-Service-Key {$CADDY_SESSION_SERVICE_KEY}
+				header_up X-Edge-Secure yes
+				copy_headers X-Edge-Cookie
+			}
 			header {
 				Cache-Control "no-store"
-				+Set-Cookie "spartan_edge_camofox={$CADDY_CAMOFOX_EDGE_TOKEN}; Path=/; Max-Age=3600; HttpOnly; SameSite=Strict; Secure"
+				+Set-Cookie "{http.request.header.X-Edge-Cookie}"
 				+Set-Cookie "spartan_ws_edge=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure"
 			}
 			request_header @camofox_only_edge_cookies -Cookie
 			request_header Cookie "^([ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*(;[ \t]*)?)+" ""
 			request_header Cookie ";[ \t]*(spartan_ws_edge|spartan_edge_[A-Za-z0-9_]+)=[^;]*" ""
 			request_header -Authorization
-			reverse_proxy http://camofox:6080
+			reverse_proxy http://camofox:6080 {
+				header_up -X-Edge-Valid
+				header_up -X-Edge-Cookie
+				header_up -X-Edge-Service-Key
+			}
 		}
+	}
 	}
 }
 

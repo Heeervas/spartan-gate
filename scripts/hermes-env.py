@@ -35,7 +35,7 @@ RESERVED = {'PATH', 'HOME', 'USER', 'SHELL', 'ENV', 'BASH_ENV', 'IFS', 'PYTHONPA
             'PYTHONHOME', 'NODE_OPTIONS', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
             'ALL_PROXY', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'SEARXNG_URL',
             'PLAYWRIGHT_BROWSERS_PATH'}
-PREFIXES = ('HERMES_', '_HERMES_', 'SPARTAN_', 'S6_', 'CAMOFOX_', 'BROWSERLESS_',
+PREFIXES = ('HERMES_', '_HERMES_', 'SPARTAN_', 'S6_', 'CAMOFOX_',
             'CLAWROUTE_', 'COMPOSE_', 'DOCKER_', 'GATEWAY_', 'LD_', 'DYLD_')
 
 # No document, secret, exception or third-party output is returned to the terminal.

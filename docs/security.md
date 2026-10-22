@@ -7,7 +7,7 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
 ## Controls
 
 - Hermes is internal-network only.
-- Browserless and Camofox are internal-network only and configured to use Tinyproxy.
+- Camofox is internal-network only and configured to use Tinyproxy in gate tiers.
 - Pocket TTS runtime is internal-network only, has no published port, proxy,
   external network, Hugging Face token, arbitrary voice URL, or voice-upload
   endpoint. It reads a versioned cache and runs with Hugging Face offline mode.
@@ -35,19 +35,23 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   capability-bearing binary requires even for high ports. Its healthcheck
   validates the effective config and the authenticated listener without
   credentials.
-- Browserless debugger WebSockets do not rely on browser Basic Auth prompts,
-  which can loop or drop credentials in Safari/Firefox. Profile-seeding URLs
-  carry a generated `BROWSERLESS_EDGE_TOKEN` as a short edge authorization
-  guard, while Caddy still injects the internal `BROWSERLESS_TOKEN` only toward
-  Browserless.
-- Camofox noVNC and `sg-add-port` listeners mint one-hour, host-only,
-  HttpOnly, SameSite=Strict sessions only after successful Caddy Basic Auth. A
+- Browserless/CDP source and debugger workflows are retired; legacy profile
+  data remains untouched.
+- Camofox noVNC and `sg-add-port` listeners set host-only,
+  HttpOnly, SameSite=Strict cookies only after successful Caddy Basic Auth. A
   valid session authorizes subsequent HTTP assets and WebSockets, avoiding
   Safari Basic Auth loops; invalid WebSockets fail with a non-challenging `401`.
   Camofox uses a distinct `CADDY_CAMOFOX_EDGE_TOKEN`; Hermes preview ports share
   `CADDY_WS_EDGE_TOKEN` as one operator trust boundary. Both must be 64 lowercase
   hex, are stripped with legacy edge cookies and `Authorization` before proxying,
-  and use `Secure` on HTTPS.
+  and use `Secure` on HTTPS. Cookies contain an audience-bound HMAC and issue
+  timestamp, never the signing key. The bounded internal verifier rejects replay
+  at age >=3600 seconds, future timestamps, malformed/duplicate cookies and old
+  static tokens. Caddy clears client verification headers before `forward_auth`,
+  mints only after successful Basic Auth and removes internal headers upstream.
+  Verifier access requires the independent `CADDY_SESSION_SERVICE_KEY`; only
+  Caddy and verifier join its isolated internal network. No published verifier
+  port or service-key exposure to Hermes/Camofox is allowed.
 - The Hermes dashboard keeps its native `/login`, `/auth/*`, `/api/*`, and
   `/ws/*` application-session routes pass-through behind the localhost/private
   edge; Hermes owns authentication on those routes while Caddy Basic Auth remains
@@ -60,7 +64,7 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   bearer auth when `CLAWROUTE_TOKEN` is configured; `/health` remains public
   for local health checks.
 - Router content logging is disabled by default.
-- Spartan Route and legacy ClawRoute run as explicit host-matching non-root
+- Spartan Route runs as an explicit host-matching non-root
   identities, with read-only roots, all capabilities dropped,
   no-new-privileges, bounded temporary storage, and only `/app/data` writable.
   Router auth/config mounts remain read-only. Spartan Route startup tooling
@@ -95,14 +99,14 @@ Keep service ownership explicit when changing security-sensitive behavior:
 - Hermes consumes services and must remain off the external network in gate
   tiers.
 - Spartan Route owns model routing, provider credentials, quota telemetry, and
-  OpenAI-compatible API behavior in L4. ClawRoute owns that boundary only when
-  the legacy tier/addon is enabled.
+  OpenAI-compatible API behavior in L3/L4. Legacy ClawRoute source is retired;
+  shared `config/clawroute` and `CLAWROUTE_*` compatibility names remain.
 - Tinyproxy and DNS own general egress policy. Invalid, malformed, expired, or
   overflowing policy data must fail closed.
 - Reader owns bounded GET-only page retrieval. Reader content is untrusted
   input and must not be turned directly into tool actions.
-- Browserless and Camofox are separate browser modes. Do not claim an inactive
-  browser Compose profile remains available.
+- Camofox owns supported persistent browsing. Retired CDP-only workflows have
+  no implicit replacement.
 - Pocket TTS owns local speech synthesis and its versioned model cache. Hermes
   consumes it through a fixed command client; a sidecar failure must remain an
   explicit error rather than falling through to a cloud speech provider.
@@ -125,9 +129,8 @@ Treat `SPARTAN_CAMOFOX_DATA_PATH` and `runtime/camofox/` like credential stores
 when Camofox is enabled.
 
 Private configuration files use mode 0600 and private configuration directories
-and single-user data roots use 0700. Browserless is the deliberate exception:
-its profile root uses 0770 with `BROWSERLESS_PROFILES_GID` so image UID 999 can
-access the mount without granting access to `other`. Permission checks inspect
+and single-user data roots use 0700. Retired Browserless and legacy ClawRoute
+roots are not modified by the permission helper. Permission checks inspect
 only explicit private config trees and the top of configured data roots; they
 must never traverse Browserless, Camofox, or Codex credential contents.
 

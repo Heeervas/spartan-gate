@@ -9,12 +9,9 @@ Public env docs describe names and behavior only. Real values and machine-specif
 - `SPARTAN_BIND_LOCALHOST`: public host bind, default `127.0.0.1`.
 - `SPARTAN_GATE_PORT`: Caddy edge port for the Hermes API.
 - `CLAWROUTE_EDGE_PORT`: Caddy edge port for the OpenAI-compatible router.
-  In L4 this reaches Spartan Route; in legacy tiers/addons it reaches
-  ClawRoute.
-- `SPARTAN_ROUTE_EDGE_PORT`: optional compatibility edge port for older
-  side-by-side Spartan Route tier overlays. The normal L4 stack uses
-  `CLAWROUTE_EDGE_PORT`.
-- `BROWSERLESS_DEBUG_PORT`: Caddy edge port for Browserless debugging.
+  In L3/L4 this reaches Spartan Route. L0–L2 have no router edge.
+  The historical variable name remains supported; the legacy application and
+  lower-tier routing addon are retired.
 - `HERMES_DASHBOARD_PORT`: Caddy edge port for the Hermes dashboard.
 - `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`,
   `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`, and
@@ -38,10 +35,9 @@ Public env docs describe names and behavior only. Real values and machine-specif
 - `CADDY_WS_EDGE_TOKEN`: historical name for the separate 64-lowercase-hex
   session secret shared by generated Hermes preview listeners. It authorizes
   their subsequent HTTP assets and WebSockets after one successful Basic Auth.
-- `BROWSERLESS_EDGE_TOKEN`: generated edge token added to Browserless debugger
-  WebSocket URLs by the profile-live helper. It prevents unauthenticated
-  Browserless WebSocket upgrades without relying on browser Basic Auth for the
-  WebSocket handshake.
+- `CADDY_SESSION_SERVICE_KEY`: independent 64-lowercase-hex credential for
+  Caddy-to-verifier authentication. It must differ from both signing keys and
+  is never sent to the browser or application upstream.
 - `SPARTAN_INTERNAL_SUBNET`: internal Docker subnet. The private HTTPS override
   also uses this CIDR as `Uvicorn`'s restricted `FORWARDED_ALLOW_IPS` trust
   boundary so `Caddy`'s `X-Forwarded-Proto: https` produces `Secure` Hermes
@@ -154,8 +150,9 @@ Manual profiles should set `API_SERVER_ENABLED=false`; otherwise a configured
 profile without an explicit port may be treated as enabled on the default
 gateway port during preflight.
 
-Hermes profiles are not Browserless profiles. Hermes profiles control gateway
-and agent configuration; Browserless profiles control Chromium login state.
+Hermes profiles control gateway and agent configuration. Camofox browser state
+is scoped to each Hermes profile's managed identity; retired Chromium profile
+directories are separate credential stores and are not converted automatically.
 
 ## Pocket TTS
 
@@ -175,100 +172,15 @@ The normal `pocket-tts` profile is offline and requires an already active
 cache. `pocket-tts-bootstrap` is a one-shot download profile used only by
 `sg run --rm pocket-tts-prefetch`; do not keep it in `COMPOSE_PROFILES`.
 
-## Browserless
+## Retired Browserless/CDP configuration
 
-- `BROWSERLESS_TOKEN`: internal bearer token shared between Browserless,
-  Hermes, and Caddy. Do not expose it in profile-live URLs; Caddy injects it
-  only when proxying to Browserless.
-- `BROWSERLESS_BASE_IMAGE`: pinned upstream Browserless image used as the base
-  for the local wrapper, default `ghcr.io/browserless/chromium:v2.51.0`.
-- `BROWSERLESS_IMAGE`: final local Spartan Gate Browserless wrapper image,
-  default `spartan-gate-browserless:2.51.0`. Compose builds it from
-  `BROWSERLESS_BASE_IMAGE`; the wrapper installs the Onest fonts used by
-  Chromium and capture/PDF tooling. Pin both variables in private env during
-  incidents before rebuilding or recreating Browserless.
-- `BROWSERLESS_PROFILE`: named Chromium login profile exposed as Hermes browser
-  profile `main`, default `main`. The normal/default browser path is ephemeral
-  and does not use this `userDataDir`.
-- `BROWSERLESS_CDP_BROKER_ENABLED`: run the local shared CDP broker for the
-  optional persistent `main` browser profile, default `true`. The default
-  browser path does not go through the broker. If this is disabled, Hermes will
-  only expose the persistent `main` browser profile when `BROWSER_CDP_MAIN_URL`
-  is supplied explicitly. In Browserless mode the broker is supervised by s6 and
-  shared by all Hermes profiles through the configured `BROWSERLESS_PROFILE`.
-- `BROWSERLESS_CDP_BROKER_PORT`: internal-only Hermes broker listener port,
-  default `9229`.
-- `BROWSERLESS_CDP_BROKER_TRACE`: verbose per-command CDP broker logging for
-  incident debugging, default `false`.
-- `BROWSERLESS_SESSION_TIMEOUT_MS`: Browserless maximum session lifetime,
-  default `2147483647` (about 24.8 days). This mainly matters for the optional
-  long-lived `main` profile broker; default ephemeral launches are short lived.
-- `BROWSERLESS_WS_BASE`: Browserless CDP launch endpoint used by Hermes, default
-  `ws://browserless:3000/chromium`.
-- `BROWSERLESS_HEADLESS`: Browserless launch headless mode, default `true`.
-- `BROWSERLESS_STEALTH_ENDPOINT`: whether to force Browserless launch endpoint
-  paths for ephemeral, persistent, and profile-seeding launches, default `true`.
-- `BROWSERLESS_ROUTE`: Browserless launch endpoint family, default `chromium`.
-  Use `stealth`, `chromium-stealth`, or `chrome-stealth` only after canary
-  testing against the target flow.
-- `BROWSERLESS_STEALTH_ROUTE`: legacy alias for `BROWSERLESS_ROUTE`; keep unset
-  in new configs unless you need compatibility with an older override.
-- `BROWSERLESS_LANG`: Chromium `--lang` value, default `es-ES`.
-- `BROWSERLESS_USER_AGENT`: optional diagnostic user-agent override, default
-  unset. Keep unset unless testing a specific fingerprint hypothesis.
-- `BROWSERLESS_TZ`: timezone exposed by the Browserless container, default
-  `Europe/Madrid`; keep it aligned with the account's normal login geography.
-- `BROWSERLESS_IGNORE_DEFAULT_ARGS`: advanced debugging override for Browserless
-  launch defaults, default `false`; keep disabled for normal account login flows.
-- `BROWSERLESS_DEBUG_ORIGIN`: optional externally reachable debugger origin for
-  overriding printed profile-seeding URLs. When unset, the helper prints local
-  HTTP and available Tailscale URLs, or the TLS hostname when HTTPS is configured.
-- `SPARTAN_EDGE_SCHEME`: optional `http` or `https` edge scheme. The helper also
-  infers HTTPS when private Caddy certificate variables are set. With HTTPS,
-  configure `TAILSCALE_HOST` to the hostname covered by the certificate.
-- `SPARTAN_BROWSERLESS_PROFILES_PATH`: private host path mounted to `/profiles`
-  in the Browserless container by `private/compose.local.yml`.
-- `BROWSERLESS_PROFILES_GID`: host group ID with write access to the mounted
-  Browserless profiles path, default `1000`; Browserless joins this group.
-- `BROWSERLESS_DEBUG_AUTOSTART`: whether seeded debugger URLs click run
-  automatically, default `true`.
-- `BROWSERLESS_LIVE_TIMEOUT_MS`: legacy maximum interactive seeding duration,
-  default `900000`.
-- `BROWSERLESS_LIVE_QUALITY`: JPEG stream quality for profile seeding, default
-  `90`.
-- `BROWSERLESS_LIVE_RESIZABLE`: legacy interactive-session option retained for
-  older Browserless images; the current debugger flow uses a fixed viewport.
-
-Browserless profile names are path segments under `/profiles`; use simple names
-such as `main`, `work`, or `search-a`. Spartan Gate uses two browser modes:
-`${BROWSER_CDP_URL}` is the normal ephemeral Browserless launch. Both
-that path and the optional persistent profile use `BROWSERLESS_ROUTE=chromium`
-with `stealth=true` by default. `${BROWSER_CDP_MAIN_URL}` is the optional persistent login profile. The broker is
-only for that persistent profile, because Browserless allows one live Chromium
-process per `userDataDir`. The broker can remove stale Chromium `Singleton*`
-lock files from the selected persistent profile only after Browserless reports
-no sessions and zero running jobs.
-
-For private installs, always verify the rendered Compose config with `sg config`
-or `sg-browserless-snapshot`; private paths such as
-`SPARTAN_BROWSERLESS_PROFILES_PATH` override public `runtime/` defaults.
-
-`HERMES_MEET_CDP_PROFILE` controls the Google Meet plugin browser mode. Keep the
-default `guest` to use the ephemeral Browserless launch; set it to `main`, or
-to the configured `BROWSERLESS_PROFILE` name, when that persistent Browserless
-profile is already signed in and Meet should join as that Google account. For a
-Google-account Meet bot, prefer `sg-hermes-chrome-profile google2`, then
-`sg-hermes-meet-join <meet-id-or-url>`. The join helper writes
-`HERMES_MEET_CDP_PROFILE` plus the real host Chrome WebSocket
-`HERMES_MEET_CDP_URL=ws://.../devtools/browser/...` to `private/env/local.env`.
-Do not use the plain `http://...:9222` endpoint. Use
-`sg-browserless-profile-live google https://accounts.google.com` only when you
-explicitly want the Browserless web debugger while Hermes is stopped.
-
-When `CAMOFOX_URL` is set, the Google Meet plugin uses Camofox for
-`mode=transcribe` and ignores stale `HERMES_MEET_CDP_URL` values. Realtime
-audio remains Browserless/CDP-only; Camofox mode falls realtime requests back
-to transcribe.
+Browserless source, CDP brokers/debugger/profile helpers and host-Chrome relay
+workflows are retired. `BROWSERLESS_*`, `BROWSER_CDP_*`, and `HERMES_MEET_CDP_*`
+no longer select supported workflows. Existing runtime profiles are untouched.
+Review private overrides for removed services, mounts and ports before activation.
+Camofox supports Meet caption transcription, not realtime/audio. See
+[layers.md](layers.md) for migration and the signed server-expiring edge-session contract.
+`SPARTAN_EDGE_SCHEME=http|https` remains an edge-helper setting, not a browser mode.
 
 ## Hermes dependency admission
 
@@ -311,12 +223,10 @@ profile scope rather than treating terminal environment as backend evidence.
   guards. Missing or changed deployment settings fail closed once initialized.
 - `S6_BEHAVIOUR_IF_STAGE2_FAILS`: fixed to `2`; init rejection stops Hermes.
 
-- `COMPOSE_PROFILES`: full-stack service selector. Use `browserless` when
-  `CAMOFOX_URL` is empty and `camofox` when it points to Camofox; optionally add
+- `COMPOSE_PROFILES`: full-stack service selector. Use `camofox`; optionally add
   `pocket-tts` after its cache/provider setup (order is not significant).
   Helpers reject duplicate, bootstrap, unknown, or conflicting profiles.
-- `CAMOFOX_URL`: optional Hermes Camofox endpoint. Leave empty to keep
-  Browserless as the default browser/CDP backend; set to
+- `CAMOFOX_URL`: managed Hermes browser endpoint. Set to
   `http://camofox:9377` to select Camofox for all generic Hermes browser tools
   and Google Meet transcribe mode. The protected-route access key is required.
 - `CAMOFOX_BASE_IMAGE`: pinned upstream Camofox base image, default
@@ -429,8 +339,9 @@ profile scope rather than treating terminal environment as backend evidence.
 
 Camofox uses Camofox's `PROXY_HOST=proxy` and `PROXY_PORT=8888` browser proxy
 configuration in Compose, plus the generic `HTTP_PROXY`/`HTTPS_PROXY` env vars.
-Browserless remains required for CDP, Google Meet realtime/CDP flows, Chrome
-DevTools MCP, and Browserless profile seeding. See `infra/camofox/README.md`.
+Browserless/CDP, Chrome DevTools CDP, host-Chrome relays and Browserless profile
+seeding are retired. Google Meet realtime audio is unsupported; Camofox supports
+caption transcription only. See `infra/camofox/README.md` and [layers.md](layers.md).
 
 ## Router And ClawRoute Compatibility
 

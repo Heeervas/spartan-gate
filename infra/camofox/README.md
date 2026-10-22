@@ -1,14 +1,15 @@
 # Camofox
 
-Camofox is an optional local browser backend for Hermes browser tools. Spartan
-Gate runs it as a separate Compose service named `camofox` and keeps
-Browserless as the default Chromium/CDP backend.
+Camofox is Spartan Gate's supported persistent browser backend for Hermes.
+It runs as the separate Compose service `camofox` in L1–L4; L0 has no browser
+service. Set `CAMOFOX_URL` to select the managed Camoufox/Firefox backend.
+An empty endpoint does not select another supported browser.
 
-Use Camofox for anti-detection experiments and browser-tool tasks where a
-Camoufox/Firefox-based browser is useful. Camofox also backs Google Meet
-`mode=transcribe` when `CAMOFOX_URL` is set. Keep Browserless for CDP behavior,
-Google Meet realtime audio, Browserless profile seeding, Chrome DevTools MCP,
-and the persistent Browserless `main` profile broker.
+Camofox also backs Google Meet `mode=transcribe`. Browserless, its shared CDP
+broker/debugger/profile seeding, Chrome DevTools CDP and host-Chrome relay
+workflows are retired. Google Meet realtime audio is unsupported; Camofox
+transcription is not a replacement for that capability. See the
+[supported layers and migration contract](../../docs/layers.md).
 
 In Camofox mode, `sg-hermes-meet setup` and `sg-hermes-meet-join` use
 `CAMOFOX_USER_ID` and ignore stale `HERMES_MEET_CDP_URL` values.
@@ -518,9 +519,9 @@ both images include the vault adapter. See [credential vault integration](../../
 for supported operations, channel requirements, failure behavior and the
 native screenshot confidentiality limitation.
 
-- Camofox does not replace `BROWSER_CDP_URL` or `BROWSER_CDP_MAIN_URL`.
-- Hermes `browser_cdp` functionality remains Browserless/Chromium-backed.
-- Google Meet realtime audio remains Browserless CDP or explicit host Chrome
-  CDP only; Camofox supports transcribe mode.
-- Browserless profile seeding stays Browserless-only.
+- CDP endpoints (`BROWSER_CDP_URL`, `BROWSER_CDP_MAIN_URL`) and Hermes
+  `browser_cdp` workflows are retired, not redirected to Camofox.
+- Google Meet supports caption transcription only; realtime audio is unsupported.
+- Browserless profile seeding/debugger and host-Chrome relay workflows are
+  retired. Legacy profiles remain untouched; no automatic conversion is offered.
 - Camofox is Firefox/Camoufox-based, so site behavior may differ from Chromium.

@@ -315,7 +315,7 @@ class CamofoxContractTests(unittest.TestCase):
 
     def test_doctor_requires_private_websocket_edge_tokens(self):
         source = (ROOT / "scripts" / "doctor.sh").read_text()
-        self.assertIn("BROWSERLESS_EDGE_TOKEN CADDY_CAMOFOX_EDGE_TOKEN CADDY_WS_EDGE_TOKEN", source)
+        self.assertIn("for key in CADDY_CAMOFOX_EDGE_TOKEN CADDY_WS_EDGE_TOKEN; do", source)
         self.assertIn("missing required private edge token", source)
         self.assertIn("invalid private edge token (expected 64 lowercase hex)", source)
         self.assertIn("Caddy edge tokens must differ", source)
@@ -673,27 +673,12 @@ sg-browser camofox-live main https://accounts.google.com
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "private disk helper\n")
 
-    def test_tier_set_persists_selection_and_sg_up_uses_tier_compose(self):
+    def test_retired_addon_selection_fails_before_writes(self):
         bin_dir, log = self.write_docker_stub("1000:1000")
-
-        result = self.run_sourced_with_path("sg-tier set L1 --with clawroute --hermes free; sg-tier show; sg-up", bin_dir)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        env_file = self.root / "private" / "env" / "local.env"
-        env_content = env_file.read_text(encoding="utf-8")
-        self.assertIn("SPARTAN_TIER=L1", env_content)
-        self.assertIn("SPARTAN_ADDONS=clawroute", env_content)
-        self.assertIn("SPARTAN_HERMES_MODE=free", env_content)
-        self.assertIn("COMPOSE_PROJECT_NAME=spartan-gate", env_content)
-        self.assertIn("Tier: L1", result.stdout)
-        self.assertIn("Addons: clawroute", result.stdout)
-        self.assertIn("Hermes mode: free", result.stdout)
-        calls = log.read_text(encoding="utf-8")
-        compose_file = self.root / "infra" / "compose" / "tiers" / "compose.l1.yml"
-        clawroute_file = self.root / "infra" / "compose" / "tiers" / "compose.clawroute.yml"
-        self.assertIn(f"docker compose -f {compose_file} -f {clawroute_file} --env-file {env_file} config --quiet", calls)
-        self.assertIn(f"docker compose -f {compose_file} -f {clawroute_file} --env-file {env_file} up -d --remove-orphans", calls)
-        self.assertIn(f"docker compose -f {compose_file} -f {clawroute_file} --env-file {env_file} up -d --force-recreate hermes", calls)
+        result = self.run_sourced_with_path("sg-tier set L1 --with clawroute --hermes free", bin_dir)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("retired", result.stderr)
+        self.assertFalse((self.root / "private/env/local.env").exists())
 
     def test_l4_tier_set_preserves_private_pocket_tts_profile(self):
         (self.root / "private" / "env").mkdir(parents=True)
@@ -846,12 +831,14 @@ esac
 
     def run_sourced_with_path(self, command, bin_dir, env_updates=None):
         env = os.environ.copy()
-        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        # A non-login shell must not replace fixture commands from a host rc.
+        env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+        env.pop("BASH_ENV", None)
         env.pop("TMUX", None)
         env.pop("TMUX_PANE", None)
         env.update(env_updates or {})
         return subprocess.run(
-            ["bash", "-lc", f"source scripts/aliases.sh; {command}"],
+            ["/bin/bash", "--noprofile", "--norc", "-c", f"source scripts/aliases.sh; {command}"],
             cwd=self.root,
             env=env,
             text=True,
@@ -1020,7 +1007,7 @@ esac
     def test_hermes_meet_uses_runtime_user_and_env(self):
         bin_dir, log = self.write_docker_stub("1234:5678")
 
-        result = self.run_sourced_with_path("sg_hermes_meet stop", bin_dir)
+        result = self.run_sourced_with_path("sg_env_value() { [[ \"$1\" != CAMOFOX_URL ]] || printf 'http://camofox:9377'; }; sg_hermes_meet stop", bin_dir)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = log.read_text(encoding="utf-8")

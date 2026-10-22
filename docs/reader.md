@@ -32,9 +32,10 @@ path, or query. Address checks prevent Reader from crossing into non-global
 networks; they do not prevent disclosure to a globally routable destination.
 Do not expose Reader to callers outside the trusted agent boundary.
 
-Reader is not a browser and does not execute JavaScript. Use Browserless for
-CDP-backed login flows, rendered UI, screenshots, or JavaScript. Use Camofox
-only when the optional Hermes Camofox backend is enabled for browser-tool tasks.
+Reader is not a browser and does not execute JavaScript. Use the configured
+Camofox backend for supported browser-tool login flows, rendered UI and
+screenshots. Browserless/CDP and Chrome-specific workflows are retired, not
+implicitly replaced by Camofox; see [layers.md](layers.md).
 
 ## How Hermes Should Use It
 

@@ -15,27 +15,11 @@ TIERS = COMPOSE / "tiers"
 
 MATRICES = {
     "l0": (TIERS / "compose.l0.yml",),
-    "l0-clawroute": (
-        TIERS / "compose.l0.yml",
-        TIERS / "compose.clawroute.yml",
-    ),
     "l1": (TIERS / "compose.l1.yml",),
-    "l1-clawroute": (
-        TIERS / "compose.l1.yml",
-        TIERS / "compose.clawroute.yml",
-    ),
     "l2": (TIERS / "compose.l2.yml",),
     "l3": (
         TIERS / "compose.l2.yml",
         TIERS / "compose.l3.yml",
-    ),
-    "l1-spartan-route": (
-        TIERS / "compose.l1.yml",
-        TIERS / "compose.spartan-route.yml",
-    ),
-    "l2-spartan-route": (
-        TIERS / "compose.l2.yml",
-        TIERS / "compose.spartan-route.yml",
     ),
     "l4": (COMPOSE / "compose.yml",),
     "l4-dev": (
@@ -59,12 +43,11 @@ MATRICES = {
 MIB = 1024 * 1024
 EXPECTED_RESOURCES = {
     "proxy": (64 * MIB, 128),
+    "edge-sessions": (64 * MIB, 32),
     "searxng": (256 * MIB, 128),
     "reader": (128 * MIB, 64),
     "dns": (32 * MIB, 64),
     "spartan-route": (512 * MIB, 256),
-    "clawroute": (512 * MIB, 256),
-    "browserless": (1024 * MIB, 512),
     "camofox": (2048 * MIB, 512),
     "pocket-tts": (2048 * MIB, 128),
     "pocket-tts-prefetch": (2048 * MIB, 128),
@@ -392,11 +375,50 @@ class ComposeHardeningContractTests(unittest.TestCase):
                 for forbidden in ("curl", "docker", "restart", "kill"):
                     self.assertNotIn(forbidden, health)
 
-    def test_clawroute_image_identity_matches_compose_default(self):
-        dockerfile = (
-            ROOT / "packages" / "clawroute" / "Dockerfile"
-        ).read_text(encoding="utf-8")
-        self.assertIn("USER 1000:1000", dockerfile)
+    def test_l3_route_is_internal_and_caddy_upstream_is_present(self):
+        services = self.renders['l3']['services']
+        route = services['spartan-route']
+        self.assertEqual(set(route['networks']), {'spartan_internal'})
+        self.assertFalse(route.get('ports'))
+        self.assertEqual(route['environment']['HTTPS_PROXY'], 'http://proxy:8888')
+        self.assertEqual(services['hermes']['environment']['OPENAI_BASE_URL'],
+                         'http://spartan-route:18790/v1')
+        targets = {item['target'] for item in services['caddy']['volumes']}
+        self.assertIn('/etc/caddy/route.d', targets)
+        l2_targets = {item['target'] for item in self.renders['l2']['services']['caddy']['volumes']}
+        self.assertNotIn('/etc/caddy/route.d', l2_targets)
+
+    def test_gate_layers_share_private_whitelist_at_every_consumer(self):
+        for layer in ('l2', 'l3'):
+            consumers = self.renders[layer]['services']
+            sources = []
+            for service, target in (('proxy', '/etc/tinyproxy/whitelist.private.txt'),
+                                    ('dns', '/etc/dns-whitelist.private.txt'),
+                                    ('hermes', '/etc/proxy-whitelist.private.txt')):
+                mounts = [item for item in consumers[service]['volumes'] if item['target'] == target]
+                self.assertEqual(len(mounts), 1, (layer, service))
+                self.assertTrue(mounts[0]['read_only'])
+                sources.append(mounts[0]['source'])
+            self.assertEqual(len(set(sources)), 1, layer)
+
+    def test_verifier_is_only_on_caddy_private_network(self):
+        for layer in ('l2', 'l3', 'l4'):
+            rendered = self.renders[layer]
+            verifier = rendered['services']['edge-sessions']
+            self.assertEqual(set(verifier['networks']), {'spartan_edge_auth'})
+            self.assertTrue(rendered['networks']['spartan_edge_auth']['internal'])
+            self.assertFalse(verifier.get('ports'))
+            peers = {name for name, service in rendered['services'].items()
+                     if 'spartan_edge_auth' in service.get('networks', {})}
+            self.assertEqual(peers, {'edge-sessions', 'caddy'})
+            self.assertTrue(verifier['read_only'])
+            self.assertEqual(verifier['cap_drop'], ['ALL'])
+
+    def test_retired_services_are_absent_in_supported_shapes(self):
+        for name, config in self.renders.items():
+            with self.subTest(shape=name):
+                self.assertNotIn('browserless', config['services'])
+                self.assertNotIn('clawroute', config['services'])
 
 
 if __name__ == "__main__":

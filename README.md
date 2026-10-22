@@ -4,7 +4,7 @@
 
 Spartan Gate is defensive infrastructure for private AI agents. It puts Hermes inside a controlled Docker boundary with whitelisted network egress, guarded browsing, LLM routing, DNS filtering, and authenticated edge access. The public shape is a gate: hard limits, visible control points, and private execution by default.
 
-Hermes is the primary agent/runtime. Spartan Route is the internal OpenAI-compatible LLM router in the full stack. The surrounding services enforce controlled outbound access, browser mediation, search, read-only web fetching, and authenticated local entry points. ClawRoute remains available as a legacy lower-tier addon and source package.
+Hermes is the primary agent/runtime. Spartan Route is the internal OpenAI-compatible LLM router in L3/L4. The surrounding services enforce controlled outbound access, Camofox browser mediation, search, read-only web fetching and authenticated local entry points. Browserless and the legacy ClawRoute application are retired; shared Route configuration names remain compatible.
 
 ## Status
 
@@ -64,16 +64,12 @@ Tiers let each operator choose how much of the gate to run:
 | L0 | Hermes only, free user-level Python/Node package installs |
 | L1 | Hermes + Camofox/noVNC, free user-level Python/Node package installs |
 | L2 | L1 + proxy, DNS, and Caddy edge |
-| L3 | L2 + ClawRoute internal LLM routing compatibility alias |
+| L3 | L2 + internal Spartan Route through proxy/Caddy |
 | L4 | Full Spartan Gate topology with Spartan Route |
 
 Use `L0` for the fastest portable Hermes setup and `L4` for the full current
 security gate. The installer writes secrets and paths under ignored `private/`.
-ClawRoute is also available as an addon on lower tiers:
-
-```sh
-scripts/install.sh --tier L1 --with clawroute
-```
+Legacy ClawRoute addons are retired; select L3/L4 for Spartan Route.
 
 See [docs/layers.md](docs/layers.md) for the full layer/addon contract,
 switching commands, and native SearXNG web-search behavior.
@@ -88,7 +84,7 @@ For a basic local run, only change these values if `doctor` tells you to:
 
 - `SPARTAN_INTERNAL_SUBNET` and `SPARTAN_DNS_IP`: change together when another
   Docker network already uses `172.28.0.0/24`.
-- `SPARTAN_GATE_PORT`, `CLAWROUTE_EDGE_PORT`, `BROWSERLESS_DEBUG_PORT`,
+- `SPARTAN_GATE_PORT`, `CLAWROUTE_EDGE_PORT`,
   `HERMES_DASHBOARD_PORT`: change if a host port is occupied.
 - `CADDY_AUTH_HASH`: replace before exposing beyond localhost.
 
@@ -133,7 +129,7 @@ Useful commands:
 sg                 # cd into the repo
 sg-tier list       # show L0-L4
 sg-tier set L2     # persist a tier selection
-sg-tier set L1 --with clawroute --hermes free  # optional addon shape
+sg-tier set L3 --hermes gated  # internal Spartan Route shape
 sg-tier show       # show selected tier, addons, and Hermes mode
 sg-up              # start the selected tier
 sg-tier down       # stop the selected tier
@@ -166,7 +162,7 @@ sg-urls
 
 `sg-up` uses `SPARTAN_TIER`, `SPARTAN_ADDONS`, and `SPARTAN_HERMES_MODE` from
 `private/env/local.env`, defaulting to L4 for older manual setups. Use
-`sg-tier set L0|L1|L2|L3|L4 [--with clawroute] [--hermes free|gated|full]` to
+`sg-tier set L0|L1|L2|L3|L4 [--hermes free|gated|full]` to
 change it. The Compose project name remains `spartan-gate`, so changing tiers
 does not intentionally move data paths or create a separate stack name. Use
 normal Compose passthrough commands for inspection and low-level operations:
@@ -181,32 +177,17 @@ sg down
 The public Compose stores Hermes data under `runtime/hermes/` inside this repo.
 That path is ignored by Git and does not reuse old stack data.
 
-Browserless has two browser modes in Spartan Gate. The default Hermes browser is
-an ephemeral Browserless launch without `--user-data-dir`, matching the simpler
-pre-profile behavior and allowing multiple browsers. The optional browser
-profile `main` uses a persistent Chromium profile under
-`runtime/browserless/profiles/` for cookies, localStorage, IndexedDB, cache, and
-login state. Private installs can override that host path with
-`SPARTAN_BROWSERLESS_PROFILES_PATH`; use `sg config` or
-`sg-browserless-snapshot` to confirm the rendered path. Both modes use
-`BROWSERLESS_ROUTE=chromium` with `stealth=true` by default.
-`BROWSERLESS_PROFILE` names that persistent login directory and
-defaults to `main`.
+Camofox is the supported persistent browser. Set
+`CAMOFOX_URL=http://camofox:9377` and `COMPOSE_PROFILES=camofox` in the full
+stack. Its isolated state lives under `runtime/camofox/` or
+`SPARTAN_CAMOFOX_DATA_PATH`. See `infra/camofox/README.md`.
 
-The persistent `main` browser is served through an internal shared CDP broker so
-Hermes clients do not open the same `--user-data-dir` twice. The default
-ephemeral browser does not use the broker. The Browserless session timeout
-defaults to its long-lived safe value (`BROWSERLESS_SESSION_TIMEOUT_MS=2147483647`,
-about 24.8 days), mainly for broker-owned persistent sessions.
-
-Camofox is available as an alternative browser service for Hermes browser
-tools. It is selected by setting `CAMOFOX_URL=http://camofox:9377`; leave
-`CAMOFOX_URL` empty for Browserless mode. `COMPOSE_PROFILES` should match the
-selected mode (`browserless` or `camofox`) when present. Browserless remains
-the default CDP backend for Google Meet, Chrome DevTools MCP, Browserless
-profile seeding, and the persistent `main` profile broker. Camofox state is
-stored separately under `runtime/camofox/` or `SPARTAN_CAMOFOX_DATA_PATH`. See
-`infra/camofox/README.md`.
+Browserless/CDP source and helpers are retired, including debugger/profile
+seeding, the shared CDP broker, Chrome DevTools and host-Chrome relays. Meet
+retains Camofox caption transcription, not realtime/audio. Existing Browserless
+profiles and legacy router databases are untouched. Review private overrides
+before activation; [layers.md](docs/layers.md) describes the migration and
+preserved `config/clawroute`, `CLAWROUTE_*` and `clawroute/auto` contracts.
 
 For private/local machines, prefer changing `SPARTAN_HERMES_DATA_PATH` in `private/env/local.env` and mounting it from `private/compose.local.yml` instead of editing the public Compose file.
 
@@ -218,56 +199,6 @@ services:
     volumes:
       - ${SPARTAN_HERMES_DATA_PATH}:/opt/data
 ```
-
-Private installs should also set `SPARTAN_BROWSERLESS_PROFILES_PATH` and let
-`private/compose.local.yml` mount it to `/profiles` in the Browserless
-container. Treat that directory like credentials, because it can contain live
-account cookies. Set `BROWSERLESS_PROFILES_GID` to a host group that can write
-that directory (normally your user's primary GID, commonly `1000`).
-
-### Browserless Profiles
-
-To seed the persistent login profile, stop Hermes if the `main` browser profile
-is in use, then open the Browserless debugger with that profile preselected:
-
-```sh
-source scripts/aliases.sh
-sg stop hermes
-sg-browserless-profile-live main https://example.com
-```
-
-The command refuses to open the active persistent profile while Hermes is
-running, because Chromium cannot open the same profile directory twice. The
-debugger flow uses the selected `BROWSERLESS_ROUTE` and `stealth=true` while seeding the profile; for `accounts.google.com` it does not auto-click Run, so start the
-debugger session yourself and complete the login manually. It prints
-the usable `Debugger URL` link or links for the configured edge. For a
-TLS/Tailscale edge, use the HTTPS hostname covered by the certificate rather
-than a raw Tailscale IP. Open the link in your normal browser, pass Caddy Basic
-Auth, and let the debugger start the session. Log in, then close the debugger
-tab when done; the profile state is written under the Browserless profiles path.
-
-Start Hermes after the profile is seeded:
-
-```sh
-sg up -d hermes
-```
-
-To switch the persistent login profile behind browser profile `main`, change
-`BROWSERLESS_PROFILE` in `.env` or `private/env/local.env`:
-
-```env
-BROWSERLESS_PROFILE=work
-```
-
-Then recreate Hermes so it receives the new browser endpoint:
-
-```sh
-sg up -d hermes
-```
-
-Do not seed and use the same Browserless profile concurrently. Chromium expects
-one live browser per `--user-data-dir`, so close the debugger session or stop
-Hermes before opening the same profile elsewhere.
 
 ### Camofox Profiles
 
@@ -366,9 +297,8 @@ input are:
   overlapping Docker network.
 - `SPARTAN_*_PORT`, if your old stack still owns the default ports.
 - `SPARTAN_HERMES_DATA_PATH`, `SPARTAN_ROUTE_DATA_PATH`,
-  `SPARTAN_CLAWROUTE_DATA_PATH`,
-  `SPARTAN_GOGCLI_DATA_PATH`, `SPARTAN_BROWSERLESS_PROFILES_PATH`.
-- `HERMES_*`, `CLAWROUTE_TOKEN`, `BROWSERLESS_TOKEN`, provider keys, chat bot
+  `SPARTAN_GOGCLI_DATA_PATH`, `SPARTAN_CAMOFOX_DATA_PATH`.
+- `HERMES_*`, `CLAWROUTE_TOKEN`, provider keys, chat bot
   tokens and profile variables, if you intend to start Hermes.
 
 When selecting Camofox mode, also configure and create:
@@ -430,7 +360,7 @@ Private HTTPS is supported by overriding Caddy from `private/`: copy `private.ex
 ## Common Edge Cases
 
 - `doctor: docker subnet overlaps existing network: ...` means another Docker stack already uses an overlapping subnet. Edit `.env` or `private/env/local.env` and change both `SPARTAN_INTERNAL_SUBNET` and `SPARTAN_DNS_IP`.
-- `doctor: host port already in use before compose up: ...` means a local published port is occupied by another process or stack. Change `SPARTAN_GATE_PORT`, `CLAWROUTE_EDGE_PORT`, `BROWSERLESS_DEBUG_PORT`, or `HERMES_DASHBOARD_PORT` in `.env` or `private/env/local.env`, then rerun `scripts/doctor.sh`.
+- `doctor: host port already in use before compose up: ...` means a local published port is occupied by another process or stack. Change `SPARTAN_GATE_PORT`, `CLAWROUTE_EDGE_PORT`, `CAMOFOX_NOVNC_PORT`, or `HERMES_DASHBOARD_PORT` in `.env` or `private/env/local.env`, then rerun `scripts/doctor.sh`.
 - `sg-up` starts the selected tier, including Hermes. `sg up -d` remains raw Compose passthrough.
 - `spartan-route` and the selected browser service can stay in `starting` for roughly 30-60 seconds after startup. That is normal warm-up time. Check `sg ps` or `sg-ps` again before treating it as a failure.
 - Reusing old Hermes, Spartan Route, or ClawRoute data paths is not a normal first install. Keep the public `runtime/` defaults or point the private override at fresh empty directories unless you are intentionally migrating.
@@ -454,7 +384,6 @@ Spartan Gate is a monorepo:
 
 - `apps/hermes-agent`: Hermes image customizations, runtime bootstrap, and patch scripts.
 - `infra/spartan-route`: current Spartan Route router source, tests, dashboard, and Docker image.
-- `packages/clawroute`: legacy ClawRoute router source, tests, dashboard, and Docker image.
 - `infra/compose`: public Compose entry points.
 - `infra/outbound-proxy`: Tinyproxy whitelist enforcement and public domain baseline.
 - `infra/dns`: dnsmasq whitelist relay.
@@ -462,23 +391,22 @@ Spartan Gate is a monorepo:
 - `infra/caddy`: authenticated edge proxy.
 - `infra/caddy/local.d`: optional local Caddy listeners, normally overridden from `private/caddy.local.d`.
 - `infra/camofox`: optional Camofox browser backend notes.
-- `infra/browserless`: Browserless integration notes and future policy.
 - `config/clawroute` and `config/searxng`: public runtime configuration.
 
-`infra/spartan-route/` is the current L4 router package. `packages/clawroute/`
-is the legacy router package. `config/clawroute/` is the publishable runtime
-routing configuration mounted into Spartan Route and legacy ClawRoute. Keep
+`infra/spartan-route/` is the current L3/L4 router package. The legacy
+TypeScript application has been removed. `config/clawroute/` is the publishable runtime
+routing configuration mounted into Spartan Route. Keep
 secrets out of those files and put them in `.env` or `private/env/local.env`.
 
 Hermes is only attached to the internal Docker network. Remote LLM calls go
 through Spartan Route, which routes through the outbound proxy. Browser traffic goes
-through Browserless and the same proxy/DNS controls. Reader is a direct GET-only
+through Camofox and the same proxy/DNS controls. Reader is a direct GET-only
 public text fetcher with SSRF protection and untrusted-content delimiters. Caddy
 is the authenticated edge.
 
 ## Public Safety Rules
 
-The public Compose files do not include personal host paths, private credentials, certificate material, Codex profile mounts, or LAN-wide port binds. Runtime data defaults to `runtime/`, which is ignored by Git. Hermes is the bundled default agent. Alternate agent integrations belong in private Compose overrides that reuse Spartan Gate's Spartan Route, Browserless, reader, SearXNG, proxy, and internal network contracts.
+The public Compose files do not include personal host paths, private credentials, certificate material, Codex profile mounts, or LAN-wide port binds. Runtime data defaults to `runtime/`, which is ignored by Git. Hermes is the bundled default agent. Alternate agent integrations belong in private Compose overrides that reuse Spartan Gate's Spartan Route, Camofox, Reader, SearXNG, proxy and internal network contracts.
 
 The public docs should remain generic and shareable. Machine-specific cutover notes, real port choices, token ownership, profile names, Tailscale hostnames, and migration notes belong in `private/docs/`.
 
@@ -486,12 +414,16 @@ Run the local checks before publishing:
 
 ```sh
 scripts/doctor.sh
-python3 -m py_compile infra/spartan-route/spartan_route/*.py infra/spartan-route/test_*.py
-npm --prefix packages/clawroute ci
-npm --prefix packages/clawroute test
-npm --prefix packages/clawroute run build
+npm ci --ignore-scripts
+npm run test:route
+npm run test:scripts
+npm run test:reader
 docker compose -f infra/compose/compose.yml config
 ```
+
+See [Development](docs/development.md) for isolated dependencies and the complete
+portable/native acceptance matrix. Fixture success with upstream-source skips is
+not native integration acceptance.
 
 Useful helper scripts:
 

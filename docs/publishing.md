@@ -30,14 +30,16 @@ ignored so each operator can maintain their own private agent environment.
 
 ```sh
 scripts/doctor.sh
-npm --prefix packages/clawroute ci
-npm --prefix packages/clawroute test
-npm --prefix packages/clawroute run build
+npm ci --ignore-scripts
+npm run test:route
+npm run test:hermes
+npm run test:pi
+npm run test:camofox
+npm run test:scripts
+npm run test:reader
 python3 -m py_compile infra/spartan-route/spartan_route/*.py infra/spartan-route/test_*.py
 docker compose -f infra/compose/tiers/compose.l0.yml config --quiet
-docker compose -f infra/compose/tiers/compose.l0.yml -f infra/compose/tiers/compose.clawroute.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l1.yml config --quiet
-docker compose -f infra/compose/tiers/compose.l1.yml -f infra/compose/tiers/compose.clawroute.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l2.yml config --quiet
 docker compose -f infra/compose/tiers/compose.l2.yml -f infra/compose/tiers/compose.l3.yml config --quiet
 docker compose -f infra/compose/compose.yml --env-file .env.example config
@@ -53,8 +55,7 @@ Expected ignored entries may include:
 !! .github/hooks/
 !! .github/prompts/
 !! .github/skills/
-!! packages/clawroute/dist/
-!! packages/clawroute/node_modules/
+!! node_modules/
 !! private/
 ```
 
@@ -78,7 +79,7 @@ After publishing, a new user should be able to:
 1. Clone the repo.
 2. Run `scripts/doctor.sh`.
 3. Run `scripts/install.sh --tier L0` for a portable Hermes baseline.
-4. Move upward through L1-L4 with `sg-tier set` when they need more boundary services; L4 uses Spartan Route, and lower tiers can add legacy ClawRoute with `--with clawroute`.
+4. Move upward through L1-L4 with `sg-tier set` when they need more boundary services; L3/L4 use Spartan Route. Legacy router addons are retired.
 5. Run `docker compose ... config` for the selected public topology.
 6. Replace or extend the bundled agent privately when they need a different runtime.
 
@@ -91,8 +92,9 @@ Before treating the repo as publishable:
 - Confirm `AGENTS.md`, `.agents/`, `.github/agents/`, `.github/hooks/`,
   `.github/prompts/`, `.github/skills/`, `private/`, `runtime/`, `.env`, build
   output, and browser profile data are ignored and not staged.
-- Run the layer Compose matrix from the pre-push checks, including L0/L1 with
-  the ClawRoute addon.
+- Run the supported layer Compose matrix and mandatory native-source gates
+  described in [development.md](development.md). Missing native inputs block
+  acceptance; portable fixture skips do not establish release readiness.
 - Review public docs for personal paths, account names, private domains, real
   hashes, certificates, OAuth files, Codex auth paths, and LAN-wide binds.
 - Scan Git history for secret-like strings and personal paths. If a real secret
@@ -111,9 +113,8 @@ Keep these caveats visible in announcements and release notes:
 
 - Public Compose edge bindings are localhost-first. Tailscale or other private
   exposure belongs in ignored private overrides.
-- Browserless debugger WebSockets use `BROWSERLESS_EDGE_TOKEN` instead of
-  browser Basic Auth so Safari/Firefox login flows do not loop during WebSocket
-  upgrades.
+- Browserless/CDP is retired. Do not advertise its debugger or realtime Meet
+  capabilities; existing private profiles remain untouched.
 - Hermes dashboard `/api/*` and `/ws/*` remain same-origin pass-through routes
   behind the private edge so the dashboard can call its own backend.
 - Reader reduces SSRF risk with request validation and checked connection

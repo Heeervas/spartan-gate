@@ -56,8 +56,6 @@ services:
       CODEX_TRANSIENT_5XX_COOLDOWN_MS: ${CODEX_TRANSIENT_5XX_COOLDOWN_MS:-120000}
       NO_PROXY: localhost,127.0.0.1,::1,hermes,spartan-route,camofox
       no_proxy: localhost,127.0.0.1,::1,hermes,spartan-route,camofox
-    ports:
-      - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_ROUTE_EDGE_PORT:-18791}:18790"
     volumes:
       - ${SPARTAN_ROUTE_DATA_PATH:-../../../runtime/spartan-route}:/app/data
       - ../../../config/clawroute:/app/config:ro

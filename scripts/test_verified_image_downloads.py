@@ -27,7 +27,6 @@ class VerifiedImageDownloadTests(unittest.TestCase):
     def test_security_boundary_dockerfiles_reject_mutable_and_streamed_extracts(self):
         dockerfiles = [
             ROOT / "apps" / "hermes-agent" / "Dockerfile",
-            ROOT / "packages" / "clawroute" / "Dockerfile",
             *sorted((ROOT / "infra").glob("*/Dockerfile")),
         ]
         for dockerfile in dockerfiles:

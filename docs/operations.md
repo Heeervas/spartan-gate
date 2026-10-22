@@ -23,7 +23,7 @@ python3 scripts/private-permissions.py fix --private-dir private --env-file priv
 
 `sg-up` starts the selected tier from `SPARTAN_TIER`, `SPARTAN_ADDONS`, and
 `SPARTAN_HERMES_MODE`. Use `sg-tier list`, `sg-tier show`, and
-`sg-tier set L0|L1|L2|L3|L4 [--with clawroute] [--hermes free|gated|full]` to
+`sg-tier set L0|L1|L2|L3|L4 [--hermes free|gated|full]` to
 change it. L0 and L1 keep Hermes unprivileged but allow user-level Python/Node
 package installs under `/opt/data` or the workspace. L4 starts proxy, DNS,
 SearXNG, reader, Spartan Route, Caddy, Hermes, and the selected browser service.
@@ -36,7 +36,7 @@ it as a problem only if the state stays `starting` for much longer or flips to
 
 ## Agent Runtime
 
-Hermes is the default public agent. If you want to use another agent, keep that integration in private Compose files and point it at Spartan Gate's internal Spartan Route, Browserless, reader, SearXNG, proxy, and DNS services.
+Hermes is the default public agent. If you want to use another agent, keep that integration in private Compose files and point it at Spartan Gate's internal Spartan Route, Camofox, Reader, SearXNG, proxy and DNS services.
 
 Hermes includes native Pango/Cairo, ffmpeg, and a curated TeX subset for
 creative tools such as Manim, but Python and Node packages should still be
@@ -359,8 +359,8 @@ sg up -d
 
 Hermes points at `http://spartan-route:18790/v1`. Spartan Route is exposed
 through Caddy on `CLAWROUTE_EDGE_PORT`, default `18790`, so existing local
-router URLs continue to work while the backend changes. `sg route ...` remains
-a compatibility alias for older commands. The Codex dashboard includes
+router URLs continue to work while the backend changes. Use main-stack `sg`
+commands rather than a separate legacy router command. The Codex dashboard includes
 reset-credit telemetry.
 
 Spartan Route releases from before the non-root Compose contract may have
@@ -382,8 +382,8 @@ repairs only `spartan-route.db`, `spartan-route.db-wal`,
 traverse other state. The fixed SQLite family is inventoried again after backup
 verification so a WAL or shared-memory sidecar materialized by SQLite receives
 the configured owner and private mode too. Fresh installer paths are prepared
-with the configured owner and private modes. Apply the same ownership principle
-to a pre-existing legacy ClawRoute data root before enabling its non-root addon.
+with the configured owner and private modes. The legacy router addon is retired;
+its old data roots are not migrated or activated by these helpers.
 
 Codex OAuth profiles mounted into Spartan Route are bootstrap-only and stay
 read-only. Refresh-token rotation is stored under the existing private data
@@ -413,7 +413,7 @@ Do not use private commands against old stack data paths unless you are intentio
 ```sh
 sg-logs-hermes
 sg-logs-spartan-route
-sg-logs proxy dns browserless
+sg-logs proxy dns camofox
 ```
 
 Equivalent raw Compose commands:
@@ -421,7 +421,7 @@ Equivalent raw Compose commands:
 ```sh
 docker compose -f infra/compose/compose.yml logs -f hermes
 docker compose -f infra/compose/compose.yml logs -f spartan-route
-docker compose -f infra/compose/compose.yml logs -f proxy dns browserless
+docker compose -f infra/compose/compose.yml logs -f proxy dns camofox
 ```
 
 ## Helper Aliases
@@ -443,7 +443,7 @@ flat aliases remain available:
 sg-up            # selected tier, including Hermes
 sg-tier list
 sg-tier set L2
-sg-tier set L1 --with clawroute --hermes free  # optional addon shape
+sg-tier set L3 --hermes gated  # internal Spartan Route shape
 sg-tier show
 sg-browser-mode-apply
 sg up -d hermes  # explicit Hermes recreate/start
@@ -456,8 +456,6 @@ sg-restart-caddy
 sg-rebuild-hermes
 sg-whitelist-domain example.com
 sg-reader-test https://example.com
-sg-browserless-snapshot
-sg-browserless-profile-live main https://example.com
 sg-camofox-profile-live main https://accounts.google.com
 sg-camofox-profile-use main
 sg-add-port --localhost 8787
@@ -656,66 +654,20 @@ Machine-specific disk shortcuts belong in ignored `private/aliases.local.sh`.
 That file is sourced automatically when present, so personal paths and host
 cleanup commands do not need to be committed.
 
-## Google Meet via Real Chrome
+## Google Meet transcription and retired browser workflows
 
-For Google Meet, prefer a real host Chrome profile over Browserless when Google
-bot-detection blocks the Browserless profile. Open a named host Chrome profile
-and keep it open while Hermes uses it:
+Google Meet supports Camofox caption transcription with `CAMOFOX_URL` configured:
 
 ```sh
-sg-hermes-chrome-profile google2 https://accounts.google.com
+sg-hermes-meet-join abc-defg-hij 60m
 ```
 
-Then, from another terminal, join by Meet ID or full URL:
-
-```sh
-sg-hermes-meet-join uif-uhgp-fxo
-sg-hermes-meet-join https://meet.google.com/uif-uhgp-fxo 60m
-```
-
-The join helper writes the current Chrome WebSocket to `private/env/local.env`,
-recreates Hermes, runs the Meet preflight, and starts the Google Meet plugin.
-Do not use the plain `http://...:9222` endpoint for `HERMES_MEET_CDP_URL`.
-
-This keeps Meet on the same human Chrome/IP/device trust surface and bypasses
-Browserless for the Meet plugin only.
-
-If `CAMOFOX_URL` is set, `sg-hermes-meet-join` uses the selected Camofox
-profile for `mode=transcribe` and ignores stale Meet CDP values. Realtime mode
-is unavailable in Camofox mode; switch browser modes before using realtime.
-
-## Browserless Profiles
-
-Seed Browserless profiles manually before asking Hermes to use accounts that
-require login:
-
-```sh
-sg stop hermes
-sg-browserless-profile-live main https://example.com
-sg up -d hermes
-```
-
-For a Google Meet account profile, prefer the real Chrome flow above. If you
-need the Browserless web debugger instead, use
-`sg-browserless-profile-live google https://accounts.google.com` while Hermes is stopped.
-
-The command fails before opening the debugger if Hermes is using the same
-`BROWSERLESS_PROFILE`; one live Chromium process can own a profile directory.
-During normal Hermes operation, its local CDP broker owns that single
-Browserless process and shares it among Hermes' internal browser clients; it
-does not make the active profile available for a separate debugger session.
-Open the printed debugger URL in your browser and pass Caddy Basic Auth. The
-helper asks Browserless to use the selected `BROWSERLESS_ROUTE` with
-`stealth=true` while writing the profile. The helper also appends the generated
-`BROWSERLESS_EDGE_TOKEN` to debugger WebSocket URLs so Caddy can authorize the
-upgrade without depending on browser Basic Auth behavior during the WebSocket
-handshake.
-For `accounts.google.com`, click Run manually and complete the login yourself.
-A TLS edge prints the certificate hostname, not a raw Tailscale IP. Complete
-the login, then close the debugger tab before starting Hermes. If login state is
-missing, confirm Hermes and the helper use the same profile, no second browser
-is holding its directory, and `/profiles` is writable through
-`BROWSERLESS_PROFILES_GID`.
+Realtime/audio, Browserless profile seeding/debugger, Chrome DevTools CDP and
+host-Chrome relay workflows are retired, not automatically replaced. Stale CDP
+values must not restore them. Legacy browser profiles are untouched; do not
+inspect or remove them as part of a source update. Review private overrides
+before activation; see [layers.md](layers.md) for migration and preserved Route
+configuration names.
 
 ## Hermes log remediation
 
@@ -962,8 +914,13 @@ Camofox browser tools. Camofox noVNC is exposed through the private Caddy edge
 on `CAMOFOX_NOVNC_PORT`; the helper starts Caddy, verifies internal noVNC and
 checks that the public listener responds before printing the URL.
 Safari may omit Basic Auth on WebSockets and on noVNC module requests. Caddy
-therefore exchanges one successful Basic Auth for a one-hour, host-only,
-HttpOnly session covering later HTTP assets and the WebSocket. Camofox uses the
+therefore exchanges successful Basic Auth for a host-only, HttpOnly signed
+cookie covering later HTTP assets and the WebSocket. The internal verifier checks
+its HMAC, audience and age on every request/upgrade; expiry is one hour after
+minting without sliding refresh. Legacy static cookies require fresh Basic Auth.
+Provision the distinct 64-hex `CADDY_SESSION_SERVICE_KEY` alongside both audience
+keys. Review/regenerate existing private listeners and HTTPS Caddyfiles before
+activation; old static listeners do not acquire server TTL automatically. Camofox uses the
 dedicated `CADDY_CAMOFOX_EDGE_TOKEN`; missing or invalid WebSocket sessions fail
 closed without reopening Safari's authentication dialog. Edge cookies and the
 Basic `Authorization` header are removed before requests reach Camofox.
@@ -1133,10 +1090,10 @@ sg-reader-test https://example.com
 If startup fails before containers are healthy, the most common causes are now caught by `scripts/doctor.sh`:
 
 - Overlapping Docker subnet. Fix `SPARTAN_INTERNAL_SUBNET` and `SPARTAN_DNS_IP` in `.env` or `private/env/local.env`.
-- Occupied local edge ports. Fix `SPARTAN_GATE_PORT`, `CLAWROUTE_EDGE_PORT`, `BROWSERLESS_DEBUG_PORT`, or `HERMES_DASHBOARD_PORT`.
+- Occupied local edge ports. Fix `SPARTAN_GATE_PORT`, `CLAWROUTE_EDGE_PORT`, `CAMOFOX_NOVNC_PORT`, or `HERMES_DASHBOARD_PORT`.
 - Private env placeholders. Replace `change-me`, `100.x.y.z`, and `/absolute/path` values before starting.
 - Missing private data directories. Create `SPARTAN_HERMES_DATA_PATH`, `SPARTAN_ROUTE_DATA_PATH`, and `SPARTAN_GOGCLI_DATA_PATH`; when Camofox is selected, also create `SPARTAN_CAMOFOX_DATA_PATH` and `SPARTAN_CAMOFOX_ADDONS_PATH`.
-- Slow first warm-up. Check `sg-logs spartan-route browserless camofox` before restarting everything.
+- Slow first warm-up. Check `sg-logs spartan-route camofox` before restarting everything.
 
 ## Whitelist Changes
 
@@ -1202,13 +1159,22 @@ sg-urls
 ```
 
 Existing private listeners created before the full Safari session contract can
-be migrated transactionally. The helper preflights all files, keeps `.bak`
-copies, validates the installed candidate as a set, rolls back on failure, and
-recreates only Caddy:
+be migrated to signed sessions transactionally. The helper preflights regular
+non-symlink files, generates an independent `CADDY_SESSION_SERVICE_KEY` when
+needed, and validates unpublished candidates with native Caddy before writing.
+It keeps `.bak` copies and rolls back publication failures. Set `CADDY_BIN` to
+a compatible installed binary; local TLS files/imports must be available for
+native validation. It never starts or recreates services:
 
 ```sh
 scripts/migrate_caddy_safari_session.py
 ```
+
+This is an explicitly authorized offline operator migration, not a source test.
+Before separately authorized activation, migrate private Compose overrides to the
+reviewed `edge-sessions` service, isolated network and all three independent
+keys. Old static cookies must reauthenticate. Review the saved diff and rollback
+copies before activation; filesystem rollback does not roll back Docker state.
 
 ## Backup
 

@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
+// Production deadline timers intentionally unref. A bounded per-test handle
+// models the live server without changing production liveness semantics.
+let keepalive;
+beforeEach(() => { keepalive = setTimeout(() => {}, 10_000); });
+afterEach(() => { clearTimeout(keepalive); });
 
 import {
   createSpartanDeepHealthController,

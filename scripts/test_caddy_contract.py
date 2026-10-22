@@ -104,25 +104,17 @@ class CaddyContractTests(unittest.TestCase):
             HTTPS_EXAMPLE.read_text(encoding="utf-8")
         )
 
-    def assert_browserless_contract(self, source: str) -> None:
-        browserless = block(source, ":3005")
-        self.assertIn("BROWSERLESS_EDGE_TOKEN", browserless)
-        self.assertIn("sgEdgeToken", browserless)
-        self.assertIn("header Connection *Upgrade*", browserless)
-        self.assertIn("respond \"Unauthorized\" 401", browserless)
-        self.assertIn("basic_auth", browserless)
-        self.assertIn('header_up Authorization "Bearer {$BROWSERLESS_TOKEN}"', browserless)
-        self.assertNotIn("basic_auth @not_websocket", browserless)
-
     def assert_camofox_session_contract(self, source: str, secure: bool) -> None:
         camofox = block(source, ":26080")
         self.assertIn("@camofox_session_authorized", camofox)
         self.assertIn("@camofox_websocket", camofox)
-        self.assertIn("{cookie.spartan_edge_camofox}", camofox)
-        self.assertIn("{$CADDY_CAMOFOX_EDGE_TOKEN}", camofox)
-        self.assertIn("spartan_edge_camofox={$CADDY_CAMOFOX_EDGE_TOKEN}", camofox)
+        self.assertIn('uri /verify/camofox', camofox)
+        self.assertIn('header X-Edge-Valid yes', camofox)
+        self.assertIn('uri /mint/camofox', camofox)
+        self.assertIn('header_up X-Edge-Service-Key {$CADDY_SESSION_SERVICE_KEY}', camofox)
+        self.assertIn('request_header -X-Edge-Valid', camofox)
         self.assertIn("spartan_ws_edge=; Path=/; Max-Age=0", camofox)
-        self.assertIn("Max-Age=3600; HttpOnly; SameSite=Strict", camofox)
+        self.assertIn('{http.request.header.X-Edge-Cookie}', camofox)
         self.assertIn("@camofox_only_edge_cookies", camofox)
         self.assertIn("spartan_edge_[A-Za-z0-9_]+", camofox)
         self.assertEqual(camofox.count("request_header Cookie"), 4)
@@ -132,13 +124,13 @@ class CaddyContractTests(unittest.TestCase):
         self.assertIn("basic_auth", camofox)
         self.assertGreaterEqual(camofox.count('Cache-Control "no-store"'), 2)
         self.assertEqual("; Secure" in camofox, secure)
-        self.assertLess(camofox.index("basic_auth"), camofox.rindex("spartan_edge_camofox="))
+        self.assertLess(camofox.index("basic_auth"), camofox.index('uri /mint/camofox'))
 
-    def test_public_browserless_websocket_uses_edge_token_not_basic_auth_bypass(self):
-        self.assert_browserless_contract(PUBLIC_CADDY.read_text(encoding="utf-8"))
-
-    def test_https_example_matches_browserless_edge_contract(self):
-        self.assert_browserless_contract(HTTPS_EXAMPLE.read_text(encoding="utf-8"))
+    def test_retired_debugger_is_not_exposed(self):
+        for path in (PUBLIC_CADDY, HTTPS_EXAMPLE):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn(':3005 {', source)
+            self.assertNotIn('http://browserless:', source)
 
     def test_public_camofox_uses_full_http_and_websocket_session(self):
         self.assert_camofox_session_contract(PUBLIC_CADDY.read_text(encoding="utf-8"), secure=False)
@@ -147,10 +139,10 @@ class CaddyContractTests(unittest.TestCase):
         source = ADD_PORT.read_text(encoding="utf-8")
         self.assertFalse(any(line.startswith("\\t") for line in source.splitlines()))
         self.assertIn("@spartan_app_session_authorized", source)
-        self.assertIn("{cookie.spartan_edge_apps}", source)
-        self.assertIn("{\\$CADDY_WS_EDGE_TOKEN}", source)
-        self.assertIn("spartan_edge_apps={\\$CADDY_WS_EDGE_TOKEN}", source)
-        self.assertIn("Max-Age=3600; HttpOnly; SameSite=Strict", source)
+        self.assertIn('uri /verify/apps', source)
+        self.assertIn('uri /mint/apps', source)
+        self.assertIn('header X-Edge-Valid yes', source)
+        self.assertIn('{http.request.header.X-Edge-Cookie}', source)
         self.assertIn("spartan_ws_edge=; Path=/; Max-Age=0", source)
         self.assertIn('respond "Unauthorized" 401', source)
         self.assertIn("HttpOnly; SameSite=Strict${cookie_secure}", source)
@@ -159,7 +151,7 @@ class CaddyContractTests(unittest.TestCase):
         self.assertIn('cookie_secure="; Secure"', source)
         self.assertIn("uses legacy or incomplete Safari session authentication", source)
         self.assertIn("remove only the %s block", source)
-        self.assertLess(source.index("\t\t\tbasic_auth"), source.index("spartan_edge_apps="))
+        self.assertLess(source.index("\t\t\tbasic_auth"), source.index('uri /mint/apps'))
 
     def test_https_camofox_session_uses_secure_cookie_token(self):
         self.assert_camofox_session_contract(HTTPS_EXAMPLE.read_text(encoding="utf-8"), secure=True)
@@ -192,6 +184,9 @@ class CaddyContractTests(unittest.TestCase):
         for path in (PUBLIC_CADDY, HTTPS_EXAMPLE):
             with self.subTest(path=path):
                 source = path.read_text(encoding="utf-8")
+                if path == PUBLIC_CADDY:
+                    self.assertIn('import /etc/caddy/route.d/*.caddy', source)
+                    source = (ROOT / 'infra/caddy/route.d/route.caddy').read_text()
                 router = block(source, ":18790")
 
                 self.assertIn("reverse_proxy http://spartan-route:18790", router)

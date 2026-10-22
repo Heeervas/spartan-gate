@@ -11,11 +11,6 @@ services:
       # private/local: same domain extension used by the DNS relay.
       - ../../private/outbound-proxy/whitelist.private.txt:/etc/dns-whitelist.private.txt:ro
 
-  browserless:
-    volumes:
-      # private/local: persistent Chromium profiles outside the repo.
-      - ${SPARTAN_BROWSERLESS_PROFILES_PATH:-../../runtime/browserless/profiles}:/profiles:Z
-
   camofox:
     volumes:
       # private/local: Camofox storageState, cookies, and traces outside the repo.
@@ -28,7 +23,6 @@ services:
       # private/local: expose edge over Tailscale without LAN discovery.
       - "${TAILSCALE_IP}:${SPARTAN_GATE_PORT:-18789}:18789"
       - "${TAILSCALE_IP}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
-      - "${TAILSCALE_IP}:${BROWSERLESS_DEBUG_PORT:-3005}:3005"
       - "${TAILSCALE_IP}:${HERMES_DASHBOARD_PORT:-9119}:9119"
       - "${TAILSCALE_IP}:${CAMOFOX_NOVNC_PORT:-26080}:26080"
       # private/local extra Hermes app ports:
@@ -102,8 +96,6 @@ services:
       - ../../private/docs/hermes-shared:/opt/data/brain/runtime_docs/local/private:ro
       # private/local: optional GogCLI credentials.
       - ${SPARTAN_GOGCLI_DATA_PATH:-../../runtime/gogcli}:/opt/data/.config/gogcli:Z
-      # private/local: same persistent Chromium profiles mounted by Browserless.
-      - ${SPARTAN_BROWSERLESS_PROFILES_PATH:-../../runtime/browserless/profiles}:/profiles:Z
       # private/local: agent can inspect local outbound whitelist additions.
       - ../../private/outbound-proxy/whitelist.private.txt:/etc/proxy-whitelist.private.txt:ro
 

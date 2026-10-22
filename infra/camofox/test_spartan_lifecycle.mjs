@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
+// Keep unref production deadlines observable in this standalone test process.
+let keepalive;
+beforeEach(() => { keepalive = setTimeout(() => {}, 10_000); });
+afterEach(() => { clearTimeout(keepalive); });
 
 import { createSpartanBrowserLifecycleCoordinator } from './spartan-lifecycle.mjs';
 

@@ -269,7 +269,6 @@ write_profile_env() {
         printf 'CUSTOM_1_API_KEY=${CUSTOM_1_API_KEY}\n'
         if [[ "$mode" == "gateway" ]]; then printf 'API_SERVER_KEY=%s\n' "$api_server_key"; fi
         if [[ -n "$port" ]]; then printf 'API_SERVER_PORT=%s\n' "$port"; fi
-        printf 'BROWSER_CDP_URL=${BROWSER_CDP_URL}\n'
         printf 'OPENAI_BASE_URL=${OPENAI_BASE_URL}\n'
         printf 'PYTHONPATH=/opt/hermes/bootstrap:/opt/data/hermes-extra-site-py314:/opt/hermes\n'
         printf 'PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright\n'

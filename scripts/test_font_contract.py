@@ -45,29 +45,6 @@ class FontImageContractTests(unittest.TestCase):
     def test_camofox_installs_complete_onest_release(self):
         self.assert_onest_install("infra/camofox/Dockerfile")
 
-    def test_browserless_derivative_installs_onest_and_preserves_upstream_startup(self):
-        source = self.read("infra/browserless/Dockerfile")
-        self.assertRegex(source, r"(?m)^ARG BROWSERLESS_BASE_IMAGE=ghcr\.io/browserless/chromium:v2\.51\.0$")
-        self.assertRegex(source, r"(?m)^FROM \$\{BROWSERLESS_BASE_IMAGE\}$")
-        self.assert_onest_install("infra/browserless/Dockerfile")
-        self.assertEqual(re.findall(r"(?m)^USER\s+(\S+)\s*$", source), ["root", "blessuser"])
-        self.assertNotRegex(source, r"(?m)^(?:CMD|ENTRYPOINT)\b")
-
-    def test_compose_builds_browserless_derivative_with_separate_base_image(self):
-        source = self.read("infra/compose/compose.yml")
-        match = re.search(r"(?ms)^  browserless:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:\n)", source)
-        self.assertIsNotNone(match, "browserless service not found")
-        service = match.group("body")
-        self.assertRegex(service, r"(?m)^    build:\n      context: ../browserless$")
-        self.assertRegex(
-            service,
-            r"(?m)^      args:\n        BROWSERLESS_BASE_IMAGE: \$\{BROWSERLESS_BASE_IMAGE:-ghcr\.io/browserless/chromium:v2\.51\.0\}$",
-        )
-        self.assertRegex(
-            service,
-            r"(?m)^    image: \$\{BROWSERLESS_IMAGE:-spartan-gate-browserless:2\.51\.0\}$",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

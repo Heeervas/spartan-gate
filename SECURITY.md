@@ -28,9 +28,9 @@ logs with bearer headers, or proof-of-concept exploit details to a public issue.
 Treat these as sensitive:
 
 - Provider, Telegram, Discord, GitHub, Raindrop, OAuth, and Codex credentials.
-- Browserless and Camofox profile directories.
+- Camofox profile directories and untouched legacy Browserless profiles.
 - `private/`, `.env`, `runtime/`, local certificates, and private host paths.
-- ClawRoute logs or databases that include request content or account state.
+- Spartan Route logs/databases and retained legacy ClawRoute data containing request content or account state.
 - Real internal domains, Tailscale hostnames, and LAN exposure details.
 
 ## Security Scope
@@ -38,7 +38,7 @@ Treat these as sensitive:
 Reports are especially useful when they affect:
 
 - Hermes network isolation.
-- Proxy, DNS, Reader, Browserless, Camofox, Caddy, or ClawRoute boundaries.
+- Proxy, DNS, Reader, Camofox, Caddy/edge-session verifier, or Spartan Route boundaries.
 - Fail-closed behavior for malformed policy, expired policy, or missing auth.
 - Secret handling in docs, examples, workflows, Docker images, and logs.
 

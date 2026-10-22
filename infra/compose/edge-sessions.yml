@@ -1,0 +1,29 @@
+# Internal Caddy-only authorization service. Never publish this listener.
+services:
+  edge-sessions:
+    build:
+      context: ../caddy
+      dockerfile: Dockerfile.sessions
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    pids_limit: 32
+    tmpfs: [/tmp:rw,nosuid,nodev,noexec,size=8m]
+    logging:
+      driver: local
+      options:
+        max-size: "${SPARTAN_LOG_MAX_SIZE:-10m}"
+        max-file: "${SPARTAN_LOG_MAX_FILES:-3}"
+    environment:
+      CADDY_SESSION_SERVICE_KEY: ${CADDY_SESSION_SERVICE_KEY:-}
+      CADDY_CAMOFOX_EDGE_TOKEN: ${CADDY_CAMOFOX_EDGE_TOKEN:-}
+      CADDY_WS_EDGE_TOKEN: ${CADDY_WS_EDGE_TOKEN:-}
+    networks: [spartan_edge_auth]
+    healthcheck:
+      test: [CMD, python3, -c, "import socket; s=socket.create_connection(('127.0.0.1',9080),2); s.close()"]
+      interval: 15s
+      timeout: 3s
+      retries: 3

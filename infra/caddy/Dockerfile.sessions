@@ -1,0 +1,5 @@
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY edge_sessions.py /app/edge_sessions.py
+USER 10001:10001
+ENTRYPOINT ["python3", "/app/edge_sessions.py"]

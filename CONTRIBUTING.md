@@ -8,11 +8,15 @@ with the security boundaries in [docs/security.md](docs/security.md).
 ```sh
 git clone https://github.com/Heeervas/spartan-gate.git
 cd spartan-gate
-npm --prefix packages/clawroute ci
+npm ci --ignore-scripts
+python3 -m venv .agents/test-venv
+.agents/test-venv/bin/python -m pip install -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.1 packaging==26.3 requests==2.32.5 httpx==0.28.1 ruamel.yaml==0.18.16
+export PATH="$PWD/.agents/test-venv/bin:$PATH"
 ```
 
-Use Node.js 22 for ClawRoute work and Docker with the Compose plugin for
-Compose validation.
+Use Node.js 22, Python 3.14 and Docker with the Compose plugin. See
+[Development](docs/development.md) for the host requirements fallback in a public
+clone, isolated Pi loader provisioning and mandatory pristine-source gates.
 
 ## Before A Pull Request
 
@@ -20,15 +24,19 @@ Run the narrowest useful checks first, then broaden when the change touches a
 shared security or runtime boundary.
 
 ```sh
-npm run clawroute:build
-npm run clawroute:test
-python3 -m unittest discover -s apps/hermes-agent -p "test_*.py"
-node --test apps/hermes-agent/test_*.js
-python3 -m unittest discover -s scripts -p "test_*.py"
-python3 -m unittest discover -s infra/reader -p "test_*.py"
+npm run test:route
+npm run test:hermes
+npm run test:pi
+npm run test:camofox
+npm run test:scripts
+npm run test:reader
 docker compose -f infra/compose/compose.yml config --quiet
 scripts/doctor.sh
 ```
+
+Portable fixture success does not satisfy source-backed integration. Report
+skips and missing native inputs explicitly; do not mark them passed. No stack
+start, image build, private render or live doctor run is needed for fixture CI.
 
 ## Security Rules
 

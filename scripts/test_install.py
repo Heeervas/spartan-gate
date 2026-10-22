@@ -67,6 +67,36 @@ exit 2
             values[key] = value.strip("'\"")
         return values
 
+    def test_retired_addon_fails_before_any_writes(self):
+        result = self.run_install("L1", "linux", "--with", "clawroute")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("retired", result.stderr)
+        self.assertFalse(self.private_dir.exists())
+        self.assertFalse(self.data_root.exists())
+
+    def test_invalid_compose_does_not_publish_candidate(self):
+        docker = self.bin_dir / "docker"
+        source = docker.read_text()
+        docker.write_text(source.replace('if [[ "$1" == "compose" ]]; then exit 0; fi',
+                                        'if [[ "$*" == *"config --quiet"* ]]; then exit 42; fi\nif [[ "$1" == "compose" ]]; then exit 0; fi'))
+        result = self.run_install("L2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.private_dir / "env/local.env").exists())
+        self.assertFalse((self.private_dir / "install-state.json").exists())
+
+    def test_publication_permission_failure_restores_existing_selection(self):
+        first = self.run_install('L2')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        paths = [self.private_dir / 'env/local.env', self.private_dir / 'install-state.json']
+        before = {path: path.read_bytes() for path in paths}
+        chmod = self.bin_dir / 'chmod'
+        chmod.write_text('#!/bin/sh\nexit 1\n')
+        chmod.chmod(0o755)
+        result = self.run_install('L3')
+        self.assertNotEqual(result.returncode, 0)
+        for path, expected in before.items():
+            self.assertEqual(path.read_bytes(), expected)
+
     def test_l0_generates_private_env_with_real_caddy_hash(self):
         result = self.run_install("L0", "linux")
 
@@ -84,7 +114,7 @@ exit 2
         self.assertTrue((self.data_root / "current" / "hermes").is_dir())
         self.assertEqual(values["CADDY_AUTH_HASH"], "$2a$test-generated-caddy-hash")
         self.assertIn("SPARTAN_CADDY_PASSWORD", values)
-        self.assertIn("BROWSERLESS_EDGE_TOKEN", values)
+        self.assertNotIn("BROWSERLESS_EDGE_TOKEN", values)
         self.assertIn("CADDY_CAMOFOX_EDGE_TOKEN", values)
         self.assertIn("CADDY_WS_EDGE_TOKEN", values)
         self.assertRegex(values["CADDY_CAMOFOX_EDGE_TOKEN"], r"^[0-9a-f]{64}$")
@@ -93,17 +123,14 @@ exit 2
         self.assertNotIn(values["HERMES_GATEWAY_TOKEN"], result.stdout)
         self.assertNotIn(values["SPARTAN_CADDY_PASSWORD"], result.stdout)
 
-        self.assertEqual(values["BROWSERLESS_PROFILES_GID"], str(os.getgid()))
         for key in (
             "SPARTAN_CADDY_UID",
             "SPARTAN_ROUTE_UID",
-            "SPARTAN_CLAWROUTE_UID",
         ):
             self.assertEqual(values[key], str(os.getuid()), key)
         for key in (
             "SPARTAN_CADDY_GID",
             "SPARTAN_ROUTE_GID",
-            "SPARTAN_CLAWROUTE_GID",
         ):
             self.assertEqual(values[key], str(os.getgid()), key)
         self.assertEqual(path_mode(self.private_dir), 0o700)
@@ -112,7 +139,6 @@ exit 2
         self.assertEqual(path_mode(self.private_dir / "install-state.json"), 0o600)
         for key in (
             "SPARTAN_HERMES_DATA_PATH",
-            "SPARTAN_CLAWROUTE_DATA_PATH",
             "SPARTAN_ROUTE_DATA_PATH",
             "SPARTAN_GOGCLI_DATA_PATH",
             "SPARTAN_CAMOFOX_DATA_PATH",
@@ -120,10 +146,7 @@ exit 2
         ):
             path = Path(values[key])
             self.assertEqual(path_mode(path), 0o700, key)
-        self.assertEqual(
-            path_mode(Path(values["SPARTAN_BROWSERLESS_PROFILES_PATH"])),
-            0o770,
-        )
+        self.assertNotIn("SPARTAN_BROWSERLESS_PROFILES_PATH", values)
 
     def test_browser_tiers_leave_global_camofox_identity_unowned(self):
         for tier in ("L1", "L2", "L4"):
@@ -256,60 +279,11 @@ exit 2
         self.assertEqual(self.read_env()["CLOUDFLARE_API_TOKEN"], token)
         self.assertNotIn(token, result.stdout + result.stderr)
 
-    def test_install_manages_browserless_derived_and_base_images(self):
-        result = self.run_install("L1", "linux")
-
+    def test_install_does_not_recreate_retired_browser_profiles(self):
+        result = self.run_install("L1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        values = self.read_env()
-        self.assertEqual(values["BROWSERLESS_IMAGE"], "spartan-gate-browserless:2.51.0")
-        self.assertEqual(values["BROWSERLESS_BASE_IMAGE"], "ghcr.io/browserless/chromium:v2.51.0")
-
-    def test_install_migrates_legacy_browserless_tag_to_derived_image(self):
-        env_dir = self.private_dir / "env"
-        env_dir.mkdir(parents=True)
-        (env_dir / "local.env").write_text(
-            "BROWSERLESS_IMAGE=ghcr.io/browserless/chromium:v2.50.0\n",
-            encoding="utf-8",
-        )
-
-        result = self.run_install("L1", "linux")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        values = self.read_env()
-        self.assertEqual(values["BROWSERLESS_IMAGE"], "spartan-gate-browserless:2.51.0")
-        self.assertEqual(values["BROWSERLESS_BASE_IMAGE"], "ghcr.io/browserless/chromium:v2.50.0")
-
-    def test_install_migrates_legacy_browserless_digest_to_derived_image(self):
-        env_dir = self.private_dir / "env"
-        env_dir.mkdir(parents=True)
-        legacy = "ghcr.io/browserless/chromium@sha256:" + "a" * 64
-        (env_dir / "local.env").write_text(
-            f"BROWSERLESS_IMAGE={legacy}\n",
-            encoding="utf-8",
-        )
-
-        result = self.run_install("L1", "linux")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        values = self.read_env()
-        self.assertEqual(values["BROWSERLESS_IMAGE"], "spartan-gate-browserless:2.51.0")
-        self.assertEqual(values["BROWSERLESS_BASE_IMAGE"], legacy)
-
-    def test_install_preserves_custom_browserless_image_with_default_base(self):
-        env_dir = self.private_dir / "env"
-        env_dir.mkdir(parents=True)
-        custom = "registry.example.test/browserless:v9"
-        (env_dir / "local.env").write_text(
-            f"BROWSERLESS_IMAGE={custom}\n",
-            encoding="utf-8",
-        )
-
-        result = self.run_install("L1", "linux")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        values = self.read_env()
-        self.assertEqual(values["BROWSERLESS_IMAGE"], custom)
-        self.assertEqual(values["BROWSERLESS_BASE_IMAGE"], "ghcr.io/browserless/chromium:v2.51.0")
+        self.assertFalse((self.data_root / "current/browserless-profiles").exists())
+        self.assertNotIn("BROWSERLESS_IMAGE", self.read_env())
 
     def test_runs_setup_before_start_and_hermes_recreate(self):
         result = self.run_install("L3", "linux")
@@ -323,21 +297,19 @@ exit 2
         self.assertLess(start, recreate)
         self.assertTrue(any("compose.l2.yml" in call and "compose.l3.yml" in call for call in calls))
         values = self.read_env()
-        self.assertEqual(values["SPARTAN_ADDONS"], "clawroute")
+        self.assertEqual(values["SPARTAN_ADDONS"], "")
         self.assertEqual(values["SPARTAN_HERMES_MODE"], "gated")
 
-    def test_l1_can_enable_clawroute_addon_without_changing_project_or_data_root(self):
-        result = self.run_install("L1", "linux", "--with", "clawroute")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        values = self.read_env()
-        self.assertEqual(values["SPARTAN_TIER"], "L1")
-        self.assertEqual(values["SPARTAN_ADDONS"], "clawroute")
-        self.assertEqual(values["SPARTAN_HERMES_MODE"], "free")
-        self.assertEqual(values["COMPOSE_PROJECT_NAME"], "spartan-gate")
-        self.assertEqual(values["SPARTAN_HERMES_DATA_PATH"], str(self.data_root / "current" / "hermes"))
-        calls = self.log.read_text(encoding="utf-8").splitlines()
-        self.assertTrue(any("compose.l1.yml" in call and "compose.clawroute.yml" in call for call in calls))
+    def test_persisted_retired_addon_requires_explicit_migration(self):
+        env_file = self.private_dir / "env/local.env"
+        env_file.parent.mkdir(parents=True)
+        original = "SPARTAN_ADDONS=clawroute\n"
+        env_file.write_text(original)
+        result = self.run_install("L3")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("retired", result.stderr)
+        self.assertEqual(env_file.read_text(), original)
+        self.assertFalse((self.private_dir / "install-state.json").exists())
 
     def test_l4_generates_minimal_private_compose_without_tailscale(self):
         result = self.run_install("L4", "linux")
@@ -378,7 +350,7 @@ exit 2
         result = self.run_install("L4", "linux", "--with", "clawroute")
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ClawRoute is not part of L4", result.stderr)
+        self.assertIn("retired", result.stderr)
 
     def test_non_l4_install_does_not_configure_spartan_reader(self):
         result = self.run_install("L3", "linux")

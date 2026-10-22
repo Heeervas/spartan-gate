@@ -239,12 +239,20 @@ validate_policy_candidate() {
 }
 
 compose_cmd() {
-    local args=(-f "$ROOT/infra/compose/compose.yml")
+    local args=() tier
+    tier="${SPARTAN_TIER:-$(policy_env_value "$(_default_env_file)" SPARTAN_TIER 2>/dev/null)}"
+    case "${tier:-L4}" in
+        L0|L1) printf '[whitelist] Selected tier has no proxy/DNS policy consumers.\n' >&2; return 1 ;;
+        L2) args=(-f "$ROOT/infra/compose/tiers/compose.l2.yml") ;;
+        L3) args=(-f "$ROOT/infra/compose/tiers/compose.l2.yml" -f "$ROOT/infra/compose/tiers/compose.l3.yml") ;;
+        L4) args=(-f "$ROOT/infra/compose/compose.yml") ;;
+        *) printf '[whitelist] Invalid selected tier.\n' >&2; return 1 ;;
+    esac
     local private_compose="${SPARTAN_PRIVATE_COMPOSE:-$ROOT/private/compose.local.yml}"
     local env_file
     env_file="$(_default_env_file)"
 
-    if [[ -f "$private_compose" ]]; then
+    if [[ "${tier:-L4}" == L4 && -f "$private_compose" ]]; then
         args+=(-f "$private_compose")
     fi
 
@@ -375,6 +383,15 @@ if [[ -n "$ttl" ]]; then
     expires_at="$((10#$now + ttl_seconds))"
 fi
 
+# Honor the installer-selected shared fragment unless the caller explicitly
+# chooses another file. This keeps L2/L3 edits attached to all three consumers.
+if [[ -z "${SPARTAN_WHITELIST_FILE:-}" ]]; then
+    configured_whitelist="$(policy_env_value "$(_default_env_file)" SPARTAN_PRIVATE_WHITELIST_PATH 2>/dev/null || true)"
+    if [[ -n "$configured_whitelist" ]]; then
+        [[ "$configured_whitelist" == /* ]] || { printf '[whitelist] Configured whitelist must be absolute.\n' >&2; exit 1; }
+        WHITELIST="$configured_whitelist"
+    fi
+fi
 mkdir -p "$(dirname "$WHITELIST")"
 exec 9>"${WHITELIST}.lock"
 if ! flock -x -w 30 9; then
