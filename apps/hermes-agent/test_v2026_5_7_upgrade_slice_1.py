@@ -160,7 +160,9 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
             '../../private/docs/hermes-shared:/opt/data/brain/runtime_docs/local/private:ro',
             private_compose,
         )
-        self.assertTrue((RUNTIME_DOCS_DIR / 'local' / 'private').is_dir())
+        # The private overlay's source and mountpoint are installation-local,
+        # not published checkout fixtures. Assert both read-only mount contracts
+        # above without requiring or reading private operator state.
         self.assertNotIn('runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
         self.assertNotIn('runtime_docs_dir=', entrypoint)
         self.assertNotIn('runtime_doc_src=', entrypoint)

@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Pin Spartan Route to aiohttp 3.14.4 for current HTTP dependency security fixes;
+  add regressions for initial-request/header timeouts and Secure shared cookies.
+  Make Hermes read-only runtime-document mount tests independent of unpublished
+  operator directories so they run in clean checkouts.
+
 - Retire Browserless and the legacy ClawRoute application from supported source,
   installation shapes and operator helpers. L3 now uses internal Spartan Route;
   Camofox remains the managed browser. Preserve shared Route configuration names,

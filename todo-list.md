@@ -75,17 +75,18 @@ Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 ## Priority 2 — Close Dependency Vulnerabilities
 
 - [ ] Recheck dependency alerts against current source and deployed versions.
-  - Route source now pins aiohttp 3.14.3; this does not establish the deployed
+  - Route source now pins aiohttp 3.14.4; this does not establish the deployed
     version or closure of historical alerts. Validate those after activation.
   - The legacy ClawRoute package/lockfile is retired; do not upgrade or rebuild
     a deleted application to close obsolete alerts.
 
 ## Activation — Reviewed Source Remediation
 
-- [ ] Review and migrate existing private Compose/Caddy overrides before activation.
-  - Remove retired service references without deleting profiles/databases.
-    Wire the isolated edge verifier and three independent keys; migrate static
-    listeners with native Caddy validation and retained rollback copies.
+- [x] Prepare the selected installation's private Compose/Caddy overrides for
+  rebuild without activating services. Retired references and baked-code overlays
+  removed; signed listeners validated against actual TLS inputs; existing keys,
+  persistent data, resource limits and rollback images preserved.
+- [ ] Build and accept the prepared candidate before activation.
   - Prepare only required images, preserving image/code-overlay guards. Build
     and recreate only after preflight; do not use `--remove-orphans` or delete
     volumes as a shortcut. Do not build retired images.

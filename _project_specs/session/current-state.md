@@ -1,5 +1,35 @@
 # Current State
 
+## Actual-stack rebuild preparation (2026-10-22)
+
+The operator authorized completing private installation preparation, not image
+builds or service activation. The earlier source closeout was subsequently
+published to the actual default branch `master` at `2a338eb`; its original
+no-push boundary below is historical, not the current publication record.
+
+Private preparation now removes retired service references and baked-code
+mounts, preserves persistent data and existing keys, wires the isolated edge
+verifier, and migrates signed listeners with native validation against actual
+TLS files. Candidate image tags retain old images for rollback. No service
+was recreated. Private backups, selected-stack checks and executable runbook
+are retained under `private/maintenance/rebuild-ready-20261022/`; do not publish
+that directory. The frozen production-input check and independent Luna review
+both PASS: the selected installation is ready for separately authorized builds.
+Builds/canaries and live acceptance remain unexecuted.
+
+Remote CI at `2a338eb` exposed a clean-checkout test dependency on an ignored
+private directory. The fixture now retains read-only mount assertions without
+requiring operator state. Route now pins aiohttp 3.14.4; dependency regressions
+fail on 3.14.3 and pass on 3.14.4. Updated Route evidence: 476 Python and 41 JS;
+mandatory native Hermes 75 and Camofox 53 pass without skips. TOP assurance
+retains the existing bounded exceptions. No deployed-version claim is made.
+
+Remote dependency alerts must be distinguished from current source matches:
+retired manifest alerts and already-fixed version ranges are not a reason to
+restore the deleted application. Final remote CI status is checked separately
+from local and native validation. Reader's residual cancellation investigation
+remains outside this preparation; it is not silently declared solved.
+
 ## Source accepted — audit remediation and legacy retirement (2026-10-22)
 
 Authority: **complete-target for source implementation and validated local
