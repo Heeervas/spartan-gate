@@ -4,10 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
-- Make native Hermes `/plan` use enabled shared planning and the repository's
-  single plan owner while retaining its planning-only boundary. Remove fixed
-  microtask, full-code and per-task commit defaults; preserve native fallback
-  when a shared method is disabled or unavailable. Image activation is separate.
+- Keep the optional native Hermes `/plan` policy patch out of normal image
+  builds pending runtime acceptance. Its evaluated source supports planning
+  across domain profiles, complete enabled support checks and native fallback,
+  while preserving plan-only behavior and independent review readiness gates.
+  Document the existing native command as the common planning alternative.
 
 - Quote the edge verifier's tmpfs mount as one YAML scalar, retaining all mount
   restrictions and preventing Docker from treating options as relative mount

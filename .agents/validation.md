@@ -197,10 +197,10 @@ python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/quality_report.py
 
 ## Portable native planning entrypoint
 
-The native `/plan` prompt patch preserves plan-only execution and routes enabled shared planning through its Hermes adapter. Run the focused real-source regression before adoption:
+The optional native `/plan` prompt patch preserves plan-only execution and routes a complete enabled shared planning chain through its Hermes adapter, with independent native fallback for unavailable dependencies. Normal Dockerfile builds do not invoke it. Run the focused real-source regression before any explicit adoption:
 
 ```sh
 HERMES_UPSTREAM_SOURCE=<actual pinned upstream checkout> PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/hermes-agent -p test_portable_plan_patch.py -v
 ```
 
-Use the actual pinned-source path from the existing native-source gate above; an absent source yields an incomplete boundary, not acceptance. The native suite includes this test. A successful source test does not activate the running image; build/recreation stays separately controlled.
+Use the actual pinned-source path from the existing native-source gate above; an absent source yields an incomplete boundary, not acceptance. The native suite includes this test. A successful source test does not activate the running image. The patch remains outside normal builds pending comparative runtime acceptance and a separately authorized activation decision.

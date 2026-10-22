@@ -13,7 +13,7 @@ import tempfile
 # Exact supported source: agent/plan_prompt.py from the inspected native source.
 # Rebase deliberately on upstream drift; never replace an unknown prompt policy.
 UPSTREAM_SHA256 = "81a4ce937a78eb5b766c6ecdc414a7d0570e8875845b46f1a63b5fe70ec1b45b"
-PATCHED_SHA256 = "fc050be9b3dbe2ea3aa5bc370b0462b665c51af61e99dd8679887fb72433057a"
+PATCHED_SHA256 = "832a53a6e9961f0a28123eddd79c3955ab25c209253a324407eefba3efe01b77"
 
 PLAN_MODE_RULES = """\
 For this turn, you are in PLAN MODE — planning only.
@@ -42,6 +42,11 @@ For this turn, you are in PLAN MODE — planning only.
 """
 
 PLAN_CRAFT = """\
+Planning is common to every active profile and domain. A development plan from
+Work or Market does not require switching to Builder. Preserve the active
+profile's actual capabilities, permissions and domain authority. Non-code plans do not require repository structure,
+code conventions, code snippets, TDD or commit steps. Scale depth to the outcome.
+
 Use the enabled canonical writing-plans method when native discovery permits it.
 First resolve the active profile/platform's enabled skill discovery and controls.
 Do not bypass a disabled/unavailable method by alias, filesystem path, preload,
@@ -55,18 +60,29 @@ read these through the native skill loader, in this order:
 4. skill_view(name="writing-plans", file_path="references/hermes.md")
 Then read the method's mandatory task supports through their enabled owners.
 Discovery/slash expansion does not automatically include these references.
-Apply that one planning method within the plan-only/output rules above. It owns
-proportional depth, dependencies, ownership and evidence; this native entrypoint
-adds no timed task sizes, mandatory full code, universal TDD or commit ritual.
-If a required enabled support cannot load, report the missing binding and leave
-its dependent gate incomplete rather than claiming the method fully ran.
+Apply that one planning method only with its complete enabled and bound support
+chain, within the plan-only/output rules above. It owns proportional depth,
+dependencies, ownership and evidence; this native entrypoint adds no timed task
+sizes, mandatory full code, universal TDD or commit ritual.
+If any required core, adapter or mandatory task support is missing, disabled, unavailable or unbound,
+even after partial shared loading, stop the dependent shared operation. Disclose the incomplete shared-method gate
+and exact missing requirement, then continue with the native fallback below.
+Do not claim that partial loading completed the shared method.
 
-Independent minimal native fallback: if shared-skills or writing-plans cannot
-be used because it is missing, disabled or unavailable, do not load its contents
-by another route. State that the shared method did not run. Under the same
-plan-only rules, save a short native plan describing the requested result,
-proposed approach, observable check and unresolved decisions. Do not reproduce
+Independent minimal native fallback: when that complete chain cannot be used,
+do not load its contents by another route. State that the shared method did not run
+to completion. Under the same plan-only rules, save a native plan describing
+the requested result, inspected facts and assumptions, proposed approach,
+decisive observable checks and unresolved decisions or gates. Do not reproduce
 the denied method or pretend its required review/readiness gates passed.
+
+Delivery and execution readiness are separate. Substantial plans involving
+material uncertainty, coupling, consequence or independently owned work packages
+require independent adversarial plan review before implementation. Respect
+explicit user/project review policy and endpoint; fully specified, bounded,
+reversible work may stay lightweight. If required review is unavailable, mark
+execution readiness incomplete. Do not delegate merely to finish this plan-only turn.
+Neither native fallback nor delivery satisfies a missing review requirement.
 
 If the request is clear enough, plan directly. If a material ambiguity remains,
 ask only the clarification needed. An empty task may use conversation context.

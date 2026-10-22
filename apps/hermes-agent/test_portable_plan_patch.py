@@ -29,6 +29,10 @@ def namespace(source):
 
 
 class RefusedInputTests(unittest.TestCase):
+    def test_normal_image_build_does_not_activate_optional_plan_patch(self):
+        dockerfile = (HERE / "Dockerfile").read_text()
+        self.assertNotIn("patch_portable_plan.py", dockerfile)
+
     def test_cli_unknown_source_leaves_file_and_directory_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "plan_prompt.py"
@@ -82,6 +86,29 @@ class PortablePlanPatchTests(unittest.TestCase):
         self.assertIn("do not maintain two active plans", prompt.lower())
         self.assertIn("`.hermes/plans/YYYY-MM-DD_HHMMSS-<slug>.md`", prompt)
         self.assertIn("use `plans/`", prompt)
+
+    def test_producer_covers_profile_neutral_planning_and_missing_support_fallback(self):
+        build = namespace(self.patched)["build_plan_prompt"]
+        cases = (
+            "Work: plan development of a client portal; planning only",
+            "Market: plan development of a market data service; planning only",
+            "Fiscal: plan a non-code quarterly reporting workflow; planning only",
+        )
+        for task in cases:
+            with self.subTest(task=task):
+                prompt = build(task)
+                self.assertIn(task, prompt)
+                self.assertIn("does not require switching to Builder", prompt)
+                self.assertIn("Non-code plans do not require repository structure", prompt)
+                self.assertIn("mandatory task support", prompt)
+                self.assertIn("missing, disabled, unavailable or unbound", prompt)
+                self.assertIn("even after partial shared loading", prompt)
+                self.assertIn("Disclose the incomplete shared-method gate", prompt)
+                self.assertIn("continue with the native fallback below", prompt)
+                self.assertIn("Do not bypass", prompt)
+                self.assertIn("inspected facts and assumptions", prompt)
+                self.assertIn("independent adversarial plan review before implementation", prompt)
+                self.assertIn("Do not delegate merely to finish this plan-only turn", prompt)
 
     def test_public_builder_api_task_interpolation_and_nonpolicy_code_are_preserved(self):
         before = ast.parse(self.source)
