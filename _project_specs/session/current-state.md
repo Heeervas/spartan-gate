@@ -9,11 +9,23 @@ app could respond. Match the literal path before the first `?`, without URL
 decoding or path normalization. Service-key authentication, exact endpoints,
 cookie signatures, audience separation and expiry remain unchanged.
 
-Source acceptance covers verifier HTTP rejection cases and native Caddy query
-bootstrap/session forwarding, including exact repeated/encoded query content.
-The scoped rebuild uses the deployed verifier image as its immutable base,
-retains rollback, and changes only verifier code. Activation/live verification
-are pending until recorded separately; stock Caddy needs no code rebuild.
+Source commit `839ab6b` passed independent security/code review, seven verifier
+and native Caddy tests, 26 Caddy/migration/port contracts, Compose validation and
+TOP assurance with the five existing exceptions. Regression checks fail on the
+original verifier and pass on the fix; exact repeated/encoded query content
+reaches the native backend unchanged.
+
+The operator-authorized scoped rebuild and activation are complete. The new
+image preserves every deployed verifier base layer and runtime setting; its
+baked source hash matches the reviewed source. Isolated image acceptance passed
+before recreation. The reported app query now returns 200 via Basic bootstrap
+and signed-cookie requests, matching the no-query content. Seven live rejection
+cases return 401: missing credentials, spoofed verifier header, invalid,
+duplicate, expired, future and wrong-audience cookies. All ten services are
+healthy; the other nine identities, start times, configs and environment hashes
+are unchanged. Stock Caddy validated successfully and needed no restart/rebuild.
+The previous verifier image is retained for rollback. Private operational
+receipts are under `private/maintenance/edge-query-20261022/`. No push occurred.
 
 ## Rebuild activated; bounded live checks passed (2026-10-22)
 
