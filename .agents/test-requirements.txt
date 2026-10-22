@@ -1,0 +1,9 @@
+# Minimal host fixture/test dependencies; not a Hermes runtime environment.
+# Spartan Route's runtime dependency remains pinned in infra/spartan-route.
+-r ../infra/spartan-route/requirements.txt
+PyYAML==6.0.3
+python-dotenv==1.2.1
+packaging==26.3
+requests==2.32.5
+httpx==0.28.1
+ruamel.yaml==0.18.16

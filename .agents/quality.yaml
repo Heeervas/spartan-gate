@@ -9,10 +9,24 @@ scope:
   include:
   - apps/hermes-agent/patches/patch_external_skill_links.py
   - apps/hermes-agent/test_external_skill_links_patch.py
+  - apps/hermes-agent/patches/*.py
+  - apps/hermes-agent/test_*.py
+  - apps/hermes-agent/proxy-bootstrap.py
   - apps/hermes-agent/Dockerfile
   - infra/pi/**
   - infra/spartan-route/**
   - scripts/check-pi-route-quality.sh
+  - scripts/*.py
+  - scripts/doctor.sh
+  - scripts/add-port.sh
+  - scripts/install.sh
+  - scripts/aliases.sh
+  - infra/reader/**
+  - infra/outbound-proxy/**
+  - infra/dns/**
+  - infra/caddy/**
+  - infra/camofox/**
+  - infra/compose/**
   exclude: []
   languages: []
 baseline:

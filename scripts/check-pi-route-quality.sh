@@ -2,7 +2,11 @@
 set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 assurance_dir="${BUILDER_ASSURANCE_DIR:-$HOME/.agents/skills/shared/builder-assurance}"
-assurance_python="${BUILDER_ASSURANCE_PYTHON:-python3}"
+default_python=python3
+if [[ -x "$project_dir/.agents/quality-venv/bin/python" ]]; then
+  default_python="$project_dir/.agents/quality-venv/bin/python"
+fi
+assurance_python="${BUILDER_ASSURANCE_PYTHON:-$default_python}"
 baseline=75651cc0c5baa1db5a6523b790564988698f2a43
 cd "$project_dir"
 "$assurance_python" "$assurance_dir/scripts/validate_quality_policy.py" .agents/quality.yaml
