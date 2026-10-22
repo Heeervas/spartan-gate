@@ -7,7 +7,7 @@ Use this before pushing Spartan Gate as the definitive public repo.
 The public repo should contain source, public examples, and docs only. It must not contain:
 
 - `AGENTS.md`
-- `.agents/`
+- private `.agents/` content except the explicit portable quality files below
 - `.github/agents/`
 - `.github/hooks/`
 - `.github/prompts/`
@@ -22,9 +22,21 @@ The public repo should contain source, public examples, and docs only. It must n
 - personal host paths
 - LAN-wide or `0.0.0.0` edge binds
 
-The public CI workflow under `.github/workflows/` stays tracked. Agent packs,
-local prompts, local hooks, and per-operator instructions are intentionally
-ignored so each operator can maintain their own private agent environment.
+The public CI workflow under `.github/workflows/` stays tracked. These reviewed,
+nonsecret portable quality-contract files also stay tracked because local
+validation and contributors consume them; CI explicitly provisions its own
+equivalent pinned dependencies:
+
+- `.agents/quality.yaml`
+- `.agents/validation.md`
+- `.agents/test-requirements.txt`
+- `.agents/schemas/quality-policy-v1.schema.json`
+
+This is an exact allowlist, not permission to publish the directory wholesale.
+Virtual environments, receipts, downloaded sources, caches, local agent packs,
+prompts, hooks and per-operator instructions remain ignored. The canonical
+shared measurement package remains an explicit external dependency, not a
+checked-in personal installation.
 
 ## Pre-Push Checks
 
@@ -59,7 +71,8 @@ Expected ignored entries may include:
 !! private/
 ```
 
-Those ignored paths should not be staged.
+Those ignored paths should not be staged, except for the four exact portable
+quality-contract files explicitly listed above.
 
 ## Commit And Push
 
@@ -89,9 +102,10 @@ No public setup step should require checked-in local agent instructions.
 
 Before treating the repo as publishable:
 
-- Confirm `AGENTS.md`, `.agents/`, `.github/agents/`, `.github/hooks/`,
-  `.github/prompts/`, `.github/skills/`, `private/`, `runtime/`, `.env`, build
-  output, and browser profile data are ignored and not staged.
+- Confirm `AGENTS.md`, private `.agents/` content outside the exact allowlist,
+  `.github/agents/`, `.github/hooks/`, `.github/prompts/`, `.github/skills/`,
+  `private/`, `runtime/`, `.env`, build output and browser profile data are ignored
+  and not staged.
 - Run the supported layer Compose matrix and mandatory native-source gates
   described in [development.md](development.md). Missing native inputs block
   acceptance; portable fixture skips do not establish release readiness.

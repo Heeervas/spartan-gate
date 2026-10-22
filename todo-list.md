@@ -1,10 +1,16 @@
 # Task List
 
-Last updated: 2026-10-09
+Last updated: 2026-10-22
 
 Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
 ## Completed
+
+- [x] Complete the public-source audit, reviewed remediation and Browserless/
+  legacy ClawRoute source retirement. Preserve shared Route configuration and
+  private data. See `docs/reviews/2026-10-22-remediation-result.md`.
+  - Source acceptance is not deployment: private override migration, image
+    preparation and live acceptance remain separate below.
 
 - [x] Integrate native Hermes vault tools with Camofox and deploy reviewed images.
   - Preserve native prompts/backends and payment consent; enforce session/tab
@@ -35,21 +41,19 @@ Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
 ## Monitoring — Astra Cache Baseline
 
-- [ ] Evaluate the deployed v2 baseline after September 13 at 08:40 UTC;
-  use September 14 at 08:40 UTC for the 48-hour check.
-  - Route-only activation and live health/authentication checks passed on
-    September 12. Other services are unchanged. Probes and cohorts remain off.
+- [ ] Re-establish the current deployed baseline epoch before evaluating cache
+  behavior. Historical September timing is not a current acceptance window.
   - Require real native traffic and the documented recurring-prefix pattern;
-    do not bypass the timing gate. A Route restart resets the baseline epoch.
-    See `docs/spartan-route-cache-experiments.md`.
+    a Route restart resets the baseline epoch. Do not enable probes/cohorts by
+    inference. See `docs/spartan-route-cache-experiments.md`.
 
 ## Priority 1 — Refresh Hermes Main And Complete Runtime Remediation
 
 - [ ] Run `.github/prompts/hermes-main-refresh.prompt.md`, using
   `plans/2026-07-21-hermes-log-remediation.md` as the remediation baseline.
-  - Rebaseline the plan before edits: the Camofox tab-isolation patch/test now
-    exist, but only about 6.8 GB is free; require more than 10 GB for a Hermes
-    build and about 16 GB before the planned database backup/VACUUM work.
+  - Rebaseline against the accepted October source remediation before edits.
+    Recheck capacity rather than use historical disk figures; require more than
+    10 GB for a Hermes build and budget backups before database maintenance.
   - Resolve and pin the exact current upstream Hermes `main` commit and image
     digest. Pre-analyze upstream source, release changes, runtime contracts,
     and plugin surfaces before downloading or rebuilding.
@@ -70,35 +74,36 @@ Work from the top down. A newly confirmed P0 or P1 interrupts this order.
 
 ## Priority 2 — Close Dependency Vulnerabilities
 
-- [ ] Remediate the dependency-vulnerability review (no P0/P1 findings).
-  - P2: bump Spartan Route from `aiohttp==3.12.14` to `3.14.1`, add focused
-    compressed-body and multipart boundary regressions, run the full Spartan
-    Route suite, rebuild/recreate only `spartan-route`, and verify the active
-    version, health, and closure of all 29 Dependabot alerts.
-  - P3: refresh the ClawRoute lockfile from `@hono/node-server` 2.0.6 to a
-    non-vulnerable release at or above 2.0.10, then run the Node 22 build and
-    tests without building the ClawRoute image.
+- [ ] Recheck dependency alerts against current source and deployed versions.
+  - Route source now pins aiohttp 3.14.3; this does not establish the deployed
+    version or closure of historical alerts. Validate those after activation.
+  - The legacy ClawRoute package/lockfile is retired; do not upgrade or rebuild
+    a deleted application to close obsolete alerts.
 
-## Priority 3 — Retire Browserless And Its CDP Integration
+## Activation — Reviewed Source Remediation
 
-- [ ] Remove Browserless as a supported Spartan Gate browser mode after the
-  Hermes-main refresh; Camofox remains the supported persistent browser.
-  - Supersede `plans/2026-06-06-browserless-review-follow-up.md`. Before the
-    first deletion, inventory Google Meet, Chrome DevTools MCP, debugger/profile
-    seeding, shared CDP broker, and other CDP-only workflows; assign each a
-    Camofox replacement or an explicit removal decision.
-  - Remove Browserless services/profiles/build context, edge routes and ports,
-    secrets, mounts, permission exceptions, brokers, helpers, tests, examples,
-    and documentation. Remove or reclassify Hermes CDP patches only after
-    proving no surviving non-Browserless contract needs them.
-  - Never inspect or delete Browserless runtime profiles. Document optional
-    local backup/migration, then leave profile cleanup as a separate explicit
-    operator action.
-  - Update layer/install/doctor/alias contracts, validate every Compose shape,
-    run affected Hermes and script suites, and complete Camofox runtime
-    acceptance. Do not build Browserless.
+- [ ] Review and migrate existing private Compose/Caddy overrides before activation.
+  - Remove retired service references without deleting profiles/databases.
+    Wire the isolated edge verifier and three independent keys; migrate static
+    listeners with native Caddy validation and retained rollback copies.
+  - Prepare only required images, preserving image/code-overlay guards. Build
+    and recreate only after preflight; do not use `--remove-orphans` or delete
+    volumes as a shortcut. Do not build retired images.
+  - Verify live health, auth denial, signed-cookie expiry, WebSocket access,
+    Camofox workflows and Hermes/Route behavior. Remote CI and dependency-alert
+    closure require their own evidence.
+  - Track Reader outbound DNS/fetch and executor shutdown global deadlines as
+    residual investigation, not a solved cancellation contract.
 
 ## Backlog
+
+- [ ] Future: review a better way to connect the Hermes safecopy to Windows.
+  - Evaluate connection reliability, startup/recovery and access boundaries.
+    Deferred work; not part of the current migration fixes.
+
+- [ ] Audit effective private configuration, deployed services and recovery
+  after separately authorized activation. The completed public-source audit
+  does not certify those runtime boundaries.
 
 - [ ] Discovery: evaluate a fixed Spanish-from-Spain Pocket TTS voice from a
   consented, suitably licensed recording, exported to a private versioned
