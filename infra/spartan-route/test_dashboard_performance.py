@@ -220,7 +220,7 @@ class DashboardRefreshRaceTests(unittest.IsolatedAsyncioTestCase):
         self.store._conn.set_trace_callback(None)
         self.assertFalse(rows[0]["routingEnabled"])
         self.assertTrue(rows[1]["routingEnabled"])
-        self.assertEqual(len(queries), 1)
+        self.assertEqual(len(queries), 0)  # Committed policy snapshot, not a telemetry query.
 
     async def test_target_waits_for_old_full_then_publishes_for_next_poll(self):
         entered, release = asyncio.Event(), asyncio.Event()

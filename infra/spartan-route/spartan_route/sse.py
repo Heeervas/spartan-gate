@@ -3,6 +3,13 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
+# Same per-event budget as the Codex WebSocket transport. Includes delimiters.
+MAX_FRAME_BYTES = 4 * 1024 * 1024
+
+
+class SSEFrameTooLarge(ValueError):
+    pass
+
 
 async def frames(source: AsyncIterator[bytes]) -> AsyncIterator[tuple[str | None, str, bytes]]:
     buffer = bytearray()
@@ -26,9 +33,13 @@ async def frames(source: AsyncIterator[bytes]) -> AsyncIterator[tuple[str | None
             crlf = buffer.find(b"\r\n\r\n", searched)
             boundaries = [(index, size) for index, size in ((lf, 2), (crlf, 4)) if index >= 0]
             if not boundaries:
+                if len(buffer) > MAX_FRAME_BYTES:
+                    raise SSEFrameTooLarge(f"SSE frame exceeds {MAX_FRAME_BYTES} bytes")
                 searched = max(0, len(buffer) - 3)
                 break
             index, size = min(boundaries)
+            if index + size > MAX_FRAME_BYTES:
+                raise SSEFrameTooLarge(f"SSE frame exceeds {MAX_FRAME_BYTES} bytes")
             raw = bytes(buffer[:index + size])
             del buffer[:index + size]
             searched = 0

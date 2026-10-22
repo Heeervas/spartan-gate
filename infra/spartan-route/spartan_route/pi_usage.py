@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextvars
+import asyncio
 import math
 import time
 from collections import OrderedDict
@@ -40,22 +41,23 @@ class CorrelationError(ValueError):
 
 async def observe_chat(service: Any, headers: Any, provider: str, execute: Any) -> tuple[Any, Any]:
     """Keep correlation scoped to this Chat request, including stream finalization."""
-    correlation = service.correlate(headers)
+    registered = await asyncio.to_thread(service.registration, headers)
+    correlation = service.correlate(headers, registered)
     attempt = correlation.start(provider) if correlation and provider != "codex" else None
     token = CURRENT_REQUEST.set(correlation)
     try:
         result = await execute()
     except BaseException:
         if attempt:
-            attempt.finish(incomplete=True)
+            await attempt.finish(incomplete=True)
         raise
     finally:
         CURRENT_REQUEST.reset(token)
 
-    def finish() -> None:
+    async def finish() -> None:
         if attempt:
             incomplete = bool(result.error) or result.status >= 400 or (result.stream is not None and not result.stream_completed)
-            attempt.finish(result, incomplete=incomplete)
+            await attempt.finish(result, incomplete=incomplete)
 
     return result, finish
 
@@ -65,7 +67,7 @@ class PiAttempt:
         self.request, self.provider = request, provider
         self.finished = False
 
-    def finish(self, result: Any = None, *, incomplete: bool = False) -> None:
+    async def finish(self, result: Any = None, *, incomplete: bool = False) -> None:
         if self.finished:
             return
         self.finished = True
@@ -79,8 +81,8 @@ class PiAttempt:
             if self.provider == "codex":
                 counters["codexTokens"] = counters["totalTokens"]
         try:
-            self.request.service.store.record(self.request.session_id, self.request.origin_id, counters,
-                                              seen, incomplete or not seen)
+            await asyncio.to_thread(self.request.service.store.record, self.request.session_id, self.request.origin_id,
+                                    counters, seen, incomplete or not seen)
         except Exception:  # noqa: BLE001 - telemetry is subordinate to inference
             # Telemetry never replaces an inference result or propagates private errors.
             self.request.service.write_failed = True
@@ -188,7 +190,17 @@ class PiUsage:
         self.failure_count = 0
         self.last_refresh_task: Any = None
 
-    def correlate(self, headers: Any) -> PiRequest | None:
+    def registration(self, headers: Any) -> Any:
+        session = headers.get("X-Spartan-Pi-Session")
+        if session is None:
+            return None
+        try:
+            return self.store.get(session_uuid(session))
+        except Exception:
+            self.write_failed = True
+            return False
+
+    def correlate(self, headers: Any, registered: Any = ...) -> PiRequest | None:
         session, origin = headers.get("X-Spartan-Pi-Session"), headers.get("X-Spartan-Pi-Origin")
         if session is None and origin is None:
             return None
@@ -198,10 +210,9 @@ class PiUsage:
             session, origin = session_uuid(session), session_uuid(origin)
         except ValueError as exc:
             raise CorrelationError(str(exc)) from None
-        try:
-            registered = self.store.get(session)
-        except Exception:  # noqa: BLE001 - storage failure must not block inference
-            self.write_failed = True
+        if registered is ...:
+            registered = self.registration(headers)
+        if registered is False:
             return None
         if registered is None or registered["originId"] != origin:
             raise CorrelationError("Pi session origin is not registered")
@@ -261,7 +272,7 @@ class PiUsage:
         self.next_due = now + 60
         router.trigger_usage_refresh()
 
-    def status(self, router: Any, session_id: str | None) -> dict[str, Any]:
+    def status(self, router: Any, session_id: str | None, refresh: dict[str, Any] | None = None) -> dict[str, Any]:
         now = time.time()
         accounts, keys, overrides, unresolved = self.accounts(router, now)
         estimate = self.telemetry.codex_usage_estimate(keys)
@@ -279,7 +290,7 @@ class PiUsage:
                 "session": session, "accounts": accounts, "unresolvedSlots": unresolved,
                 "pool": {name: pool_window(accounts, name, len(unresolved)) for name in ("fiveHour", "weekly")},
                 "lease": lease_view(router, affinity, overrides, now), "calibration": calibration,
-                "refresh": self.refresh_state(router, now), "observedAt": observed, "ageSeconds": age(observed, now)}
+                "refresh": refresh if refresh is not None else self.refresh_state(router, now), "observedAt": observed, "ageSeconds": age(observed, now)}
 
 
 def api_error(message: str, status: int = 400) -> web.Response:
@@ -296,7 +307,7 @@ def register_routes(app: web.Application, get_state: Any) -> None:
             incomplete = body.get("trackingIncomplete", False)
             if type(incomplete) is not bool:
                 raise TypeError("trackingIncomplete must be boolean")
-            session, created = get_state(request).pi_usage.store.register(session_id, baseline, incomplete)
+            session, created = await asyncio.to_thread(get_state(request).pi_usage.store.register, session_id, baseline, incomplete)
             return web.json_response({"version": 1, "status": "registered", "session": session,
                                       "baselineConflict": session["baseline"] != baseline}, status=201 if created else 200)
         except (ValueError, TypeError):
@@ -310,7 +321,9 @@ def register_routes(app: web.Application, get_state: Any) -> None:
             state = get_state(request)
             if state.codex is None:
                 return api_error("Codex usage unavailable", 503)
-            return web.json_response(state.pi_usage.status(state.codex, session))
+            refresh = state.pi_usage.refresh_state(state.codex, time.time())
+            payload = await asyncio.to_thread(state.pi_usage.status, state.codex, session, refresh)
+            return web.json_response(payload)
         except ValueError:
             return api_error("Invalid sessionId")
         except Exception:  # noqa: BLE001 - sanitize operational failures at the API
@@ -326,7 +339,8 @@ def register_routes(app: web.Application, get_state: Any) -> None:
                 return api_error("body must be an object")
             session = session_uuid(body["sessionId"]) if "sessionId" in body else None
             state.pi_usage.refresh(state.codex)
-            payload = state.pi_usage.status(state.codex, session)
+            refresh_status = state.pi_usage.refresh_state(state.codex, time.time())
+            payload = await asyncio.to_thread(state.pi_usage.status, state.codex, session, refresh_status)
             return web.json_response(payload, status=202 if payload["refresh"]["state"] == "refreshing" else 200)
         except (TypeError, ValueError):
             return api_error("Invalid Pi refresh request")

@@ -31,6 +31,8 @@ from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .pi_usage import CorrelationError, PiUsage, observe_chat, register_routes as register_pi_routes
 from .transport import create_client_session
 from .sse import frames as parse_sse_frames
+from .upstream_lifecycle import UpstreamOwner, provider_stream, notify
+from .slot_policy import require_policy, SlotPolicyUnavailable
 from .util import (
     json_error,
     now_iso,
@@ -443,24 +445,6 @@ async def iter_sse_payloads(source: AsyncIterator[bytes]) -> AsyncIterator[tuple
         yield event, data, raw
 
 
-async def provider_stream(response: Any, result: ExecutionResult) -> AsyncIterator[bytes]:
-    try:
-        async for event, data, raw in iter_sse_payloads(response.content.iter_chunked(8192)):
-            del event
-            if data == "[DONE]":
-                result.stream_completed = True
-            if data and data != "[DONE]":
-                parsed = parse_json_bytes(data.encode("utf-8"))
-                if isinstance(parsed, dict):
-                    apply_usage(result, parsed)
-                    apply_tool_call_telemetry(result, parsed)
-                    if parsed.get("error") and not result.error:
-                        result.error = stable_json(parsed.get("error"))
-            yield raw
-    finally:
-        response.release()
-
-
 async def execute_provider_chat(
     state: SpartanRouteState,
     body: dict[str, Any],
@@ -518,11 +502,15 @@ async def execute_provider_chat(
             headers={"Content-Type": "text/event-stream"},
             upstream_response_time_ms=upstream_response_time_ms,
         )
-        result.stream = provider_stream(response, result)
+        owner = UpstreamOwner(response)
+        result.stream = provider_stream(response, result, owner, apply_usage, apply_tool_call_telemetry)
+        result.stream_cleanup = owner.cleanup
         return result
 
-    data = await response.read()
-    response.release()
+    try:
+        data = await response.read()
+    finally:
+        response.release()
     result = ExecutionResult(
         response.status,
         body=data,
@@ -542,6 +530,7 @@ def apply_responses_telemetry(result: ExecutionResult, payload: dict[str, Any], 
         result._responses_telemetry = CodexCallResult(status=result.status)
     observed = result._responses_telemetry
     capture_telemetry(observed, payload, event)
+    result.error = result.error or observed.error
     result.actual_tool_call_count = observed.actual_tool_call_count
     result.actual_tool_names = observed.actual_tool_names
     result.tool_telemetry_complete = observed.tool_telemetry_complete
@@ -568,6 +557,7 @@ async def provider_responses_stream(
     realm: str,
     diagnostics: NativeCacheDiagnostics | None = None,
     observation: Observation | None = None,
+    owner: UpstreamOwner | None = None,
 ) -> AsyncIterator[bytes]:
     drained = False
     try:
@@ -591,9 +581,12 @@ async def provider_responses_stream(
             yield sse(updated, event_name)
         drained = True
     finally:
-        response.release()
-        if diagnostics is not None and observation is not None:
-            finish_provider_cache(result, diagnostics, observation, drained)
+        if owner is not None:
+            owner.close(drained)
+        else:
+            response.release()
+            if diagnostics is not None and observation is not None:
+                finish_provider_cache(result, diagnostics, observation, drained)
 
 
 async def execute_provider_responses(
@@ -649,13 +642,9 @@ async def execute_provider_responses(
     elapsed = max(0, int((time.monotonic() - started) * 1000))
     if wants_stream and 200 <= response.status < 300:
         result = ExecutionResult(response.status, headers={"Content-Type": "text/event-stream"}, upstream_response_time_ms=elapsed)
-        result.stream = provider_responses_stream(response, result, "openai_api", state.native_cache, observation)
-
-        async def cleanup_api_stream() -> None:
-            response.release()
-            finish_provider_cache(result, state.native_cache, observation, False)
-
-        result.stream_cleanup = cleanup_api_stream
+        owner = UpstreamOwner(response, lambda delivered: finish_provider_cache(result, state.native_cache, observation, delivered))
+        result.stream = provider_responses_stream(response, result, "openai_api", state.native_cache, observation, owner)
+        result.stream_cleanup = owner.cleanup
         return result
     try:
         data = await response.read()
@@ -1649,8 +1638,7 @@ async def write_execution_response(
                     if result.stream_cleanup is not None:
                         await result.stream_cleanup()
                 finally:
-                    if on_done:
-                        on_done()
+                    await notify(on_done)
             if prepared and not client_disconnected:
                 try:
                     await response.write_eof()
@@ -1658,8 +1646,7 @@ async def write_execution_response(
                     pass
         return response
 
-    if on_done:
-        on_done()
+    await notify(on_done)
     headers = result.headers or {}
     body = result.body if result.body is not None else {}
     if isinstance(body, (bytes, bytearray)):
@@ -1801,6 +1788,7 @@ def get_state(request: web.Request) -> SpartanRouteState:
     return request.app[STATE_KEY]
 
 
+@require_policy
 async def chat_completions(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -1827,8 +1815,8 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
     except CorrelationError as exc:
         return response_json_error(str(exc), 409, "pi_origin_invalid", "invalid_request_error")
 
-    def done() -> None:
-        finish_pi()
+    async def done() -> None:
+        await finish_pi()
         log_request(state, body, route, result, started, request_id, session_id, turn_id, "chat_completions")
 
     return await write_execution_response(
@@ -1838,6 +1826,7 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
     )
 
 
+@require_policy
 async def responses(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -1998,6 +1987,7 @@ def summarize_image_multipart_payload(fields: Any, log_content: bool) -> dict[st
     return summary
 
 
+@require_policy
 async def image_generations(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -2052,6 +2042,7 @@ async def proxy_openai_multipart(state: SpartanRouteState, endpoint: str, fields
         return ExecutionResult(response.status, body=data, headers={"Content-Type": response.headers.get("Content-Type", "application/json")}, error=sanitize_preview(data.decode("utf-8", "replace")) if response.status >= 400 else None)
 
 
+@require_policy
 async def image_edits(request: web.Request) -> web.StreamResponse:
     try:
         fields = await request.post()
@@ -2579,9 +2570,12 @@ def read_daily_cache_rows(
 async def health(request: web.Request) -> web.Response:
     state = get_state(request)
     codex_slots = []
+    policy_ready = True
     if state.codex:
         try:
             codex_slots = state.codex.slot_status()
+        except SlotPolicyUnavailable:
+            policy_ready = False
         except Exception as exc:
             record_telemetry_failure(state, "read", "slot_status", exc)
         else:
@@ -2590,14 +2584,15 @@ async def health(request: web.Request) -> web.Response:
     database_status = state.telemetry.health_status()
     telemetry_status["database"] = database_status
     return web.json_response({
-        "ok": True,
-        "degraded": not database_status["healthy"],
+        "ok": policy_ready,
+        "policyReady": policy_ready,
+        "degraded": not database_status["healthy"] or not policy_ready,
         "service": "spartan-route",
         "version": "0.1.0",
         "enabled": state.config.enabled,
         "telemetry": telemetry_status,
         "codexSlots": codex_slots,
-    })
+    }, status=200 if policy_ready else 503)
 
 
 async def stats(request: web.Request) -> web.Response:

@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
+// The parent agent may itself run offline. Each scenario owns this input.
+let inheritedOffline;
+beforeEach(() => { inheritedOffline = process.env.PI_OFFLINE; delete process.env.PI_OFFLINE; });
+afterEach(() => {
+  if (inheritedOffline === undefined) delete process.env.PI_OFFLINE;
+  else process.env.PI_OFFLINE = inheritedOffline;
+});
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

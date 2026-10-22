@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .slot_policy import load_policy, policy_snapshot, decode_override
+
 import asyncio
 import contextlib
 import copy
@@ -122,8 +124,9 @@ class TelemetryStore:
         self._last_failure_code: str | None = None
         self._retention_status: dict[str, Any] = {}
         self._init_schema()
-        self.pi_usage = PiUsageStore(self._conn, self._lock)
         try:
+            self._slot_policy = load_policy(self._conn, self._slot_override_from_row)
+            self.pi_usage = PiUsageStore(self._conn, self._lock)
             self.enforce_routing_retention(force_rebuild=True)
         except Exception:
             self._conn.close()
@@ -1315,7 +1318,7 @@ class TelemetryStore:
         auth_fingerprint_hash: str | None = None,
     ) -> None:
         updated_at = now_iso()
-        with self._lock:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO codex_slot_overrides (
@@ -1337,17 +1340,18 @@ class TelemetryStore:
                     updated_at,
                 ),
             )
+            candidate = load_policy(self._conn, self._slot_override_from_row)
             self._conn.commit()
+            # Publish only the fully committed policy. Telemetry retention never
+            # participates in hot-path policy reads. Failed writes keep this snapshot.
+            self._slot_policy = candidate
 
     def slot_routing_overrides(self) -> dict[int, dict[str, Any]]:
-        with self._lock:
-            rows = self._conn.execute("SELECT * FROM codex_slot_overrides ORDER BY slot_index").fetchall()
-        return {int(row["slot_index"]): self._slot_override_from_row(dict(row)) for row in rows}
+        return policy_snapshot(self)
 
     def slot_routing_override(self, slot_index: int) -> dict[str, Any] | None:
-        with self._lock:
-            row = self._conn.execute("SELECT * FROM codex_slot_overrides WHERE slot_index = ?", (int(slot_index),)).fetchone()
-        return self._slot_override_from_row(dict(row)) if row else None
+        row = policy_snapshot(self).get(int(slot_index))
+        return dict(row) if row is not None else None
 
     def codex_model_contexts(self) -> dict[str, int]:
         with self._lock:
@@ -2269,15 +2273,7 @@ class TelemetryStore:
         legacy = upstream is None and total is None
         return upstream_int if upstream is not None else response, total_int if total is not None else response, legacy
 
-    def _slot_override_from_row(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "slotIndex": int(row["slot_index"]),
-            "routingEnabled": bool(row["routing_enabled"]),
-            "accountKey": row.get("account_key"),
-            "slotPathHash": row.get("slot_path_hash"),
-            "authFingerprintHash": row.get("auth_fingerprint_hash"),
-            "updatedAt": row.get("updated_at"),
-        }
+    _slot_override_from_row = staticmethod(decode_override)
 
     def _decision_from_row(self, row: dict[str, Any]) -> dict[str, Any]:
         context: Any = None

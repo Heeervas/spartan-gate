@@ -337,10 +337,11 @@ class PiApiTests(unittest.IsolatedAsyncioTestCase):
 
         observed.stream = stream()
         record = self.store.pi_usage.record
+        loop = asyncio.get_running_loop()
 
         def finished(*args):
             record(*args)
-            finalized.set()
+            loop.call_soon_threadsafe(finalized.set)
 
         with patch("spartan_route.app.execute_chat", new=AsyncMock(return_value=observed)), \
              patch.object(self.store.pi_usage, "record", side_effect=finished):

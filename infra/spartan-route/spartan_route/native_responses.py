@@ -30,6 +30,7 @@ from .util import stable_json, token_count_estimate
 from .native_cache import NativeCacheDiagnostics, provider_cache_fields, request_diagnostics, cache_read_known
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected
 from .transport import TransportError
+from .attempt import CodexAttempt, apply_outcome
 
 CODEX_RESPONSES_REALM = "codex_subscription"
 CODEX_RESPONSES_MAX_ATTEMPTS = 3
@@ -159,6 +160,7 @@ def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_na
     if event_name in {"response.output_item.added", "response.output_item.done"}:
         capture_tool_item(result, payload.get("item"), payload.get("output_index"))
     if event_name in TERMINAL_CODEX_EVENTS:
+        result.error = terminal_error(payload, event_name)
         result.completed = bool(event_name == "response.completed" and response is not None and response.get("status") == "completed")
         try:
             result.cache_write_tokens, result.cache_provider_diagnostics = provider_cache_fields(payload)
@@ -171,6 +173,23 @@ def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_na
         if result.tool_telemetry_complete:
             result.actual_tool_call_count = len(result._native_tool_names)
             result.actual_tool_names = sorted(set(result._native_tool_names.values()))
+
+
+def terminal_error(payload: dict[str, Any], event_name: str) -> str | None:
+    response = response_object(payload) or {}
+    if event_name == "response.completed" and response.get("status") == "completed":
+        return None
+    error = response.get("error") or payload.get("error")
+    if isinstance(error, dict):
+        return str(error.get("code") or error.get("type") or "codex_error")
+    return "codex_incomplete_response"
+
+
+def missing_terminal(result: CodexCallResult) -> bytes:
+    result.completed = False
+    result.error = "codex_incomplete_response"
+    return sse({"type": "response.failed", "response": {"status": "failed", "error": {
+        "code": result.error, "type": "upstream_error", "message": "Upstream ended before a terminal response"}}}, "response.failed")
 
 
 def sanitized_error_code(text: str) -> str:
@@ -284,11 +303,36 @@ async def collect_response(
             terminal["output"] = completed_output_items
     result.body = terminal
     status = str(terminal.get("status") or "").lower()
-    result.completed = status == "completed"
     if status in {"failed", "cancelled", "incomplete"}:
         error = terminal.get("error")
         result.error = router._error_code(error) if isinstance(error, dict) else f"response_{status}"
     return result
+
+
+async def buffer_precommit(events: Any, result: CodexCallResult, realm: str) -> tuple[list[bytes], bool]:
+    buffered = []
+    size = 0
+    async for event, data in events:
+        if not data or data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (ValueError, TypeError):
+            result._native_tool_invalid = True
+            continue
+        if not isinstance(payload, dict):
+            result._native_tool_invalid = True
+            continue
+        name = response_event_name(event, payload)
+        encoded = sse(annotate_realm(payload, realm), name)
+        buffered.append(encoded)
+        size += len(encoded)
+        capture_telemetry(result, payload, name)
+        if name == "error":
+            result.error = sanitized_error_code(data)
+        if len(buffered) > CODEX_RESPONSES_PRECOMMIT_MAX_EVENTS or size > CODEX_RESPONSES_PRECOMMIT_MAX_BYTES or name not in {"response.created", "response.in_progress"}:
+            return buffered, name in TERMINAL_CODEX_EVENTS or name == "error"
+    return [], False
 
 
 async def prepare_stream(
@@ -299,36 +343,11 @@ async def prepare_stream(
     realm: str,
 ) -> bool:
     events = parse_sse_response(opened.response)
-    buffered: list[bytes] = []
-    buffered_bytes = 0
     try:
-        while True:
-            try:
-                event, data = await events.__anext__()
-            except StopAsyncIteration:
-                opened.response.release()
-                return False
-            if not data or data == "[DONE]":
-                continue
-            try:
-                payload = json.loads(data)
-            except Exception:
-                result._native_tool_invalid = True
-                continue
-            if not isinstance(payload, dict):
-                result._native_tool_invalid = True
-                continue
-            event_name = response_event_name(event, payload)
-            encoded = sse(annotate_realm(payload, realm), event_name)
-            buffered.append(encoded)
-            buffered_bytes += len(encoded)
-            capture_telemetry(result, payload, event_name)
-            if (
-                len(buffered) > CODEX_RESPONSES_PRECOMMIT_MAX_EVENTS
-                or buffered_bytes > CODEX_RESPONSES_PRECOMMIT_MAX_BYTES
-                or event_name not in {"response.created", "response.in_progress"}
-            ):
-                break
+        buffered, first_terminal = await buffer_precommit(events, result, realm)
+        if not buffered:
+            opened.response.release()
+            return False
     except TransportError as exc:
         result.status, result.error, result.retry_allowed = exc.status, exc.code, exc.retry_allowed
         result.body = {"error": exc.error}
@@ -339,9 +358,12 @@ async def prepare_stream(
         return False
 
     async def stream() -> AsyncIterator[bytes]:
+        terminal_seen = first_terminal
         try:
             for chunk in buffered:
                 yield chunk
+            if terminal_seen:
+                return
             async for event, data in events:
                 if not data or data == "[DONE]":
                     continue
@@ -355,17 +377,17 @@ async def prepare_stream(
                     continue
                 event_name = response_event_name(event, payload)
                 capture_telemetry(result, payload, event_name)
-                current = response_object(payload)
                 if event_name in TERMINAL_CODEX_EVENTS:
-                    status = str(current.get("status") or "") if current is not None else ""
-                    result.completed = status == "completed"
-                    if status in {"failed", "cancelled", "incomplete"}:
-                        error = current.get("error") if current is not None else None
-                        result.error = router._error_code(error) if isinstance(error, dict) else f"response_{status}"
+                    terminal_seen = True
                 elif event_name == "error":
+                    terminal_seen = True
                     error = payload.get("error") if isinstance(payload.get("error"), dict) else payload
                     result.error = router._error_code(error)
                 yield sse(annotate_realm(payload, realm), event_name)
+                if terminal_seen:
+                    return
+            if not terminal_seen:
+                yield missing_terminal(result)
         except TransportError as exc:
             error = router._websocket_stream_error(slot, exc)
             result.error = router._error_code(error)
@@ -433,6 +455,7 @@ async def execute_codex_responses(
         if not chosen:
             break
         slot, auth = chosen
+        attempt = CodexAttempt(slot, auth, slot.auth_fingerprint)
         catalog = getattr(router, "model_catalog", None)
         if probe is not None and catalog is not None and not catalog.supports(slot, auth, model_id, reasoning_effort):
             experiments.finish(probe, success=False, sent=False)
@@ -503,12 +526,7 @@ async def execute_codex_responses(
             excluded_slots.add(slot.index)
             if auth.account_key:
                 excluded_accounts.add(auth.account_key)
-            if opened.status == 401:
-                router._quarantine_auth_failure(slot)
-            elif opened.status == 429:
-                router.mark_rate_limited(slot, text)
-            else:
-                router.mark_transient(slot)
+            apply_outcome(router, attempt, opened.status, text)
             continue
 
         result = CodexCallResult(
@@ -523,7 +541,7 @@ async def execute_codex_responses(
         )
         if wants_stream:
             try:
-                committed = await prepare_stream(router, opened, result, slot, CODEX_RESPONSES_REALM)
+                committed = await prepare_stream(router, opened, result, attempt, CODEX_RESPONSES_REALM)
             except BaseException:
                 diagnostics.finish(observation, success=False, error="request_aborted")
                 finish_probe(False)
@@ -558,7 +576,7 @@ async def execute_codex_responses(
                     finally:
                         await cleanup_stream()
                         if result.completed and not result.error and affinity_key:
-                            router._remember_lease(affinity_key, slot)
+                            router._remember_lease(affinity_key, attempt)
 
                 result.stream_cleanup = cleanup_stream
                 result.stream = guarded_stream()
@@ -580,17 +598,17 @@ async def execute_codex_responses(
                 if auth.account_key:
                     excluded_accounts.add(auth.account_key)
                 if result.status == 401:
-                    router._quarantine_auth_failure(slot)
+                    router._quarantine_auth_failure(attempt)
                 elif result.status == 429:
-                    router.mark_rate_limited(slot, text)
+                    router.mark_rate_limited(attempt, text)
                 else:
-                    router.mark_transient(slot)
+                    router.mark_transient(attempt)
                 last_result = result
                 continue
             excluded_slots.add(slot.index)
             if auth.account_key:
                 excluded_accounts.add(auth.account_key)
-            router.mark_transient(slot)
+            router.mark_transient(attempt)
             last_result = CodexCallResult(
                 status=502,
                 body={"error": {"message": "Codex Responses stream ended before commit", "type": "upstream_error", "code": "codex_stream_error"}},
@@ -602,7 +620,7 @@ async def execute_codex_responses(
             continue
 
         try:
-            collected = await collect_response(router, opened, slot, CODEX_RESPONSES_REALM)
+            collected = await collect_response(router, opened, attempt, CODEX_RESPONSES_REALM)
         except BaseException:
             diagnostics.finish(observation, success=False, error="request_aborted")
             finish_probe(False)
@@ -615,18 +633,18 @@ async def execute_codex_responses(
         finish_cache(collected)
         if not collected.retry_allowed or collected.status < 400 or not should_retry(collected.status, stable_json(collected.body)):
             if collected.completed and not collected.error and affinity_key:
-                router._remember_lease(affinity_key, slot)
+                router._remember_lease(affinity_key, attempt)
             return collected
         excluded_slots.add(slot.index)
         if auth.account_key:
             excluded_accounts.add(auth.account_key)
         error_text = stable_json(collected.body)
         if collected.status == 401:
-            router._quarantine_auth_failure(slot)
+            router._quarantine_auth_failure(attempt)
         elif collected.status == 429:
-            router.mark_rate_limited(slot, error_text)
+            router.mark_rate_limited(attempt, error_text)
         else:
-            router.mark_transient(slot)
+            router.mark_transient(attempt)
         last_result = collected
 
     if selection_diagnostics.get("operational_eligible", 0) > 0 and selection_diagnostics.get("model_eligible") == 0:

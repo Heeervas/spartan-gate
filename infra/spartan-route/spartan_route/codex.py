@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .attempt import CodexAttempt, outcome_slot, valid_tool_arguments
+
 import asyncio
 import base64
 import copy
@@ -177,7 +179,7 @@ class CodexAuthCandidate:
     last_refresh_at: str | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class CodexAuth:
     access_token: str
     refresh_token: str | None = None
@@ -870,7 +872,7 @@ class CodexRouter:
             raise IndexError("slot not found")
         await self.load_auth(slot)
         identity = self._slot_identity(slot)
-        self.telemetry.set_slot_routing_enabled(
+        await asyncio.to_thread(self.telemetry.set_slot_routing_enabled,
             slot.index,
             bool(routing_enabled),
             account_key=identity["accountKey"],
@@ -1471,7 +1473,10 @@ class CodexRouter:
         for key in expired:
             self.leases.pop(key, None)
 
-    def _remember_lease(self, affinity_key: str | None, slot: CodexSlot) -> None:
+    def _remember_lease(self, affinity_key: str | None, slot: CodexSlot | CodexAttempt) -> None:
+        slot = outcome_slot(slot)
+        if slot is None:
+            return
         mode, duration, _grace, max_age, max_entries = self._lease_settings()
         if mode == "off" or not affinity_key or not slot.auth or not slot.auth.account_key:
             return
@@ -1649,15 +1654,21 @@ class CodexRouter:
             return {}
         return {"Retry-After": str(value)}
 
-    def mark_rate_limited(self, slot: CodexSlot, text: str) -> None:
+    def mark_rate_limited(self, slot: CodexSlot | CodexAttempt, text: str) -> None:
+        slot = outcome_slot(slot)
+        if slot is None:
+            return
         error = parse_codex_error(text)
         reset = epoch_millis(error.get("resets_at")) or int((time.time() + parse_float(error.get("resets_in_seconds"), 900)) * 1000)
         slot.rate_limited_until = reset / 1000
         self._invalidate_slot_leases(slot)
         self._notify_availability_changed()
 
-    def _quarantine_auth_failure(self, slot: CodexSlot) -> None:
+    def _quarantine_auth_failure(self, slot: CodexSlot | CodexAttempt) -> None:
         """Keep a rejected auth candidate out of rotation until it changes."""
+        slot = outcome_slot(slot)
+        if slot is None:
+            return
         failed_fingerprint = slot.auth_fingerprint
         slot.auth = None
         slot.auth_error_code = "reauth_required"
@@ -1714,7 +1725,10 @@ class CodexRouter:
         finally:
             self._last_recovery_probe_at = time.monotonic()
 
-    def mark_transient(self, slot: CodexSlot) -> None:
+    def mark_transient(self, slot: CodexSlot | CodexAttempt) -> None:
+        slot = outcome_slot(slot)
+        if slot is None:
+            return
         cooldown = parse_int(os.environ.get("CODEX_TRANSIENT_5XX_COOLDOWN_MS"), 120_000, 0, 900_000) / 1000
         if cooldown > 0:
             slot.transient_until = time.time() + cooldown
@@ -1798,20 +1812,20 @@ class CodexRouter:
                 if not chosen:
                     break
                 slot, auth = chosen
-                slot.in_flight += 1
-                slot.last_selected_at = time.time()
+                attempt = CodexAttempt(slot, auth, slot.auth_fingerprint)
+                slot.in_flight, slot.last_selected_at = slot.in_flight + 1, time.time()
                 pi_attempt = pi_request.start("codex") if pi_request is not None else None
                 try:
                     result = await self._single_chat_call(body, model_id, model_name, wants_stream, slot, auth)
                 except BaseException:
                     slot.in_flight = max(0, slot.in_flight - 1)
                     if pi_attempt is not None:
-                        pi_attempt.finish(incomplete=True)
+                        await pi_attempt.finish(incomplete=True)
                     raise
                 if result.stream is None:
                     slot.in_flight = max(0, slot.in_flight - 1)
                     if pi_attempt is not None:
-                        pi_attempt.finish(result, incomplete=bool(result.error) or not result.completed)
+                        await pi_attempt.finish(result, incomplete=bool(result.error) or not result.completed)
                 else:
                     source = result.stream
                     source_cleanup = result.stream_cleanup
@@ -1831,7 +1845,7 @@ class CodexRouter:
                             finally:
                                 slot.in_flight = max(0, slot.in_flight - 1)
                                 if pi_attempt is not None:
-                                    pi_attempt.finish(result, incomplete=bool(result.error) or not result.completed)
+                                    await pi_attempt.finish(result, incomplete=bool(result.error) or not result.completed)
 
                     async def stream_with_inflight_guard() -> AsyncIterator[bytes]:
                         try:
@@ -1844,7 +1858,7 @@ class CodexRouter:
                         finally:
                             await cleanup_stream()
                             if result.completed and not result.error and affinity_key:
-                                self._remember_lease(affinity_key, slot)
+                                self._remember_lease(affinity_key, attempt)
 
                     result.stream_cleanup = cleanup_stream
                     result.stream = stream_with_inflight_guard()
@@ -1857,7 +1871,7 @@ class CodexRouter:
                     return result
                 if result.status not in {401, 429, 500, 502}:
                     if result.status < 400 and result.stream is None and not result.error:
-                        self._remember_lease(affinity_key, slot)
+                        self._remember_lease(affinity_key, attempt)
                     return result
                 text = result.body.decode("utf-8", errors="replace") if isinstance(result.body, bytes) else stable_json(result.body)
                 if not should_retry(result.status, text):
@@ -1866,11 +1880,11 @@ class CodexRouter:
                 if auth.account_key:
                     excluded_accounts.add(auth.account_key)
                 if result.status == 401:
-                    self._quarantine_auth_failure(slot)
+                    self._quarantine_auth_failure(attempt)
                 elif result.status == 429:
-                    self.mark_rate_limited(slot, text)
+                    self.mark_rate_limited(attempt, text)
                 else:
-                    self.mark_transient(slot)
+                    self.mark_transient(attempt)
 
             state = await self.slot_availability()
             if state.eligible == 0 and state.rate_limited and not state.transient_5xx:
@@ -1891,6 +1905,7 @@ class CodexRouter:
         slot: CodexSlot,
         auth: CodexAuth,
     ) -> CodexCallResult:
+        slot = CodexAttempt(slot, auth, slot.auth_fingerprint)
         headers = build_codex_responses_headers(body, auth)
         timeout_ms = codex_request_timeout_ms()
         try:
@@ -1940,7 +1955,7 @@ class CodexRouter:
             return result
         collected = await self._collect_codex_response(response, model_id, slot)
         collected.upstream_response_time_ms = None if getattr(response, "is_websocket", False) else upstream_response_time_ms
-        collected.retry_allowed = getattr(response, "retry_allowed", True)
+        collected.retry_allowed = collected.retry_allowed and getattr(response, "retry_allowed", True)
         collected.transport_details = getattr(response, "transport_details", None)
         return collected
 
@@ -1970,7 +1985,7 @@ class CodexRouter:
                     state.terminal_error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
                     break
                 self._apply_codex_event_state(event, parsed, state)
-                if state.terminal_error:
+                if state.terminal_seen:
                     break
         except asyncio.TimeoutError as exc:
             return self._stream_transport_result(exc, slot, state)
@@ -2017,15 +2032,8 @@ class CodexRouter:
                 result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
                 result.usage_seen = state.usage_seen
                 result.usage_event_type = state.usage_event_type
-                if not state.has_payload():
-                    error = self._empty_response_error()
-                    result.error = str(error["code"])
-                    self.mark_transient(slot)
-                    await emit(sse({"error": error}, event="error"))
-                    await emit(b"data: [DONE]\n\n")
-                    return
-                if state.finish_reason == "length" and state.tool_calls:
-                    error = self._incomplete_tool_response_error()
+                error = self._chat_terminal_error(state)
+                if error is not None:
                     result.error = str(error["code"])
                     self.mark_transient(slot)
                     await emit(sse({"error": error}, event="error"))
@@ -2234,7 +2242,7 @@ class CodexRouter:
 
     def _incomplete_tool_response_error(self) -> dict[str, Any]:
         return {
-            "message": "Codex returned an incomplete tool-call response",
+            "message": "Codex response ended without a valid successful completion",
             "type": "upstream_error",
             "code": "codex_incomplete_response",
         }
@@ -2335,36 +2343,22 @@ class CodexRouter:
             usage_event_type=usage_event_type,
         )
 
-    def _chat_completion_result(self, state: CodexEventState, model: str) -> CodexCallResult:
+    def _chat_terminal_error(self, state: CodexEventState) -> dict[str, Any] | None:
         if state.terminal_error:
-            return self._error_result(state.terminal_error, state)
-        prompt_tokens, cached, output_tokens = self._usage_values(state)
+            return state.terminal_error
         if not state.has_payload():
-            return CodexCallResult(
-                status=502,
-                body={"error": self._empty_response_error()},
-                input_tokens=prompt_tokens,
-                cached_input_tokens=cached,
-                actual_tool_call_count=len(state.calls()),
-                actual_tool_names=self._actual_tool_names(state),
-                output_tokens=output_tokens,
-                error="codex_empty_response",
-                usage_seen=state.usage_seen,
-                usage_event_type=state.usage_event_type,
-            )
-        if state.finish_reason == "length" and state.tool_calls:
-            return CodexCallResult(
-                status=502,
-                body={"error": self._incomplete_tool_response_error()},
-                actual_tool_call_count=len(state.calls()),
-                actual_tool_names=self._actual_tool_names(state),
-                input_tokens=prompt_tokens,
-                cached_input_tokens=cached,
-                output_tokens=output_tokens,
-                error="codex_incomplete_response",
-                usage_seen=state.usage_seen,
-                usage_event_type=state.usage_event_type,
-            )
+            return self._empty_response_error()
+        if not state.terminal_seen or not valid_tool_arguments(state.calls()) or (state.finish_reason == "length" and state.tool_calls):
+            return self._incomplete_tool_response_error()
+        return None
+
+    def _chat_completion_result(self, state: CodexEventState, model: str) -> CodexCallResult:
+        error = self._chat_terminal_error(state)
+        if error is not None:
+            result = self._error_result(error, state)
+            result.retry_allowed = not (state.has_payload() and not state.terminal_seen)
+            return result
+        prompt_tokens, cached, output_tokens = self._usage_values(state)
         text = state.text()
         calls = state.calls()
         message: dict[str, Any] = {"role": "assistant", "content": text if text else None}
@@ -2895,6 +2889,7 @@ class CodexRouter:
                 if not chosen:
                     break
                 slot, auth = chosen
+                attempt = CodexAttempt(slot, auth, slot.auth_fingerprint)
                 slot.in_flight += 1
                 slot.last_selected_at = time.time()
                 try:
@@ -2913,11 +2908,11 @@ class CodexRouter:
                 if auth.account_key:
                     excluded_accounts.add(auth.account_key)
                 if result.status == 401:
-                    self._quarantine_auth_failure(slot)
+                    self._quarantine_auth_failure(attempt)
                 elif result.status == 429:
-                    self.mark_rate_limited(slot, text)
+                    self.mark_rate_limited(attempt, text)
                 else:
-                    self.mark_transient(slot)
+                    self.mark_transient(attempt)
 
             state = await self.slot_availability()
             if state.eligible == 0 and state.rate_limited and not state.transient_5xx:
