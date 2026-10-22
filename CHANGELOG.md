@@ -4,6 +4,26 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Retire Browserless and the legacy ClawRoute application from supported source,
+  installation shapes and operator helpers. L3 now uses internal Spartan Route;
+  Camofox remains the managed browser. Preserve shared Route configuration names,
+  existing private data and the Camofox Meet transcription capability; CDP-only
+  workflows are no longer supported. Existing deployments need explicit migration.
+- Require successful upstream terminal events before publishing Codex tool calls,
+  fence delayed credential outcomes by attempt identity, close upstream resources
+  before stream iteration, and isolate durable slot policy from telemetry locks.
+  Bound SSE frames and move Pi database work off the event loop.
+- Protect doctor diagnostics with exclusive private scratch and cleanup, bound
+  Reader's inbound request lifetime, minimize proxy audit URLs, and reject partial
+  or incompatible Hermes stage2 patches against pinned upstream source.
+- Enforce edge session expiry with an isolated, bounded HMAC verifier and stock
+  Caddy authentication; add transactional configuration preparation and signed
+  session migration. Activation requires new verifier wiring and independent keys;
+  no deployed stack or private browser data is changed by these source commits.
+- Replace legacy CI targets with current-stack portable and pinned-source native
+  checks; repair test isolation and add file-backed dashboard characterization.
+  Comparative measurements establish output parity, not a claimed speed gain.
+
 - Bake hash-pinned Qlty 0.659.0 and Desloppify 1.0 into Hermes for optional
   local analysis. Preserve Qlty's native CLI syntax with telemetry and upgrade
   checks off; process-locally expose pinned analyzers and isolate Desloppify's

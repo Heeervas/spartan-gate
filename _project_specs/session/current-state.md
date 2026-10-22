@@ -1,5 +1,36 @@
 # Current State
 
+## Source accepted — audit remediation and legacy retirement (2026-10-22)
+
+Authority: **complete-target for source implementation and validated local
+commits**, authorized by the operator. Browserless and legacy ClawRoute may be
+retired; private profiles/databases and surviving Spartan Route configuration
+must be preserved. No deployment, builds, production mutation, data deletion or
+push is authorized by this task.
+
+Durable plan and recovery entry: `docs/reviews/2026-10-22-remediation-plan.md`.
+Read its execution log, `.agents/validation.md` and Git status before resuming.
+Starting candidate is `3b0262b`; inherited todo-list and three runtime notes stay
+untouched. Source implementation and independent reviews are complete; local
+commit closeout is recorded in the plan. F01–F15 are addressed in source, with
+retired-shape obligations revalidated against surviving L0–L4 contracts. The
+signed edge verifier and private override migration are NOT activated.
+
+Consolidated local checks pass: Route 474 Python/41 JS (including benchmark),
+Hermes 310 Python with one root-authority skip plus 75 mandatory native tests
+without skips, Reader 26, Pi 4 Python/23 JS, Camofox 28 Python/53 JS, native
+Caddy 5 and scripts 492 including final ports regression. Native Camofox repeats
+its 53 JS tests; do not add overlapping counts. Retired Hermes JavaScript files
+have no surviving suite: zero tests is not claimed as coverage. TOP assurance
+passes with five pre-existing bounded exceptions; baseline is unchanged.
+
+Sol/medium builders and Luna/high independent reviewers accepted their final
+scopes, including the integration and security corrections. Remote GitHub CI,
+container builds, private migration and live/browser acceptance remain separate
+pending operations. Reader outbound DNS/fetch and executor-thread shutdown still
+lack proven global cancellation guarantees. File-backed synthetic comparison
+showed matching outputs, not a speed gain. No runtime data was deleted.
+
 ## Optional Hermes quality CLIs deployed (2026-10-21)
 
 Qlty 0.659.0 and Desloppify 1.0 are baked into the rebuilt, healthy Hermes

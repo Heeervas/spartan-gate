@@ -1,5 +1,26 @@
 # Decisions
 
+## 2026-10-22 — Audit remediation and source retirement
+
+- The operator authorized implementation of the reviewed audit and retirement
+  of Browserless and the legacy ClawRoute application, including source deletion.
+  Preserve private browser profiles, credentials and databases; no data cleanup,
+  deployment, build, push or publication is implied.
+- Preserve L0–L4 entry points; L3 becomes L2 plus internal Spartan Route. Reject
+  retired `clawroute` addon selection before writes with migration guidance.
+  Keep shared `config/clawroute`, consumed `CLAWROUTE_*` keys and auto model aliases.
+- Retire CDP-only workflows honestly; preserve existing Camofox transcription,
+  managed browser isolation, vault behavior and numeric/root-owned supervision.
+- Server-side edge expiry uses a bounded internal verifier and stock Caddy
+  forward-auth, with separate audience keys and service authentication. Existing
+  private overrides need explicit offline migration and separately approved
+  activation; browser Max-Age alone is not an authorization deadline.
+- Keep the immutable quality baseline and thresholds. Independent Sol/medium
+  implementation and Luna/high review must precede acceptance of integrated
+  source. Known executor/outbound DNS lifecycle limits remain explicit residuals,
+  not claims of cancellation solved by moving work into threads.
+- Durable execution owner: `docs/reviews/2026-10-22-remediation-plan.md`.
+
 ## 2026-10-09 — Native vault transport for Camofox
 
 - Reuse Hermes vault backends, classifiers, fill scripts and secure prompts;
