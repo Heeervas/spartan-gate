@@ -1,4 +1,5 @@
 import importlib.util
+import http.client
 import threading
 import socket
 import time
@@ -14,6 +15,65 @@ spec.loader.exec_module(edge)
 
 
 class SessionTests(unittest.TestCase):
+    def test_query_routes_preserve_service_auth_and_exact_endpoint_matching(self):
+        server = edge.Server(('127.0.0.1', 0), {'camofox': 'a' * 64, 'apps': 'b' * 64}, 'c' * 64)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+
+        def request(path, headers):
+            connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+            try:
+                connection.putrequest('GET', path)
+                for name, value in headers:
+                    connection.putheader(name, value)
+                connection.endheaders()
+                response = connection.getresponse()
+                response.read()
+                return response.status, response.headers
+            finally:
+                connection.close()
+
+        service = [('X-Edge-Service-Key', 'c' * 64)]
+        query = '?evidence=horizontal&next=%2Fverify%2Fcamofox&x=1&x=2'
+        try:
+            for audience in ('apps', 'camofox'):
+                with self.subTest(audience=audience):
+                    status, headers = request('/mint/' + audience + query, service)
+                    self.assertEqual(status, 200)
+                    cookie = headers['X-Edge-Cookie'].split(';')[0]
+                    status, headers = request('/verify/' + audience + query, service + [('Cookie', cookie)])
+                    self.assertEqual(status, 200)
+                    self.assertEqual(headers['X-Edge-Valid'], 'yes')
+                    key = server.keys[audience]
+                    for token in (edge.mint(key, audience, time.time() - 3600), 'invalid'):
+                        status, headers = request('/verify/' + audience + query,
+                                                  service + [('Cookie', edge.COOKIE_NAMES[audience] + '=' + token)])
+                        self.assertEqual(status, 200)
+                        self.assertEqual(headers['X-Edge-Valid'], 'no')
+                    other = 'camofox' if audience == 'apps' else 'apps'
+                    status, headers = request('/verify/' + other + query, service + [('Cookie', cookie)])
+                    self.assertEqual(status, 200)
+                    self.assertEqual(headers['X-Edge-Valid'], 'no')
+            for operation in ('mint', 'verify'):
+                for credentials in ([], [('X-Edge-Service-Key', 'wrong')], service * 2):
+                    with self.subTest(operation=operation, credentials=len(credentials)):
+                        status, headers = request('/' + operation + '/apps' + query, credentials)
+                        self.assertEqual(status, 403)
+                        self.assertNotIn('X-Edge-Cookie', headers)
+                        self.assertNotIn('X-Edge-Valid', headers)
+            for path in ('/verify/unknown', '/unknown/apps', '/verify/apps/extra',
+                         '/verify/apps/', '/verify/apps%3Fignored', '/verify%2Fapps',
+                         '/verify/../apps', '/verify//apps'):
+                with self.subTest(path=path):
+                    status, headers = request(path + query, service)
+                    self.assertEqual(status, 404)
+                    self.assertNotIn('X-Edge-Cookie', headers)
+                    self.assertNotIn('X-Edge-Valid', headers)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_expiry_signature_audience_rotation_and_future_fail_closed(self):
         token = edge.mint('a' * 64, 'camofox', 10000)
         self.assertTrue(edge.valid(token, 'a' * 64, 'camofox', 13599))

@@ -1,5 +1,20 @@
 # Current State
 
+## Edge query-string regression repair (2026-10-22)
+
+The operator authorized a security-reviewed fix and edge rebuild/activation.
+Caddy auth subrequests preserve the application's query; the new verifier
+previously included it in the audience comparison and returned 404 before the
+app could respond. Match the literal path before the first `?`, without URL
+decoding or path normalization. Service-key authentication, exact endpoints,
+cookie signatures, audience separation and expiry remain unchanged.
+
+Source acceptance covers verifier HTTP rejection cases and native Caddy query
+bootstrap/session forwarding, including exact repeated/encoded query content.
+The scoped rebuild uses the deployed verifier image as its immutable base,
+retains rollback, and changes only verifier code. Activation/live verification
+are pending until recorded separately; stock Caddy needs no code rebuild.
+
 ## Rebuild activated; bounded live checks passed (2026-10-22)
 
 The operator executed the prepared build and ordered activation. Activation

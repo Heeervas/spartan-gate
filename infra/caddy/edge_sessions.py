@@ -106,7 +106,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(credentials) != 1 or not hmac.compare_digest(credentials[0], self.server.service_key):
             self.send_error(403)
             return
-        parts = self.path.split('/')
+        # Caddy's auth subrequest retains the original application's query.
+        parts = self.path.partition('?')[0].split('/')
         if len(parts) != 3 or parts[1] not in {'verify', 'mint'} or parts[2] not in COOKIE_NAMES:
             self.send_error(404)
             return

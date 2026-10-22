@@ -1152,6 +1152,14 @@ listener. Public HTTP returns unauthenticated `401`; a private TLS listener
 returns `400` to the healthcheck's deliberate plain-HTTP probe. Either proves
 the listener is serving without placing credentials in the check.
 
+Signed-session authentication preserves the application's original query string.
+The internal verifier matches only the literal endpoint path; query parameters
+cannot select an operation, audience or identity. Service authentication and
+cookie signature/expiry checks still apply. The verifier code is baked into
+`edge-sessions`, so a verifier repair requires rebuilding and recreating that
+service after review and isolated acceptance. Restarting stock Caddy alone does
+not update verifier code. Retain the previous verifier image for rollback.
+
 ```sh
 sg-caddy-validate
 sg-restart-caddy

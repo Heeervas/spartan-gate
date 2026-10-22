@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Preserve application query strings through Caddy signed-session authentication.
+  Match verifier endpoints using only the literal URL path, retaining service-key,
+  signature, audience and expiry checks plus exact malformed-path rejection.
+
 - Keep the optional native Hermes `/plan` policy patch out of normal image
   builds pending runtime acceptance. Its evaluated source supports planning
   across domain profiles, complete enabled support checks and native fallback,
