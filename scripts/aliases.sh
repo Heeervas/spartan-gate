@@ -80,6 +80,25 @@ sg_env_value() {
     printf '%s\n' "$default"
 }
 
+sg_spartan_internal_gateway() {
+    local project gateway octet first second third fourth
+    project="${COMPOSE_PROJECT_NAME:-$(sg_env_value COMPOSE_PROJECT_NAME spartan-gate)}"
+    if ! gateway="$(docker network inspect "${project}_spartan_internal" \
+        --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null)" \
+        || [[ ! "$gateway" =~ ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$ ]]; then
+        printf 'Unable to discover a valid Spartan internal IPv4 gateway.\n' >&2
+        return 1
+    fi
+    IFS=. read -r first second third fourth <<< "$gateway"
+    for octet in "$first" "$second" "$third" "$fourth"; do
+        if (( octet > 255 )); then
+            printf 'Unable to discover a valid Spartan internal IPv4 gateway.\n' >&2
+            return 1
+        fi
+    done
+    printf '%s\n' "$gateway"
+}
+
 sg_spartan_route_data_path() {
     local raw
     raw="$(sg_env_value SPARTAN_ROUTE_DATA_PATH "../../runtime/spartan-route")"

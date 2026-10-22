@@ -8,6 +8,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -852,16 +853,20 @@ class WorkstationStartupAliasTests(unittest.TestCase):
         (self.root / "private" / "env" / "local.env").write_text(
             f"SPARTAN_WORKSTATION_STATE_DIR={self.state}\n")
         docker = self.root / "bin" / "docker"
-        docker.write_text("#!/usr/bin/env python3\n" +
+        docker.write_text(f"#!{sys.executable}\n" +
             "import json, os, pathlib, sys\n"
             "root = pathlib.Path(os.environ['WORKSTATION_STARTUP_TEST_ROOT'])\n"
             "with (root / 'docker.log').open('a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:3] == ['network', 'inspect']:\n"
+            "    if os.environ.get('WORKSTATION_TEST_NETWORK_FAIL'): sys.exit(1)\n"
+            "    print(os.environ.get('WORKSTATION_TEST_GATEWAY', '172.29.3.1'))\n"
             "if sys.argv[-3:] == ['config', '--format', 'json']:\n"
             "    if os.environ.get('WORKSTATION_TEST_BAD_CONFIG'): sys.exit(1)\n"
             "    print((root / 'compose.json').read_text())\n")
         docker.chmod(0o755)
         self.env = os.environ.copy()
         self.env.pop("SPARTAN_WORKSTATION_STATE_DIR", None)
+        self.env.pop("COMPOSE_PROJECT_NAME", None)
         self.env["PATH"] = str(self.root / "bin") + os.pathsep + self.env["PATH"]
         self.env["WORKSTATION_STARTUP_TEST_ROOT"] = str(self.root)
 
@@ -907,13 +912,59 @@ class WorkstationStartupAliasTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(self.state.exists())
 
-    def test_broker_wrapper_uses_same_env_file_override_without_preparing(self):
-        result = self.run_alias('python3() { printf "%s" "$SPARTAN_WORKSTATION_STATE_DIR"; }; '
-                                'sg_spartan_internal_gateway() { printf "127.0.0.1"; }; '
-                                'sg-workstation status')
+    def capture_broker(self, command="status"):
+        python = self.root / "bin" / "python3"
+        python.write_text(f"#!{sys.executable}\n"
+            "import json, os, pathlib, sys\n"
+            "root = pathlib.Path(os.environ['WORKSTATION_STARTUP_TEST_ROOT'])\n"
+            "(root / 'broker-called').touch()\n"
+            "print(json.dumps({'state': os.environ.get('SPARTAN_WORKSTATION_STATE_DIR'), "
+            "'args': sys.argv[1:]}))\n")
+        python.chmod(0o755)
+        return self.run_alias("sg-workstation " + command)
+
+    def test_broker_wrapper_discovers_gateway_and_forwards_env_file_state(self):
+        result = self.capture_broker()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, str(self.state))
+        forwarded = json.loads(result.stdout)
+        self.assertEqual(forwarded, {"state": str(self.state), "args": [
+            str(self.root / "scripts" / "workstation-bridge.py"), "status", "--config",
+            str(self.root / "private" / "workstation" / "bridges.json"),
+            "--gateway", "172.29.3.1"]})
+        self.assertEqual(self.calls()[0], ["network", "inspect", "spartan-gate_spartan_internal",
+            "--format", "{{(index .IPAM.Config 0).Gateway}}"])
         self.assertFalse(self.state.exists())
+
+    def test_broker_wrapper_honors_project_and_state_environment_precedence(self):
+        envfile = self.root / "private" / "env" / "local.env"
+        envfile.write_text(f"COMPOSE_PROJECT_NAME=env-file-project\n"
+                           f"SPARTAN_WORKSTATION_STATE_DIR={self.state}\n")
+        self.env["SPARTAN_WORKSTATION_STATE_DIR"] = str(self.root / "override-state")
+        for project in (None, "exported-project"):
+            with self.subTest(project=project):
+                if project:
+                    self.env["COMPOSE_PROJECT_NAME"] = project
+                result = self.capture_broker("repin")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.calls()[-1][2],
+                    (project or "env-file-project") + "_spartan_internal")
+                forwarded = json.loads(result.stdout)
+                self.assertEqual(forwarded["state"], str(self.root / "override-state"))
+                self.assertEqual(forwarded["args"][1], "repin")
+
+    def test_broker_wrapper_blocks_dispatch_when_gateway_discovery_fails(self):
+        cases = ((True, "172.29.3.1"), (False, ""), (False, "<no value>"),
+                 (False, "172.29.3.256"), (False, "::1"), (False, "172.029.3.1"))
+        for fail, gateway in cases:
+            with self.subTest(lookup_failure=fail, gateway=gateway):
+                self.env["WORKSTATION_TEST_NETWORK_FAIL"] = "1" if fail else ""
+                self.env["WORKSTATION_TEST_GATEWAY"] = gateway
+                result = self.capture_broker("repin")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("valid Spartan internal IPv4 gateway", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertFalse((self.root / "broker-called").exists())
+                self.assertFalse(self.state.exists())
 
 
 if __name__ == "__main__":

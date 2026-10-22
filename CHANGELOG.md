@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Restore workstation command gateway discovery after the legacy-service
+  cleanup. Respect Compose project selection and reject unavailable or invalid
+  network gateways before invoking the workstation bridge.
+
 - Preserve application query strings through Caddy signed-session authentication.
   Match verifier endpoints using only the literal URL path, retaining service-key,
   signature, audience and expiry checks plus exact malformed-path rejection.
