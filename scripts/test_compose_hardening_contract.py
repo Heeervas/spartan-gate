@@ -414,6 +414,16 @@ class ComposeHardeningContractTests(unittest.TestCase):
             self.assertTrue(verifier['read_only'])
             self.assertEqual(verifier['cap_drop'], ['ALL'])
 
+    def test_edge_sessions_tmpfs_is_one_mount_with_all_restrictions(self):
+        for label, rendered in self.renders.items():
+            if "edge-sessions" not in rendered["services"]:
+                continue
+            with self.subTest(matrix=label):
+                self.assertEqual(
+                    rendered["services"]["edge-sessions"]["tmpfs"],
+                    ["/tmp:rw,nosuid,nodev,noexec,size=8m"],
+                )
+
     def test_retired_services_are_absent_in_supported_shapes(self):
         for name, config in self.renders.items():
             with self.subTest(shape=name):

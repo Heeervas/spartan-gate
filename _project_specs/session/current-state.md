@@ -1,5 +1,30 @@
 # Current State
 
+## Rebuild activated; bounded live checks passed (2026-10-22)
+
+The operator executed the prepared build and ordered activation. Activation
+stopped at the verifier because an unquoted YAML flow scalar split tmpfs options
+into separate mounts. A focused regression reproduced the defect across seven
+edge-enabled Compose shapes; the quoted scalar passed independent review.
+Private input fingerprints were explicitly rebaselined for only the reviewed
+Compose/test delta. Real Docker and kernel checks confirm one restricted tmpfs.
+
+Recovery resumed the verifier, then Caddy and Hermes without another build or
+recreating already-updated services. All ten containers are healthy. Hermes
+initially exceeded its startup-health allowance but became healthy without retry
+or restart; this remains a healthcheck timing caveat, not a hidden clean start.
+Candidate image IDs match the isolated post-build receipts. Deployed Route uses
+aiohttp 3.14.4. Both signed-session audiences passed bounded mint/verify and
+missing/expired/future/wrong-audience/malformed/duplicate-cookie denial checks.
+Hermes health/import/dependency admission and Route auth denial passed.
+
+No persistent data, keys or volumes were deleted or reset. The pre-existing
+watchdog-volume ownership warning was not repaired by deletion. Private recovery
+receipts are under `private/maintenance/rebuild-ready-20261022/`.
+Browser/vault/full-tool workflows, WebSocket success, interactive login/TLS trust
+and live inference/telemetry remain outside these bounded acceptance checks.
+The preparation-only descriptions below are historical checkpoints.
+
 ## Actual-stack rebuild preparation (2026-10-22)
 
 The operator authorized completing private installation preparation, not image

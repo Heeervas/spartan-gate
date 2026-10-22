@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Quote the edge verifier's tmpfs mount as one YAML scalar, retaining all mount
+  restrictions and preventing Docker from treating options as relative mount
+  paths. Regress the exact rendered mount across all edge-enabled layers.
+
 - Pin Spartan Route to aiohttp 3.14.4 for current HTTP dependency security fixes;
   add regressions for initial-request/header timeouts and Secure shared cookies.
   Make Hermes read-only runtime-document mount tests independent of unpublished
