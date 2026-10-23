@@ -1,5 +1,22 @@
 # Current State
 
+## Named Pi subagent binding correction (2026-10-23)
+
+Source fix `adc8e6b` is installed and accepted. mjakl named child IDs are valid Pi
+IDs but are not UUIDs; the first native adapter rejected them before binding.
+A shared deterministic UUIDv8 adapter now supplies the same canonical identity
+to Route signing and usage while preserving native IDs, session files and cache
+keys. Independent review passed, all Pi suites pass, and TOP passes with the
+previous exceptions unchanged.
+
+The actual installed subagent tool reproduced the failure, then successfully
+retried and resumed that same named session from the same parent process after
+installation. Independent named and ephemeral children also completed using the
+reported model. Both persisted named ledgers have complete observed usage.
+Only three Pi helper modules changed; Route needed no restart. Existing parent
+processes can retry the same child calls. See the follow-up in
+`docs/reviews/pi-native-responses-20261023.md`. No push occurred.
+
 ## Pi native Responses activated (2026-10-23)
 
 The requested Pi/Route fix is implemented in source commit `b4cc3ba`, installed

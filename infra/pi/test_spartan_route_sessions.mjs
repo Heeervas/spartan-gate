@@ -19,7 +19,7 @@ test('named Pi IDs have a pinned, case-sensitive UUIDv8 identity across restarts
 });
 
 test('invalid and unbounded identities cannot obtain a Route session', () => {
-  for (const value of [undefined, null, 1, {}, '', ' ', ' a', 'a ', '../a', 'a/b', 'a:b', 'a\nb', 'a\0b', '-a', 'a_', 'a.', 'x'.repeat(257)]) {
+  for (const value of [undefined, null, 1, {}, '', ' ', ' a', 'a ', '../a', 'a/b', 'a:b', 'a\nb', 'a\n', 'a\r', 'a\u2028', 'a\0b', '-a', 'a_', 'a.', 'x'.repeat(257)]) {
     assert.equal(routeSessionId(value), undefined);
   }
 });

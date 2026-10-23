@@ -19,3 +19,11 @@ turn, continuation, process restart and encrypted reasoning replay with the
 same signed chain. Route recorded all six attempts with no missing usage.
 The other stack services retained their existing containers. Existing Pi
 processes need a restart to load the new provider/helper modules.
+
+Named-subagent follow-up: the first adapter assumed UUID session IDs and rejected
+mjakl's `subagent.<hash>` IDs. The installed correction shares a stable UUIDv8
+identity adapter between binding and usage, preserving native sessions. Actual
+subagent creation, retry of the previously failed session, resume and independent
+named/ephemeral children passed with the parent process kept alive. Fresh child
+launches load the fix automatically; retrying those calls needs no parent restart.
+Route required no change or restart for this correction.

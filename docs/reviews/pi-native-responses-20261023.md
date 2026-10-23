@@ -53,3 +53,38 @@ usage, and no incomplete or missing-usage attempts. Acceptance observes
 `agent_settled`, not just prompt acknowledgments. Private receipts are retained
 in the task's dated admin directory. Existing Pi processes require a restart;
 no session migration is necessary. No push occurred.
+
+## Named subagent regression correction
+
+The initial live acceptance covered ordinary UUID sessions and missed mjakl's
+named IDs (`subagent.<16 hex>`). Real named calls failed locally with
+`Route session binding unavailable` before provider submission. Usage also
+assumed UUIDs and could not register those children. Source fix `adc8e6b` adds
+one shared, versioned native-ID-to-UUIDv8 mapping for binding and usage, preserving
+existing UUIDs, native session files and cache identities. Invalid IDs still fail
+closed; server authentication, signing and realm contracts remain unchanged.
+Usage keeps raw and canonical identities separate across headers, settled
+updates, resume and disposal.
+
+The independent reviewer approved the source and tests. Named save/reopen and
+usage registration failed before the fix and pass afterward. The focused suites
+pass 11 native provider, 20 usage and three identity tests, alongside the full Pi
+command (four Python tests and four JavaScript files). TOP still returns
+QUALITY_PASS_WITH_EXCEPTION with no gaps and no new exceptions.
+
+Installed acceptance used the actual mjakl `subagent` tool with an isolated
+read-only builder fixture and the reported model
+`spartan-route/codex/gpt-6.1-sol-282kcontext`. The installed failure was reproduced,
+then the same named session was successfully retried and resumed after updating
+the three Pi helper modules. The parent process stayed alive across installation.
+A separate named child and an ephemeral child also completed: four real provider
+calls total. The two persisted named sessions retain their original IDs; their
+separate Route usage ledgers record two and one successful attempts respectively,
+with no missing or incomplete usage. Encrypted named replay is covered by the
+native synthetic save/reopen regression; these simple live prompts establish
+the actual named launch, binding, continuation and accounting path.
+
+Route required no change or restart. Existing child sessions and unrelated work
+were preserved. Subsequent child launches read the new helpers, so retrying the
+same calls requires no parent restart. Previous helper bytes are retained outside
+discovery; private receipts are in the dated subagent-binding admin directory.
