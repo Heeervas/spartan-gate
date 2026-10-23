@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Fix native Responses and usage tracking for named Pi subagent sessions by
+  mapping native IDs to stable Route UUIDs without renaming persisted sessions.
+
 - Add native Responses discovery and signed Pi session reasoning replay while
   preserving other model protocols and Route's realm isolation. Track native
   Pi usage across attempts, retries, and stream cleanup.

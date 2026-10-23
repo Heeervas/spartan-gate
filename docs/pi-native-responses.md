@@ -19,12 +19,22 @@ replay provenance through its native callbacks.
 Before a native request, Pi asks authenticated `POST /api/pi/reasoning-binding`
 for a binding containing `spartan_chain_id`, `spartan_expected_realm`, and
 `spartan_binding_mac`. The request contains a SHA-256 hash of the canonical Pi
-agent directory, the native request session UUID, and the desired realm.
+agent directory, a canonical request session UUID, and the desired realm.
 Route derives the chain using a Pi-specific HMAC namespace, signs it with its
 existing server secret, and binds the chain to the realm in its existing
 reasoning binding store. The secret and provider OAuth credentials stay in Route.
 The endpoint rejects malformed input, arbitrary caller-chosen chain IDs,
 unavailable signing/storage, and attempts to change the chain's realm.
+
+Pi allows non-UUID native session IDs, including named subagents such as
+`subagent.<hash>`. The shared `spartan-route-usage/session.mjs` identity adapter
+preserves UUIDs and deterministically maps other valid native IDs to UUIDv8
+using a versioned SHA-256 namespace. It accepts Pi's native ID alphabet and
+start/end rules with a 256-character bound. Invalid IDs fail before binding or
+provider submission. Binding and usage use the same derived ID; native session
+headers, filenames, cache keys and `options.sessionId` retain their original
+identity. Case is preserved for named IDs. The mapping is a persistence contract
+and must remain stable across updates and process restarts.
 
 Pi stamps received reasoning items before native normalization. Pi's own
 `thinkingSignature` and session JSONL retain those tags, including after resume.
@@ -46,7 +56,8 @@ wrapper uses the native Pi session key.
 
 The source owner is `infra/pi/extensions/spartan-route-provider.ts` plus its
 `spartan-route-provider/` helpers. Install these alongside the existing
-`spartan-route-usage/gateway.py` helper in Pi's configured agent extension
+`spartan-route-usage/gateway.py` and shared `spartan-route-usage/session.mjs`
+helpers in Pi's configured agent extension
 directory. The gateway reuses the existing Route configuration and Caddy
 authentication; no second credential store is needed. Keep only one active
 Route provider entry: replace the old `spartan-route.ts` loader when installing

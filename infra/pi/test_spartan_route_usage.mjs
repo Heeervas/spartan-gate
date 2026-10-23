@@ -92,6 +92,40 @@ test('resume recovers immutable origin without reading baseline; forks register 
   client.stop();
 }));
 
+test('named subagent usage registers a stable UUID and attaches it across native session resume', async () => clientTest(async (directory) => {
+  const named = 'subagent.0123456789abcdef';
+  const calls = [];
+  let saved;
+  const request = async (action, body) => {
+    calls.push([action, body]);
+    assert.match(body.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    if (action === 'register') saved = canonical(body.sessionId, body.baseline);
+    return saved ?? { version: 1, session: null };
+  };
+  const client = new UsageClient(directory, request);
+  const ctx = context(named);
+  await client.start(ctx);
+  const headers = { 'X-Spartan-Pi-Client': '1' };
+  await client.headers(headers, ctx);
+  assert.deepEqual(calls.map(([action]) => action), ['status', 'register']);
+  assert.equal(headers['X-Spartan-Pi-Session'], saved.session.sessionId);
+  assert.equal(headers['X-Spartan-Pi-Origin'], origin);
+  assert.equal(client.sessionId, '3bab243f-a0c3-8494-9c22-072bbf68d2f7');
+  assert.equal(client.rawSessionId, named);
+  await client.headers({ 'X-Spartan-Pi-Client': '1' }, ctx);
+  await client.settled(ctx);
+  assert.deepEqual(calls.map(([action]) => action), ['status', 'register', 'status']);
+  client.stop();
+  assert.equal(client.rawSessionId, undefined);
+  assert.equal(client.sessionId, undefined);
+  const resumed = new UsageClient(directory, request);
+  await resumed.start(context(named));
+  assert.equal(resumed.originId, origin);
+  assert.equal(resumed.sessionId, saved.session.sessionId);
+  assert.deepEqual(calls.map(([action]) => action), ['status', 'register', 'status', 'status']);
+  resumed.stop();
+}));
+
 test('telemetry failure leaves inference headers uncorrelated; recovery persists gap; unrelated provider untouched', async () => clientTest(async (directory) => {
   let online = false;
   const bodies = [];

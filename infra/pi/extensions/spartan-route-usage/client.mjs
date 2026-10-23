@@ -3,6 +3,7 @@ import { readFile, mkdir, writeFile, rename, unlink, access } from 'node:fs/prom
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nativeBaseline, presentation } from './core.mjs';
+import { routeSessionId } from './session.mjs';
 
 const gateway = fileURLToPath(new URL('./gateway.py', import.meta.url));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -43,6 +44,7 @@ export class UsageClient {
     this.polling = undefined;
     this.refreshing = undefined;
     this.sessionId = undefined;
+    this.rawSessionId = undefined;
     this.snapshot = undefined;
     this.originId = undefined;
     this.trackingIncomplete = false;
@@ -52,7 +54,8 @@ export class UsageClient {
   async start(ctx) {
     this.stop();
     this.ctx = ctx;
-    this.sessionId = ctx.sessionManager.getSessionId();
+    this.rawSessionId = ctx.sessionManager.getSessionId();
+    this.sessionId = routeSessionId(this.rawSessionId);
     this.controller = new AbortController();
     this.offline = this.startupOffline;
     const generation = this.generation;
@@ -148,7 +151,7 @@ export class UsageClient {
     for (const key of Object.keys(headers)) {
       if (['x-spartan-pi-session', 'x-spartan-pi-origin'].includes(key.toLowerCase())) delete headers[key];
     }
-    if (ctx.sessionManager.getSessionId() !== this.sessionId) await this.start(ctx);
+    if (ctx.sessionManager.getSessionId() !== this.rawSessionId) await this.start(ctx);
     const generation = this.generation;
     const origin = await this.ensure(ctx);
     if (generation !== this.generation) return;
@@ -242,7 +245,7 @@ export class UsageClient {
     this.schedule();
   }
   async settled(ctx) {
-    if (ctx.sessionManager.getSessionId() !== this.sessionId || ctx.model?.provider !== 'spartan-route') return;
+    if (ctx.sessionManager.getSessionId() !== this.rawSessionId || ctx.model?.provider !== 'spartan-route') return;
     if (this.originId) await this.update();
     else this.render();
     this.schedule();

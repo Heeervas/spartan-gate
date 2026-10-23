@@ -5,7 +5,7 @@ to the existing Spartan Route provider. It uses native Pi extension hooks and th
 existing authenticated gateway. Pi itself is unchanged.
 
 See [the Pi extension instructions](../infra/pi/README.md) for installation and
-focused checks. Select a `spartan-route` Chat Completions model and restart Pi after
+focused checks. Select a supported `spartan-route` model and restart Pi after
 installing or updating the managed extension files and provider marker. A full
 process restart also clears Node's cached helper imports; `/reload` alone can
 retain an older `.mjs` helper after an update.
@@ -57,6 +57,9 @@ branch and recorded compaction, summary, warming and tool-result usage. A native
 fork gets a new origin with its copied recorded history; the parent's current
 Route aggregate is not imported. Resume and reload recover the same origin.
 Subagent sessions remain independent; no custom parent-child aggregation is added.
+Named Pi IDs are mapped to stable UUIDv8 identities by the same adapter used for
+native reasoning bindings. The native ID and session file are preserved; usage
+headers, origins and gap markers use the canonical identity.
 
 The ledger survives normal routing-history retention and Route restart. Cumulative
 session rows have no automatic expiry. Deleting/replacing the Route database loses

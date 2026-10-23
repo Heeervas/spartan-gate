@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
+import { routeSessionId } from '../spartan-route-usage/session.mjs';
 
 const HEX = /^[0-9a-f]{64}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REALMS = new Set(['codex_subscription', 'openai_api']);
 const PRIVATE_PREFIX = '_spartan_';
 
@@ -83,10 +83,11 @@ export function createResponsesStream(nativeStream, request, scope, realmForMode
         const changed = await options.onPayload?.(payload, requestModel);
         const actual = changed === undefined ? payload : changed;
         const realm = realmForModel(actual?.model);
-        if (!REALMS.has(realm) || !UUID.test(options.sessionId ?? '')) throw new Error('Route session binding unavailable');
+        const sessionId = routeSessionId(options.sessionId);
+        if (!REALMS.has(realm) || !sessionId) throw new Error('Route session binding unavailable');
         options.signal?.throwIfAborted();
         binding = validateBinding(await request('binding', {
-          scope: await scope, sessionId: options.sessionId, realm,
+          scope: await scope, sessionId, realm,
         }, options.signal), realm);
         options.signal?.throwIfAborted();
         return prepareRequest(actual, binding, options.sessionId);

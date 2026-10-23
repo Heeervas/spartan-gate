@@ -152,6 +152,39 @@ test('fork, profile scope and missing provenance reset encrypted replay and item
   assert.equal(input[1].id, 'msg_old');
 });
 
+test('named subagent sessions bind and replay through native Pi save and reopen without renaming', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-named-responses-'));
+  try {
+    const named = 'subagent.0123456789abcdef';
+    const manager = SessionManager.create(directory, join(directory, 'sessions'), { id: named });
+    const identities = [];
+    const stream = createResponsesStream(native.streamSimple, async (_action, body) => {
+      assert.match(body.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      identities.push(body.sessionId);
+      return { version: 1, binding: binding(body.sessionId === '3bab243f-a0c3-8494-9c22-072bbf68d2f7' ? 'a' : 'c') };
+    }, await agentScope(directory), () => realm);
+    const requests = [];
+    manager.appendMessage(prompt[0]);
+    const first = await run(stream, prompt, requests, { sessionId: manager.getSessionId() });
+    manager.appendMessage(first);
+    const call = first.content.find(item => item.type === 'toolCall');
+    manager.appendMessage({ role: 'toolResult', toolCallId: call.id, toolName: 'read',
+      content: [{ type: 'text', text: 'synthetic' }], isError: false, timestamp: 2 });
+    const reopened = SessionManager.open(manager.getSessionFile());
+    assert.equal(reopened.getSessionId(), named);
+    await run(stream, reopened.buildSessionContext().messages, requests, { sessionId: reopened.getSessionId() });
+    assert.equal(identities.length, 2);
+    assert.equal(identities[0], identities[1]);
+    assert.equal(identities[0], '3bab243f-a0c3-8494-9c22-072bbf68d2f7');
+    assert.equal(requests[0].body.prompt_cache_key, named);
+    assert.equal(requests[1].body.input.find(item => item.type === 'reasoning').encrypted_content, 'opaque');
+    const forked = SessionManager.forkFrom(manager.getSessionFile(), directory, join(directory, 'sessions'), { id: 'subagent.0123456789abcdee' });
+    await run(stream, forked.buildSessionContext().messages, requests, { sessionId: forked.getSessionId() });
+    assert.notEqual(identities[2], identities[0]);
+    assert.equal(requests[2].body.input.some(item => item.type === 'reasoning'), false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('binding failure or invalid session aborts before any provider HTTP request', async () => {
   for (const request of [async () => { throw new Error('synthetic unavailable'); }, async () => ({ version: 1, binding: binding('z') })]) {
     const received = [];
@@ -163,8 +196,10 @@ test('binding failure or invalid session aborts before any provider HTTP request
   const received = [];
   let calls = 0;
   const stream = createResponsesStream(native.streamSimple, async () => { calls++; return { version: 1, binding: binding() }; }, 'scope', () => realm);
-  const result = await stream(model, { messages: prompt }, { apiKey: 'synthetic', sessionId: 'invalid', fetch: fakeFetch(received) }).result();
-  assert.equal(result.stopReason, 'error');
+  for (const sessionId of [undefined, '', '../invalid', 'bad\nvalue', 'x'.repeat(257)]) {
+    const result = await stream(model, { messages: prompt }, { apiKey: 'synthetic', sessionId, fetch: fakeFetch(received) }).result();
+    assert.equal(result.stopReason, 'error');
+  }
   assert.equal(calls, 0);
   assert.equal(received.length, 0);
 });
