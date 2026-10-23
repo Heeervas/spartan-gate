@@ -1,5 +1,25 @@
 # Current State
 
+## Hermes instruction debloat activated (2026-10-23)
+
+Source bf6f202 adds opt-in native required-skill selection before prompt
+composition, with policy-aware caching and unchanged native controls. The
+reviewed private instruction candidate was checkpointed in Git before applying
+MASTER, role SOUL/AGENTS, task-selected default references and the canonical
+shared entry. Four profile configs gained only the selection-policy field.
+Two Sol high review rounds plus affected re-review resolved a quoted-content
+middleware defect before deployment; the middleware proposal was withdrawn.
+
+The canonical suite passes 321 tests with one host-root-only skip; all nine
+mandatory native suites pass 86 tests with zero skips. TOP retains existing
+approved exceptions. The rebuilt image passed a no-network/nonroot/read-only
+canary before Hermes alone was recreated. API returns 200 and Docker health is
+healthy; installed bytes and four native profile loading checks pass. Other
+service identities, required gates, profile controls and internal networking
+are preserved. Exact scoped rollback files and previous image are retained.
+Actual task latency/completion gains remain unmeasured. See the applied note
+under apps/hermes-agent/runtime-docs/hermes_notes/instruction_debloat_23102026.md.
+
 ## Named Pi subagent binding correction (2026-10-23)
 
 Source fix `adc8e6b` is installed and accepted. mjakl named child IDs are valid Pi
