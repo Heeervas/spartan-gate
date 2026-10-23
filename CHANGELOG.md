@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document the approved Hermes process-instruction correction and its graceful
+  gateway refresh. Preserve profile controls, distinguish persisted-session
+  prompts from fresh loading, and leave efficiency claims for actual task evidence.
+
 - Restore workstation command gateway discovery after the legacy-service
   cleanup. Respect Compose project selection and reject unavailable or invalid
   network gateways before invoking the workstation bridge.
