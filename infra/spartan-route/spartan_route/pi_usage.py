@@ -1,4 +1,4 @@
-"""Pi Chat correlation, passive sanitized quota views and shared refresh admission."""
+"""Pi inference correlation, passive quota views and shared refresh admission."""
 from __future__ import annotations
 
 import contextvars
@@ -40,7 +40,7 @@ class CorrelationError(ValueError):
 
 
 async def observe_chat(service: Any, headers: Any, provider: str, execute: Any) -> tuple[Any, Any]:
-    """Keep correlation scoped to this Chat request, including stream finalization."""
+    """Keep correlation scoped to one inference request and stream finalization."""
     registered = await asyncio.to_thread(service.registration, headers)
     correlation = service.correlate(headers, registered)
     attempt = correlation.start(provider) if correlation and provider != "codex" else None

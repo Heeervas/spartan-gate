@@ -27,7 +27,7 @@ def usage_request(config, action, document):
     if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
         raise ValueError('Gateway requires a credential-free HTTPS URL')
     paths = {'status': '/api/pi/status', 'register': '/api/pi/sessions',
-             'refresh': '/api/pi/usage/refresh'}
+             'refresh': '/api/pi/usage/refresh', 'binding': '/api/pi/reasoning-binding'}
     path = paths[action]
     method = 'GET' if action == 'status' else 'POST'
     if method == 'GET':
@@ -108,7 +108,7 @@ def catalog(config):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('header', 'catalog', 'check', 'status', 'register', 'refresh'))
+    parser.add_argument('action', choices=('header', 'catalog', 'check', 'status', 'register', 'refresh', 'binding'))
     args = parser.parse_args()
     try:
         config = configuration()

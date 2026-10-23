@@ -166,4 +166,38 @@ exceptions:
     reference: docs/reviews/pi-route-usage-20261021.md
   created_at: '2026-10-21'
   expires_at: '2026-11-20'
+- id: pi-native-response-attempt-complexity
+  selector:
+    path: infra/spartan-route/spartan_route/native_responses.py
+    language: python
+    symbol: execute_codex_responses
+    kind: function
+  metric: python_ast_v1.cyclomatic_v1
+  allowance:
+    maximum: 75
+  rationale: Native Responses owns attempt admission, retry and stream cleanup. Pi
+    observation shares that exact lifecycle; broader transport extraction would increase
+    this protocol change. PiAttempt retains idempotence and storage ownership.
+  approval:
+    authority: Independent native_responses_review agent
+    reference: docs/reviews/pi-native-responses-20261023.md
+  created_at: '2026-10-23'
+  expires_at: '2026-11-20'
+- id: pi-native-response-attempt-lines
+  selector:
+    path: infra/spartan-route/spartan_route/native_responses.py
+    language: python
+    symbol: execute_codex_responses
+    kind: function
+  metric: python_ast_v1.function_logical_lines
+  allowance:
+    maximum: 250
+  rationale: Native Responses owns attempt admission, retry and stream cleanup. Pi
+    observation shares that exact lifecycle; broader transport extraction would increase
+    this protocol change. PiAttempt retains idempotence and storage ownership.
+  approval:
+    authority: Independent native_responses_review agent
+    reference: docs/reviews/pi-native-responses-20261023.md
+  created_at: '2026-10-23'
+  expires_at: '2026-11-20'
 extensions: {}

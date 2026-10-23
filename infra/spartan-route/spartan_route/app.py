@@ -29,6 +29,7 @@ from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected, PRO
 from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realtime_model, register as register_realtime, voice_dispatch
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .pi_usage import CorrelationError, PiUsage, observe_chat, register_routes as register_pi_routes
+from .pi_responses import auto_capabilities, model_payload, register_routes as register_pi_responses
 from .transport import create_client_session
 from .sse import frames as parse_sse_frames
 from .upstream_lifecycle import UpstreamOwner, provider_stream, notify
@@ -1863,8 +1864,8 @@ async def responses(request: web.Request) -> web.StreamResponse:
         for field in (SPARTAN_CHAIN_ID_FIELD, SPARTAN_EXPECTED_REALM_FIELD, SPARTAN_BINDING_MAC_FIELD)
     ):
         chain_id = body[SPARTAN_CHAIN_ID_FIELD].strip().lower()
-        telemetry_session_id = sha(f"signed_hermes_chain\0{chain_id}", 16)
-        session_identity_source = "signed_hermes_chain"
+        session_identity_source = "signed_pi_chain" if request.headers.get("X-Spartan-Pi-Client") == "1" else "signed_hermes_chain"
+        telemetry_session_id = sha(f"{session_identity_source}\0{chain_id}", 16)
     probe = None
     probe_header = request.headers.get(PROBE_HEADER)
     if probe_header is not None:
@@ -1875,9 +1876,16 @@ async def responses(request: web.Request) -> web.StreamResponse:
         except ProbeRejected:
             return response_json_error("Cache probe rejected; inspect the private run report", 409, "cache_probe_rejected")
     try:
-        result = preflight_error or binding_error or await execute_responses(
-            state, body, route, wants_stream, session_id, effective_prompt_cache_key, probe
+        async def execute_native() -> ExecutionResult:
+            return preflight_error or binding_error or await execute_responses(
+                state, body, route, wants_stream, session_id, effective_prompt_cache_key, probe
+            )
+
+        result, finish_pi = await observe_chat(
+            state.pi_usage, request.headers, route.provider, execute_native
         )
+    except CorrelationError as exc:
+        return response_json_error(str(exc), 409, "pi_origin_invalid", "invalid_request_error")
     except BaseException:
         if probe is not None:
             state.cache_experiments.finish(probe, success=False)
@@ -1885,7 +1893,8 @@ async def responses(request: web.Request) -> web.StreamResponse:
     if probe is not None and result.stream is None:
         state.cache_experiments.finish(probe, success=False, sent=False)
 
-    def done() -> None:
+    async def done() -> None:
+        await finish_pi()
         log_request(state, chat_body, route, result, started, request_id, session_id, turn_id, "responses",
                     telemetry_session_id=telemetry_session_id, session_identity_source=session_identity_source)
 
@@ -2099,20 +2108,7 @@ async def image_edits(request: web.Request) -> web.StreamResponse:
 
 async def models(request: web.Request) -> web.Response:
     state = get_state(request)
-
-    def model_payload(entry: ModelEntry) -> dict[str, Any]:
-        return {
-            "id": entry.id,
-            "object": "model",
-            "created": 1_700_000_000,
-            "owned_by": entry.provider,
-            "max_context": entry.max_context,
-            "context_length": entry.max_context,
-            "max_model_len": entry.max_context,
-            "tool_capable": entry.tool_capable,
-            "multimodal": entry.multimodal,
-        }
-
+    variants = state.model_variants.snapshot(state.config, reserved_ids=state.variant_reserved_ids)[1]
     auto = {
         "id": "clawroute/auto",
         "object": "model",
@@ -2124,6 +2120,7 @@ async def models(request: web.Request) -> web.Response:
         "tool_capable": True,
         "multimodal": True,
         "description": "Auto-routes with spartan-route v1 policy",
+        **auto_capabilities(state),
     }
     return web.json_response({
         "object": "list",
@@ -2131,10 +2128,10 @@ async def models(request: web.Request) -> web.Response:
             auto,
             {**auto, "id": "custom-1/clawroute/auto"},
             {**auto, "id": "spartan-route/clawroute/auto"},
-            *[model_payload(m) for m in state.config.models.values() if m.enabled],
+            *[model_payload(m, state.codex_catalog) for m in state.config.models.values() if m.enabled],
             *[
-                model_payload(m)
-                for m in state.model_variants.snapshot(state.config, reserved_ids=state.variant_reserved_ids)[1].values()
+                model_payload(m, state.codex_catalog, variants.bases[m.id])
+                for m in variants.values()
             ],
             *([realtime_model()] if request.app[RT_KEY].config.enabled else []),
         ],
@@ -2147,13 +2144,14 @@ async def model_detail(request: web.Request) -> web.Response:
     if model_id == request.app[RT_KEY].config.model and request.app[RT_KEY].config.enabled:
         return web.json_response(realtime_model())
     if model_id in {"clawroute/auto", "auto"}:
-        return web.json_response({"id": request.match_info["model_id"], "object": "model", "owned_by": "spartan-route", "max_context": 1_000_000, "tool_capable": True, "multimodal": True})
+        return web.json_response({"id": request.match_info["model_id"], "object": "model", "owned_by": "spartan-route", "max_context": 1_000_000, "tool_capable": True, "multimodal": True, **auto_capabilities(state)})
     entry = state.config.models.get(model_id)
-    variant = None if entry is not None else state.model_variants.snapshot(state.config, reserved_ids=state.variant_reserved_ids)[1].get(model_id)
+    variants = state.model_variants.snapshot(state.config, reserved_ids=state.variant_reserved_ids)[1]
+    variant = None if entry is not None else variants.get(model_id)
     entry = entry or variant
     if not entry:
         return response_json_error(f"The model '{request.match_info['model_id']}' does not exist", 404, "model_not_found", "invalid_request_error")
-    payload = {"id": entry.id, "object": "model", "owned_by": entry.provider, "max_context": entry.max_context, "context_length": entry.max_context, "max_model_len": entry.max_context, "tool_capable": entry.tool_capable, "multimodal": entry.multimodal}
+    payload = model_payload(entry, state.codex_catalog, variants.bases.get(entry.id))
     return web.json_response(payload)
 
 
@@ -3281,6 +3279,7 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     )
     register_realtime(app, RealtimeConfig.from_env(config.token))
     register_pi_routes(app, get_state)
+    register_pi_responses(app, get_state)
     app[STATE_KEY].variant_reserved_ids = frozenset({app[RT_KEY].config.model})
     app.on_startup.append(startup)
     app.on_shutdown.append(shutdown_realtime)

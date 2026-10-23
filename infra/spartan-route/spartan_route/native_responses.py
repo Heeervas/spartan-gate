@@ -31,6 +31,7 @@ from .native_cache import NativeCacheDiagnostics, provider_cache_fields, request
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected
 from .transport import TransportError
 from .attempt import CodexAttempt, apply_outcome
+from .pi_usage import CURRENT_REQUEST
 
 CODEX_RESPONSES_REALM = "codex_subscription"
 CODEX_RESPONSES_MAX_ATTEMPTS = 3
@@ -419,6 +420,9 @@ async def execute_codex_responses(
     model_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
     upstream_cache_key = resolve_prompt_cache_key(request, session_id, prompt_cache_key)
     affinity_key = str(request.get("spartan_chain_id") or "").strip() or resolve_affinity_key(request, session_id, prompt_cache_key)
+    pi_request = CURRENT_REQUEST.get()
+    if pi_request is not None:
+        pi_request.affinity(affinity_key)
     base_body = build_codex_responses_body(request, model_name, upstream_cache_key)
     reasoning = base_body.get("reasoning")
     reasoning_effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
@@ -490,7 +494,7 @@ async def execute_codex_responses(
             if cohort_attempt_id is not None and experiments is not None:
                 experiments.finish_cohort(cohort_attempt_id, success)
 
-        def finish_cache(current: CodexCallResult, *, delivered: bool = True) -> None:
+        async def finish_cache(current: CodexCallResult, *, delivered: bool = True) -> None:
             # Only result objects carry usage. OpenedResponse is never accepted.
             if not isinstance(current, CodexCallResult):
                 return
@@ -503,22 +507,27 @@ async def execute_codex_responses(
             ))
             current.native_cache = request_diagnostics(attempts)
             finish_probe(delivered and current.completed and not current.error and current.usage_seen, current.cache_response_id)
+            if pi_attempt is not None:
+                await pi_attempt.finish(current, incomplete=not delivered or not current.completed or bool(current.error))
 
         slot.in_flight += 1
         slot.last_selected_at = time.time()
+        pi_attempt = pi_request.start("codex") if pi_request is not None else None
         try:
             opened = await open_response(router, body, auth, affinity_key)
         except BaseException:
             diagnostics.finish(observation, success=False, error="request_aborted")
             finish_probe(False)
             slot.in_flight = max(0, slot.in_flight - 1)
+            if pi_attempt is not None:
+                await pi_attempt.finish(incomplete=True)
             raise
         if isinstance(opened, CodexCallResult):
             slot.in_flight = max(0, slot.in_flight - 1)
             opened.selection_diagnostics = selection_diagnostics or None
             opened.slot_index = slot.index
             opened.account_key = auth.account_key
-            finish_cache(opened)
+            await finish_cache(opened)
             last_result = opened
             text = opened.body.decode("utf-8", errors="replace") if isinstance(opened.body, bytes) else stable_json(opened.body)
             if not opened.retry_allowed or not should_retry(opened.status, text):
@@ -547,6 +556,8 @@ async def execute_codex_responses(
                 finish_probe(False)
                 slot.in_flight = max(0, slot.in_flight - 1)
                 opened.response.release()
+                if pi_attempt is not None:
+                    await pi_attempt.finish(incomplete=True)
                 raise
             if committed:
                 source = result.stream
@@ -563,8 +574,8 @@ async def execute_codex_responses(
                             await source.aclose()
                     finally:
                         opened.response.release()
-                        finish_cache(result, delivered=drained)
                         slot.in_flight = max(0, slot.in_flight - 1)
+                        await finish_cache(result, delivered=drained)
 
                 async def guarded_stream() -> AsyncIterator[bytes]:
                     nonlocal drained
@@ -587,10 +598,10 @@ async def execute_codex_responses(
                     result.status = 502
                     result.error = "codex_stream_error"
                     result.body = {"error": {"code": result.error, "type": "upstream_error", "message": "Codex stream ended before output"}}
-                finish_cache(result)
+                await finish_cache(result)
                 return result
             if result.status >= 400 and result.body is not None:
-                finish_cache(result)
+                await finish_cache(result)
                 text = stable_json(result.body)
                 if not should_retry(result.status, text):
                     return result
@@ -616,7 +627,7 @@ async def execute_codex_responses(
                 slot_index=slot.index,
                 account_key=auth.account_key,
             )
-            finish_cache(last_result)
+            await finish_cache(last_result)
             continue
 
         try:
@@ -624,13 +635,15 @@ async def execute_codex_responses(
         except BaseException:
             diagnostics.finish(observation, success=False, error="request_aborted")
             finish_probe(False)
+            if pi_attempt is not None:
+                await pi_attempt.finish(incomplete=True)
             raise
         finally:
             slot.in_flight = max(0, slot.in_flight - 1)
         collected.selection_diagnostics = selection_diagnostics or None
         collected.slot_index = slot.index
         collected.account_key = auth.account_key
-        finish_cache(collected)
+        await finish_cache(collected)
         if not collected.retry_allowed or collected.status < 400 or not should_retry(collected.status, stable_json(collected.body)):
             if collected.completed and not collected.error and affinity_key:
                 router._remember_lease(affinity_key, attempt)

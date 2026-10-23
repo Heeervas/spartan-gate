@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add native Responses discovery and signed Pi session reasoning replay while
+  preserving other model protocols and Route's realm isolation. Track native
+  Pi usage across attempts, retries, and stream cleanup.
+
 - Document the approved Hermes process-instruction correction and its graceful
   gateway refresh. Preserve profile controls, distinguish persisted-session
   prompts from fresh loading, and leave efficiency claims for actual task evidence.

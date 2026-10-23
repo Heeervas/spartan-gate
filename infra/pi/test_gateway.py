@@ -49,6 +49,11 @@ class GatewayTests(unittest.TestCase):
             self.assertEqual(connection.args[:2], ('GET', '/api/pi/status?sessionId=abc%26other%3Dbad'))
             self.assertEqual(connection.response.limit, 256 * 1024 + 1)
             self.assertTrue(connection.closed)
+            document = {'scope': 'a' * 64, 'sessionId': 'synthetic', 'realm': 'codex_subscription'}
+            gateway.usage_request(config, 'binding', document)
+            self.assertEqual(connection.args[:2], ('POST', '/api/pi/reasoning-binding'))
+            self.assertEqual(json.loads(connection.kwargs['body']), document)
+            self.assertEqual(connection.kwargs['headers']['Authorization'], 'Basic synthetic')
             connection.response.status = 302
             with self.assertRaises(ValueError):
                 gateway.usage_request(config, 'register', {'sessionId': 'abc'})
