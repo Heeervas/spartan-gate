@@ -33,5 +33,23 @@ protocol change. The immutable baseline remains
 other limits remain unchanged. This is measured debt, not repository-wide or
 deployment acceptance.
 
-Activation and real gateway acceptance are recorded separately after installation.
-Retain the previous Route image and installed provider/helper bytes for rollback.
+Installed and deployed acceptance passed after source review. The candidate
+Route image preserves the deployed base and changes only four owning Python
+modules; isolated read-only/network-disabled import acceptance passed. The
+running image is healthy and its four source hashes match the reviewed source.
+The installed Pi entry and three helper files also match their owning source.
+Only Route was recreated; all nine other stack containers retained their IDs
+and remained healthy. Previous image and original installed/config bytes are
+retained outside extension discovery for rollback.
+
+A real Pi 1.3.0 RPC canary used six synthetic calls through the authenticated
+gateway. Native streaming, one read-tool call, continuation and process restart
+passed. The low-effort marker prompts returned zero reasoning tokens; one
+high-effort counting turn and another resumed continuation additionally proved
+encrypted replay. The saved session contains eight opaque reasoning items with
+one signed chain. All six assistant calls completed without error; the final
+resumed reply matched its predecessor. Route recorded six attempts, all with
+usage, and no incomplete or missing-usage attempts. Acceptance observes
+`agent_settled`, not just prompt acknowledgments. Private receipts are retained
+in the task's dated admin directory. Existing Pi processes require a restart;
+no session migration is necessary. No push occurred.

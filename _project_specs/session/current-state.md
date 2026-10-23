@@ -1,5 +1,27 @@
 # Current State
 
+## Pi native Responses activated (2026-10-23)
+
+The requested Pi/Route fix is implemented in source commit `b4cc3ba`, installed
+and live. Pi delegates supported models to its built-in Responses transport;
+Route supplies authenticated, Pi-specific signed reasoning bindings and native
+attempt accounting. Dynamic catalog metadata preserves model-specific efforts
+and keeps mixed-realm auto routing on its supported protocol.
+
+Independent review passed after fixing unsupported implicit `none` effort.
+Route passed 483 Python and 41 JavaScript tests; Pi passed four Python tests,
+all three JavaScript test files and ten focused native provider checks. TOP
+assurance passed with the existing five exceptions and two independently
+approved native-attempt limits expiring 2026-11-20; baseline is unchanged.
+
+The healthy deployed image and installed provider/helpers match reviewed source.
+A six-call real gateway canary passed streaming, a read-tool turn, continuation,
+process restart and encrypted reasoning replay using one signed chain. All six
+attempts have usage and none are incomplete. Only Route was recreated; all other
+stack container identities remain unchanged. Previous image and exact installed
+bytes are retained for rollback. Existing Pi processes need a restart. See
+`docs/reviews/pi-native-responses-20261023.md`. No push occurred.
+
 ## Edge query-string regression repair (2026-10-22)
 
 The operator authorized a security-reviewed fix and edge rebuild/activation.
