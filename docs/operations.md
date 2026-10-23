@@ -180,6 +180,31 @@ served by the default multiplexer use the default restart command.
 `sg restart hermes` / `sg-restart-hermes` still restart the whole container.
 Changed Compose environment or mounts require recreation instead.
 
+### Required-skill selection (opt-in)
+
+Set `skills.selection_policy: required` in a selected Hermes profile's private
+`config.yaml` to load explicitly requested, contract-required or clearly needed
+skills, with only distinct additional support. The selection applies equally
+to normal and one-shot prompts; it preserves full required reads, native skill
+membership/disables, catalog contents and one-shot tool restrictions. It does
+not authorize skill maintenance or make prompt compliance a security boundary.
+
+The image patch changes native guidance before project text is assembled, so
+quoted documents are not rewritten. Unset/unknown values preserve upstream
+selection. The policy participates in the native prompt cache key. Install the
+updated Hermes image, then recreate only Hermes; configuration changes on an
+already patched image need a graceful gateway refresh to clear cached agents.
+Existing session IDs and history remain; no session database migration/reset.
+Stored old prompts are historical evidence, not proof of the next request.
+
+Validate with the source-consuming `test_skill_selection_guidance_patch.py`
+using `HERMES_UPSTREAM_SOURCE` pointing to the supported checkout, or
+`HERMES_PROMPT_SOURCE` pointing to its unpatched `agent/prompt_builder.py`.
+The required `test:hermes:native` gate includes this suite; missing-source skips
+do not satisfy native acceptance. Exercise ordinary/one-shot rendering, untouched profiles, policy
+cache changes and one-shot tool pruning on the actual built image before
+activation. Lower instruction size is not a measured performance gain.
+
 ### Shared host skills (opt-in)
 
 Hermes can discover a host-owned skill library through `skills.external_dirs`.

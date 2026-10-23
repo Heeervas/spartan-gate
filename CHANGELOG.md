@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add opt-in native required-skill selection for Hermes profiles, preserving
+  catalog contents, existing controls and one-shot restrictions without rewriting
+  quoted project text.
+
 - Fix native Responses and usage tracking for named Pi subagent sessions by
   mapping native IDs to stable Route UUIDs without renaming persisted sessions.
 
