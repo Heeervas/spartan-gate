@@ -1,10 +1,12 @@
 # Standard Responses source candidate (2026-10-24)
 
-Status: **READY_FOR_REVIEW**, not independently accepted, installed or deployed.
-No implementation commit has been made. Parent owns independent review and any
-later scoped commit/installation/Route-only activation. The first source review
-returned BLOCKED_NEEDS_FIXES for two major Pi local-state defects; this revision
-addresses them and requires renewed review, not acceptance by the implementer.
+Status: **revision-two source review PASS, accepted by parent; Route deployed and
+Pi task-owned files installed with bounded live evidence**. Source implementation
+is locally committed/integrated as `cc460db9baa0e0d62ba22b327f3b0d3883f8fbeb`.
+The first source review returned BLOCKED_NEEDS_FIXES for two major Pi local-state
+defects; the repaired frozen revision received independent PASS before closeout
+and separately authorized operational execution. Parent retains final acceptance.
+No push occurred.
 
 ## Promise and design authority
 
@@ -16,8 +18,11 @@ The design now has a tracked contract in `docs/pi-native-responses.md`; the igno
 plan is not the only explanation of source behavior.
 
 The clean task branch started at `9aef64fae9f20e601f762f74ac520278f0057fba`, tree
-`0538c11939ddd2c0e6f550ab7a329969eb85b0a1`. Candidate identity is the exact dirty/
-untracked snapshot and full patch under `.agents/quality-receipts/route-standard/`:
+`0538c11939ddd2c0e6f550ab7a329969eb85b0a1`. Accepted pre-commit manifest SHA-256 is
+`2cd8170ed5d3eb32f15025e549686c0c21b7014f5d75c0ffb2ec48d3588e70aa`; full patch
+SHA-256 is `172b883413bf16c222808ffb3cc335031927b00c32b650410315310e27327da1`.
+All 27 staged/committed/integrated files were compared to that manifest. The
+original exact dirty/untracked snapshot and full patch remain in task evidence:
 `final-candidate.json`, `candidate.patch` and `candidate-source.tar`. A base commit
 alone does not identify these uncommitted bytes. That receipt also identifies
 program inputs, scoped file hashes, raw command results and artifact hashes.
@@ -166,5 +171,63 @@ The later live gate permits **at most 12 physical upstream requests total**,
 Sol/Luna only, inert tools, requesting 4096 output tokens per request, counting
 failures/retries. Codex discards `max_output_tokens`, so this is not an enforceable
 output cap. A zero-reasoning response or partial text is not encrypted acceptance.
-Source approval grants no implicit installation, deployment, push or other-service
-mutation.
+Source approval alone granted no operational permission. The parent subsequently
+explicitly authorized the following Route-only deployment and task-owned Pi
+installation; no other-service mutation or push was performed.
+
+## Applied operational closeout (2026-10-24)
+
+Private owner: `private/maintenance/route-standard-responses-20261024/`. It retains
+`source-evidence/`, `source-inputs/`, `source-integration.json`, exact prechange
+Compose/container/image snapshots, `pi-before/`, `pi-install-manifest.json`,
+`pi-installed.json`, `image-canary.log`, `activation-summary.json`, stage-specific
+live logs, `live-budget.json`, `closeout-summary.json` and `ROLLBACK.md`. Private
+receipts are not publication artifacts and contain no credentials in public docs.
+
+`sg build spartan-route` built the exact integrated source; an isolated nonroot,
+read-only, no-network/no-production-data image import and synthetic receipt canary
+passed. Candidate/live image is
+`sha256:96bf7faa073f52138a4c43dcc8b0d02e68bf3474be99c260cf49b076e0fb2464`.
+Only Route was recreated with the scoped no-dependencies/no-build/no-pull command.
+Container `4a27d247140e04c0a56facca65d38103183003366b10e11d5b226fbdd7e62dc7`
+is healthy, all 26 Route module hashes match source, and protected inference
+without authentication returns 401. `/v1/models` remains intentionally public
+under the existing discovery contract. Environment key/value mappings and runtime
+security settings are unchanged; Docker reordered the environment array, not its
+values. All nine neighboring IDs, images and start times remain unchanged.
+Disk capacity remained far above the 5-GB floor; no prune or data migration ran.
+
+The installed provider entry and three changed helpers match source. Exact
+four-file installation-manifest SHA-256 is
+`2233d87f9e55e49f9a6364fb190804f86655dcc0af274ad5fe78b58fd9d25a38`.
+Settings, usage/cache entries, authentication and unrelated extensions are
+unchanged. A fresh process loaded the actual installed entry successfully; no
+current parent was reloaded/terminated and existing processes need a full restart.
+
+Actual-provider acceptance consumed **eight physical upstream attempts total**,
+including failures/retries; cap was twelve, now closed. Every call used the
+allowed Sol model and requested 4096 output tokens, which Codex does not enforce.
+All eight attempts have usage. Seven client operations completed successfully:
+standard streamed first/inert-tool/continuation/fresh-process resume; native Pi
+named first/resume; and legacy raw named first/migration-resume using preserved
+old-client bytes then current installed helpers. Encrypted content was positively
+observed and replayed, not inferred from zero-reasoning text. No real external
+tool/channel message ran and no existing session was rewritten.
+
+One counted client probe failed: SDK 7.19's higher-level `responses.stream()`
+accumulator does not recognize upstream `response.metadata`. The server completed
+that request with usage. The documented unmodified SDK
+`responses.create({stream:true})` iterator then completed the required journey;
+no SDK/server source adaptation was made. Do not claim the higher-level
+accumulator, every SDK convenience API or the unrelated intermittent incident
+is fixed. The full native Pi CLI/RPC orchestrator was not newly exercised here:
+native installed loader, transport/helpers and real persisted SessionManager were.
+
+Previous image is retained as
+`spartan-gate-spartan-route:pre-standard-responses-20261024`, immutable ID
+`sha256:fd6d8d5b5fb2e4305be3aace82af7d4e4a4da5f1984a6dee55755b7962f8ff93`.
+Exact scoped restore instructions and installed-file backups are in `ROLLBACK.md`.
+Old-server rollback still requires visible-history/Chat recovery for receipt-bearing
+sessions; stable key/account availability and shared-root-secret limits remain.
+The clean task worktree is retained until parent confirms writer cessation; its
+ignored evidence/inputs have already been copied into the private closeout owner.

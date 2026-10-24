@@ -1,6 +1,6 @@
 # Decisions
 
-## 2026-10-24 — Standard Responses replay design, source acceptance pending
+## 2026-10-24 — Standard Responses replay design
 
 - Parent approved stateless server-issued Codex replay receipts in the ordinary
   opaque field, not removal of raw-replay checks or a new conversation registry.
@@ -19,8 +19,10 @@
   added. Old-server rollback needs visible-history/Chat continuation for new
   receipts; legacy raw histories remain compatible.
 - Preserve the frozen stronger inherited TOP policy, immutable baseline and
-  existing exceptions. Source implementation/review are authorized; no commit
-  before independent source acceptance. Parent owns later installation/deployment.
+  existing exceptions. Independent revision-two source review passed and parent
+  accepted the frozen candidate before the scoped local commit. The parent then
+  explicitly authorized Route-only build/recreation and the four task-owned Pi
+  installation files; no push or other-service recreation was authorized.
 - Later live acceptance is limited to 12 physical upstream requests total,
   Sol/Luna only, inert tools, requesting 4096 output tokens per request. Count
   retries/failures. Codex discards that field: it is not an enforceable cap.

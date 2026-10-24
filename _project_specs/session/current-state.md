@@ -1,6 +1,6 @@
 # Current State
 
-## Standard Responses source candidate — review pending (2026-10-24)
+## Standard Responses deployed; bounded live acceptance recorded (2026-10-24)
 
 Parent approved the independently reviewed design for standard-client stateless
 Responses conversations. The source candidate adds server-owned opaque Codex
@@ -14,16 +14,30 @@ reload could trust a phantom lock after append failure. The revised source uses
 provisional concurrency reservations with durable commit only after legacy
 validation, plus process-local manager-owned poison state surviving extension
 replacement. Correct-realm reopen and fresh-process disk recovery controls are
-included; source re-review remains required.
+included. Independent revision-two source review passed and parent accepted the
+frozen 27-file manifest `2cd8170ed5d3eb32f15025e549686c0c21b7014f5d75c0ffb2ec48d3588e70aa`.
 
 Source tests use an unmodified OpenAI SDK, actual loopback Route/native selection
 and synthetic HTTP upstream, with tool/encrypted continuation and fresh client/
 Route process resume. Native Pi 1.3 and 1.4 and the unchanged Hermes lineage
-consumer are exercised. Source acceptance is still **pending independent review**;
-see `docs/reviews/route-standard-responses-20261024.md` and `.agents/validation.md`
-for candidate-bound receipts and gates. No source commit, active Pi installation,
-image build, live inference or service recreation has occurred in this task.
-The installed/deployed signed implementation described below remains current.
+consumer are exercised. Source commit `cc460db` is locally integrated; exact
+reviewed bytes were verified before build. Only Route was rebuilt/recreated.
+The healthy image's 26 module hashes match source; protected inference denies
+unauthenticated requests. All nine neighboring container identities/images/start
+times are unchanged. The four reviewed Pi files are installed with exact backups,
+matching hashes, preserved settings and a fresh-process native loader check.
+
+The unmodified SDK `responses.create({stream:true})` journey passed a streamed
+inert function call, encrypted continuation and fresh-process resume. Native Pi
+named new/resumed sessions and legacy raw named migration/resume also passed.
+The finite live canary used eight of twelve physical upstream attempts including
+one client-side failure, with usage recorded on all eight. SDK 7.19's higher-level
+`responses.stream()` accumulator rejected an upstream `response.metadata` event;
+this convenience API remains a concrete limitation, not an all-SDK compatibility
+claim. No production source/SDK patch was made for it. See the tracked review
+for exact image and receipt references. No push, session rewrite or database
+migration/deletion occurred. Existing Pi processes require a full restart to
+adopt changed helpers; no current parent was reloaded or terminated.
 
 Receipt integrity assumes uncompromised holders of the existing root secret,
 which is also held by Hermes; this is not hostile-tenant isolation. Account/secret
