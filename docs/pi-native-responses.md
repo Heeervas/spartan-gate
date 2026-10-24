@@ -42,7 +42,24 @@ At the Codex public-SSE boundary, Route excludes the exact proprietary
 Responses event and the SDK accumulator rejects it. Output/tool events, terminal
 usage and failures retain their existing semantics; unknown events are not
 blanket-filtered. Collected JSON, API-key passthrough and legacy replay are
-unchanged. Source tests do not establish live-provider acceptance of this fix.
+unchanged.
+
+SDK convenience accumulation also adds output-only parsed values such as
+`function_call.parsed_arguments`. For manually replayed convenience-helper
+history, the SDK documents its own normalizer:
+
+```js
+import { toResponseInputItems } from 'openai/lib/responses/ResponseInputItems';
+input.push(...toResponseInputItems(response.output));
+```
+
+This retains reasoning/tool items while removing SDK-only parsed fields; it is
+not a Spartan signing adapter. The local synthetic upstream tolerates extra
+input fields and its Route restart is within one OS process, not a new server
+process. Live follow-up confirmed the metadata fix on an inert first/tool call,
+but raw accumulated-output continuation received `unknown_parameter`; normalized
+helper continuation remains unverified live. See the bounded acceptance record
+in [the follow-up review](reviews/route-sdk-stream-20261024.md).
 
 Codex subscription does not support `store=true`, `previous_response_id`, native
 compaction/context management, reasoning modes or non-function tools in this

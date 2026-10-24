@@ -1,16 +1,30 @@
 # Current State
 
-## SDK accumulator follow-up — source candidate, review pending (2026-10-24)
+## SDK accumulator metadata fix deployed; replay acceptance incomplete (2026-10-24)
 
-The operator authorized a narrow repair for the confirmed SDK 7.19
-`responses.stream()` failure below. A synthetic Route/upstream regression
-reproduces its unsupported `response.metadata` accumulator error while collected
-JSON and create-iterator controls succeed. The candidate excludes only that
-proprietary Codex public-SSE event after raw telemetry observation; no SDK/Pi
-patch, dependency upgrade or replay-policy change is required. Independent
-source review and parent acceptance remain pending. No new deployment, active
-Pi install or real inference is authorized by this source task. The prior live
-acceptance and intermittent-incident limitations below remain historical facts.
+Independent review and parent acceptance covered the exact eight-file source
+candidate, committed as `bb4949c` and integrated without changing unrelated dirty
+work. Route alone was rebuilt/recreated after the nonroot/read-only/no-network
+image smoke passed. Its 26 module hashes match accepted source; health and
+unauthenticated inference denial pass. All nine neighbors, Route environment,
+mounts and the existing signing secret are unchanged. No Pi installation ran.
+
+The real SDK 7.19 `responses.stream().finalResponse()` now completes an inert
+tool call with nonempty encrypted reasoning; no unknown-event error occurred.
+A fresh-process continuation using the raw accumulated output was rejected as
+`unknown_parameter`. SDK accumulation adds output-only `parsed_arguments`;
+the installed SDK's documented `toResponseInputItems()` removes it, but that
+normalizer has only synthetic local evidence in this follow-up. The exact
+rejected parameter was not retained, so that cause remains a source-supported
+hypothesis, not a confirmed upstream diagnosis. The synthetic replay fixture did
+not reject that extra field and restarts Route within the same OS process.
+
+The bounded live check stopped at two of four permitted physical attempts
+(one successful, one rejected without usage). No further call was admitted:
+remaining budget cannot reserve the gateway's three-attempt ceiling. Full live
+helper encrypted continuation/resume remains incomplete; no replay-policy fix
+or intermittent-incident resolution is claimed. Prior image and private receipts
+are retained; see `docs/reviews/route-sdk-stream-20261024.md`.
 
 ## Standard Responses deployed; bounded live acceptance recorded (2026-10-24)
 

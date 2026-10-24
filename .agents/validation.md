@@ -244,7 +244,12 @@ reservations must preserve concurrent-first-request exclusion without committing
 failed migration. The HTTP upstream fixture rejects missing/mismatched/reordered
 or duplicated tool-result call IDs even when result text is correct. Fixture
 subprocesses must exit and be reaped.
-This is local interoperability, not upstream/live acceptance.
+This is local interoperability, not upstream/live acceptance. The fixture restarts
+Route within one OS process and tolerates SDK-only extra input fields. Actual
+SDK convenience-output replay should use its documented `toResponseInputItems()`
+normalizer; its live continuation acceptance is still incomplete after the bounded
+2026-10-24 metadata follow-up. Do not equate the synthetic replay green with
+strict upstream input-schema acceptance.
 
 For the task worktree, retain the stronger inherited policy unchanged as an ignored
 frozen input `.agents/route-standard-inputs/quality.yaml` (file SHA-256
