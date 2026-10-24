@@ -4,7 +4,8 @@ import { routeSessionId } from '../spartan-route-usage/session.mjs';
 
 const HEX = /^[0-9a-f]{64}$/;
 const REALMS = new Set(['codex_subscription', 'openai_api']);
-const PRIVATE_PREFIX = '_spartan_';
+const FIELDS = ['spartan_chain_id', 'spartan_expected_realm', 'spartan_binding_mac'];
+const BINDING_ERRORS = new Set(['reasoning_binding_invalid', 'reasoning_binding_unavailable', 'reasoning_realm_mismatch']);
 
 export async function agentScope(agentDir) {
   return createHash('sha256').update(await realpath(agentDir)).digest('hex');
@@ -12,89 +13,126 @@ export async function agentScope(agentDir) {
 
 export function validateBinding(document, realm) {
   const binding = document?.binding;
+  if (document?.error) {
+    const code = BINDING_ERRORS.has(document.error.code) ? document.error.code : 'reasoning_binding_unavailable';
+    throw new Error(`Route legacy migration: ${code}`);
+  }
   if (document?.version !== 1 || !binding || !HEX.test(binding.spartan_chain_id ?? '') ||
       !HEX.test(binding.spartan_binding_mac ?? '') || binding.spartan_expected_realm !== realm) {
     throw new Error('Route reasoning binding unavailable');
   }
-  return {
-    spartan_chain_id: binding.spartan_chain_id,
-    spartan_expected_realm: binding.spartan_expected_realm,
-    spartan_binding_mac: binding.spartan_binding_mac,
-  };
+  return Object.fromEntries(FIELDS.map(key => [key, binding[key]]));
 }
 
-function matchesBinding(item, binding) {
-  return item._spartan_chain_id === binding.spartan_chain_id &&
+function matchesLegacy(item, binding) {
+  return binding && item._spartan_chain_id === binding.spartan_chain_id &&
     item._spartan_reasoning_realm === binding.spartan_expected_realm &&
     item._spartan_binding_mac === binding.spartan_binding_mac;
 }
 
-function publicItem(item) {
-  return Object.fromEntries(Object.entries(item).filter(([key]) => !key.startsWith(PRIVATE_PREFIX)));
+function matchesLocal(item, identity, realm) {
+  return item._spartan_replay_version === 2 && item._spartan_replay_identity === identity &&
+    item._spartan_reasoning_realm === realm;
 }
 
-function replayItem(item, binding, reset) {
-  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-  if (item.type === 'reasoning' && !matchesBinding(item, binding)) return undefined;
-  const cleaned = publicItem(item);
-  if (reset && ['message', 'function_call', 'custom_tool_call'].includes(cleaned.type)) delete cleaned.id;
+function publicItem(item) {
+  const cleaned = Object.fromEntries(Object.entries(item).filter(([key]) => !key.startsWith('_spartan_')));
+  if (['message', 'function_call', 'custom_tool_call'].includes(cleaned.type)) delete cleaned.id;
   return cleaned;
 }
 
-export function prepareRequest(payload, binding, sessionId) {
+export function prepareRequest(payload, identity, realm, sessionId, binding) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid Route request');
-  const input = payload.input;
-  const reset = Array.isArray(input) && input.some(item =>
-    item?.type === 'reasoning' && !matchesBinding(item, binding));
-  const result = { ...payload, ...binding };
-  // Native sessions replay complete transcripts. Never reference provider-side response state.
-  delete result.previous_response_id;
-  delete result.response_id;
-  if (Array.isArray(input)) result.input = input.map(item => replayItem(item, binding, reset)).filter(item => item !== undefined);
+  const result = { ...payload };
+  for (const field of [...FIELDS, 'previous_response_id', 'response_id']) delete result[field];
+  let legacy = false;
+  if (Array.isArray(payload.input)) result.input = payload.input.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [item];
+    if (item.type === 'reasoning' && !matchesLocal(item, identity, realm)) {
+      if (!matchesLegacy(item, binding)) return [];
+      legacy = true;
+    }
+    return [publicItem(item)];
+  });
+  if (legacy) Object.assign(result, binding);
   if (result.prompt_cache_key == null || (typeof result.prompt_cache_key === 'string' && !result.prompt_cache_key.trim())) {
     result.prompt_cache_key = `pi:${sessionId}`;
   }
   return result;
 }
 
-function stampItem(item, binding) {
-  if (item?.type !== 'reasoning') return;
-  item._spartan_chain_id = binding.spartan_chain_id;
-  item._spartan_reasoning_realm = binding.spartan_expected_realm;
-  item._spartan_binding_mac = binding.spartan_binding_mac;
-}
-
-export function stampEvent(event, binding) {
-  if (!binding || !event || typeof event !== 'object') return;
-  if (event.type === 'response.output_item.done') stampItem(event.item, binding);
-  if (Array.isArray(event.response?.output)) {
-    for (const item of event.response.output) stampItem(item, binding);
+export function stampEvent(event, identity, realm, binding) {
+  if (!event || typeof event !== 'object') return;
+  const items = [event.item, ...(event.response?.output ?? [])];
+  for (const item of items) {
+    if (item?.type !== 'reasoning') continue;
+    item._spartan_reasoning_realm = realm;
+    if (binding) {
+      item._spartan_chain_id = binding.spartan_chain_id;
+      item._spartan_binding_mac = binding.spartan_binding_mac;
+    } else {
+      item._spartan_replay_version = 2;
+      item._spartan_replay_identity = identity;
+    }
   }
 }
 
-// Delegate HTTP, retries, cancellation, SSE parsing and Pi messages to native Pi.
-// The callbacks close over one request so concurrent calls cannot share provenance.
-export function createResponsesStream(nativeStream, request, scope, realmForModel) {
+function legacyItems(payload) {
+  return Array.isArray(payload?.input) && payload.input.some(item =>
+    item?.type === 'reasoning' && item.encrypted_content && HEX.test(item._spartan_chain_id ?? '') &&
+    HEX.test(item._spartan_binding_mac ?? ''));
+}
+
+function legacyHistory(context) {
+  return context.messages?.some(message => Array.isArray(message.content) && message.content.some(block => {
+    if (block.type !== 'thinking' || !block.thinkingSignature) return false;
+    try { return legacyItems({ input: [JSON.parse(block.thinkingSignature)] }); }
+    catch { return false; } // Native conversion still owns malformed signature rejection.
+  }));
+}
+
+// Native Pi owns conversion/HTTP/SSE/cancellation. Only old raw histories use the
+// compatibility binding endpoint; successful bindings live in this runtime only.
+export function createResponsesStream(nativeStream, request, scope, realmForModel, fence) {
+  const bindings = new Map();
+  async function legacyBinding(sessionId, realm, signal) {
+    const key = `${sessionId}\0${realm}`;
+    if (!bindings.has(key)) {
+      const pending = request('binding', { scope, sessionId, realm }, signal)
+        .then(document => validateBinding(document, realm));
+      bindings.set(key, pending);
+      pending.catch(() => { if (bindings.get(key) === pending) bindings.delete(key); });
+    }
+    return bindings.get(key);
+  }
   return (model, context, options = {}) => {
-    let binding;
+    let identity, realm, binding;
     return nativeStream(model, context, {
       ...options,
       onPayload: async (payload, requestModel) => {
         const changed = await options.onPayload?.(payload, requestModel);
         const actual = changed === undefined ? payload : changed;
-        const realm = realmForModel(actual?.model);
-        const sessionId = routeSessionId(options.sessionId);
-        if (!REALMS.has(realm) || !sessionId) throw new Error('Route session binding unavailable');
+        realm = realmForModel(actual?.model);
+        if (!REALMS.has(realm)) throw new Error('Route reasoning realm unavailable');
         options.signal?.throwIfAborted();
-        binding = validateBinding(await request('binding', {
-          scope: await scope, sessionId, realm,
-        }, options.signal), realm);
-        options.signal?.throwIfAborted();
-        return prepareRequest(actual, binding, options.sessionId);
+        const ticket = fence.reserve(options.sessionId, realm);
+        try {
+          // Native cross-model conversion may already have omitted old reasoning.
+          // Its saved provenance still needs validation before a durable realm lock.
+          if (legacyItems(actual) || legacyHistory(context)) {
+            binding = await legacyBinding(routeSessionId(options.sessionId), realm, options.signal);
+          }
+          options.signal?.throwIfAborted();
+          const prepared = prepareRequest(actual, ticket.identity, realm, options.sessionId, binding);
+          identity = fence.commit(ticket);
+          // A foreign legacy history may have been entirely removed.
+          if (!prepared.spartan_binding_mac) binding = undefined;
+          return prepared;
+        } finally { fence.release(ticket); }
       },
       onProviderStreamEvent: async (event, requestModel) => {
         await options.onProviderStreamEvent?.(event, requestModel);
-        stampEvent(event, binding);
+        stampEvent(event, identity, realm, binding);
       },
     });
   };

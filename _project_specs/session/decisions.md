@@ -1,5 +1,32 @@
 # Decisions
 
+## 2026-10-24 — Standard Responses replay design, source acceptance pending
+
+- Parent approved stateless server-issued Codex replay receipts in the ordinary
+  opaque field, not removal of raw-replay checks or a new conversation registry.
+  Standard clients need only endpoint authentication and full-history Responses.
+- Pin opaque replay to the issuing known account (credential-specific when its
+  account is unknown). Availability loss cannot justify arbitrary cross-account
+  ciphertext replay. Preserve existing enable/cooldown/model/auth policy gates.
+- Retain signed raw legacy Hermes/Pi wire behavior and saved histories. Pi uses a
+  lazy successful binding cache only while old raw history remains; new sessions
+  use local provenance/realm state, not signing RPCs. No session rewrite/migration
+  database, new dependency or Hermes change is required.
+- Purpose separation does not make the shared root secret exclusive to Route:
+  integrity assumes uncompromised authorized secret holders, including Hermes.
+  Gateway credentials/receipts do not establish hostile tenant/profile isolation.
+- Keep the existing secret stable. Rotation invalidates receipts; no key ring is
+  added. Old-server rollback needs visible-history/Chat continuation for new
+  receipts; legacy raw histories remain compatible.
+- Preserve the frozen stronger inherited TOP policy, immutable baseline and
+  existing exceptions. Source implementation/review are authorized; no commit
+  before independent source acceptance. Parent owns later installation/deployment.
+- Later live acceptance is limited to 12 physical upstream requests total,
+  Sol/Luna only, inert tools, requesting 4096 output tokens per request. Count
+  retries/failures. Codex discards that field: it is not an enforceable cap.
+  No paid inference, active Pi install, image build or service/DB mutation is
+  authorized during source work.
+
 ## 2026-10-22 — Audit remediation and source retirement
 
 - The operator authorized implementation of the reviewed audit and retirement

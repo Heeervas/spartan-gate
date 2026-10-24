@@ -357,12 +357,12 @@ class CodexHealthTests(unittest.TestCase):
             ],
         )
 
+@patch.dict(os.environ, SPARTAN_REASONING_BINDING_SECRET="41" * 32)
 class AppTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.store = TelemetryStore(":memory:")
         self.app = create_app(test_config(), self.store)
-        self.server = TestServer(self.app)
-        self.client = TestClient(self.server)
+        self.client = TestClient(TestServer(self.app))
         await self.client.start_server()
 
     async def asyncTearDown(self) -> None:

@@ -64,7 +64,8 @@ class AuditRegressions(unittest.IsolatedAsyncioTestCase):
         self.state = self.app[routeapp.STATE_KEY]
         self.session = Session(self.response)
         self.router = CodexRouter(self.session, self.store)
-        self.env = patch.dict('os.environ', {'SPARTAN_ROUTE_RECOVERY_WAIT_MS': '0'})
+        self.env = patch.dict('os.environ', {'SPARTAN_ROUTE_RECOVERY_WAIT_MS': '0',
+                                             'SPARTAN_REASONING_BINDING_SECRET': '41' * 32})
         self.env.start()
         self.slot = CodexSlot(0, token='synthetic', auth=CodexAuth('synthetic', account_id='account-a'))
         self.router.slots = [self.slot]

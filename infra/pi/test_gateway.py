@@ -74,6 +74,21 @@ class GatewayTests(unittest.TestCase):
             self.assertNotIn(private, stderr.getvalue())
             self.assertIn('unavailable', stderr.getvalue())
 
+    def test_binding_errors_expose_only_allowlisted_codes_not_private_body(self):
+        class Response:
+            status = 409
+            def read(self, limit):
+                return self.raw[:limit]
+        response = Response()
+        for code in ('reasoning_binding_invalid', 'reasoning_binding_unavailable', 'reasoning_realm_mismatch'):
+            response.raw = json.dumps({'error': {'code': code, 'message': 'synthetic-private-detail'}}).encode()
+            self.assertEqual(gateway.usage_response(response, 'binding'), {'version': 1, 'error': {'code': code}})
+            with self.assertRaises(ValueError):
+                gateway.usage_response(response, 'register')
+        response.raw = b'{"error":{"code":"synthetic-private-detail"}}'
+        with self.assertRaises(ValueError):
+            gateway.usage_response(response, 'binding')
+
     def test_configuration_uses_existing_shared_path_or_explicit_override(self):
         with tempfile.TemporaryDirectory() as directory:
             shared = Path(directory) / 'pi-spartan-route/config.json'

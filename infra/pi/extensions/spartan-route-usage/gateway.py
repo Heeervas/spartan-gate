@@ -41,17 +41,26 @@ def usage_request(config, action, document):
             'Content-Type': 'application/json', 'User-Agent': 'pi-spartan-route-usage/1',
         })
         response = connection.getresponse()
-        if response.status not in (200, 201, 202):
-            raise ValueError('Usage endpoint unavailable')
-        raw = response.read(256 * 1024 + 1)
-        if len(raw) > 256 * 1024:
-            raise ValueError('Usage response exceeds size limit')
-        result = json.loads(raw)
-        if not isinstance(result, dict) or result.get('version') != 1:
-            raise ValueError('Unsupported usage protocol')
-        return result
+        return usage_response(response, action)
     finally:
         connection.close()
+
+
+def usage_response(response, action):
+    raw = response.read(256 * 1024 + 1)
+    if len(raw) > 256 * 1024:
+        raise ValueError('Usage response exceeds size limit')
+    result = json.loads(raw)
+    if action == 'binding' and response.status in (400, 409, 503):
+        error = result.get('error') if isinstance(result, dict) else None
+        code = error.get('code') if isinstance(error, dict) else None
+        if code in ('reasoning_binding_invalid', 'reasoning_binding_unavailable', 'reasoning_realm_mismatch'):
+            return {'version': 1, 'error': {'code': code}}
+    if response.status not in (200, 201, 202):
+        raise ValueError('Usage endpoint unavailable')
+    if not isinstance(result, dict) or result.get('version') != 1:
+        raise ValueError('Unsupported usage protocol')
+    return result
 
 
 def credentials(path):

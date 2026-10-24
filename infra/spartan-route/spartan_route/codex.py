@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .reasoning_replay import allows_auth, unavailable_error
+
 from .attempt import CodexAttempt, outcome_slot, valid_tool_arguments
 
 import asyncio
@@ -1539,7 +1541,7 @@ class CodexRouter:
                 and (not auth.account_key or auth.account_key not in excluded_accounts)
                 and self.slot_routing_status(slot)["routingEnabled"]
                 and slot.rate_limited_until <= now and slot.transient_until <= now
-                and slot.auth is auth]
+                and slot.auth is auth and allows_auth(auth)]
 
     async def model_selection_diagnostics(self, excluded: set[int], excluded_accounts: set[str], model_id: str, reasoning_effort: str | None = None) -> dict[str, Any]:
         catalog = getattr(self, "model_catalog", None)
@@ -1758,7 +1760,7 @@ class CodexRouter:
         }
 
     async def _unavailable_result(self, selection_diagnostics: dict[str, Any] | None = None) -> CodexCallResult:
-        error = await self._unavailable_error()
+        error = unavailable_error(await self._unavailable_error())
         if (selection_diagnostics and selection_diagnostics.get("operational_eligible", 0) > 0
                 and selection_diagnostics.get("model_eligible") == 0
                 and error.get("slot_diagnostics", {}).get("eligible", 0) > 0):

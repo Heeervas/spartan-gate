@@ -204,3 +204,74 @@ HERMES_UPSTREAM_SOURCE=<actual pinned upstream checkout> PYTHONDONTWRITEBYTECODE
 ```
 
 Use the actual pinned-source path from the existing native-source gate above; an absent source yields an incomplete boundary, not acceptance. The native suite includes this test. A successful source test does not activate the running image. The patch remains outside normal builds pending comparative runtime acceptance and a separately authorized activation decision.
+
+## Standard Responses replay acceptance
+
+Source contract: `docs/pi-native-responses.md`. No paid inference, production
+configuration or credential stores are used by these source gates. Use Node 22
+and the explicit existing pinned venv/program inputs above, without installing
+or modifying shared dependencies. `PI13_PACKAGE` and `PI14_PACKAGE` identify real
+Pi 1.3.0 and 1.4.0 package directories, not active agent homes. Both bundle pinned
+OpenAI SDK 7.19.0. The test input locator supports npm-hoisted and bundled layouts;
+missing actual dependencies fail rather than skip.
+
+```sh
+python3 -m unittest discover -s infra/spartan-route -p test_reasoning_replay.py
+PI_CODING_AGENT_DIR="$PI13_PACKAGE" node --test infra/pi/test_standard_responses.mjs infra/pi/test_spartan_route_provider.mjs
+npm run test:route
+PI_CODING_AGENT_DIR="$PI13_PACKAGE" npm run test:pi
+PI_CODING_AGENT_DIR="$PI14_PACKAGE" npm run test:pi
+python3 -m unittest discover -s infra/hermes-plugins -p test_spartan_cache_lineage.py -v
+git diff --check
+```
+
+The SDK test uses actual loopback Route/native account selection and a disposable
+HTTP upstream; it has no custom SDK transport, signing fields or binding call.
+It must pass first/function-tool/encrypted continuation and fresh-process client
+and Route resume. Separate cases deny receipt tampering, raw foreign ciphertext,
+foreign realm, mixed accounts and invalid present legacy bindings before upstream
+submission; same-account token/slot changes work and wrong-account failover does
+not occur. Native Pi additionally proves named resume, copied zero-reasoning IDs,
+local realm locking, lazy legacy migration, wrong-realm rejection followed by
+correct-realm reopen, and native append-memory-before-persist failure followed by
+retry/reloaded extension over the retained manager. A fresh-process disk recovery
+control must succeed without authorizing poisoned retained memory. Provisional
+reservations must preserve concurrent-first-request exclusion without committing
+failed migration. The HTTP upstream fixture rejects missing/mismatched/reordered
+or duplicated tool-result call IDs even when result text is correct. Fixture
+subprocesses must exit and be reaped.
+This is local interoperability, not upstream/live acceptance.
+
+For the task worktree, retain the stronger inherited policy unchanged as an ignored
+frozen input `.agents/route-standard-inputs/quality.yaml` (file SHA-256
+`18b4582cb69dec698867cff5cb6d2837e9a08531438ba28e75bb4d84545da5db`). The
+original dirty policy is not task-owned source. TOP preflight/final reporting use
+that exact input in addition to the ordinary runner; do not substitute the narrower
+committed copy, change baseline/thresholds or self-approve exceptions. Reuse only
+explicit existing dependency inputs; an ignored `node_modules/.bin` directory link
+may expose pinned Oxlint without changing shared packages.
+
+```sh
+assurance_dir="${BUILDER_ASSURANCE_DIR:-$HOME/.agents/skills/shared/builder-assurance}"
+assurance_python="${BUILDER_ASSURANCE_PYTHON:-python3}"
+"$assurance_python" "$assurance_dir/scripts/validate_quality_policy.py" .agents/route-standard-inputs/quality.yaml
+"$assurance_python" "$assurance_dir/scripts/collect_oxlint_metrics.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope all --oxlint ./node_modules/.bin/oxlint --output .agents/oxlint-metrics.json
+"$assurance_python" "$assurance_dir/scripts/quality_report.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope all --level top --config .agents/route-standard-inputs/quality.yaml --format json --output .agents/pi-route-quality.json
+```
+
+A base RED check can set fixture-only `ROUTE_FIXTURE_SOURCE` to an explicit pristine
+`infra/spartan-route` snapshot of the starting commit and run the two `unmodified
+OpenAI SDK` cases. The first request must succeed and encrypted continuation must
+fail specifically with `reasoning_binding_required`, not dependency/startup errors.
+The same cases must pass on the candidate without that override. Keep raw commands,
+logs, baseline and candidate source/input hashes in ignored task receipts.
+
+Parent-owned deployment gates remain separate: accepted source review, exact image
+and installed-Pi byte readback, isolated read-only image canary, Route-only recreation,
+healthy/auth denial and unchanged neighbor identities. The later live canary budget
+is **at most 12 physical upstream requests total**, Sol/Luna only, inert tools,
+requesting `max_output_tokens=4096` each, counting all retries/failures. Codex discards
+that field, so this is not an enforceable output cap. Nonempty opaque replay and
+successful terminal first/tool/continuation/fresh-process resume are required;
+zero-reasoning or partial text cannot count. No live source test or implicit key
+rotation, active installation, service build/recreation or DB mutation is authorized.

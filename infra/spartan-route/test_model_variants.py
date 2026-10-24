@@ -140,6 +140,9 @@ class PolicyTests(unittest.TestCase):
 
 class VariantApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        signing = patch.dict('os.environ', SPARTAN_REASONING_BINDING_SECRET='41' * 32)
+        signing.start()
+        self.addCleanup(signing.stop)
         self.store = TelemetryStore(":memory:")
         self.app = create_app(test_config(), self.store)
         self.client = TestClient(TestServer(self.app))

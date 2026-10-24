@@ -4,6 +4,18 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Support the documented stateless Responses conversation subset without client
+  signing, using server-owned opaque Codex replay receipts and conservative
+  issuing-account scope. Preserve signed legacy Hermes/Pi histories, shared-secret
+  trust limits and explicit visible-history recovery for old-server rollback.
+- Avoid binding RPCs for new Pi sessions while retaining lazy legacy migration.
+  Validate saved legacy provenance before committing a local realm lock; failed
+  wrong-realm migration leaves the original realm resumable. Retain append-failure
+  poison state across extension reloads of the same native SessionManager, so
+  phantom in-memory locks cannot authorize submission. Preserve native named IDs,
+  tools, usage and copied zero-reasoning visible history without bulk rewrites.
+  Source verification and review do not imply active installation or deployment.
+
 - Add opt-in native required-skill selection for Hermes profiles, preserving
   catalog contents, existing controls and one-shot restrictions without rewriting
   quoted project text.

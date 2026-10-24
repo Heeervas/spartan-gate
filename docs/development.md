@@ -31,6 +31,16 @@ in `infra/spartan-route/requirements.txt`; the retired TypeScript router has no
 build/test/package lane. Keep `config/clawroute` and routing auto aliases used by
 Spartan Route.
 
+`npm run test:pi` also exercises unmodified OpenAI SDK 7.19.0 (pinned by Pi),
+actual loopback Route/native selection and synthetic upstream HTTP. It proves
+standard Responses tool/encrypted continuation and fresh-process resume without
+client signing. No real provider, private config or active Pi install is used.
+The native test-input locator supports both hoisted and bundled package layouts.
+Keep the 1.3.0 compatibility gate; additionally run the Pi suite with an explicit
+existing 1.4.0 package directory for current-consumer acceptance. Do not upgrade a
+global Pi installation just to run tests. See [the contract and rollback limits](pi-native-responses.md)
+and the standard replay section of the local `.agents/validation.md` authority.
+
 ## Portable current-stack gates
 
 ```sh

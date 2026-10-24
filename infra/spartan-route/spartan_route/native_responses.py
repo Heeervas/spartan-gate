@@ -32,6 +32,7 @@ from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected
 from .transport import TransportError
 from .attempt import CodexAttempt, apply_outcome
 from .pi_usage import CURRENT_REQUEST
+from .reasoning_replay import output_transform
 
 CODEX_RESPONSES_REALM = "codex_subscription"
 CODEX_RESPONSES_MAX_ATTEMPTS = 3
@@ -43,6 +44,7 @@ CODEX_RESPONSES_PRECOMMIT_MAX_BYTES = 256 * 1024
 class OpenedResponse:
     response: Any
     response_time_ms: int | None
+    transform: Any = lambda payload: payload
 
 
 def response_event_name(event: str | None, payload: dict[str, Any]) -> str:
@@ -235,7 +237,7 @@ async def open_response(
             transport_details=getattr(response, "transport_details", None),
             retry_allowed=getattr(response, "retry_allowed", True),
         )
-    return OpenedResponse(response, elapsed)
+    return OpenedResponse(response, elapsed, output_transform(auth))
 
 
 async def collect_response(
@@ -302,7 +304,7 @@ async def collect_response(
     if not isinstance(terminal.get("output"), list) or not terminal.get("output"):
         if completed_output_items:
             terminal["output"] = completed_output_items
-    result.body = terminal
+    result.body = opened.transform(terminal)
     status = str(terminal.get("status") or "").lower()
     if status in {"failed", "cancelled", "incomplete"}:
         error = terminal.get("error")
@@ -310,7 +312,7 @@ async def collect_response(
     return result
 
 
-async def buffer_precommit(events: Any, result: CodexCallResult, realm: str) -> tuple[list[bytes], bool]:
+async def buffer_precommit(events: Any, result: CodexCallResult, realm: str, transform: Any) -> tuple[list[bytes], bool]:
     buffered = []
     size = 0
     async for event, data in events:
@@ -325,7 +327,7 @@ async def buffer_precommit(events: Any, result: CodexCallResult, realm: str) -> 
             result._native_tool_invalid = True
             continue
         name = response_event_name(event, payload)
-        encoded = sse(annotate_realm(payload, realm), name)
+        encoded = sse(transform(annotate_realm(payload, realm)), name)
         buffered.append(encoded)
         size += len(encoded)
         capture_telemetry(result, payload, name)
@@ -345,7 +347,7 @@ async def prepare_stream(
 ) -> bool:
     events = parse_sse_response(opened.response)
     try:
-        buffered, first_terminal = await buffer_precommit(events, result, realm)
+        buffered, first_terminal = await buffer_precommit(events, result, realm, opened.transform)
         if not buffered:
             opened.response.release()
             return False
@@ -384,7 +386,7 @@ async def prepare_stream(
                     terminal_seen = True
                     error = payload.get("error") if isinstance(payload.get("error"), dict) else payload
                     result.error = router._error_code(error)
-                yield sse(annotate_realm(payload, realm), event_name)
+                yield sse(opened.transform(annotate_realm(payload, realm)), event_name)
                 if terminal_seen:
                     return
             if not terminal_seen:

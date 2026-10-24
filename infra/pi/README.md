@@ -1,4 +1,16 @@
-# Pi session cache key
+# Pi integrations
+
+For native Responses and the standard-client subset, see
+[`docs/pi-native-responses.md`](../../docs/pi-native-responses.md). New native
+sessions use server-owned opaque replay receipts without a binding RPC. The
+provider's `session.mjs` helper owns provisional concurrency reservations and the
+post-validation durable realm lock, including manager-owned append-failure retry/
+reload safety; install it with the other provider helpers. Legacy raw saved
+histories use a lazy cached binding and are not rewritten. Both Pi 1.3 and 1.4
+are validated with isolated configuration; restart fully after installation.
+No active installation or Route deployment is implied by source tests.
+
+## Pi session cache key
 
 `extensions/spartan-route-cache.ts` supplies an explicit prompt-cache key for
 ordinary Pi requests whose selected model uses provider `spartan-route` and API
@@ -97,7 +109,9 @@ restart to uninstall. The separate cache extension can remain installed.
 
 The versioned `gateway.py` preserves `header`, `catalog`, and `check` commands
 from the local discovery helper and adds JSON-only `status`, `register`, and
-`refresh` actions. Usage actions never print authorization. It reads the existing
+`refresh` actions, plus `binding` for lazy legacy Responses migration. Binding
+failures return only allowlisted sanitized error codes; arbitrary server messages
+and parser/credential errors are never echoed. Usage actions never print authorization. It reads the existing
 `$XDG_DATA_HOME/pi-spartan-route/config.json` (default
 `~/.local/share/pi-spartan-route/config.json`), or `PI_SPARTAN_ROUTE_CONFIG`.
 The existing `baseUrl` must be credential-free HTTPS; usage calls use `/api/pi/*`

@@ -268,19 +268,32 @@ Kept in v1:
   use `store=false` and include `reasoning.encrypted_content` for manual opaque
   reasoning replay. Subscription traffic goes to the ChatGPT Codex Responses
   backend; API-key traffic goes to the configured `/v1/responses` endpoint.
-- Signed reasoning affinity binds `HERMES_HOME + session_id` to exactly one
-  provider realm. Sol/Terra model changes remain valid inside the subscription
-  realm. Switching between subscription and API-key realms returns
-  `409 reasoning_realm_mismatch`; start a new session or branch. Copying a
-  session between profiles strips foreign opaque reasoning and server item IDs
-  while preserving visible history. The same textual session ID in two profiles
-  is safe because canonical `HERMES_HOME` is part of the signed chain identity.
-  Background review with `provider: auto` inherits that runtime and realm.
-- Codex subscription replay rejects unsigned encrypted reasoning. It also
-+  rejects `store=true`, `previous_response_id`, native compaction items,
-+  `context_management`, `reasoning.mode`, and non-function tools until Hermes
-+  can preserve those contracts end to end. OpenAI API-key Responses remains a
-+  separate explicit realm and native transport.
+- Standard unsigned Codex conversations replay server-issued authenticated
+  receipts in the ordinary opaque `encrypted_content` field, without client
+  signing or a binding endpoint. Route restores provider ciphertext and pins
+  replay to the issuing account. OAuth refresh/slot moves within that known
+  account work; unavailable accounts do not silently fail over. Unknown-account
+  receipts are credential-specific. Raw unsigned Codex ciphertext, tampered
+  receipts, mixed accounts and foreign realms fail before dispatch. See
+  [the supported subset and migration contract](pi-native-responses.md).
+- The existing signed Hermes/legacy-Pi lane remains compatible and returns raw
+  opaque output. Its chain MAC authenticates chain/realm, not ciphertext. Local
+  profile fences protect cooperative copying, not hostile clients. The same root
+  secret is available to Hermes: purpose separation is not exclusive server trust,
+  and receipt integrity assumes uncompromised authorized secret holders. A valid
+  receipt plus gateway access is a bearer replay capability, not tenant identity.
+  Background review with `provider: auto` retains its existing runtime/realm.
+- Codex subscription rejects `store=true`, `previous_response_id`, native
+  compaction items, `context_management`, `reasoning.mode`, and non-function tools.
+  This is a stateless full-history subset, not full OpenAI API equivalence.
+  Codex discards `max_output_tokens`; it is not an enforceable output cap.
+  OpenAI API-key Responses retains its native raw passthrough and provider-owned
+  replay validation, but rejects recognized Codex receipts before submission.
+- The existing binding secret must remain stable across restart. Rotation/loss
+  invalidates new receipts; no old-key ring or automatic regeneration is provided.
+  Old-server rollback requires visible-history/Chat continuation for receipt-bearing
+  sessions, not transparent encrypted resume. Signed legacy raw sessions remain
+  compatible. No session rewrite or database migration is required.
 - Multiple Codex auth slots from `OPENAI_CODEX_AUTH_PATHS`. Configured auth
   files are read-only bootstrap inputs. Spartan Route stores rotated OAuth
   generations separately in `/app/data/codex-auth`, keyed by a SHA-256 source

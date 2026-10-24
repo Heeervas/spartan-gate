@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { Discovery, loadConfig, gatewayPath, gatewayRequest } from './spartan-route-provider/discovery.mjs';
 import { agentScope, createResponsesStream } from './spartan-route-provider/responses.mjs';
+import { SessionFence } from './spartan-route-provider/session.mjs';
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -13,6 +14,7 @@ export default async function (pi: ExtensionAPI) {
   const config = await loadConfig(configPath);
   const discovery = new Discovery(dirname(configPath), config);
   const scope = await agentScope(getAgentDir());
+  const fence = new SessionFence(scope, (type: string, data: unknown) => pi.appendEntry(type, data));
   const offline = process.argv.includes('--offline') || /^(1|true|yes)$/i.test(process.env.PI_OFFLINE ?? '');
   let models = await discovery.get({ network: false });
   let unavailable = false;
@@ -26,7 +28,7 @@ export default async function (pi: ExtensionAPI) {
     headers: { Authorization: `!python3 ${shellQuote(gatewayPath)} header`, 'X-Spartan-Pi-Client': '1' },
     models,
     streamSimple: createResponsesStream(openAIResponsesApi().streamSimple, gatewayRequest, scope,
-      (id: string) => discovery.models.find((model: any) => model.id === id)?.spartanReasoningRealm),
+      (id: string) => discovery.models.find((model: any) => model.id === id)?.spartanReasoningRealm, fence),
     refreshModels: (context) => discovery.get({ network: context.allowNetwork, force: context.force, signal: context.signal }),
   });
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -38,6 +40,7 @@ export default async function (pi: ExtensionAPI) {
   }
   pi.on('session_start', (_event, ctx) => {
     stop();
+    fence.activate(ctx);
     if (unavailable) ctx.ui.notify('Spartan Route unavailable; using the cached model catalog.', 'warning');
     if (!offline) {
       controller = new AbortController();
@@ -50,7 +53,7 @@ export default async function (pi: ExtensionAPI) {
       timer.unref();
     }
   });
-  pi.on('session_shutdown', stop);
+  pi.on('session_shutdown', () => { fence.deactivate(); stop(); });
   pi.registerCommand('spartan-route-refresh', {
     description: 'Refresh the Spartan Route model catalog',
     getArgumentCompletions: () => [],

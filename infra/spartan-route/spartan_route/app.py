@@ -30,6 +30,7 @@ from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realt
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .pi_usage import CorrelationError, PiUsage, observe_chat, register_routes as register_pi_routes
 from .pi_responses import auto_capabilities, model_payload, register_routes as register_pi_responses
+from .reasoning_replay import ReplayError, legacy_binding, policy as replay_policy, replay_request
 from .transport import create_client_session
 from .sse import frames as parse_sse_frames
 from .upstream_lifecycle import UpstreamOwner, provider_stream, notify
@@ -138,7 +139,6 @@ SPARTAN_CACHE_LINEAGE_REASON_FIELD = "spartan_cache_lineage_reason"
 SPARTAN_CHAIN_ID_FIELD = "spartan_chain_id"
 SPARTAN_EXPECTED_REALM_FIELD = "spartan_expected_realm"
 SPARTAN_BINDING_MAC_FIELD = "spartan_binding_mac"
-SPARTAN_REASONING_REALMS = {"codex_subscription", "openai_api"}
 SPARTAN_PRIVATE_REQUEST_FIELDS = {
     SPARTAN_CACHE_LINEAGE_FIELD,
     SPARTAN_CACHE_LINEAGE_REASON_FIELD,
@@ -693,51 +693,11 @@ def reasoning_binding_error(
     body: Mapping[str, Any],
     realm: str,
 ) -> ExecutionResult | None:
-    values = {
-        SPARTAN_CHAIN_ID_FIELD: body.get(SPARTAN_CHAIN_ID_FIELD),
-        SPARTAN_EXPECTED_REALM_FIELD: body.get(SPARTAN_EXPECTED_REALM_FIELD),
-        SPARTAN_BINDING_MAC_FIELD: body.get(SPARTAN_BINDING_MAC_FIELD),
-    }
-    if all(value is None for value in values.values()):
-        input_items = body.get("input")
-        has_encrypted_replay = isinstance(input_items, list) and any(
-            isinstance(item, Mapping)
-            and item.get("type") == "reasoning"
-            and bool(item.get("encrypted_content"))
-            for item in input_items
-        )
-        if realm == "codex_subscription" and has_encrypted_replay:
-            return ExecutionResult(
-                400,
-                body=json_error(
-                    "Signed reasoning binding is required for Codex subscription replay",
-                    400,
-                    "reasoning_binding_required",
-                    "invalid_request_error",
-                )[0],
-                error="reasoning_binding_required",
-            )
-        return None
-    if not all(isinstance(value, str) and value.strip() for value in values.values()):
-        return ExecutionResult(400, body=json_error("Incomplete reasoning binding", 400, "reasoning_binding_invalid", "invalid_request_error")[0], error="reasoning_binding_invalid")
-    chain_id = str(values[SPARTAN_CHAIN_ID_FIELD]).strip().lower()
-    expected = str(values[SPARTAN_EXPECTED_REALM_FIELD]).strip().lower()
-    supplied_mac = str(values[SPARTAN_BINDING_MAC_FIELD]).strip().lower()
-    secret_hex = str(os.environ.get("SPARTAN_REASONING_BINDING_SECRET") or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", secret_hex):
-        return ExecutionResult(503, body=json_error("Reasoning binding is unavailable", 503, "reasoning_binding_unavailable")[0], error="reasoning_binding_unavailable")
-    if not re.fullmatch(r"[0-9a-f]{64}", chain_id) or not re.fullmatch(r"[0-9a-f]{64}", supplied_mac) or expected not in SPARTAN_REASONING_REALMS:
-        return ExecutionResult(400, body=json_error("Invalid reasoning binding", 400, "reasoning_binding_invalid", "invalid_request_error")[0], error="reasoning_binding_invalid")
-    calculated = hmac.new(bytes.fromhex(secret_hex), f"{chain_id}\0{expected}".encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(calculated, supplied_mac):
-        return ExecutionResult(400, body=json_error("Invalid reasoning binding", 400, "reasoning_binding_invalid", "invalid_request_error")[0], error="reasoning_binding_invalid")
-    if expected != realm:
-        return ExecutionResult(409, body=json_error("Reasoning chain belongs to a different provider realm; start a new session or branch", 409, "reasoning_realm_mismatch", "invalid_request_error")[0], error="reasoning_realm_mismatch")
     try:
-        if not state.telemetry.bind_reasoning_chain(chain_id, realm):
-            return ExecutionResult(409, body=json_error("Reasoning chain belongs to a different provider realm; start a new session or branch", 409, "reasoning_realm_mismatch", "invalid_request_error")[0], error="reasoning_realm_mismatch")
-    except Exception:
-        return ExecutionResult(503, body=json_error("Reasoning binding store is unavailable", 503, "reasoning_binding_unavailable")[0], error="reasoning_binding_unavailable")
+        legacy_binding(state.telemetry, body, realm)
+        replay_policy(body, realm)
+    except ReplayError as exc:
+        return ExecutionResult(exc.status, body=exc.body(), error=exc.code)
     return None
 
 
@@ -1877,9 +1837,12 @@ async def responses(request: web.Request) -> web.StreamResponse:
             return response_json_error("Cache probe rejected; inspect the private run report", 409, "cache_probe_rejected")
     try:
         async def execute_native() -> ExecutionResult:
-            return preflight_error or binding_error or await execute_responses(
-                state, body, route, wants_stream, session_id, effective_prompt_cache_key, probe
-            )
+            if preflight_error or binding_error:
+                return preflight_error or binding_error
+            with replay_request(body, reasoning_realm_for_route(route)) as prepared:
+                return await execute_responses(
+                    state, prepared, route, wants_stream, session_id, effective_prompt_cache_key, probe
+                )
 
         result, finish_pi = await observe_chat(
             state.pi_usage, request.headers, route.provider, execute_native
