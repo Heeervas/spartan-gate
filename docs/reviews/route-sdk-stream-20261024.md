@@ -68,6 +68,24 @@ acceptance remains incomplete. A separately authorized bounded check should use
 the official SDK history normalizer; the unrelated intermittent incident remains
 outside this repair.
 
+## Authorized normalized continuation follow-up
+
+The parent authorized one additional request with a three-attempt reservation,
+raising the total physical-attempt cap to five. A fresh SDK process used the
+SDK's documented `toResponseInputItems()` to prepare the saved encrypted history
+and inert tool result. `finalResponse()` returned without an unknown-event or
+API error. Route recorded HTTP 200, terminal completion and usage on one physical
+attempt, with no routing error. Total usage was **three physical attempts of
+five**; the canary is closed and no reservation remains.
+
+A subsequent local assertion failed without retaining its exact assertion
+identity. Therefore successful SDK/provider completion is evidenced, but the
+canary's complete content and new-opaque-output postconditions are not claimed.
+Zero new reasoning tokens were recorded. No additional production change or
+rebuild was needed. Private evidence includes `normalized-completion-accounting.json`
+and `live-normalized-resume.log`. The original metadata-accumulator defect is
+fixed and live-verified; the unrelated intermittent incident remains undiagnosed.
+
 ## Evidence and rollback
 
 Private receipt owner: `private/maintenance/route-sdk-stream-20261024/`. It retains
