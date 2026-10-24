@@ -312,6 +312,14 @@ async def collect_response(
     return result
 
 
+def public_response_sse(payload: dict[str, Any], name: str, realm: str, transform: Any) -> bytes:
+    # Subscription-only sideband is not a public Responses event. Observe raw
+    # payloads first; retain every other event, including unknowns and failures.
+    if name == payload.get("type") == "response.metadata":
+        return b""
+    return sse(transform(annotate_realm(payload, realm)), name)
+
+
 async def buffer_precommit(events: Any, result: CodexCallResult, realm: str, transform: Any) -> tuple[list[bytes], bool]:
     buffered = []
     size = 0
@@ -327,10 +335,10 @@ async def buffer_precommit(events: Any, result: CodexCallResult, realm: str, tra
             result._native_tool_invalid = True
             continue
         name = response_event_name(event, payload)
-        encoded = sse(transform(annotate_realm(payload, realm)), name)
+        capture_telemetry(result, payload, name)
+        encoded = public_response_sse(payload, name, realm, transform)
         buffered.append(encoded)
         size += len(encoded)
-        capture_telemetry(result, payload, name)
         if name == "error":
             result.error = sanitized_error_code(data)
         if len(buffered) > CODEX_RESPONSES_PRECOMMIT_MAX_EVENTS or size > CODEX_RESPONSES_PRECOMMIT_MAX_BYTES or name not in {"response.created", "response.in_progress"}:
@@ -386,7 +394,7 @@ async def prepare_stream(
                     terminal_seen = True
                     error = payload.get("error") if isinstance(payload.get("error"), dict) else payload
                     result.error = router._error_code(error)
-                yield sse(opened.transform(annotate_realm(payload, realm)), event_name)
+                yield public_response_sse(payload, event_name, realm, opened.transform)
                 if terminal_seen:
                     return
             if not terminal_seen:

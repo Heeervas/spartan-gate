@@ -65,11 +65,18 @@ class Fixture:
         terminal = {"id": "resp_1", "object": "response", "status": "completed", "output": output,
                     "usage": {"input_tokens": 10, "output_tokens": 4,
                               "output_tokens_details": {"reasoning_tokens": 2}}}
-        events = [{"type": "response.created", "response": {"id": "resp_1", "object": "response", "status": "in_progress"}},
+        # SDK accumulators require an empty initial output and added-before-done
+        # ordering. Metadata is proprietary sideband, before and after commit.
+        metadata = {"type": "response.metadata", "metadata": {"fixture": "synthetic"}}
+        events = [{"type": "response.created", "response": {"id": "resp_1", "object": "response", "status": "in_progress", "output": []}},
+                  metadata,
+                  {"type": "response.output_item.added", "output_index": 0,
+                   "item": {"id": "rs_1", "type": "reasoning", "summary": []}},
                   {"type": "response.output_item.done", "output_index": 0,
                    "item": {k: v for k, v in reasoning.items() if not (self.late and k == "encrypted_content")}},
                   {"type": "response.output_item.added", "output_index": 1, "item": {**message, "arguments": ""}},
                   {"type": "response.output_item.done", "output_index": 1, "item": message},
+                  metadata,
                   {"type": "response.completed", "response": terminal}]
         if self.omit_output:
             terminal["output"] = []

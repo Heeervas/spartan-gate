@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Fix OpenAI SDK 7.19 `responses.stream()` accumulation on Codex streams by
+  excluding only proprietary `response.metadata` sideband after raw telemetry
+  observation. Preserve terminal errors/usage, tool and encrypted replay,
+  create-iterator and native Pi/legacy behavior. Deployment remains a separate gate.
+
 - Support the documented stateless Responses conversation subset without client
   signing, using server-owned opaque Codex replay receipts and conservative
   issuing-account scope. Preserve signed legacy Hermes/Pi histories, shared-secret

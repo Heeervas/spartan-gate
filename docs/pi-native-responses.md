@@ -32,7 +32,17 @@ Save the history as ordinary JSON and replay it after process restart. Treat
 `encrypted_content` as an **opaque endpoint-owned string**: do not decode, edit or
 import it from a different provider/gateway. Preserve tool `call_id` relationships.
 A successful conversation requires terminal completion, not merely HTTP 200 or
-partial streamed text.
+partial streamed text. Both `responses.create({stream:true})` iteration and the
+OpenAI SDK 7.19 `responses.stream({...}).finalResponse()` accumulator are covered
+by local interoperability tests. Check the returned terminal status in either
+case; `finalResponse()` alone does not guarantee successful completion.
+
+At the Codex public-SSE boundary, Route excludes the exact proprietary
+`response.metadata` event after raw telemetry observation. It is not a public
+Responses event and the SDK accumulator rejects it. Output/tool events, terminal
+usage and failures retain their existing semantics; unknown events are not
+blanket-filtered. Collected JSON, API-key passthrough and legacy replay are
+unchanged. Source tests do not establish live-provider acceptance of this fix.
 
 Codex subscription does not support `store=true`, `previous_response_id`, native
 compaction/context management, reasoning modes or non-function tools in this

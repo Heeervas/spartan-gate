@@ -228,8 +228,12 @@ git diff --check
 The SDK test uses actual loopback Route/native account selection and a disposable
 HTTP upstream; it has no custom SDK transport, signing fields or binding call.
 It must pass first/function-tool/encrypted continuation and fresh-process client
-and Route resume. Separate cases deny receipt tampering, raw foreign ciphertext,
-foreign realm, mixed accounts and invalid present legacy bindings before upstream
+and Route resume, including SDK 7.19 `responses.stream().finalResponse()` against
+synthetic `response.metadata` before and after stream commit. The SSE owner
+regression preserves raw metadata usage, unknown events, tools and terminal
+completion/failure/error semantics; no live ciphertext is needed. Separate cases
+deny receipt tampering, raw foreign ciphertext, foreign realm, mixed accounts and
+invalid present legacy bindings before upstream
 submission; same-account token/slot changes work and wrong-account failover does
 not occur. Native Pi additionally proves named resume, copied zero-reasoning IDs,
 local realm locking, lazy legacy migration, wrong-realm rejection followed by

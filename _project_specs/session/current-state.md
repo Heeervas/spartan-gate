@@ -1,5 +1,17 @@
 # Current State
 
+## SDK accumulator follow-up — source candidate, review pending (2026-10-24)
+
+The operator authorized a narrow repair for the confirmed SDK 7.19
+`responses.stream()` failure below. A synthetic Route/upstream regression
+reproduces its unsupported `response.metadata` accumulator error while collected
+JSON and create-iterator controls succeed. The candidate excludes only that
+proprietary Codex public-SSE event after raw telemetry observation; no SDK/Pi
+patch, dependency upgrade or replay-policy change is required. Independent
+source review and parent acceptance remain pending. No new deployment, active
+Pi install or real inference is authorized by this source task. The prior live
+acceptance and intermittent-incident limitations below remain historical facts.
+
 ## Standard Responses deployed; bounded live acceptance recorded (2026-10-24)
 
 Parent approved the independently reviewed design for standard-client stateless

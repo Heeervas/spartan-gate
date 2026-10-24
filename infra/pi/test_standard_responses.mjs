@@ -45,6 +45,11 @@ async function fixture(t) {
 }
 
 async function complete(client, input, stream = false) {
+  if (stream === 'helper') {
+    const response = await client.responses.stream({ model, input, tools, store: false }).finalResponse();
+    assert.equal(response.status, 'completed');
+    return response;
+  }
   const response = await client.responses.create({ model, input, tools, store: false, stream });
   if (!stream) { assert.equal(response.status, 'completed'); return response; }
   let terminal;
@@ -56,12 +61,13 @@ async function complete(client, input, stream = false) {
   return terminal;
 }
 
-async function resumedProcess(baseURL, input) {
+async function resumedProcess(baseURL, input, stream = false) {
   const script = `import OpenAI from ${JSON.stringify(sdk)};
     let raw=''; for await (const b of process.stdin) raw += b;
     const client = new OpenAI({baseURL:process.argv[1],apiKey:'secret',maxRetries:0});
-    console.log(JSON.stringify(await client.responses.create({model:${JSON.stringify(model)},
-      input:JSON.parse(raw),store:false})));`;
+    const params = {model:${JSON.stringify(model)},input:JSON.parse(raw),store:false};
+    const response = ${stream === 'helper' ? 'await client.responses.stream(params).finalResponse()' : 'await client.responses.create(params)'};
+    console.log(JSON.stringify(response));`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script, baseURL]);
   let output = '', error = '';
   child.stdout.on('data', chunk => { output += chunk; });
@@ -76,7 +82,7 @@ async function resumedProcess(baseURL, input) {
   return result;
 }
 
-for (const stream of [false, true]) {
+for (const stream of [false, true, 'helper']) {
   test(`unmodified OpenAI SDK completes tool/encrypted replay and fresh-process resume (stream=${stream})`, async t => {
     const service = await fixture(t);
     const input = [{ role: 'user', content: 'Use answer to obtain the result' }];
@@ -92,7 +98,7 @@ for (const stream of [false, true]) {
     assert.equal(second.output.find(item => item.type === 'message').content[0].text, 'answer=42');
     input.push(...second.output, { role: 'user', content: 'Continue after restart' });
     await service.control({ restart: true });
-    const resumed = await resumedProcess(service.baseURL, input);
+    const resumed = await resumedProcess(service.baseURL, input, stream);
     assert.equal(resumed.output.find(item => item.type === 'message').content[0].text, 'answer=42');
     const observed = await service.control();
     assert.equal(observed.bindings, 0);
