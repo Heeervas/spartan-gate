@@ -316,7 +316,7 @@ class Stage2RuntimeOwnerPatchTests(unittest.TestCase):
 class Stage2BindBoundaryTests(unittest.TestCase):
     """Real mountinfo/stat and physical ownership repair, never native bootstrap."""
 
-    def run_fixture(self, variant="canonical"):
+    def run_fixture(self, variant="canonical", home_spelling="/opt/data", mount_options="Z", nested_parent="/opt/data/skills/shared"):
         module = load_module()
         source_path = os.environ.get("HERMES_STAGE2_TEST_SOURCE")
         if source_path:
@@ -342,6 +342,7 @@ if tree_has_non_hermes_owner "$HERMES_HOME/skills"; then
     chown_hermes_tree "$HERMES_HOME/skills"
 fi
 '''
+        script = script.replace("HERMES_HOME=/opt/data\n", f"HERMES_HOME={home_spelling}\n", 1)
         with tempfile.TemporaryDirectory(dir=os.environ.get("HERMES_STAGE2_TEST_TMPDIR")) as directory:
             base = pathlib.Path(directory).resolve()
             home, shared, other = (base / name for name in ("data", "shared", "other"))
@@ -365,12 +366,12 @@ fi
             command = ["docker", "run", "--rm", "-i", "--network", "none", "--user", "0:0", "--entrypoint", "/bin/sh"]
             command += ["--volume", f"{home}:/opt/data:Z"]
             if variant != "unbound":
-                command += ["--volume", f"{shared}:/opt/data/skills/shared:Z"]
+                command += ["--volume", f"{shared}:/opt/data/skills/shared:{mount_options}"]
             if variant not in ("partial", "unbound"):
                 alias = other if variant == "wrong-alias" else shared
                 command += ["--volume", f"{alias}:/opt/shared-skills:Z"]
             if variant == "nested":
-                command += ["--volume", f"{other}:/opt/data/skills/shared/unexpected:Z"]
+                command += ["--volume", f"{other}:{nested_parent}/unexpected:Z"]
             command += [os.environ["HERMES_STAGE2_TEST_IMAGE"], "-s"]
             result = subprocess.run(command, input=script, capture_output=True, text=True, check=False)
             self.assertEqual(self.snapshot(shared), before, result.stderr)
@@ -411,6 +412,21 @@ if tree_has_non_hermes_owner "$HERMES_HOME/skills"; then exit 42; fi
 
     def test_unbound_shared_is_still_owned(self):
         self.run_fixture("unbound")
+
+    def test_bound_home_requires_exact_shell_path_spelling(self):
+        for spelling in ("/opt/data/", "/opt//data", "/opt/./data"):
+            with self.subTest(spelling=spelling):
+                # A defective guard must not corrupt even the synthetic
+                # collection during RED probes that reach physical repair.
+                self.run_fixture("spelling", spelling, mount_options="ro,Z")
+
+    def test_unbound_home_preserves_alternate_path_spellings(self):
+        for spelling in ("/opt/data/", "/opt//data", "/opt/./data"):
+            with self.subTest(spelling=spelling):
+                self.run_fixture("unbound", spelling)
+
+    def test_alias_only_nested_mount_refuses_before_any_write(self):
+        self.run_fixture("nested", nested_parent="/opt/shared-skills")
 
     def test_unsafe_boundaries_refuse_before_any_write(self):
         for variant in ("wrong-alias", "partial", "nested", "symlink"):

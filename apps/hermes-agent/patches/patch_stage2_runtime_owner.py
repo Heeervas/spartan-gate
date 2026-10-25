@@ -257,10 +257,16 @@ alias = Path("/opt/shared-skills")
 paired = [record for record in mounts if record[0] in (canonical, alias)]
 boundary = None
 if paired:
+    # Shell find uses the original spelling, so it must match the prune path.
+    if sys.argv[1] != "/opt/data":
+        raise SystemExit("[stage2] FATAL: canonical shared-skills binds require exact HERMES_HOME=/opt/data")
     if root != Path("/opt/data") or len(paired) != 2 or {{record[0] for record in paired}} != {{canonical, alias}}:
         raise SystemExit("[stage2] FATAL: incomplete canonical shared-skills bind pair")
     if not paired[0][2].is_absolute() or paired[0][1:] != paired[1][1:]:
         raise SystemExit("[stage2] FATAL: canonical shared-skills mount root/device/source mismatch")
+    for mount, *_ in mounts:
+        if canonical in mount.parents or alias in mount.parents:
+            raise SystemExit(f"[stage2] FATAL: nested mount in shared-skills bind: {{mount}}")
     identities = []
     for path in (canonical, alias):
         for component in (path, *path.parents):
