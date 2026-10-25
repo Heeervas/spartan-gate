@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .reasoning_replay import allows_auth, unavailable_error
+from .reasoning_replay import prefers_auth
 
 from .attempt import CodexAttempt, outcome_slot, valid_tool_arguments
 
@@ -1512,15 +1512,22 @@ class CodexRouter:
             candidates.append((slot, auth))
         if not candidates:
             return None
+        # Replay affinity follows model/effort and operational gates, not vice versa.
+        preferred = [pair for pair in candidates if prefers_auth(pair[1])]
+        selection = preferred or candidates
         if affinity_key:
             lease = self.leases.get(self._lease_key(affinity_key))
             if lease:
                 for slot, auth in candidates:
                     if slot.index == lease.slot_index and auth.account_key == lease.account_key:
-                        lease.last_used_at = now
-                        return slot, auth
-                self.leases.pop(self._lease_key(affinity_key), None)
-        return sorted(candidates, key=lambda pair: (pair[0].in_flight, pair[0].last_selected_at, pair[0].index))[0]
+                        if (slot, auth) in selection:
+                            lease.last_used_at = now
+                            return slot, auth
+                        # A valid lease outside the advisory subset stays valid.
+                        break
+                else:
+                    self.leases.pop(self._lease_key(affinity_key), None)
+        return sorted(selection, key=lambda pair: (pair[0].in_flight, pair[0].last_selected_at, pair[0].index))[0]
 
     async def _operational_candidates(self, excluded: set[int], excluded_accounts: set[str]) -> list[tuple[CodexSlot, CodexAuth]]:
         candidates = []
@@ -1541,7 +1548,7 @@ class CodexRouter:
                 and (not auth.account_key or auth.account_key not in excluded_accounts)
                 and self.slot_routing_status(slot)["routingEnabled"]
                 and slot.rate_limited_until <= now and slot.transient_until <= now
-                and slot.auth is auth and allows_auth(auth)]
+                and slot.auth is auth]
 
     async def model_selection_diagnostics(self, excluded: set[int], excluded_accounts: set[str], model_id: str, reasoning_effort: str | None = None) -> dict[str, Any]:
         catalog = getattr(self, "model_catalog", None)
@@ -1760,7 +1767,7 @@ class CodexRouter:
         }
 
     async def _unavailable_result(self, selection_diagnostics: dict[str, Any] | None = None) -> CodexCallResult:
-        error = unavailable_error(await self._unavailable_error())
+        error = await self._unavailable_error()
         if (selection_diagnostics and selection_diagnostics.get("operational_eligible", 0) > 0
                 and selection_diagnostics.get("model_eligible") == 0
                 and error.get("slot_diagnostics", {}).get("eligible", 0) > 0):

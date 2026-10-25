@@ -1,5 +1,38 @@
 # Current State
 
+## Codex replay portability source accepted — final docs review pending (2026-10-25)
+
+The independently reviewed source plan restores subscription pool portability for
+standard Responses receipts. Every receipt still authenticates exact ciphertext,
+version, canonical encoding, size and realm; mixed issuers are accepted and the
+last issuer is advisory after operational/model/effort eligibility. Conflicting
+valid leases cannot override preference or be invalidated merely by it. Ordinary
+pool fallback and existing safe retries remain; output scope follows the actual
+attempt. No Pi production code, saved history, secret, config or DB is changed.
+
+Focused regressions are green (14 Route receipt/scheduling/admission tests and
+9 real SDK/native Pi 1.3 interoperability cases). TOP interim reporting passes
+with existing exceptions, stronger inherited policy and immutable baseline.
+Final source gates pass: Route 509 Python + 47 JS; Pi 1.3 and 1.4 each
+5 Python + 55 JS; unchanged Hermes lineage 29. No skips/cancellations. Final TOP
+passes with the same seven existing exceptions and no gaps. Independent revision-1
+source review returned `PASS_WITH_NOTES` with no blocking source/evidence issues;
+the reviewer reran 14 focused plus 4 transport-boundary tests and recomputed exact
+quality. Parent accepted the source and authorized a local commit, not yet performed.
+The review note's stale mixed-issuer denial/failover prohibition is reconciled in
+`.agents/validation.md` without changing executable commands or weakening gates.
+This documentation-only revision awaits final docs review; production/test bytes
+and their behavioral receipts are unchanged. Revision-1 identities remain retained,
+with fresh scoped manifest/patch/TOP evidence under the task's `revision2/` receipts;
+see `docs/reviews/codex-replay-portability-20261025.md`.
+Parent will handle the authorized local commit after final documentation review.
+Deployment remains pending; no build, activation, restart, push or new live
+inference is authorized by this closeout.
+Historical deployment entries below describe their original candidates, not this
+new scheduling policy. Parent-supplied synthetic live completion across accounts
+is not proof of lossless hidden-reasoning reuse; foreign reasoning counted zero
+input tokens. Latent continuity remains uncertain.
+
 ## SDK accumulator metadata fix deployed; replay acceptance incomplete (2026-10-24)
 
 Independent review and parent acceptance covered the exact eight-file source
@@ -30,7 +63,8 @@ are retained; see `docs/reviews/route-sdk-stream-20261024.md`.
 
 Parent approved the independently reviewed design for standard-client stateless
 Responses conversations. The source candidate adds server-owned opaque Codex
-replay receipts with conservative issuing-account scope, while retaining signed
+replay receipts with the then-conservative issuing-account pin (superseded in
+source by the portability candidate above), while retaining signed
 legacy raw Hermes/Pi traffic. New Pi sessions avoid the binding RPC; old raw
 histories use lazy cached bindings without rewriting sessions. Local realm locks,
 zero-reasoning copied item-ID removal and append-failure retry safety are covered.

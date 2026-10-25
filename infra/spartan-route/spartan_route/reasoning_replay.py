@@ -105,6 +105,8 @@ class ReplayPolicy:
 
     def unwrap(self, value: str, realm: str) -> tuple[str, str]:
         try:
+            if len(value) > MAX_RECEIPT_BYTES:
+                raise ValueError("Receipt too large")
             version, payload, mac = value.split(".")
             if version != PREFIX + "1" or not HEX.fullmatch(mac):
                 raise ValueError("Invalid receipt")
@@ -150,16 +152,14 @@ def policy(body: dict[str, Any], realm: str) -> ReplayPolicy:
     needs_key = standard or any(isinstance(value, str) and value.startswith(PREFIX) for value in opaque)
     key = hmac.new(secret(), b"spartan-route/replay/v1", hashlib.sha256).digest() if needs_key else None
     result = ReplayPolicy(key, standard)
-    scopes = set()
+    scope = None
+    # Validate the entire history; the last authentic issuer is only a preference.
     for value in filter(None, opaque):
         if isinstance(value, str) and value.startswith(PREFIX):
             _, scope = result.unwrap(value, realm)
-            scopes.add(scope)
         elif standard:
             raise ReplayError("reasoning_binding_required", "Raw Codex reasoning requires a legacy binding; replay this endpoint's opaque output")
-    if len(scopes) > 1:
-        raise ReplayError("reasoning_replay_scope_mismatch", "Opaque history mixes upstream accounts", 409)
-    return ReplayPolicy(key, standard, next(iter(scopes), None))
+    return ReplayPolicy(key, standard, scope)
 
 
 @contextmanager
@@ -179,17 +179,10 @@ def replay_request(body: dict[str, Any], realm: str):
         CURRENT.reset(token)
 
 
-def allows_auth(auth: Any) -> bool:
+def prefers_auth(auth: Any) -> bool:
+    """Advisory issuer affinity, never an auth or operational eligibility gate."""
     selected = CURRENT.get()
     return selected is None or selected.scope is None or selected.account_scope(auth) == selected.scope
-
-
-def unavailable_error(error: dict[str, Any]) -> dict[str, Any]:
-    selected = CURRENT.get()
-    if selected is None or selected.scope is None:
-        return error
-    return {**error, "code": "reasoning_replay_account_unavailable",
-            "message": "No eligible issuing-account slot for opaque replay; retry later or start with visible history."}
 
 
 def output_transform(auth: Any):

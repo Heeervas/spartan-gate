@@ -270,11 +270,17 @@ Kept in v1:
   backend; API-key traffic goes to the configured `/v1/responses` endpoint.
 - Standard unsigned Codex conversations replay server-issued authenticated
   receipts in the ordinary opaque `encrypted_content` field, without client
-  signing or a binding endpoint. Route restores provider ciphertext and pins
-  replay to the issuing account. OAuth refresh/slot moves within that known
-  account work; unavailable accounts do not silently fail over. Unknown-account
-  receipts are credential-specific. Raw unsigned Codex ciphertext, tampered
-  receipts, mixed accounts and foreign realms fail before dispatch. See
+  signing or a binding endpoint. Route authenticates every receipt and restores
+  provider ciphertext verbatim. The last receipt's issuer is a preference after
+  operational and model/effort eligibility, before ordinary lease/load ordering;
+  mixed-issuer histories are supported. If that issuer is ineligible, the ordinary
+  eligible pool can serve the unchanged history under existing safe-retry gates.
+  Issuer scope is not authorization. Unknown-account credential replacement loses
+  preference, not receipt validity. New output receipts follow the actual attempt.
+  Raw unsigned Codex ciphertext, tampered receipts and foreign realms still fail
+  before dispatch. No committed-stream/ambiguous-send replay is added. Cross-account
+  completion does not prove lossless latent-reasoning or cache reuse. This source
+  policy is pending separate activation. See
   [the supported subset and migration contract](pi-native-responses.md).
 - The existing signed Hermes/legacy-Pi lane remains compatible and returns raw
   opaque output. Its chain MAC authenticates chain/realm, not ciphertext. Local

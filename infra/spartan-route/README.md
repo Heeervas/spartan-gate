@@ -21,6 +21,19 @@ resource through idempotent cleanup. Cache observations finalize once. Codex
 outcomes and affinity publication are fenced to the selected credential identity;
 a delayed rejection cannot quarantine or cool down its replacement credential.
 
+## Standard Codex replay scheduling
+
+Opaque receipts retain their existing format, key and integrity checks. Every
+receipt is validated; the last input receipt supplies advisory issuer affinity.
+Selection first enforces operational/model/effort/retry eligibility, then prefers
+that issuer before ordinary lease/load ordering. If no matching issuer is eligible,
+use the full eligible pool. Mixed-issuer histories are valid; raw ciphertext and
+tool pairings remain unchanged. New receipts identify the actual attempt. This
+does not authorize replay after committed output or ambiguous delivery, and does
+not establish lossless cross-account hidden-reasoning reuse. See the
+[standard-client contract](../../docs/pi-native-responses.md). Source-only until
+separately activated.
+
 ## Durable policy versus observations
 
 SQLite `codex_slot_overrides` is durable policy, not discardable telemetry. Route

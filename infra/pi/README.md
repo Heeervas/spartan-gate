@@ -8,7 +8,11 @@ post-validation durable realm lock, including manager-owned append-failure retry
 reload safety; install it with the other provider helpers. Legacy raw saved
 histories use a lazy cached binding and are not rewritten. Both Pi 1.3 and 1.4
 are validated with isolated configuration; restart fully after installation.
-No active installation or Route deployment is implied by source tests.
+No active installation or Route deployment is implied by source tests. Codex
+receipts authenticate ciphertext/realm; their last issuer is an advisory scheduling
+preference, not an account pin. Mixed-issuer continuation can fall back to the
+ordinary eligible pool without changing Pi production code or stored histories.
+Cross-account completion is not proof of lossless hidden-reasoning reuse.
 
 ## Pi session cache key
 

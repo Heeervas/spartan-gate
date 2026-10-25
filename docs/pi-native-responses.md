@@ -76,12 +76,27 @@ Route verifies the actual ciphertext, version, realm and issuing account scope,
 then restores raw provider ciphertext before upstream dispatch. No conversation
 registry, new schema, binding-store write or extra client request is needed.
 
-Replay stays on the issuing account, including after OAuth refresh or slot moves.
-An unavailable/disabled account cannot be replaced with another account for opaque
-replay; retry later or deliberately start with visible history only. When no stable
-account identity is known, receipts are credential-specific and token replacement
-invalidates them. Mixed-account histories, tampering and wrong realms fail before
-submission. Raw unbound Codex ciphertext is not accepted as a fallback.
+The last receipt in input order supplies an **advisory issuer preference**, not
+authorization or an account pin. Route validates every receipt, including earlier
+items in mixed-issuer histories. After operational and model/effort eligibility,
+it prefers matching issuers before ordinary lease/load ordering. A conflicting
+valid lease is not invalidated merely for being outside that preferred subset.
+If no preferred issuer remains eligible, the ordinary eligible pool can serve the
+unchanged raw ciphertext; existing safe-retry gates still govern failover. Disable,
+cooldown, auth, model/effort and retry exclusions always apply. Committed streams
+and ambiguous sends are not replayed.
+
+Known-account issuer identity survives OAuth refresh and slot moves. An unknown
+account's scope is credential-specific, but replacing that credential only loses
+the preference: it does not invalidate the authentic receipt. New output receipts
+identify the actual selected attempt. Tampering and wrong realms still fail before
+submission; raw unbound Codex ciphertext is not accepted as a fallback.
+
+Cross-account completion has bounded synthetic live evidence, **not proof of
+lossless hidden-reasoning reuse**. Foreign reasoning was attributed zero input
+tokens in that probe. Latent continuity and cache reuse remain upstream-dependent
+and uncertain; do not treat a completed response as proof of either. This source
+policy change is pending separate review/activation, not a deployed-state claim.
 
 The existing root secret must remain stable and recoverable across Route restarts.
 Missing signing configuration denies even a first standard Codex request before
@@ -164,7 +179,8 @@ The validation owner is `.agents/validation.md`; public setup is in
 [Development](development.md). Tests use actual OpenAI SDK 7.19.0 and native Pi
 1.3/1.4, real loopback Route/native selection and synthetic upstream HTTP. They
 cover tool/encrypted continuation, fresh-client/Route resume, receipt integrity,
-account pinning and legacy raw compatibility. Those are not live-provider proof.
+advisory issuer selection, mixed-issuer failover and legacy raw compatibility.
+Those are not live-provider proof.
 Source review, isolated image acceptance and parent-authorized live acceptance
 remain separate gates.
 

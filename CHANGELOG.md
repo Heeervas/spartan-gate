@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Restore Codex subscription pool failover for standard Responses replay. Keep
+  authenticated opaque receipts and exact ciphertext/tool history; treat the last
+  issuer as a preference after operational/model/effort gates, not an account pin.
+  Accept valid mixed-issuer histories and stamp new receipts for the actual attempt.
+  Preserve legacy raw safeguards and existing retry/ambiguous-send boundaries.
+  Cross-account completion does not prove lossless hidden-reasoning reuse. Source
+  verification does not activate this policy.
+
 - Add optional, bounded client-asserted conversation correlation for Pi and
   Ultimate without changing cache keys, replay authorization or account affinity.
   Keep related child sessions independent, expose purpose and provenance, scope
@@ -21,9 +29,10 @@ All notable changes to Spartan Gate are documented here.
   create-iterator and native Pi/legacy behavior. Deployment remains a separate gate.
 
 - Support the documented stateless Responses conversation subset without client
-  signing, using server-owned opaque Codex replay receipts and conservative
-  issuing-account scope. Preserve signed legacy Hermes/Pi histories, shared-secret
-  trust limits and explicit visible-history recovery for old-server rollback.
+  signing, using server-owned opaque Codex replay receipts. The original conservative
+  issuing-account pin is superseded by the advisory issuer policy above. Preserve
+  signed legacy Hermes/Pi histories, shared-secret trust limits and explicit
+  visible-history recovery for old-server rollback.
 - Avoid binding RPCs for new Pi sessions while retaining lazy legacy migration.
   Validate saved legacy provenance before committing a local realm lock; failed
   wrong-realm migration leaves the original realm resumable. Retain append-failure

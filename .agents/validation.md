@@ -232,10 +232,17 @@ and Route resume, including SDK 7.19 `responses.stream().finalResponse()` agains
 synthetic `response.metadata` before and after stream commit. The SSE owner
 regression preserves raw metadata usage, unknown events, tools and terminal
 completion/failure/error semantics; no live ciphertext is needed. Separate cases
-deny receipt tampering, raw foreign ciphertext, foreign realm, mixed accounts and
-invalid present legacy bindings before upstream
-submission; same-account token/slot changes work and wrong-account failover does
-not occur. Native Pi additionally proves named resume, copied zero-reasoning IDs,
+deny receipt tampering (including an invalid earlier receipt), raw foreign
+ciphertext, foreign realm and invalid present legacy bindings before upstream
+submission. Authentic mixed-issuer histories are accepted; the last receipt's
+issuer is an advisory preference after operational/model/effort eligibility,
+before ordinary lease/load ordering. Same-account token/slot changes work, and
+unavailable or retry-excluded issuers fall back to the ordinary eligible pool
+without bypassing disable/cooldown/auth/model/effort or retry exclusions. Verify
+exact raw ciphertext/tool pairings and new receipts scoped to the actual attempt;
+committed streams and ambiguous sends must not be replayed. Cross-account
+completion does not establish lossless hidden-reasoning reuse or cache continuity.
+Native Pi additionally proves named resume, copied zero-reasoning IDs,
 local realm locking, lazy legacy migration, wrong-realm rejection followed by
 correct-realm reopen, and native append-memory-before-persist failure followed by
 retry/reloaded extension over the retained manager. A fresh-process disk recovery

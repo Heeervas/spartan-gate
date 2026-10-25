@@ -97,21 +97,24 @@ for (const stream of [false, true, 'helper']) {
     // The inert tool actually runs; its result is required by the upstream fixture.
     const answer = () => String(6 * 7);
     input.push(...first.output, { type: 'function_call_output', call_id: call.call_id, output: answer() });
+    await service.control({ disabled: [0, 2] });
     const second = await complete(service.client, input, stream);
     assert.equal(second.output.find(item => item.type === 'message').content[0].text, 'answer=42');
     input.push(...second.output, { role: 'user', content: 'Continue after restart' });
-    await service.control({ restart: true });
+    await service.control({ disabled: [0, 1], restart: true });
     const resumed = await resumedProcess(service.baseURL, input, stream);
     assert.equal(resumed.output.find(item => item.type === 'message').content[0].text, 'answer=42');
     const observed = await service.control();
     assert.equal(observed.bindings, 0);
     assert.equal(observed.calls.length, 3);
-    assert.equal(new Set(observed.calls.map(call => call.account)).size, 1);
+    assert.deepEqual(observed.calls.map(call => call.account), ['A', 'B', 'A']);
+    assert.deepEqual(observed.calls.slice(1).map(call => call.body.input
+      .filter(item => item.type === 'reasoning').map(item => item.encrypted_content)),
+    [['provider-opaque-A'], ['provider-opaque-A', 'provider-opaque-B']]);
     for (const call of observed.calls.slice(1)) {
-      const opaque = call.body.input.filter(item => item.type === 'reasoning');
-      assert.ok(opaque.length);
-      assert.ok(opaque.every(item => item.encrypted_content === 'provider-opaque-A'));
       assert.equal(call.body.spartan_binding_mac, undefined);
+      assert.deepEqual(call.body.input.filter(item => item.type === 'function_call_output'),
+        [{ type: 'function_call_output', call_id: 'call_1', output: '42' }]);
     }
   });
 }
@@ -154,22 +157,24 @@ test('client correlation cannot bypass receipt integrity, realm or present-inval
   assert.equal((await service.control()).calls.length, 1);
 });
 
-test('client correlation cannot bypass account affinity across token/slot changes', async t => {
+test('mixed issuer order gives advisory preference across token and slot changes; earlier tampering still denies', async t => {
   const service = await fixture(t, true);
   const first = await complete(service.client, 'start');
   const reasonA = first.output.find(item => item.type === 'reasoning');
   await service.control({ disabled: [0, 2] });
-  // The other account is operational, but must never receive A's ciphertext.
-  await assert.rejects(service.client.responses.create({ model, input: [reasonA], store: false }),
-    error => error.status === 503 && error.code === 'reasoning_replay_account_unavailable');
-  assert.equal((await service.control()).calls.length, 1);
-  const other = await complete(service.client, 'separate conversation');
+  const other = await complete(service.client, [reasonA]);
   const reasonB = other.output.find(item => item.type === 'reasoning');
-  await rejected(service.client, [reasonA, reasonB], 'reasoning_replay_scope_mismatch');
+  assert.notEqual(reasonA.encrypted_content, reasonB.encrypted_content);
   await service.control({ disabled: [0], restart: true });
-  await complete(service.client, [reasonA]);
+  await complete(service.client, [reasonA, reasonB], true);
+  await complete(service.client, [reasonB, reasonA]);
   const observed = await service.control();
-  assert.deepEqual(observed.calls.map(call => call.account), ['A', 'B', 'A']);
+  assert.deepEqual(observed.calls.map(call => call.account), ['A', 'B', 'B', 'A']);
+  assert.deepEqual(observed.calls.slice(2).map(call => call.body.input.map(item => item.encrypted_content)),
+    [['provider-opaque-A', 'provider-opaque-B'], ['provider-opaque-B', 'provider-opaque-A']]);
+  await rejected(service.client, [{ ...reasonA, encrypted_content: reasonA.encrypted_content + '0' }, reasonB],
+    'reasoning_replay_invalid');
+  assert.equal((await service.control()).calls.length, 4);
 });
 
 test('valid signed legacy raw history retains its wire contract against new Route', async t => {
@@ -186,6 +191,8 @@ test('valid signed legacy raw history retains its wire contract against new Rout
   const second = await service.client.responses.create({ model, input: [reason], store: false, ...binding });
   assert.equal(second.status, 'completed');
   assert.equal(second.output.find(item => item.type === 'reasoning').encrypted_content, 'provider-opaque-A');
+  await rejected(service.client, [{ ...reason, encrypted_content: 'provider-opaque-unknown' }],
+    'fixture_wrong_ciphertext', binding);
   const standard = await complete(service.client, 'new unsigned history');
   const receipt = standard.output.find(item => item.type === 'reasoning');
   const mixed = await service.client.responses.create({ model, input: [receipt], store: false, ...binding });
@@ -245,7 +252,7 @@ test('real native Pi named session continues through fresh client and Route proc
     assert.equal(first.stopReason, 'stop');
     assert.equal(first.sessionId, 'subagent.0123456789abcdef');
     assert.ok(first.opaque > 0);
-    await service.control({ restart: true });
+    await service.control({ disabled: [0, 2], restart: true });
     const resumed = await nativeProcess({ baseURL: service.baseURL, directory, sessionFile: first.sessionFile });
     assert.equal(resumed.stopReason, 'stop');
     assert.equal(resumed.sessionId, first.sessionId);
@@ -254,6 +261,7 @@ test('real native Pi named session continues through fresh client and Route proc
     assert.equal(observed.bindings, 0);
     assert.equal(observed.calls.length, 3);
     assertNativeCorrelation(observed, first.sessionId);
+    assert.deepEqual(observed.calls.map(call => call.account), ['A', 'A', 'B']);
     assert.ok(observed.calls.slice(1).every(call => call.body.input.some(item => item.encrypted_content === 'provider-opaque-A')));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

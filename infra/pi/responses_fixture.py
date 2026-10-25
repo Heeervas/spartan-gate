@@ -50,7 +50,9 @@ class Fixture:
         self.calls.append({"body": body, "account": account})
         items = body["input"]
         opaque = [i["encrypted_content"] for i in items if i.get("type") == "reasoning"]
-        if any(value != "provider-opaque-" + account for value in opaque):
+        # Only these synthetic ciphertexts are authentic, regardless of dispatch
+        # account. Never accept arbitrary raw strings or still-wrapped receipts.
+        if any(value not in ("provider-opaque-A", "provider-opaque-B") for value in opaque):
             return web.json_response({"error": {"code": "fixture_wrong_ciphertext"}}, status=400)
         if not paired_tool_results(items):
             return web.json_response({"error": {"code": "fixture_wrong_tool_pair"}}, status=400)

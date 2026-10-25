@@ -1,13 +1,35 @@
 # Decisions
 
-## 2026-10-24 — Standard Responses replay design
+## 2026-10-25 — Codex subscription replay portability (source only)
+
+- Parent authorized implementation of the independently reviewed portability plan
+  (`PASS_WITH_RESIDUAL_RISK`), superseding the 2026-10-24 hard account pin below.
+  Acceptance remains parent-owned; candidate review precedes any commit/activation.
+- Keep receipt format/key, every MAC/version/canonical/size/realm check, signed
+  legacy/raw safeguards, exact upstream ciphertext and stored histories unchanged.
+  Accept authentic mixed issuers; the last receipt in input order gives advisory
+  issuer affinity only after operational/model/effort eligibility, before leases/load.
+- If that issuer is unavailable or excluded, use the ordinary eligible pool under
+  existing retry gates. Never override disable/cooldown/auth/catalog policy or
+  resurrect a failed issuer. A valid conflicting lease is not invalidated merely
+  for being outside the preferred subset. Output scope follows the actual attempt.
+- Unknown-account credential replacement loses issuer preference, not receipt
+  validity. Account identity is not replay authorization or tenant isolation.
+- Parent-supplied bounded synthetic live evidence showed cross-account terminal
+  completion with unchanged ciphertext, but foreign reasoning counted zero input
+  tokens: lossless hidden-reasoning continuity/cache reuse remains uncertain.
+- Source work authorizes no build, restart, deployment, push, new live inference,
+  production config/DB mutation or Pi production edit. Keep the stronger dirty TOP
+  policy, immutable baseline and independently approved exceptions unchanged.
+
+## 2026-10-24 — Standard Responses replay design (historical account pin superseded)
 
 - Parent approved stateless server-issued Codex replay receipts in the ordinary
   opaque field, not removal of raw-replay checks or a new conversation registry.
   Standard clients need only endpoint authentication and full-history Responses.
-- Pin opaque replay to the issuing known account (credential-specific when its
-  account is unknown). Availability loss cannot justify arbitrary cross-account
-  ciphertext replay. Preserve existing enable/cooldown/model/auth policy gates.
+- Original policy pinned opaque replay to the issuing known account (credential-
+  specific when unknown). This pin is superseded by the 2026-10-25 advisory issuer
+  decision above; existing enable/cooldown/model/auth gates remain mandatory.
 - Retain signed raw legacy Hermes/Pi wire behavior and saved histories. Pi uses a
   lazy successful binding cache only while old raw history remains; new sessions
   use local provenance/realm state, not signing RPCs. No session rewrite/migration
