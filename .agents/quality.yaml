@@ -22,6 +22,7 @@ scope:
   - scripts/install.sh
   - scripts/aliases.sh
   - infra/reader/**
+  - infra/hermes-plugins/**
   - infra/outbound-proxy/**
   - infra/dns/**
   - infra/caddy/**
