@@ -1,5 +1,7 @@
 # Client-asserted Route correlation
 
+This is a source contract, not a record of deployment or client installation.
+
 `POST /v1/chat/completions` and `POST /v1/responses` optionally accept a single
 `X-Spartan-Correlation` header. Header names are case-insensitive; repeated
 instances are rejected even when identical. The value must be at most 1024 raw
@@ -69,6 +71,21 @@ outside the current view. Legacy identities are labeled rather than reclassified
 Observed purposes and usage are passive telemetry, not an exact inventory of
 native attempts or an authenticated execution tree. Filtering and retention can
 hide parents, descendants or requests; grouping does not fetch missing history.
+
+## Dashboard interpretation
+
+Tagged cards show the client and observed purposes. Cards sharing an explicitly
+asserted root are arranged together only within the currently visible result
+set; child sessions and their metrics remain independent. Parent/root navigation
+opens the related card when it is visible, otherwise the identifier is labeled
+`not in this view`. These relationships are not authenticated ancestry proofs.
+Untagged historical cards retain their existing identity and are labeled
+`Legacy identity`; signed-chain and cache-key fallback histories are not rewritten.
+
+`Cache observations` counts passive observations of routed requests, not extra
+inference checks. Request detail separately reports the number of native attempts
+recorded when that metadata exists. Request-shape compatibility is not proof of
+provider cache residency; cached-token figures remain provider observations.
 
 ## Native Pi source integration
 

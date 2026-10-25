@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add optional, bounded client-asserted conversation correlation for Pi and
+  Ultimate without changing cache keys, replay authorization or account affinity.
+  Keep related child sessions independent, expose purpose and provenance, scope
+  lazy turn detail to its logical session, and rename passive cache checks to
+  cache observations. Historical telemetry is unchanged; source verification
+  does not install clients or activate the Route service.
+
 - Add source-only Ultimate worktree setup with Node 22, locked npm dependencies
   and isolated minimal Python test dependencies, without copying private data or
   enabling automatic landing checks, pushes or deployments.

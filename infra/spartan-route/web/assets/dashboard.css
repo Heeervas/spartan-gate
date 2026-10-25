@@ -126,6 +126,9 @@ th:first-child, td:first-child { text-align: left; white-space: normal; min-widt
 .metric:first-child { border-left: 0; padding-left: 0; }
 .metric .value { margin-top: 4px; font-size: 24px; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .session-card { margin-bottom: 16px; }
+.related-group { margin-bottom: 24px; padding-left: 16px; border-left: 2px solid var(--line); }
+.related-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 12px; font-size: 13px; }
+.title > .meta-pill { justify-self: start; }
 summary { cursor: pointer; }
 details.panel > summary, .turn > summary { display: grid; grid-template-columns: minmax(0,1fr) minmax(490px,1.2fr); align-items: center; gap: 24px; list-style: none; }
 summary::-webkit-details-marker { display: none; }

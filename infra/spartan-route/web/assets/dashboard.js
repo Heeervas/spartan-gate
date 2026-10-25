@@ -92,7 +92,7 @@
       const comparisons = native.comparisons || {};
       const compatible = Number(comparisons.replay || 0) + Number(comparisons.append || 0);
       const unknown = Number(comparisons.unknown || 0) + Number(comparisons.unattributed || 0);
-      return `${native.requests} native checks · ${compatible} compatible · ${Number(comparisons.changed || 0)} changed · ${unknown} unknown · cache data ${Number(native.cacheReadKnownRequests || 0)}/${Number(native.usageRequests || 0)}`;
+      return `${native.requests} observed requests · ${compatible} compatible · ${Number(comparisons.changed || 0)} changed · ${unknown} unknown · cache data ${Number(native.cacheReadKnownRequests || 0)}/${Number(native.usageRequests || 0)}`;
     }
     function cacheLowSummary(low, likely) {
       return likely ? `${num(low)}/${num(likely)} low in legacy estimate` : '';
@@ -137,7 +137,7 @@
       return [
         fact('Model', models.join(', ') || 'unknown'),
         fact('Cache', cache),
-        fact('Cache checks', metrics.nativeCache?.requests ? `${num(metrics.nativeCache.requests)} checks` : 'none yet', '', nativeCacheSummary(metrics.nativeCache)),
+        fact('Cache observations', metrics.nativeCache?.requests ? `${num(metrics.nativeCache.requests)} requests` : 'none yet', '', nativeCacheSummary(metrics.nativeCache)),
         fact('Est. usage', usageUnitSummary(metrics)),
         fact('Reasoning', reasoningSummary(metrics)),
         fact('Tools', toolSummary(metrics)),
@@ -205,8 +205,13 @@
       for (const entry of turnLoads.values()) entry.controller.abort();
       turnLoads.clear();
     }
+    function turnLoadKey(sessionId, turnId) {
+      return `${sessionId || ''}\0${turnId}`;
+    }
     function loadTurn(turnId, target, item) {
-      const existing = turnLoads.get(turnId);
+      const sessionId = item.dataset.sessionId;
+      const key = turnLoadKey(sessionId, turnId);
+      const existing = turnLoads.get(key);
       if (existing && existing.target === target) return existing.promise;
       existing?.controller.abort();
       const controller = new AbortController();
@@ -216,10 +221,10 @@
       target.setAttribute('aria-busy', 'true');
       if (!target.children.length) target.innerHTML = '<p class="muted">Loading turn...</p>';
       const current = () => !controller.signal.aborted && credential === tokenInput.value.trim()
-        && target.isConnected && item.dataset.detailVersion === version && turnLoads.get(turnId) === entry;
+        && target.isConnected && item.dataset.detailVersion === version && turnLoads.get(key) === entry;
       entry.promise = Promise.all([
         detailRenderer(),
-        getJson(`/api/routing/turns/${encodeURIComponent(turnId)}`, controller.signal),
+        getJson(`/api/routing/turns/${encodeURIComponent(turnId)}${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`, controller.signal),
       ]).then(([renderer, payload]) => {
         if (!current()) return;
         const rows = payload.requests || [];
@@ -228,12 +233,12 @@
       }).catch(error => {
         if (current()) target.innerHTML = `<p class="bad" role="alert">${esc(error.message)}</p>`;
       }).finally(() => {
-        if (turnLoads.get(turnId) === entry) {
-          turnLoads.delete(turnId);
+        if (turnLoads.get(key) === entry) {
+          turnLoads.delete(key);
           target.setAttribute('aria-busy', 'false');
         }
       });
-      turnLoads.set(turnId, entry);
+      turnLoads.set(key, entry);
       return entry.promise;
     }
     function wireLazyTurns() {
@@ -256,6 +261,13 @@
     function restoreFocus(element) {
       if (element?.isConnected && document.activeElement !== element) element.focus({ preventScroll: true });
     }
+    function retainSessionDiagnostics(next, old) {
+      const diagnostic = old.querySelector('.session-diagnostics');
+      if (!diagnostic) return;
+      const incoming = next.querySelector('.session-diagnostics');
+      if (diagnostic.innerHTML !== incoming.innerHTML) diagnostic.innerHTML = incoming.innerHTML;
+      incoming.replaceWith(diagnostic);
+    }
     function retainDetails(incoming, previous, selector, key) {
       const existing = new Map([...previous.querySelectorAll(selector)].map(item => [item.dataset[key], item]));
       incoming.querySelectorAll(selector).forEach(next => {
@@ -267,14 +279,14 @@
         if (key === 'sessionId') {
           retainDetails(next, old, 'details.turn', 'turnId');
           // Keep the session node and its disclosure state while reusing its turns.
-          const diagnostic = old.querySelector('.session-diagnostics');
-          if (diagnostic) next.querySelector('.session-diagnostics').replaceWith(diagnostic);
+          retainSessionDiagnostics(next, old);
           old.querySelector('.turn-list').replaceChildren(...next.querySelector('.turn-list').childNodes);
         } else if (old.dataset.detailVersion !== next.dataset.detailVersion) {
           old.dataset.detailVersion = next.dataset.detailVersion;
           delete old.dataset.loaded;
-          const entry = turnLoads.get(old.dataset.turnId);
-          if (entry) { entry.controller.abort(); turnLoads.delete(old.dataset.turnId); }
+          const key = turnLoadKey(old.dataset.sessionId, old.dataset.turnId);
+          const entry = turnLoads.get(key);
+          if (entry) { entry.controller.abort(); turnLoads.delete(key); }
         }
         next.replaceWith(old);
       });
@@ -330,20 +342,55 @@
         ? `${payload.matchingTurns || 0} matching turns · ${active.map(([key, value]) => `${key}: ${value}`).join(' · ')}`
         : '';
     }
-    function renderSessions(payload) {
-      const sessions = payload.sessions || [];
-      statusEl.textContent = `${sessions.length} shown of ${payload.matchingSessions ?? sessions.length}${payload.hasMoreSessions ? ', more matches' : ''}`;
-      const markup = sessions.map((session, index) => {
-        const turns = session.turns || [];
-        const latestTurn = turns[0] || {};
-        const title = activityTitle(latestTurn, `Session at ${fmtTime(session.lastAt)}`);
-        return `<details class="panel session-card" data-session-id="${esc(session.id)}" ${index === 0 ? 'open' : ''}>
+    function clientCorrelation(session) {
+      const correlation = session.correlation;
+      return correlation?.version === 1 && correlation.source === 'client_asserted' ? correlation : null;
+    }
+    function clientLabel(client) {
+      return client === 'ultimate' ? 'Ultimate' : 'Pi';
+    }
+    function purposeLabel(purpose) {
+      return ({ agent: 'Agent', summary: 'Summary', compaction: 'Compaction', other: 'Other' })[purpose] || 'Other';
+    }
+    function correlationSummary(session) {
+      const correlation = clientCorrelation(session);
+      if (!correlation) return '<span class="meta-pill">Legacy identity</span>';
+      const purposes = (session.purposes || [correlation.purpose]).map(purposeLabel).join(' + ');
+      return `<span class="meta-pill">${esc(clientLabel(correlation.client))} · ${esc(purposes)}</span>`;
+    }
+    function correlationDetails(session, sessions) {
+      const correlation = clientCorrelation(session);
+      if (!correlation) return '<p class="muted">Existing signed-chain or cache-key identity. Historical requests are not reclassified.</p>';
+      const relations = ['parent', 'root'].filter(key => correlation[key] && correlation[key] !== session.id).map(key => {
+        const target = sessions.find(item => item.id === correlation[key] && clientCorrelation(item)?.client === correlation.client);
+        const label = key === 'parent' ? 'Parent' : 'Root';
+        return `<div class="diagnostic-list"><span>${label}: ${esc(correlation[key])}</span>${target
+          ? `<button type="button" data-session-jump="${esc(target.id)}">View ${label.toLowerCase()}</button>`
+          : '<span class="muted">not in this view</span>'}</div>`;
+      }).join('');
+      return `<p class="muted">Client asserted · observational only, not an authentication or cache boundary.</p>${relations}`;
+    }
+    function groupSessions(sessions) {
+      const groups = new Map();
+      for (const session of sessions) {
+        const correlation = clientCorrelation(session);
+        const key = correlation?.root ? `${correlation.client}:${correlation.root}` : `session:${session.id}`;
+        if (!groups.has(key)) groups.set(key, { root: correlation?.root, client: correlation?.client, sessions: [] });
+        groups.get(key).sessions.push(session);
+      }
+      return [...groups.values()];
+    }
+    function sessionCard(session, index, sessions) {
+      const turns = session.turns || [];
+      const latestTurn = turns[0] || {};
+      const title = activityTitle(latestTurn, `Session at ${fmtTime(session.lastAt)}`);
+      return `<details class="panel session-card" data-session-id="${esc(session.id)}" ${index === 0 ? 'open' : ''}>
           <summary class="session-summary">
-            <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(title)}</strong><span class="muted">${esc(fmtTime(session.lastAt))} · ${esc(session.turnCount || turns.length)} turns</span></span>
+            <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(title)}</strong><span class="muted">${esc(fmtTime(session.lastAt))} · ${esc(session.turnCount || turns.length)} turns</span>${correlationSummary(session)}</span>
             <span class="summary-metrics">${metricLine(session.metrics, session.models)}</span>
           </summary>
           <div class="turn-list">
-            ${turns.map(turn => `<details class="turn" data-turn-id="${esc(turn.id)}" data-detail-version="${esc(JSON.stringify([turn.lastAt, turn.metrics]))}">
+            ${turns.map(turn => `<details class="turn" data-turn-id="${esc(turn.id)}" data-session-id="${esc(session.id)}" data-detail-version="${esc(JSON.stringify([turn.lastAt, turn.metrics]))}">
               <summary class="turn-summary">
                 <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(activityTitle(turn, 'Turn without preview'))}</strong><span class="muted">${esc(fmtTime(turn.lastAt))}</span></span>
                 <span class="summary-metrics">${metricLine(turn.metrics, turn.models)}</span>
@@ -356,11 +403,21 @@
             </details>`).join('')}
             ${session.hasMoreTurns ? '<p class="muted">Older turns hidden by the current limit.</p>' : ''}
             <details class="diagnostics session-diagnostics">
-              <summary>Session identifier</summary>
+              <summary>Session identity and relationships</summary>
+              ${correlationDetails(session, sessions)}
               <div class="diagnostic-list"><span>${esc(session.id)}</span><button type="button" data-copy="${esc(session.id)}">Copy session ID</button></div>
             </details>
           </div>
         </details>`;
+    }
+    function renderSessions(payload) {
+      const sessions = payload.sessions || [];
+      statusEl.textContent = `${sessions.length} shown of ${payload.matchingSessions ?? sessions.length}${payload.hasMoreSessions ? ', more matches' : ''}`;
+      const markup = groupSessions(sessions).map(group => {
+        const cards = group.sessions.map(session => sessionCard(session, sessions.indexOf(session), sessions)).join('');
+        if (group.sessions.length < 2) return cards;
+        return `<section class="related-group" aria-label="Related ${esc(clientLabel(group.client))} conversations">
+          <div class="related-heading"><strong>${esc(clientLabel(group.client))} · ${group.sessions.length} related conversations</strong><span class="muted">Client asserted · children stay separate</span></div>${cards}</section>`;
       }).join('') || '<div class="panel muted" role="status">No sessions recorded yet. New routed requests will appear here.</div>';
       if (renderedMarkup.get(sessionsEl) === markup) return;
       const focusedElement = document.activeElement;
@@ -376,6 +433,12 @@
       wireLazyTurns();
     }
     sessionsEl.addEventListener('click', async event => {
+      const jump = event.target.closest('button[data-session-jump]');
+      if (jump) {
+        const target = [...sessionsEl.querySelectorAll('details.session-card')].find(item => item.dataset.sessionId === jump.dataset.sessionJump);
+        if (target) { target.open = true; target.querySelector('summary').focus(); target.scrollIntoView({ block: 'nearest' }); }
+        return;
+      }
       const button = event.target.closest('button[data-copy]');
       if (!button) return;
       try {

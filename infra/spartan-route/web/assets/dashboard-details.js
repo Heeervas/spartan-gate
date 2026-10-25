@@ -52,8 +52,17 @@
         return `<div class="trace-item"><span class="trace-role">${esc(item.role || 'unknown')}</span><span class="trace-preview">${esc(item.preview || `${item.chars || 0} chars`)}</span>${tools}</div>`;
       }).join('')}</div>`;
     }
+    function requestCorrelationDetail(context) {
+      const correlation = context?.correlation;
+      const attempts = context?.native_cache?.attempts;
+      return {
+        meta: `${correlation ? correlationSummary({ correlation }) : ''}${Array.isArray(attempts) ? `<span class="meta-pill">${attempts.length} native attempts recorded</span>` : ''}`,
+        operation: correlation?.operation ? `<p class="muted">Client-asserted operation: ${esc(correlation.operation)}</p>` : '',
+      };
+    }
     function renderRequest(row) {
       const preview = requestPreview(row);
+      const correlation = requestCorrelationDetail(row.context);
       const slot = row.selectedCodexSlotIndex ?? '-';
       const account = row.selectedCodexAccountKey || '';
       const total = row.totalResponseTimeMs || 0;
@@ -78,6 +87,7 @@
             <span class="meta-pill">${esc(row.originalModel)} to ${esc(row.routedModel)}</span>
             <span class="meta-pill">${esc(row.tier || 'unknown')}</span>
             <span class="meta-pill">${num(row.inputTokens)} in · ${num(row.cachedInputTokens)} cached · ${num(row.outputTokens)} out</span>
+            ${correlation.meta}
             ${row.toolsAvailable ? '<span class="meta-pill">tools offered</span>' : ''}
             ${toolNames.length ? `<span class="meta-pill">called ${esc(toolNames.join(', '))}</span>` : ''}
             ${row.context?.request_trace?.delta?.phase ? `<span class="meta-pill">${esc(row.context.request_trace.delta.phase)}</span>` : ''}
@@ -86,6 +96,7 @@
           ${renderTraceItems(row)}
           <details class="diagnostics">
             <summary>Technical identifiers</summary>
+            ${correlation.operation}
             <div class="diagnostic-list">
               <span>request ${esc(row.requestId || 'unavailable')}</span>
               <button type="button" data-copy="${esc(row.requestId || '')}">Copy request ID</button>
