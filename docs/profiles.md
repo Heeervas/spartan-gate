@@ -126,9 +126,13 @@ exceptions or change the [explicit runtime activation policy](spartan-route.md).
 
 The local profile baseline also uses the shared `shared-master` plugin for
 eligible profiles. Link and enable it so new sessions receive the common
-`/opt/data/MASTER.md`; keep one source instead of profile-local copies. Follow
-the private runtime authority for installation-specific exclusions, then verify
-prompt inclusion in a new session after the gateway reload.
+`MASTER.md` from Hermes' default root (`/opt/data/MASTER.md` in the standard
+container). Custom roots and active named profiles use that same default-root
+source, not a profile-local copy. Native project/gateway `AGENTS.md` remains
+separate. Follow the private runtime authority for installation-specific
+exclusions, then verify prompt inclusion in a new session after the gateway
+reload. See [shared transport semantics](../apps/hermes-agent/runtime-docs/hermes_notes/shared_master_instructions_17102026.md)
+for stale-session reconciliation and oversized delivery.
 
 For Reader, link and enable `web-spartan-reader` and set
 `web.extract_backend: spartan-reader`; verify the effective provider selection. Preserve explicit
