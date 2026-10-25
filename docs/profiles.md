@@ -126,14 +126,22 @@ exceptions or change the [explicit runtime activation policy](spartan-route.md).
 
 The local profile baseline also uses the shared `shared-master` plugin for
 eligible profiles. Link and enable it so new sessions receive the common
-`/opt/data/MASTER.md`; keep one source instead of profile-local copies. Follow
-the private runtime authority for installation-specific exclusions, then verify
-prompt inclusion in a new session after the gateway reload.
+`MASTER.md` from Hermes' default root (`/opt/data/MASTER.md` in the standard
+container). Custom roots and active named profiles use that same default-root
+source, not a profile-local copy. Native project/gateway `AGENTS.md` remains
+separate. Follow the private runtime authority for installation-specific
+exclusions, then verify prompt inclusion in a new session after the gateway
+reload. See [shared transport semantics](../apps/hermes-agent/runtime-docs/hermes_notes/shared_master_instructions_17102026.md)
+for stale-session reconciliation and oversized delivery.
 
-For Reader, link and enable `web-spartan-reader` and set
-`web.extract_backend: spartan-reader`; verify the effective provider selection. Preserve explicit
-plugin disables, particularly `prompt-load-bridge`, and existing peer tool
-overrides. For profile delegation, add the intended new target to each enabled
+For Reader, use the Gate-owned `infra/hermes-plugins/web/spartan-reader`
+package, discovered as `web/spartan-reader` (manifest alias `web-spartan-reader`
+is also accepted for enablement), and set `web.extract_backend: spartan-reader`.
+Do not substitute the legacy flat plugin merely because its manifest name matches:
+the Gate provider pins the internal Reader endpoint and rejects responses missing
+the untrusted-content header or envelope. Verify the effective provider selection
+when activation is authorized. Preserve explicit plugin disables, particularly
+`prompt-load-bridge`, and existing peer tool overrides. For profile delegation, add the intended new target to each enabled
 caller's `plugins.entries.profile-delegate.allowed_profiles` only where
 authorized. The effective `PROFILE_DELEGATE_ALLOWED_PROFILES` environment value
 overrides the YAML policy, including values loaded through scoped dotenv.

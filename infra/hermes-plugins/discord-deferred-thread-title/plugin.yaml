@@ -1,0 +1,9 @@
+name: discord-deferred-thread-title
+version: "0.6.2"
+description: "Require workload indicators on generated Hermes session titles, preserve deferred Discord titles, and expose /rename-thread with close/drop support"
+author: Adán
+kind: standalone
+requires_env: []
+provides_tools: []
+provides_hooks:
+  - pre_gateway_dispatch
