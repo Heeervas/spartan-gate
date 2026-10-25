@@ -41,13 +41,21 @@ Hermes is the default public agent. If you want to use another agent, keep that 
 Hermes includes native Pango/Cairo, ffmpeg, and a curated TeX subset for
 creative tools such as Manim, but Python and Node packages should still be
 installed into project-local sandboxes under `/opt/data` or the workspace.
-Compose mounts the versioned runtime guides read-only under
-`/opt/data/brain/runtime_docs/local/`; no Hermes image rebuild or startup copy
-is required. The package-install guide covers the supported `uv` and npm flows;
-the Camofox guide covers Hermes browser capabilities, API endpoints, tab
-limits, recovery timing, and runtime viewports. Installation-specific guidance
-can be mounted read-only under `/opt/data/brain/runtime_docs/local/private/` so
-both sources remain distinct. Extra postinstall domains remain private policy;
+Compose mounts only `apps/hermes-agent/runtime-guides` read-only at
+`/opt/data/brain/runtime_docs`; no Hermes image rebuild or startup copy is
+required. This curated publication tree contains exactly three public-safe guides:
+[package installs](../apps/hermes-agent/runtime-guides/local/package-installs.md),
+[Camofox](../apps/hermes-agent/runtime-guides/local/camofox.md), and
+[profile creation](../apps/hermes-agent/runtime-guides/local/private/profile-creation.md).
+The profile recipe retains runtime path `local/private/profile-creation.md` for
+continuity, not confidentiality. There is no nested private-doc bind.
+`apps/hermes-agent/runtime-docs/hermes_notes/` is an unserved, host-only operator
+archive, never mounted or prescribed as a runtime reading source. Writing an
+operational note does not publish it; adding another curated guide requires an
+explicit publication decision and boundary-test update, not a sync/registry.
+Existing installations must separately remove any private nested guide bind and
+apply the new mount through an authorized recreation; source changes alone do
+not change a running container. Extra postinstall domains remain private policy;
 add them with `sg-whitelist-domain 15d <domain>` after inspecting the failed
 request.
 

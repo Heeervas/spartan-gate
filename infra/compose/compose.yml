@@ -566,8 +566,8 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      # required: versioned runtime guidance, exposed directly to Hermes as read-only data.
-      - ../../apps/hermes-agent/runtime-docs:/opt/data/brain/runtime_docs:ro
+      # required: curated published guides only; operator archive is never mounted.
+      - ../../apps/hermes-agent/runtime-guides:/opt/data/brain/runtime_docs:ro
       # required: agent can inspect but not modify the public proxy whitelist fragment.
       - ../outbound-proxy/whitelist.txt:/etc/proxy-whitelist.public.txt:ro
       # optional: Spartan Route cache-lineage plugin, enabled by user-owned Hermes config.

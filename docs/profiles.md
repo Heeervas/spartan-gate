@@ -37,6 +37,12 @@ running s6 service, not a named profile hosted by the multiplexer. See
 
 ## Create and complete a fresh profile
 
+The [published profile recipe](../apps/hermes-agent/runtime-guides/local/private/profile-creation.md)
+is the curated runtime procedure at
+`/opt/data/brain/runtime_docs/local/private/profile-creation.md`. Its `private`
+path component is historical; its contents are public safe. The sections below
+explain native integration and safety boundaries, not a private inventory.
+
 Prefer native fresh creation. With explicit authorization for creation and
 immediate multiplex enrollment of the intended profile, the supported CLI may
 run inside the gateway's tool process:
@@ -71,8 +77,10 @@ without bypassing the guard. An authorized native creation is not a lifecycle
 bypass, and neither is a supported profile configuration edit. Never retry a
 denied action with `--force` or another bypass.
 
-Prepare the profile's own `SOUL.md`, profile instruction file (for example,
-`AGENTS_<profile>.md`) and compact memories; verify effective instruction loading.
+Prepare the profile's own `SOUL.md` and compact memories. AGENTS loading follows
+the effective cwd: prefer an explicit named workspace cwd and
+`workspace/AGENTS.md` with one instruction body. `AGENTS_<name>.md` is not
+automatically injected; verify effective instruction loading in a fresh session.
 Curate skills
 deliberately: link complete skill directories, including their supporting
 files, and preserve intentional per-profile divergences and
@@ -89,7 +97,10 @@ credentials are absent. Hermes scoped dotenv loading may not be visible in a
 plain Python `os.environ` inspection. Validate the effective profile-aware
 configuration without printing secrets.
 
-Native cloning copies configuration, `.env`, identity and memories. It strips
+Do not copy DEFAULT `.env`, config, identity or bot credentials into a fresh
+profile. Native cloning is not history restoration; existing-profile recovery is
+a separately authorized recovery operation, not a generic clone step. Native cloning copies
+configuration, `.env`, identity and memories. It strips
 messaging credentials by default, but other secrets can remain. Do not blanket
 clone an existing gateway or copy OAuth/provider state. If deliberate cloning
 is required, review each retained configuration and credential locally before
@@ -113,8 +124,18 @@ inheritance and the active Route endpoint contract.
 Use native `SEARXNG_URL` for SearXNG. Browser configuration follows the selected
 Compose browser mode. When using the Camofox-only image, managed Camofox is
 required; follow the
-[runtime Camofox guide](../apps/hermes-agent/runtime-docs/local/camofox.md).
+[runtime Camofox guide](../apps/hermes-agent/runtime-guides/local/camofox.md).
 Do not configure Chromium or another backend as an availability fallback.
+
+The new-profile BASIC config enables exactly `shared-master`, `node-search`,
+`profile-delegate`, `discord-deferred-thread-title`, `spartan-cache-lineage`,
+`web-spartan-reader`, `hermes-lcm`, and `self-improvement-governor`, with
+`context.engine: lcm` and `web.extract_backend: spartan-reader`. Use individual
+per-profile implementation links and profile-local config, not a whole plugin
+directory link or DEFAULT config copy. NodeSearch requires an explicit narrow
+vault root, profile-local cache and PyYAML in the actual Hermes interpreter.
+Delegation availability is not authority: `allowed_profiles` defaults empty.
+These are new-profile requirements, not a migration of existing exceptions.
 
 Reference only installed, enabled plugins in toolsets and profile config. Every
 **new profile** must link the mounted `spartan-cache-lineage` plugin, include
@@ -129,10 +150,10 @@ eligible profiles. Link and enable it so new sessions receive the common
 `MASTER.md` from Hermes' default root (`/opt/data/MASTER.md` in the standard
 container). Custom roots and active named profiles use that same default-root
 source, not a profile-local copy. Native project/gateway `AGENTS.md` remains
-separate. Follow the private runtime authority for installation-specific
-exclusions, then verify prompt inclusion in a new session after the gateway
-reload. See [shared transport semantics](../apps/hermes-agent/runtime-docs/hermes_notes/shared_master_instructions_17102026.md)
-for stale-session reconciliation and oversized delivery.
+separate. Follow the published runtime recipe and explicitly approved local
+exceptions, then verify prompt inclusion in a new session after the gateway
+reload. The [historical shared transport note](../apps/hermes-agent/runtime-docs/hermes_notes/shared_master_instructions_17102026.md)
+is an unserved, host-only operator archive reference, not runtime guidance.
 
 For Reader, use the Gate-owned `infra/hermes-plugins/web/spartan-reader`
 package, discovered as `web/spartan-reader` (manifest alias `web-spartan-reader`

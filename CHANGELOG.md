@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Restrict Hermes runtime documentation to three curated public-safe guides in
+  `apps/hermes-agent/runtime-guides`, mounted read-only at the existing
+  `/opt/data/brain/runtime_docs` path. Move Camofox/package guidance and promote
+  the sanitized profile recipe with the eight-plugin BASIC baseline, retaining
+  `local/private/profile-creation.md` for continuity. Remove the example nested
+  private-doc bind; keep operator notes as an unserved host-only archive.
+  Existing private mounts require separately authorized migration/recreation.
+
 - Restore Codex subscription pool failover for standard Responses replay. Keep
   authenticated opaque receipts and exact ciphertext/tool history; treat the last
   issuer as a preference after operational/model/effort gates, not an account pin.

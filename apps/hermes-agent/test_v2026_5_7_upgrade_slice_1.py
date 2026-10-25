@@ -1,12 +1,15 @@
 import pathlib
+import re
 import unittest
+
+import yaml
 
 
 HERMES_DIR = pathlib.Path(__file__).parent
 REPO_ROOT = HERMES_DIR.parents[1]
 DOCKERFILE_PATH = HERMES_DIR / 'Dockerfile'
 ENTRYPOINT_PATH = HERMES_DIR / 'entrypoint-wrapper.sh'
-RUNTIME_DOCS_DIR = HERMES_DIR / 'runtime-docs'
+RUNTIME_DOCS_DIR = HERMES_DIR / 'runtime-guides'
 PACKAGE_INSTALLS_DOC_PATH = RUNTIME_DOCS_DIR / 'local' / 'package-installs.md'
 CAMOFOX_DOC_PATH = RUNTIME_DOCS_DIR / 'local' / 'camofox.md'
 COMPOSE_PATH = REPO_ROOT / 'infra' / 'compose' / 'compose.yml'
@@ -149,20 +152,39 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         entrypoint = read_text(ENTRYPOINT_PATH)
         compose = read_text(COMPOSE_PATH)
         private_compose = read_text(PRIVATE_COMPOSE_PATH)
-        package_doc = read_text(PACKAGE_INSTALLS_DOC_PATH)
-        camofox_doc = read_text(CAMOFOX_DOC_PATH)
-
         self.assertIn(
-            '../../apps/hermes-agent/runtime-docs:/opt/data/brain/runtime_docs:ro',
+            '../../apps/hermes-agent/runtime-guides:/opt/data/brain/runtime_docs:ro',
             compose,
         )
-        self.assertIn(
-            '../../private/docs/hermes-shared:/opt/data/brain/runtime_docs/local/private:ro',
-            private_compose,
+        self.assertEqual(compose.count(':/opt/data/brain/runtime_docs'), 1)
+        self.assertNotIn(':/opt/data/brain/runtime_docs', private_compose)
+        self.assertNotIn('../../apps/hermes-agent/runtime-docs:', compose)
+        self.assertFalse(RUNTIME_DOCS_DIR.is_symlink())
+        paths = list(RUNTIME_DOCS_DIR.rglob('*'))
+        self.assertFalse(any(path.is_symlink() for path in paths))
+        self.assertTrue(all(path.is_dir() or path.is_file() for path in paths))
+        self.assertEqual(
+            {path.relative_to(RUNTIME_DOCS_DIR).as_posix()
+             for path in paths if path.is_file()},
+            {'local/camofox.md', 'local/package-installs.md',
+             'local/private/profile-creation.md'},
         )
-        # The private overlay's source and mountpoint are installation-local,
-        # not published checkout fixtures. Assert both read-only mount contracts
-        # above without requiring or reading private operator state.
+        profile_doc = read_text(RUNTIME_DOCS_DIR / 'local/private/profile-creation.md')
+        basic = re.search(r'```yaml\n(.*?)\n```', profile_doc, re.DOTALL)
+        self.assertIsNotNone(basic)
+        recipe = yaml.safe_load(basic.group(1))
+        self.assertEqual(
+            recipe['plugins']['enabled'],
+            ['shared-master', 'node-search', 'profile-delegate',
+             'discord-deferred-thread-title', 'spartan-cache-lineage',
+             'web-spartan-reader', 'hermes-lcm', 'self-improvement-governor'],
+        )
+        self.assertEqual(recipe['context']['engine'], 'lcm')
+        self.assertEqual(recipe['web']['extract_backend'], 'spartan-reader')
+        self.assertEqual(recipe['plugins']['entries']['profile-delegate']['allowed_profiles'], [])
+        package_doc = read_text(PACKAGE_INSTALLS_DOC_PATH)
+        camofox_doc = read_text(CAMOFOX_DOC_PATH)
+        # Only public fixtures define the publication boundary; no private state.
         self.assertNotIn('runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
         self.assertNotIn('runtime_docs_dir=', entrypoint)
         self.assertNotIn('runtime_doc_src=', entrypoint)
