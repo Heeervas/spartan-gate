@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add source-only Ultimate worktree setup with Node 22, locked npm dependencies
+  and isolated minimal Python test dependencies, without copying private data or
+  enabling automatic landing checks, pushes or deployments.
+
 - Fix OpenAI SDK 7.19 `responses.stream()` accumulation on Codex streams by
   excluding only proprietary `response.metadata` sideband after raw telemetry
   observation. Preserve terminal errors/usage, tool and encrypted replay,
