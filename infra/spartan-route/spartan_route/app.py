@@ -35,6 +35,7 @@ from .transport import create_client_session
 from .sse import frames as parse_sse_frames
 from .upstream_lifecycle import UpstreamOwner, provider_stream, notify
 from .slot_policy import require_policy, SlotPolicyUnavailable
+from .correlation import REQUEST_KEY as CORRELATION_KEY, require_correlation, context_fields, grouping_session, parse_session_filter
 from .util import (
     json_error,
     now_iso,
@@ -78,6 +79,7 @@ class ExecutionResult:
     actual_tool_names: list[str] | None = None
     tool_telemetry_complete: bool | None = None
     native_cache: dict[str, Any] | None = None
+    correlation: dict[str, Any] | None = None
     stream_cleanup: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
     _responses_telemetry: CodexCallResult | None = field(default=None, repr=False)
     _actual_tool_call_keys: set[str] = field(default_factory=set, repr=False)
@@ -1467,7 +1469,7 @@ def log_request(
                 if key in transport:
                     transport["request_" + key] = preparation_ms + transport[key]
     context = {
-        "session_identity": {"version": 1, "source": session_identity_source},
+        **context_fields(result.correlation, session_identity_source),
         "routeReason": route.reason,
         "provider": route.provider,
         "status": result.status,
@@ -1540,7 +1542,7 @@ def log_request(
             actual_tool_call_count=result.actual_tool_call_count,
             actual_tool_names=result.actual_tool_names,
             is_dry_run=state.config.dry_run,
-            session_id=telemetry_session_id if telemetry_session_id is not None else session_id,
+            session_id=grouping_session(result.correlation, telemetry_session_id if telemetry_session_id is not None else session_id),
             error=result.error if result.status >= 400 or result.error else None,
             prompt_preview=prompt_preview_from_request(body, state.config.log_content),
             context_info=stable_json(context),
@@ -1750,6 +1752,7 @@ def get_state(request: web.Request) -> SpartanRouteState:
 
 
 @require_policy
+@require_correlation
 async def chat_completions(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -1776,6 +1779,8 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
     except CorrelationError as exc:
         return response_json_error(str(exc), 409, "pi_origin_invalid", "invalid_request_error")
 
+    result.correlation = request.get(CORRELATION_KEY)
+
     async def done() -> None:
         await finish_pi()
         log_request(state, body, route, result, started, request_id, session_id, turn_id, "chat_completions")
@@ -1788,6 +1793,7 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
 
 
 @require_policy
+@require_correlation
 async def responses(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -1853,6 +1859,7 @@ async def responses(request: web.Request) -> web.StreamResponse:
         if probe is not None:
             state.cache_experiments.finish(probe, success=False)
         raise
+    result.correlation = request.get(CORRELATION_KEY)
     if probe is not None and result.stream is None:
         state.cache_experiments.finish(probe, success=False, sent=False)
 
@@ -2700,7 +2707,11 @@ async def api_routing_turn(request: web.Request) -> web.Response:
     if not valid_turn_id(turn_id):
         return response_json_error("Invalid turn id", 400, "invalid_turn_id", "invalid_request_error")
     try:
-        payload = await asyncio.to_thread(state.telemetry.turn_requests, turn_id)
+        session_id = parse_session_filter(request.query)
+    except ValueError:
+        return response_json_error("Invalid session id", 400, "invalid_session_id", "invalid_request_error")
+    try:
+        payload = await asyncio.to_thread(state.telemetry.turn_requests, turn_id, session_id=session_id)
     except Exception as exc:
         record_telemetry_failure(state, "read", "routing_turn", exc)
         return telemetry_unavailable_response()

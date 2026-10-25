@@ -1,7 +1,7 @@
 // Disposable native producer/consumer for process-resume tests, no host config.
 import assert from 'node:assert/strict';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { piDir, piDependency } from './pi_test_inputs.mjs';
 import { createResponsesStream } from './extensions/spartan-route-provider/responses.mjs';
 import { SessionFence } from './extensions/spartan-route-provider/session.mjs';
@@ -14,6 +14,18 @@ const native = await import(pathToFileURL(piDependency('@earendil-works/pi-ai', 
 const { SessionManager } = await import(pathToFileURL(resolve(piDir, 'dist/core/session-manager.js')).href);
 const manager = input.sessionFile ? SessionManager.open(input.sessionFile) :
   SessionManager.create(input.directory, join(input.directory, 'sessions'), { id: 'subagent.0123456789abcdef' });
+// Load the real extension and await the real native header dispatcher. The
+// synthetic missing gateway config proves labels do not depend on registration.
+process.env.PI_CODING_AGENT_DIR = input.directory;
+process.env.PI_SPARTAN_ROUTE_CONFIG = join(input.directory, 'missing-gateway-config.json');
+const { loadExtensions } = await import(pathToFileURL(resolve(piDir, 'dist/core/extensions/loader.js')).href);
+const { ExtensionRunner } = await import(pathToFileURL(resolve(piDir, 'dist/core/extensions/runner.js')).href);
+const extensionPath = fileURLToPath(new URL('./extensions/spartan-route-usage.ts', import.meta.url));
+const loaded = await loadExtensions([extensionPath], input.directory);
+assert.deepEqual(loaded.errors, []);
+const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, input.directory, manager, {});
+runner.createContext = () => ({ sessionManager: manager, hasUI: false,
+  model: { provider: 'spartan-route' }, ui: { setStatus() {}, setWidget() {} } });
 const fence = new SessionFence('a'.repeat(64), (type, data) => manager.appendCustomEntry(type, data));
 fence.activate({ sessionManager: manager });
 const stream = createResponsesStream(native.streamSimple, async () => { throw new Error('Unexpected binding RPC'); },
@@ -25,6 +37,7 @@ manager.appendMessage({ role: 'user', content: input.sessionFile ? 'Continue aft
 async function turn() {
   const result = await stream(model, manager.buildSessionContext(), {
     apiKey: 'secret', sessionId: manager.getSessionId(), maxRetries: 0, reasoning: 'high',
+    headers: await runner.emitBeforeProviderHeaders({ 'X-Spartan-Pi-Client': '1' }),
   }).result();
   assert.notEqual(result.stopReason, 'error', result.errorMessage);
   manager.appendMessage(result);
@@ -39,6 +52,9 @@ if (!input.sessionFile) {
   manager.appendMessage({ role: 'toolResult', toolCallId: call.id, toolName: call.name,
     content: [{ type: 'text', text: answer }], isError: false, timestamp: Date.now() });
   result = await turn();
+}
+for (const extension of loaded.extensions) {
+  for (const handler of extension.handlers.get('session_shutdown') ?? []) await handler();
 }
 console.log(JSON.stringify({ stopReason: result.stopReason, sessionId: manager.getSessionId(), sessionFile: manager.getSessionFile(),
   opaque: manager.getEntries().filter(entry => entry.message?.role === 'assistant').flatMap(entry => entry.message.content)

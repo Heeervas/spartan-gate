@@ -35,6 +35,8 @@ def paired_tool_results(items):
 class Fixture:
     def __init__(self):
         self.calls = []
+        self.dispatches = []
+        self.telemetry = []
         self.bindings = 0
         self.route_runner = None
         self.disabled = set()
@@ -102,6 +104,7 @@ class Fixture:
                 return slot.auth
 
             async def open_inference(self, body, headers, auth, scope=None):
+                fixture.dispatches.append({"body": body, "headers": dict(headers)})
                 return await session.post(fixture.upstream_url, json=body,
                                           headers={"X-Fixture-Account": auth.account_id})
 
@@ -109,7 +112,7 @@ class Fixture:
         router.slots = [CodexSlot(i, auth=CodexAuth("synthetic-token-" + str(self.generation), account_id=a))
                         for i, a in enumerate(("A", "B", "A"))]
         app[STATE_KEY].session = session
-        app[STATE_KEY].queue.start()
+        app[STATE_KEY].queue.log = self.telemetry.append
         app[STATE_KEY].codex = self.router = router
         for slot in router.slots:
             await router.set_slot_routing_enabled(slot.index, slot.index not in self.disabled)
@@ -133,7 +136,10 @@ class Fixture:
         elif "disabled" in data:
             for slot in self.router.slots:
                 await self.router.set_slot_routing_enabled(slot.index, slot.index not in self.disabled)
-        return web.json_response({"calls": self.calls, "bindings": self.bindings})
+        return web.json_response({"calls": self.calls, "bindings": self.bindings,
+                                  "dispatches": self.dispatches,
+                                  "telemetry": [{"session_id": entry.session_id, "context": json.loads(entry.context_info)}
+                                                for entry in self.telemetry]})
 
     async def run(self):
         # Do not inherit provider credentials, endpoint overrides or private program inputs.

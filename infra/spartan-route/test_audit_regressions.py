@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from multidict import CIMultiDict
 
 import test_app as fixtures
 import test_codex as upstream
@@ -48,9 +49,10 @@ class Sink:
         pass
 
 
-class Request:
+class Request(dict):
     def __init__(self, app, body):
-        self.app, self.body, self.headers = app, body, {}
+        super().__init__()
+        self.app, self.body, self.headers = app, body, CIMultiDict()
 
     async def json(self):
         return self.body

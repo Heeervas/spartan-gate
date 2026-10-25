@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .util import now_iso
+from .correlation import add_group_correlation
 from .pi_usage_store import PiUsageStore
 from .cache_metrics import empty_metrics as empty_native_metrics, add_request as add_native_request, merge_metrics as merge_native_metrics, public_metrics as public_native_metrics
 
@@ -1246,9 +1247,7 @@ class TelemetryStore:
             session["lastAt"] = max(session["lastAt"], item["timestamp"])
             session["lastId"] = max(session["lastId"], item["id"])
             session["matchLastId"] = max(session["matchLastId"], int(match_meta["last_match_id"]))
-            self._add_metrics(session["metrics"], item)
-            session["models"].add(item["actual_model"])
-            session["tiers"].add(item["tier"])
+            self._add_group_request(session, item)
             turn = session["turns"].setdefault(turn_id, {
                 "id": turn_id,
                 "startedAt": item["timestamp"],
@@ -1264,9 +1263,7 @@ class TelemetryStore:
             turn["lastAt"] = max(turn["lastAt"], item["timestamp"])
             turn["lastId"] = max(turn["lastId"], item["id"])
             turn["promptPreview"] = turn["promptPreview"] or item.get("prompt_preview")
-            self._add_metrics(turn["metrics"], item)
-            turn["models"].add(item["actual_model"])
-            turn["tiers"].add(item["tier"])
+            self._add_group_request(turn, item)
 
         values = sorted(sessions.values(), key=lambda session: session["matchLastId"], reverse=True)
         selected_meta = {str(row["session_id"]): dict(row) for row in selected_rows}
@@ -1299,12 +1296,18 @@ class TelemetryStore:
             "appliedFilters": filters,
         }
 
-    def turn_requests(self, turn_id: str, limit: int = 200) -> dict[str, Any]:
+    def _add_group_request(self, group: dict[str, Any], item: dict[str, Any]) -> None:
+        self._add_metrics(group["metrics"], item)
+        group["models"].add(item["actual_model"])
+        group["tiers"].add(item["tier"])
+        add_group_correlation(group, self._row_context(item).get("correlation"))
+
+    def turn_requests(self, turn_id: str, limit: int = 200, *, session_id: str | None = None) -> dict[str, Any]:
         safe_limit = max(1, min(200, int(limit)))
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM routing_log WHERE turn_id = ? ORDER BY id ASC LIMIT ?",
-                (turn_id, safe_limit + 1),
+                "SELECT * FROM routing_log WHERE turn_id = ? AND (? IS NULL OR session_id = ?) ORDER BY id ASC LIMIT ?",
+                (turn_id, session_id, session_id, safe_limit + 1),
             ).fetchall()
         items = [self._decision_from_row(dict(row)) for row in rows]
         return {"turnId": turn_id, "requests": items[:safe_limit], "truncated": len(items) > safe_limit}

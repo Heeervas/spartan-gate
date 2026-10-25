@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
@@ -18,7 +19,7 @@ const fixturePath = fileURLToPath(new URL('./responses_fixture.py', import.meta.
 const model = 'codex/gpt-6-sol';
 const tools = [{ type: 'function', name: 'answer', parameters: { type: 'object', properties: {} } }];
 
-async function fixture(t) {
+async function fixture(t, correlated = false) {
   const child = spawn(process.env.PYTHON || 'python3', ['-B', fixturePath], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = once(child, 'exit');
   let stderr = '';
@@ -37,7 +38,9 @@ async function fixture(t) {
     exited.then(() => { throw new Error(stderr || 'Fixture exited before readiness'); })])
     .finally(() => clearTimeout(readiness));
   const config = JSON.parse(line);
-  const client = new OpenAI({ baseURL: config.baseURL, apiKey: 'secret', maxRetries: 0 });
+  const defaultHeaders = correlated ? { 'X-Spartan-Correlation': JSON.stringify({ version: 1,
+    client: 'ultimate', conversation: 'synthetic-conversation', purpose: 'agent' }) } : {};
+  const client = new OpenAI({ baseURL: config.baseURL, apiKey: 'secret', maxRetries: 0, defaultHeaders });
   const control = async (body = {}) => (await fetch(config.control, {
     method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' },
   })).json();
@@ -130,8 +133,8 @@ test('synthetic upstream requires matching preceding tool call IDs, not only cor
   assert.equal(valid.output.find(item => item.type === 'message').content[0].text, 'answer=42');
 });
 
-test('receipt integrity, realm and present-invalid-legacy denials occur before upstream submission', async t => {
-  const service = await fixture(t);
+test('client correlation cannot bypass receipt integrity, realm or present-invalid-legacy denials', async t => {
+  const service = await fixture(t, true);
   const first = await complete(service.client, 'start');
   const reason = first.output.find(item => item.type === 'reasoning');
   const parts = reason.encrypted_content.split('.');
@@ -151,8 +154,8 @@ test('receipt integrity, realm and present-invalid-legacy denials occur before u
   assert.equal((await service.control()).calls.length, 1);
 });
 
-test('same-account replay survives token/slot changes but never fails over across accounts', async t => {
-  const service = await fixture(t);
+test('client correlation cannot bypass account affinity across token/slot changes', async t => {
+  const service = await fixture(t, true);
   const first = await complete(service.client, 'start');
   const reasonA = first.output.find(item => item.type === 'reasoning');
   await service.control({ disabled: [0, 2] });
@@ -216,6 +219,23 @@ async function nativeProcess(document) {
   return JSON.parse(output);
 }
 
+function assertNativeCorrelation(observed, sessionId) {
+  const hash = createHash('sha256').update(`pi\0${sessionId}`).digest('hex').slice(0, 16);
+  assert.equal(observed.telemetry.length, 3);
+  for (const entry of observed.telemetry) {
+    assert.equal(entry.session_id, hash);
+    assert.deepEqual(entry.context.correlation, { version: 1, source: 'client_asserted', client: 'pi',
+      conversation: hash, purpose: 'other' });
+  }
+  for (const dispatch of observed.dispatches) {
+    assert.ok(Object.keys(dispatch.headers).every(key => key.toLowerCase() !== 'x-spartan-correlation'));
+    const cacheHash = createHash('sha256').update(sessionId).digest('hex').slice(0, 32);
+    assert.equal(dispatch.body.prompt_cache_key, `clawroute:${cacheHash}`);
+    assert.equal(dispatch.body.correlation, undefined);
+  }
+  assert.equal(new Set(observed.telemetry.map(entry => entry.context.cache_key_hash)).size, 1);
+}
+
 test('real native Pi named session continues through fresh client and Route processes', async t => {
   const service = await fixture(t);
   const directory = await mkdtemp(join(tmpdir(), 'pi-native-http-'));
@@ -233,6 +253,7 @@ test('real native Pi named session continues through fresh client and Route proc
     const observed = await service.control();
     assert.equal(observed.bindings, 0);
     assert.equal(observed.calls.length, 3);
+    assertNativeCorrelation(observed, first.sessionId);
     assert.ok(observed.calls.slice(1).every(call => call.body.input.some(item => item.encrypted_content === 'provider-opaque-A')));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
