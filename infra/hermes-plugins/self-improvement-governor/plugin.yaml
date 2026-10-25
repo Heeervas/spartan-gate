@@ -1,0 +1,4 @@
+name: self-improvement-governor
+version: "0.2.0"
+description: Adds required skill-review methods and core/reference routing to native review prompts.
+kind: standalone
