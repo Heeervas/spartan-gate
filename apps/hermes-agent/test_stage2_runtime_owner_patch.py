@@ -134,7 +134,8 @@ class Stage2RuntimeOwnerPatchTests(unittest.TestCase):
         self.assertIn('actual_hermes_uid="$SPARTAN_HERMES_RUN_UID"', patched)
         self.assertIn('export SPARTAN_HERMES_RUN_UID SPARTAN_HERMES_RUN_GID', patched)
         self.assertIn('chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$HERMES_HOME"', patched)
-        self.assertIn('chown -hR "$SPARTAN_HERMES_RUNTIME_OWNER" "$target"', patched)
+        self.assertIn(module.PHYSICAL_CHOWN_REPLACEMENT, patched)
+        self.assertNotIn('chown -hR "$SPARTAN_HERMES_RUNTIME_OWNER" "$target"', patched)
         self.assertIn('! -uid "$SPARTAN_HERMES_RUN_UID"', patched)
         self.assertIn('! -gid "$SPARTAN_HERMES_RUN_GID"', patched)
         self.assertIn(
@@ -146,7 +147,7 @@ class Stage2RuntimeOwnerPatchTests(unittest.TestCase):
         self.assertIn("platforms/pairing lazy-packages kanban .local/state/hermes; do", patched)
         self.assertLess(patched.index(module.OWNERSHIP_PREFLIGHT_MARKER), patched.index('chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$HERMES_HOME"'))
         self.assertIn("nested mount in ownership target", patched)
-        self.assertIn("chown -hR uses physical traversal", patched)
+        self.assertIn("chown -h uses physical traversal", patched)
         self.assertNotIn('s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python"', patched)
         self.assertEqual(patched.count('as_hermes "$INSTALL_DIR/.venv/bin/python"'), 3)
         self.assertNotIn(".install_method; do", patched)
@@ -160,6 +161,19 @@ class Stage2RuntimeOwnerPatchTests(unittest.TestCase):
         module = load_module()
         patched = module.patch_source(upstream_shape())
         self.assertEqual(module.patch_source(patched), patched)
+
+    def test_unknown_existing_guard_or_traversal_fails_closed(self):
+        module = load_module()
+        patched = module.patch_source(upstream_shape())
+        for corrupted in (
+            patched.replace("# Validate all targets", "# Unknown guard"),
+            patched.replace(module.OWNERSHIP_PREFLIGHT_MARKER, "# Missing guard marker"),
+            patched.replace(module.PHYSICAL_CHOWN_REPLACEMENT, 'chown -R "$target"'),
+            patched.replace(module.PRUNED_TREE_OWNER_REPLACEMENT, 'find "$target" -print'),
+        ):
+            with self.subTest(source=corrupted[-50:]):
+                with self.assertRaisesRegex(ValueError, "guard|traversal anchor"):
+                    module.patch_source(corrupted)
 
     def test_managed_dir_allowlist_rejects_unknown_upstream_entries(self):
         module = load_module()
@@ -296,6 +310,112 @@ class Stage2RuntimeOwnerPatchTests(unittest.TestCase):
         module = load_module()
         with self.assertRaises(ValueError):
             module.patch_source("before\nafter\n")
+
+
+@unittest.skipUnless(os.environ.get("HERMES_STAGE2_TEST_IMAGE"), "explicit isolated Docker fixture image required")
+class Stage2BindBoundaryTests(unittest.TestCase):
+    """Real mountinfo/stat and physical ownership repair, never native bootstrap."""
+
+    def run_fixture(self, variant="canonical"):
+        module = load_module()
+        source_path = os.environ.get("HERMES_STAGE2_TEST_SOURCE")
+        if source_path:
+            source = pathlib.Path(source_path).read_text(encoding="utf-8")
+            if not os.environ.get("HERMES_STAGE2_TEST_OLD_GUARD"):
+                source = module.patch_source(source)
+            start = source.index("path_has_symlink_component() {")
+            ownership = source[start:source.index("needs_chown=false\n", start)]
+        else:
+            source = module.patch_source(upstream_shape())
+            start = source.index("chown_hermes_tree() {")
+            ownership = source[start:source.index("needs_chown=false\n", start)]
+        script = '''set -eu
+INSTALL_DIR=/opt/hermes
+HERMES_HOME=/opt/data
+SPARTAN_HERMES_RUN_UID=12345
+SPARTAN_HERMES_RUN_GID=12346
+SPARTAN_HERMES_RUNTIME_OWNER=12345:12346
+''' + ownership + '''
+# A successful all-target preflight must precede even this synthetic write.
+touch "$HERMES_HOME/write-started"
+if tree_has_non_hermes_owner "$HERMES_HOME/skills"; then
+    chown_hermes_tree "$HERMES_HOME/skills"
+fi
+'''
+        with tempfile.TemporaryDirectory(dir=os.environ.get("HERMES_STAGE2_TEST_TMPDIR")) as directory:
+            base = pathlib.Path(directory).resolve()
+            home, shared, other = (base / name for name in ("data", "shared", "other"))
+            for path in (home / "skills" / "shared", shared / "nested", other):
+                path.mkdir(parents=True)
+            # Repair changes this synthetic directory's owner; keep it removable
+            # by the unprivileged host test runner without a privileged cleanup.
+            (home / "skills").chmod(0o777)
+            (home / "skills" / "ordinary").write_bytes(b"managed")
+            (shared / "nested" / "payload").write_bytes(b"canonical must not change")
+            (home / "skills" / "external").symlink_to("/opt/shared-skills/nested/payload")
+            (home / "skills" / "broken").symlink_to("missing-target")
+            if variant == "unbound":
+                (home / "skills" / "shared" / "payload").write_bytes(b"ordinary unbound skills")
+                (home / "skills" / "shared").chmod(0o777)
+            if variant == "symlink":
+                (home / "profiles").symlink_to("/opt/shared-skills")
+            if variant == "nested":
+                (shared / "unexpected").mkdir()
+            before = self.snapshot(shared)
+            command = ["docker", "run", "--rm", "-i", "--network", "none", "--user", "0:0", "--entrypoint", "/bin/sh"]
+            command += ["--volume", f"{home}:/opt/data:Z"]
+            if variant != "unbound":
+                command += ["--volume", f"{shared}:/opt/data/skills/shared:Z"]
+            if variant not in ("partial", "unbound"):
+                alias = other if variant == "wrong-alias" else shared
+                command += ["--volume", f"{alias}:/opt/shared-skills:Z"]
+            if variant == "nested":
+                command += ["--volume", f"{other}:/opt/data/skills/shared/unexpected:Z"]
+            command += [os.environ["HERMES_STAGE2_TEST_IMAGE"], "-s"]
+            result = subprocess.run(command, input=script, capture_output=True, text=True, check=False)
+            self.assertEqual(self.snapshot(shared), before, result.stderr)
+            if variant in ("canonical", "unbound"):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((home / "write-started").exists())
+                for name in ("ordinary", "external", "broken"):
+                    metadata = (home / "skills" / name).lstat()
+                    self.assertEqual((metadata.st_uid, metadata.st_gid), (12345, 12346), name)
+                if variant == "unbound":
+                    metadata = (home / "skills" / "shared" / "payload").stat()
+                    self.assertEqual((metadata.st_uid, metadata.st_gid), (12345, 12346))
+                # Once ordinary ownership is repaired, detection must prune the
+                # differently-owned canonical branch rather than report it.
+                probe = script[:script.index('touch "$HERMES_HOME/write-started"')] + '''
+if tree_has_non_hermes_owner "$HERMES_HOME/skills"; then exit 42; fi
+'''
+                repeated = subprocess.run(command, input=probe, capture_output=True, text=True, check=False)
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            else:
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("FATAL", result.stderr)
+                self.assertFalse((home / "write-started").exists())
+                self.assertEqual((home / "skills" / "ordinary").stat().st_uid, os.getuid())
+
+    @staticmethod
+    def snapshot(root):
+        return {
+            str(path.relative_to(root)): (
+                path.lstat().st_mode, path.lstat().st_uid, path.lstat().st_gid,
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in (root, *root.rglob("*"))
+        }
+
+    def test_actual_same_source_bind_is_pruned_during_forced_repair(self):
+        self.run_fixture()
+
+    def test_unbound_shared_is_still_owned(self):
+        self.run_fixture("unbound")
+
+    def test_unsafe_boundaries_refuse_before_any_write(self):
+        for variant in ("wrong-alias", "partial", "nested", "symlink"):
+            with self.subTest(variant=variant):
+                self.run_fixture(variant)
 
 
 if __name__ == "__main__":

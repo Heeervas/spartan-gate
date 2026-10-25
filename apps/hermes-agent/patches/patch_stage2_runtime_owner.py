@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -77,6 +78,16 @@ TREE_OWNER_REPLACEMENT = (
     r'-o ! -gid "$SPARTAN_HERMES_RUN_GID" \) '
     '-print -quit 2>/dev/null | grep -q .'
 )
+BOUNDARY_PRUNE = r'\( -path "$SPARTAN_HERMES_SHARED_BOUNDARY" -prune \) -o '
+PHYSICAL_CHOWN_REPLACEMENT = (
+    'find "$target" ' + BOUNDARY_PRUNE
+    + '-exec chown -h "$SPARTAN_HERMES_RUNTIME_OWNER" {} +'
+)
+PRUNED_TREE_OWNER_REPLACEMENT = TREE_OWNER_REPLACEMENT.replace(
+    'find "$target" ', 'find "$target" ' + BOUNDARY_PRUNE, 1,
+)
+# Exact guard emitted before canonical-bind support. Never trust a marker alone.
+LEGACY_PREFLIGHT_SHA256 = "b21d2390bce1d5f0c4df2644c4dfa2b7cb03303c523da2984bc2f6a1aef2c8ee"
 RUNTIME_CHOWN_ANCHORS = (
     'chown hermes:hermes "$HERMES_HOME"',
     'chown hermes:hermes "$HERMES_HOME/logs/gateways"',
@@ -204,9 +215,9 @@ PY
 """
 
 OWNERSHIP_PREFLIGHT_BLOCK = f'''{OWNERSHIP_PREFLIGHT_MARKER}
-# Refuse unsafe symlinks and nested mounts in the closed ownership allowlist
-# before the first ownership mutation. Strict in-tree links are safe because
-# recursive ownership uses physical traversal and never dereferences them.
+# Validate all targets before publishing the sole pruned ownership boundary.
+# Physical traversal still owns descendant links, never their referents.
+SPARTAN_HERMES_SHARED_BOUNDARY="$(
 "$INSTALL_DIR/.venv/bin/python" - "$HERMES_HOME" <<'PY'
 import os
 import re
@@ -228,10 +239,41 @@ mounts = []
 try:
     for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
         fields = line.split()
-        if len(fields) >= 5:
-            mounts.append(decode_mount_path(fields[4]))
-except OSError as exc:
+        separator = fields.index("-")
+        if separator < 6 or len(fields) != separator + 4:
+            raise ValueError("malformed mountinfo record")
+        device, mount_root, mountpoint = fields[2:5]
+        if not re.fullmatch(r"[0-9]+:[0-9]+", device):
+            raise ValueError("malformed mountinfo device")
+        mount_root, mountpoint = decode_mount_path(mount_root), decode_mount_path(mountpoint)
+        if not mountpoint.is_absolute():
+            raise ValueError("non-absolute mountinfo mountpoint")
+        mounts.append((mountpoint, device, mount_root, *fields[separator + 1:separator + 3]))
+except (OSError, ValueError) as exc:
     raise SystemExit(f"[stage2] FATAL: cannot inspect mount boundaries: {{exc}}")
+
+canonical = Path("/opt/data/skills/shared")
+alias = Path("/opt/shared-skills")
+paired = [record for record in mounts if record[0] in (canonical, alias)]
+boundary = None
+if paired:
+    if root != Path("/opt/data") or len(paired) != 2 or {{record[0] for record in paired}} != {{canonical, alias}}:
+        raise SystemExit("[stage2] FATAL: incomplete canonical shared-skills bind pair")
+    if not paired[0][2].is_absolute() or paired[0][1:] != paired[1][1:]:
+        raise SystemExit("[stage2] FATAL: canonical shared-skills mount root/device/source mismatch")
+    identities = []
+    for path in (canonical, alias):
+        for component in (path, *path.parents):
+            metadata = component.lstat()
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise SystemExit(f"[stage2] FATAL: non-directory or symlink in shared-skills path: {{component}}")
+        metadata = path.lstat()
+        # Compare stat identities to each other, not to mountinfo's device:
+        # Btrfs subvolumes can expose a different synthetic stat st_dev.
+        identities.append((metadata.st_dev, metadata.st_ino))
+    if identities[0] != identities[1]:
+        raise SystemExit("[stage2] FATAL: shared-skills binds are not the same object")
+    boundary = canonical
 
 def under(path: Path, parent: Path) -> bool:
     try:
@@ -249,8 +291,8 @@ def inspect_target(relative: str, recursive: bool) -> None:
         raise SystemExit(f"[stage2] FATAL: ownership target is a symlink: {{target}}")
     if target_metadata.st_dev != root_device:
         raise SystemExit(f"[stage2] FATAL: ownership target crosses a mount boundary: {{target}}")
-    for mount in mounts:
-        if mount == root:
+    for mount, *_ in mounts:
+        if mount == root or mount == boundary:
             continue
         if mount == target or (recursive and under(mount, target)):
             raise SystemExit(f"[stage2] FATAL: nested mount in ownership target: {{mount}}")
@@ -258,9 +300,12 @@ def inspect_target(relative: str, recursive: bool) -> None:
         for current, directories, files in os.walk(target, followlinks=False):
             for name in [*directories, *files]:
                 child = Path(current) / name
+                if child == boundary:
+                    directories.remove(name)
+                    continue
                 child_metadata = child.lstat()
                 if stat.S_ISLNK(child_metadata.st_mode):
-                    # chown -hR uses physical traversal: it changes the link's
+                    # find with chown -h uses physical traversal: it changes the link's
                     # metadata and never follows its target. Working, external,
                     # and intentionally broken dependency links are therefore
                     # safe descendants of a real managed root.
@@ -272,7 +317,10 @@ for entry in {MANAGED_DIR_ENTRIES!r}:
     inspect_target(entry, True)
 for entry in {MANAGED_FILE_ENTRIES!r}:
     inspect_target(entry, False)
+# No path is published until the complete allowlist has passed inspection.
+print(boundary or "")
 PY
+)" || exit 1
 
 '''
 
@@ -309,6 +357,34 @@ def validate_managed_file_allowlist(source: str) -> None:
                 raise ValueError("managed top-level file allowlist changed")
             return
     raise ValueError("managed top-level file allowlist anchor not found")
+
+
+def patch_ownership_boundary(source: str, *, require_existing: bool) -> str:
+    """Upgrade only known ownership guards and physical traversal anchors."""
+    anchor = "needs_chown=false\n"
+    if source.count(anchor) != 1:
+        raise ValueError("runtime ownership preflight anchor changed")
+    if OWNERSHIP_PREFLIGHT_MARKER in source:
+        if source.count(OWNERSHIP_PREFLIGHT_MARKER) != 1:
+            raise ValueError("runtime ownership preflight duplicated")
+        start = source.index(OWNERSHIP_PREFLIGHT_MARKER)
+        end = source.index(anchor)
+        existing = source[start:end]
+        if existing != OWNERSHIP_PREFLIGHT_BLOCK and hashlib.sha256(existing.encode()).hexdigest() != LEGACY_PREFLIGHT_SHA256:
+            raise ValueError("unknown runtime ownership preflight guard")
+        source = source[:start] + OWNERSHIP_PREFLIGHT_BLOCK + source[end:]
+    else:
+        if require_existing:
+            raise ValueError("runtime ownership preflight guard missing")
+        source = source.replace(anchor, OWNERSHIP_PREFLIGHT_BLOCK + anchor, 1)
+    for old, new in (
+        ('chown -hR "$SPARTAN_HERMES_RUNTIME_OWNER" "$target"', PHYSICAL_CHOWN_REPLACEMENT),
+        (TREE_OWNER_REPLACEMENT, PRUNED_TREE_OWNER_REPLACEMENT),
+    ):
+        if source.count(old) + source.count(new) != 1:
+            raise ValueError("runtime ownership traversal anchor changed")
+        source = source.replace(old, new, 1)
+    return source
 
 
 def patch_source(source: str) -> str:
@@ -384,15 +460,7 @@ def patch_source(source: str) -> str:
 
     patched = patch_managed_dir_allowlist(patched)
 
-    if OWNERSHIP_PREFLIGHT_MARKER not in patched:
-        preflight_anchor = "needs_chown=false\n"
-        if patched.count(preflight_anchor) != 1:
-            raise ValueError("runtime ownership preflight anchor changed")
-        patched = patched.replace(
-            preflight_anchor,
-            OWNERSHIP_PREFLIGHT_BLOCK + preflight_anchor,
-            1,
-        )
+    patched = patch_ownership_boundary(patched, require_existing=RUNTIME_IDENTITY_MARKER in source)
 
     if RUNTIME_DIR_MARKER not in patched:
         seed_anchor = "as_hermes mkdir -p "
