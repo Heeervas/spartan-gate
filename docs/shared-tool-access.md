@@ -182,10 +182,19 @@ Only after approving that preview, use the same arguments with
 0700/0600 and outside extension discovery. The helper performs all validation
 before writes, per-file atomic replacement and scoped rollback on failure—not a
 globally atomic multi-file transaction or protection against a hostile same-user
-writer. Explicitly set `PI_SPARTAN_TOOLS_CONFIG` to the reported
-`<agent-dir>/spartan-tools.json` and keep `PI_CODING_AGENT_DIR` bound to the same
-selected directory. Restart only the selected Pi process after installation;
+writer. Normal native Pi launch selects the existing
+`<getAgentDir()>/spartan-tools.json` only when `PI_SPARTAN_TOOLS_CONFIG` is unset.
+The directory comes solely from Pi's native `getAgentDir()`; there is no cwd or
+upward search, configuration creation, or token prompt. An explicit
+`PI_SPARTAN_TOOLS_CONFIG` always selects exactly that value, including empty,
+invalid or missing paths: rejection never falls back to the default. Missing,
+unsafe or profile-mismatched defaults fail closed through the same validators
+before managed HTTP requests. Keep `PI_CODING_AGENT_DIR` bound to the selected
+profile; explicit selectors must also pass that profile's strict search checks.
+Restart only the selected Pi process after separately approved installation;
 there is no global agent restart or active reload during source verification.
+This source default does not authorize production installation, which still
+requires independent review and explicit operator approval.
 
 The reused provider supports static headers only: the scoped token is duplicated
 in mode-0600 `web-search.json` and its backups as well as the credential file.

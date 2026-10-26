@@ -174,6 +174,53 @@ test('installer replaces prior provider routing and installed native search load
   } finally { n.session.dispose(); }
 }));
 
+for (const scenario of ['unset-existing', 'explicit-override', 'explicit-empty', 'explicit-relative',
+  'explicit-invalid', 'explicit-missing', 'default-missing', 'default-unsafe', 'default-wrong-profile']) {
+  test(`native selector ${scenario} uses only its selected configuration`, async () => fixture(async f => {
+    const defaultPath = join(f.agentDir, 'spartan-tools.json');
+    await writeFile(defaultPath, JSON.stringify(f.config), { mode: 0o600 });
+    delete process.env.PI_SPARTAN_TOOLS_CONFIG;
+    switch (scenario) {
+      case 'explicit-override':
+        process.env.PI_SPARTAN_TOOLS_CONFIG = f.configPath;
+        await writeFile(defaultPath, 'invalid default');
+        break;
+      case 'explicit-empty': process.env.PI_SPARTAN_TOOLS_CONFIG = ''; break;
+      case 'explicit-relative': process.env.PI_SPARTAN_TOOLS_CONFIG = 'tools.json'; break;
+      case 'explicit-invalid':
+        process.env.PI_SPARTAN_TOOLS_CONFIG = f.configPath;
+        await writeFile(f.configPath, 'invalid explicit config');
+        break;
+      case 'explicit-missing': process.env.PI_SPARTAN_TOOLS_CONFIG = join(f.directory, 'missing.json'); break;
+      case 'default-missing': await rm(defaultPath); break;
+      case 'default-unsafe': await chmod(defaultPath, 0o644); break;
+      case 'default-wrong-profile': {
+        const webPath = join(f.agentDir, 'web-search.json');
+        const web = JSON.parse(await readFile(webPath, 'utf8'));
+        web.searxngHeaders.Authorization = `Bearer ${'e'.repeat(64)}`;
+        await writeFile(webPath, JSON.stringify(web));
+        break;
+      }
+    }
+    const n = await native(f, undefined, [[call('selected-reader', 'gate_reader', { url: 'https://example.com' })]]);
+    try {
+      await n.session.prompt('Synthetic configuration selection only.');
+      const result = n.session.agent.state.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'selected-reader');
+      assert.ok(result, 'native extension must finish the managed tool call');
+      if (['unset-existing', 'explicit-override'].includes(scenario)) {
+        assert.notEqual(result.isError, true);
+        assert.match(JSON.stringify(result.content), /fixture text/);
+        assert.equal(f.calls.length, 1);
+        assert.ok(f.calls[0].path.startsWith('/fetch?'));
+      } else {
+        assert.equal(result.isError, true);
+        assert.match(JSON.stringify(result.content), new RegExp(FAILURE));
+        assert.equal(f.calls.length, 0, 'rejected selection must not issue HTTP or fall back');
+      }
+    } finally { n.session.dispose(); }
+  }));
+}
+
 test('native prompt enforces strict search for model and nested calls with zero substitute requests', async () => fixture(async f => {
   const n = await native(f, undefined, [[
     call('valid','web_search',{ query: 'allowed', provider: 'searxng' }),

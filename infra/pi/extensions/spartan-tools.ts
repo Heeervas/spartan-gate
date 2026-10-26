@@ -1,9 +1,14 @@
 import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
+import { join } from 'node:path';
 import { ToolsClient } from './spartan-tools/client.mjs';
 
 export default function (pi: ExtensionAPI) {
-  const client = new ToolsClient(process.env.PI_SPARTAN_TOOLS_CONFIG, getAgentDir());
+  const agentDir = getAgentDir();
+  const configPath = process.env.PI_SPARTAN_TOOLS_CONFIG === undefined
+    ? join(agentDir, 'spartan-tools.json')
+    : process.env.PI_SPARTAN_TOOLS_CONFIG;
+  const client = new ToolsClient(configPath, agentDir);
   pi.on('session_start', (_event, ctx) => client.start(ctx));
   pi.on('session_shutdown', () => client.stop());
   pi.on('tool_call', event => client.guard(event));
