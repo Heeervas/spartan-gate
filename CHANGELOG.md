@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add source-only, explicitly enrolled Discord fixed-text reminders over native
+  paused/no-agent one-shots, retaining the create contract and adding only
+  requester/conversation-scoped receipt revocation. Keep task input inert under
+  native media/mention/silence parsing, serialize crash recovery without retiming,
+  and preserve native delivery/unknown-send ownership. A fixed per-profile helper
+  and explicit requester scope require separately approved provisioning; no old
+  jobs, pins, Work enrollment, model-at-fire or live changes are included.
+
 - Keep manual Discord thread rename/archive actions on the authorized receiving
   bot under Hermes profile multiplexing, rather than the primary adapter map.
   Recheck source authorization before queued actions and refuse missing owner or

@@ -1,0 +1,10 @@
+name: discord-reminders
+version: "0.1.0"
+description: Explicit-profile fixed-text Discord reminders using native no-agent one-shots.
+kind: standalone
+provides_tools:
+  - discord_reminder_create
+  - discord_reminder_cancel
+provides_hooks:
+  - pre_gateway_dispatch
+  - pre_llm_call

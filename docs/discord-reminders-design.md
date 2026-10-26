@@ -1,7 +1,10 @@
 # Native fixed-text Discord reminders — proposed source design
 
-Status: **design only; implementation and provisioning pending review/approval**.
-The existing manual rename owner is unchanged by this proposal. This is not a
+Status: **reviewed design; source implementation authorized, live provisioning
+and activation not authorized**. The candidate package is
+`infra/hermes-plugins/discord-reminders/`; its README owns the actual source
+contract, verification and pending operator procedure. The existing manual rename
+owner is unchanged by this proposal. This is not a
 recovery of the Alberto Tools pins bundle or of historical reminder jobs.
 
 ## Outcome and native constraints
