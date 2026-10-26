@@ -32,36 +32,7 @@ Historical SHA-256 identities before adaptation:
 - Extract the existing older-session evidence lookup into a focused helper to
   keep the newly carried source below the unchanged TOP strong-complexity limit.
 
-## Manual command and profile boundary
-
-This plugin, not the historical Alberto Tools pins/reminders bundle, owns
-`/rename-thread [new title|close|drop]`. An empty argument requests an auxiliary
-model title; an explicit title, `close`, or `drop` does not require a model.
-
-Dispatch uses current Hermes `_is_user_authorized_for_source` and
-`_intake_adapter_for`: authorize under the source transport's policy and mutate
-through its registered receiving adapter. Never select a bot from the primary
-`gateway.adapters` map for a secondary-profile event. Missing requester identity,
-internal events, unavailable native methods or missing receiving provenance do
-not rename or archive anything. Authorization is checked again when the queued
-manual task begins. The source must identify a Discord thread; the command has
-no destination/channel argument. Native Discord permission failures remain
-failures. Existing title generation and close/drop semantics are unchanged.
-
-The policy is portable across default and named profiles, not blanket enrollment.
-Each profile must explicitly enable the existing plugin; a native disable still
-wins. This change neither enables profiles nor restores old reminder jobs, pins,
-commands or a dispatcher. Reminders are a separate capability: native `cronjob`
-agent runs are **not** equivalent to the historical zero-agent fixed-text sender.
-
-No Compose mounts, activation or configuration changes are included. For an
-approved installation, mount only this directory read-only at
-`$HERMES_HOME/plugins/discord-deferred-thread-title` and add the plugin name to
-that profile's `plugins.enabled` without removing any `plugins.disabled` entry.
-A shared gateway already serving profiles needs controller-coordinated reload
-and command-catalog verification before availability can be claimed. Rollback
-restores the previous reviewed plugin bytes and the exact prior enrollment;
-it must not overwrite another profile's settings or restore an entire config.
+No Compose mounts, activation or configuration changes are included.
 
 ## Focused regression
 
@@ -75,7 +46,7 @@ Missing program inputs fail rather than skip.
 HERMES_TITLE_SOURCE=/path/to/exported/agent/title_generator.py \
 HERMES_DISCORD_ADAPTER_SOURCE=/path/to/exported/discord/adapter.py \
 PYTHONDONTWRITEBYTECODE=1 \
-python infra/hermes-plugins/test_discord_deferred_thread_title.py -v
+python -m unittest discover -s infra/hermes-plugins -p test_discord_deferred_thread_title.py
 ```
 
 Program input SHA-256 identities used for this adaptation:

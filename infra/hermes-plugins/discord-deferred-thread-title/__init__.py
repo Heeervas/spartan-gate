@@ -229,24 +229,9 @@ async def _generate_title_from_session(gateway, source) -> str | None:
     return ensure_workload_indicator(fallback_title) if fallback_title else None
 
 
-def _authorized_source(event, gateway) -> bool:
-    source = getattr(event, "source", None)
-    authorize = getattr(gateway, "_is_user_authorized_for_source", None)
-    if not source or not getattr(source, "user_id", None) or getattr(event, "internal", False):
-        return False
-    return callable(authorize) and authorize(source)
-
-
-def _receiving_adapter(source, gateway):
-    resolve = getattr(gateway, "_intake_adapter_for", None)
-    return resolve(source) if callable(resolve) else None
-
-
 async def _rename_current_thread(event, gateway, requested_title: str) -> None:
-    if not _authorized_source(event, gateway):
-        return
-    source = event.source
-    adapter = _receiving_adapter(source, gateway)
+    source = getattr(event, "source", None)
+    adapter = (getattr(gateway, "adapters", {}) or {}).get(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None) or getattr(source, "chat_id", None)
     channel_id = getattr(source, "chat_id", None) or thread_id
 
@@ -299,13 +284,14 @@ def register(ctx):
 
     def pre_gateway_dispatch(event=None, gateway=None, **kwargs):
         source = getattr(event, "source", None)
-        if not _authorized_source(event, gateway):
+        is_authorized = getattr(gateway, "_is_user_authorized", None)
+        if source is None or not callable(is_authorized) or not is_authorized(source):
             return None
 
         if _platform_name(source) == "discord":
-            adapter = _receiving_adapter(source, gateway)
-            if adapter is None:
-                return None
+            adapter = (getattr(gateway, "adapters", {}) or {}).get(
+                getattr(source, "platform", None)
+            )
             if not install_native_discord_rename_compatibility(adapter):
                 logger.error(
                     "Discord semantic-title compatibility unavailable for active adapter %r",

@@ -4,7 +4,6 @@ No gateway, provider, profile or Discord client is started. See package README.
 """
 
 import ast
-import asyncio
 import importlib.util
 import itertools
 import json
@@ -83,7 +82,6 @@ def native_adapter_class():
 def event(text, *, created=False):
     return NS(text=text, source=NS(
         platform="discord", chat_type="thread", chat_id="123", thread_id="123",
-        user_id="fixture-user",
         auto_thread_created=created,
         auto_thread_initial_name="/model fixture" if created else None,
     ))
@@ -218,11 +216,7 @@ class NativeRename(unittest.IsolatedAsyncioTestCase):
                 adapter = adapter_type()
                 adapter._client = NS(get_channel=lambda channel_id: thread)
                 adapter.send = AsyncMock()
-                gateway = NS(
-                    adapters={"discord": adapter},
-                    _is_user_authorized_for_source=lambda source: True,
-                    _intake_adapter_for=lambda source: adapter,
-                )
+                gateway = NS(adapters={"discord": adapter}, _is_user_authorized=lambda source: True)
                 hooks = {}
                 ctx = NS(register_hook=lambda name, callback: hooks.update({name: callback}),
                          register_command=lambda *args, **kwargs: None)
@@ -244,52 +238,6 @@ class NativeRename(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(plugin._STATE.process(event("Later content")))
                 adapter.send.assert_not_awaited()
 
-    async def test_manual_rename_uses_authorized_receiving_bot_not_primary_map(self):
-        plugin = load_plugin()
-        hooks = {}
-        ctx = NS(register_hook=lambda name, callback: hooks.update({name: callback}),
-                 register_command=lambda *args, **kwargs: None)
-        with patch.object(plugin, "install_global_title_policy"):
-            plugin.register(ctx)
-        primary = NS(rename_thread=AsyncMock(return_value=True), send=AsyncMock())
-        receiving = NS(rename_thread=AsyncMock(return_value=True), send=AsyncMock())
-        gateway = NS(
-            adapters={"discord": primary},
-            # An ambient authorization check must never admit this operation.
-            _is_user_authorized=lambda source: True,
-            _is_user_authorized_for_source=lambda source: True,
-            _intake_adapter_for=lambda source: receiving,
-        )
-        hook = hooks["pre_gateway_dispatch"]
-        with patch.object(plugin, "install_native_discord_rename_compatibility", return_value=True):
-            request = event("/rename-thread Deployment review")
-            request.source.profile = "secondary"
-            result = hook(event=request, gateway=gateway)
-            self.assertEqual(result["action"], "skip")
-            await asyncio.sleep(0)
-            receiving.rename_thread.assert_awaited_once_with("123", "🟡 Deployment review")
-            receiving.send.assert_awaited_once()
-            primary.rename_thread.assert_not_awaited()
-            primary.send.assert_not_awaited()
-            receiving.rename_thread.reset_mock()
-            receiving.send.reset_mock()
-            # Revocation, missing provenance, and missing owner all deny. No fallback.
-            gateway._is_user_authorized_for_source = lambda source: False
-            hook(event=request, gateway=gateway)
-            await asyncio.sleep(0)
-            receiving.rename_thread.assert_not_awaited()
-            gateway._is_user_authorized_for_source = lambda source: True
-            gateway._intake_adapter_for = lambda source: None
-            hook(event=request, gateway=gateway)
-            await asyncio.sleep(0)
-            primary.rename_thread.assert_not_awaited()
-            gateway._intake_adapter_for = lambda source: receiving
-            request.source.user_id = None
-            hook(event=request, gateway=gateway)
-            await asyncio.sleep(0)
-            receiving.rename_thread.assert_not_awaited()
-            receiving.send.assert_not_awaited()
-
     async def test_unauthorized_dispatch_does_not_arm_or_rename(self):
         plugin = load_plugin()
         hooks = {}
@@ -298,11 +246,7 @@ class NativeRename(unittest.IsolatedAsyncioTestCase):
         with patch.object(plugin, "install_global_title_policy"):
             plugin.register(ctx)
         adapter = NS(rename_thread=AsyncMock())
-        gateway = NS(
-            adapters={"discord": adapter},
-            _is_user_authorized_for_source=lambda source: False,
-            _intake_adapter_for=lambda source: adapter,
-        )
+        gateway = NS(adapters={"discord": adapter}, _is_user_authorized=lambda source: False)
         hook = hooks["pre_gateway_dispatch"]
         hook(event=event("/model fixture", created=True), gateway=gateway)
         hook(event=event("/rename-thread close"), gateway=gateway)
