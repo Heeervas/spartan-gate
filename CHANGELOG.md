@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Keep manual Discord thread rename/archive actions on the authorized receiving
+  bot under Hermes profile multiplexing, rather than the primary adapter map.
+  Recheck source authorization before queued actions and refuse missing owner or
+  transport provenance. Preserve the existing command/title owner and explicit
+  profile enrollment; no reminder jobs, dispatcher or runtime changes included.
+
 - Add opt-in shared managed-tool access for native host Pi and scoped HTTP
   clients: a dedicated loopback Caddy edge, fixed bounded SearXNG/Reader
   transports and server-issued browser workflow/tab authority. Reuse the native
