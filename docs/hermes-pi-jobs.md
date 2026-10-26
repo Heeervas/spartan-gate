@@ -1,10 +1,11 @@
-# Native Pi jobs from Hermes (source candidate)
+# Native Pi jobs from Hermes
 
-This is a source-only wiring proposal, not an activated integration. Hermes owns
+Operator integration recipe; source changes alone do not activate it. Hermes owns
 intake, assignment permission, native process control and acceptance; Pi owns the
 coding work inside the container. No daemon, queue, host bridge or new RPC client
-is needed. Container Node 26 compatibility and live lifecycle/inference remain
-separate acceptance gates; source smoke checks on Node 22 do not satisfy them.
+is needed. Verify actual container Node compatibility, resources and lifecycle
+separately; host Node 22 smoke checks are not a substitute. Instance-specific
+activation and acceptance evidence belongs in the private operational receipt.
 
 ## Wiring and activation gates
 
@@ -76,6 +77,40 @@ CLI arguments or public files; do not copy laptop auth. Confirm credential scope
 catalog/model metadata and Sol/Luna permission separately. Initial settings select
 only `spartan-route/codex/gpt-6.1-sol-282kcontext`; cached synthetic metadata in
 source tests is not evidence of the live catalog, auth or cache hits.
+
+### Optional Pi-only direct HTTPS origin
+
+The native Pi CLI configures Undici's `EnvHttpProxyAgent` for global fetch. A
+successful Python or Node `https` catalog probe does not prove that path works:
+inherited `HTTPS_PROXY` can route native Pi through the proxy even when the
+approved internal HTTPS origin is directly reachable. Do not unset proxies or
+change Route, TLS, networks or profile-wide exclusions to work around this.
+
+Only with explicit operator approval, provision the existing owner's nonsecret
+`$HERMES_HOME/pi/spartan-route/direct-https-origin` file containing one approved
+HTTPS DNS origin, for example `https://route.example.invalid:18790` (a trailing
+`/` and one final newline are allowed). No credentials, path, query, fragment,
+wildcard, IP address or other whitespace is accepted. The launcher validates it
+against the selected `PI_SPARTAN_ROUTE_CONFIG` credential-free HTTPS `baseUrl`:
+scheme, DNS hostname and effective port must match; the config may retain `/v1`.
+Malformed, unreadable or mismatched inputs fail before Node with a sanitized error.
+
+A matching opt-in appends only `hostname:port` to this Pi process's `NO_PROXY` and
+`no_proxy`, retaining each existing list. If one case is unset, its baseline is
+the other case's list so lowercase preference cannot discard inherited entries.
+All HTTP(S) proxy variables, Pi defaults/explicit overrides and CLI arguments are
+preserved. With no binding file, behavior is unchanged: no Python/config read and
+no proxy-list modification. Python3 is already required by the existing gateway.
+
+**Undici's native matching also includes subdomains**, even for a literal
+`hostname:port` entry. This is not an exact-host security filter. Approval must
+account for that suffix behavior within the unchanged internal-network/DNS/hosts
+boundary; no wildcard or global bypass is introduced by this launcher. Validate
+actual native SDK/global-fetch behavior separately without inference before the
+next authorized job. Source fake-Node checks do not establish that live result.
+Removal of the owned opt-in file restores inherited behavior for future launches;
+running processes keep their existing environment. The controller owns any file-
+bind inode readback/activation concern; this source repair performs no live edits.
 
 New mounts require separately authorized Hermes **container recreation** through
 the approved `sg` private selection, never an image rebuild. Coordinate all affected
