@@ -584,6 +584,68 @@ services:
       retries: 3
       start_period: 30s
 
+  # Opt-in shared tools. Legacy Caddy never joins tool_client_ingress.
+  tool-access:
+    profiles: [tool-access]
+    logging: *spartan-logging
+    build:
+      context: ../tool-access
+    image: ${SPARTAN_TOOL_ACCESS_IMAGE:-spartan-gate-tool-access:local}
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=16777216,mode=1777
+    environment:
+      POLICY_FILE: /run/tool-access/clients.json
+      SEARCH_URL: http://searxng:8080
+      READER_URL: http://reader:3000
+      CAMOFOX_URL: http://camofox:9377
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:-}
+      ALLOWED_HOSTS: "localhost:${SPARTAN_TOOL_EDGE_PORT:-18792},127.0.0.1:${SPARTAN_TOOL_EDGE_PORT:-18792},tool-edge:18792"
+    volumes:
+      # Directory mount: atomic policy rotation must become visible immediately.
+      # Contains scoped token digests only, never the full private environment.
+      - ../../private/tool-access:/run/tool-access:ro
+    networks:
+      - tool_adapter_ingress
+      - spartan_internal
+
+  tool-edge:
+    profiles: [tool-access]
+    logging: *spartan-logging
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    user: "${SPARTAN_CADDY_UID:-${HERMES_UID:-1000}}:${SPARTAN_CADDY_GID:-${HERMES_GID:-1000}}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=8388608,mode=1777
+      - /config/caddy:size=8388608
+      - /data/caddy:size=8388608
+    ports:
+      - "127.0.0.1:${SPARTAN_TOOL_EDGE_PORT:-18792}:18792"
+    volumes:
+      - ../caddy/Caddyfile.tools:/etc/caddy/Caddyfile:ro
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    networks:
+      # Docker needs a normal bridge for effective loopback publication.
+      # Only this fixed-target proxy joins it, never a client or backend.
+      - tool_edge_publish
+      - tool_client_ingress
+      - tool_adapter_ingress
+    depends_on:
+      tool-access:
+        condition: service_started
+
   caddy:
     logging: *spartan-logging
     image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
@@ -645,6 +707,12 @@ services:
       start_period: 10s
 
 networks:
+  tool_edge_publish:
+    driver: bridge
+  tool_client_ingress:
+    internal: true
+  tool_adapter_ingress:
+    internal: true
   spartan_edge_auth:
     internal: true
   spartan_internal:

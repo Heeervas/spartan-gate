@@ -1,5 +1,39 @@
 # Decisions
 
+## 2026-10-26 — Shared managed-tool source contract
+
+- Keep host Pi native and services in the existing Gate stack. Reuse Pi's
+  SearXNG provider with strict configuration/guards; add only fixed bounded
+  search/Reader transports and browser semantic authorization. MCP migration
+  remains out of scope; no generic gateway or unmanaged browser fallback.
+- Use a dedicated opt-in tool-only Caddy service. Legacy listeners never join
+  client ingress. Docker requires a normal edge-only publishing bridge for
+  effective loopback ports; client/adapter ingress remain internal. The edge
+  itself has ordinary bridge reachability, not confinement. Default host
+  publication is loopback only; private remote exposure requires approval.
+- Per-request fail-closed token policy selects principal/capabilities/browser
+  identity. Opaque server-issued workflow capabilities and an exact created-tab
+  registry authorize every operation. Native sidecars stay outside model history,
+  keyed to endpoint/client/actual session ID; resume recovers, fork/new differs.
+  Numeric browser generation is not a process epoch; missing/ambiguous handles
+  retire without adoption/replay. Profiles share cookies only within an explicit
+  browser user identity; new client scratch identities are separate by default.
+- Preserve existing Camofox defaults; expose optional singleAttempt only through
+  an advertised capability that this adapter requires. Reader's existing
+  inactivity timeout was insufficient: add one total deadline, outbound socket
+  shutdown and four accounted residual DNS jobs. No claim libc is cancelled.
+- Actual isolated acceptance uses existing program images with synthetic
+  state/networks; test-only browser analytics mode is not default-UBO proof.
+  Positive Reader HTTP has a declared transport seam, native Pi uses a synthetic
+  model, and source acceptance is not deployment. No Hermes rebuild, profile
+  reset, model-routing change, paid inference, push or activation follows.
+- Preserve TOP/baseline/adapters/thresholds and existing exceptions. Independently
+  approve additive exact coverage; record the late installer-scope preflight
+  omission without retroactive PASS. Isolate test HOME/auth/network behavior
+  before execution, retain original Caddy XDG/public-TCP side-effect evidence and
+  its unknown consequences, and never inspect/rotate/clean private stores by
+  inference. W6 requires one specific operator decision and separate readback.
+
 ## 2026-10-25 — Codex subscription replay portability (source only)
 
 - Parent authorized implementation of the independently reviewed portability plan

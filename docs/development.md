@@ -22,6 +22,8 @@ export PATH="$PWD/.agents/test-venv/bin:$PATH"
 # The native Pi loader test requires a real installed package, not a stub.
 npm install --prefix .agents/pi-test --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.3.0
 export PI_CODING_AGENT_DIR="$PWD/.agents/pi-test/node_modules/@earendil-works/pi-coding-agent"
+npm install --prefix .agents/pi-web-test --ignore-scripts --no-audit --no-fund pi-web-access@0.44.0
+export PI_WEB_ACCESS_EXTENSION="$PWD/.agents/pi-web-test/node_modules/pi-web-access/dist/index.js"
 ```
 
 Operator-local `.agents/test-requirements.txt`, when provisioned, pins the same
@@ -49,7 +51,8 @@ npm run test:hermes   # surviving Python patches and host fixtures
 npm run test:pi       # gateway and actual Pi extension loader
 npm run test:camofox  # Python and JavaScript browser-boundary fixtures
 npm run test:scripts  # operator helpers and full public Compose matrix
-npm run test:reader  # SSRF and bounded inbound lifecycle
+npm run test:reader  # SSRF, total fetch deadline and bounded DNS/worker lifecycle
+npm run test:tools   # scoped auth/transport/browser policy and synthetic installer
 python3 -m unittest discover -s infra/caddy -p 'test_edge_sessions.py'
 find scripts apps/hermes-agent infra -name '*.sh' -type f -print0 | xargs -0 -r -n 1 bash -n
 docker compose -f infra/compose/compose.yml config --quiet
@@ -62,6 +65,14 @@ must be reported: a green portable lane does **not** satisfy the native gate.
 Hermes JavaScript tests were dedicated to the retired Browserless implementation;
 there are no surviving `apps/hermes-agent/test_*.js` entries. Do not run a literal
 unmatched Node glob and mistake its zero-test success for coverage.
+
+`test:route` seals its Python fixture environment/auth state and denies
+non-loopback DNS/TCP before discovery. Focused Route Python tests must use
+`python3 infra/spartan-route/run_tests.py --pattern <test-file.py>` (optional
+`-k <name>`), not direct unsealed discovery. Actual catalog parsing/publication
+is still exercised through owned loopback HTTP with synthetic auth; no feature
+is disabled to make tests green. This is a process-local Route fixture boundary,
+not an OS/subprocess/UDP sandbox. Caddy fixtures also bind scratch HOME/XDG paths.
 
 Doctor is an operator preflight, not an unconditional public CI command. Its
 security tests use disposable public trees and synthetic Compose secrets. Run
@@ -130,6 +141,53 @@ The separate native CI lane extracts Caddy from the pinned stock image archive,
 without starting a container, then runs the actual isolated loopback gate.
 Portable CI alone does not prove this contract. Missing native inputs are
 INCOMPLETE, not a skip or deployment claim.
+
+## Shared tools: isolated native/container acceptance
+
+The [shared-tool contract](shared-tool-access.md) remains opt-in and deployment
+pending until separately activated. `test:pi` requires both actual Pi program code
+and the pinned public web extension above. Keep Pi 1.3 compatibility and additionally
+bind **both** `PI_CODING_AGENT_DIR` and `PI_TEST_PACKAGE_DIR` to an explicitly
+provisioned Pi 1.4 package for current-consumer acceptance. These variables are
+program test inputs before fixture setup, not an instruction to load active homes.
+
+Source preflight starts no services:
+
+```sh
+python3 infra/tool-access/isolated_acceptance.py \
+  --browser-image "$TOOL_TEST_BROWSER_IMAGE" --caddy-image "$TOOL_TEST_CADDY_IMAGE" \
+  --patched-server-source "$CAMOFOX_PATCHED_SERVER"
+```
+
+Exact existing program images and the extracted **program-only** `server.js` must
+be explicitly provisioned; never search private stores or copy a live container's
+runtime/profile. No pull/build is performed. `CAMOFOX_PATCHED_SERVER` also enables
+the native already-patched-source upgrade regression. After resource/operation
+authority, the separate real joint fixture command is:
+
+```sh
+python3 infra/tool-access/isolated_acceptance.py \
+  --browser-image "$TOOL_TEST_BROWSER_IMAGE" --caddy-image "$TOOL_TEST_CADDY_IMAGE" \
+  --patched-server-source "$CAMOFOX_PATCHED_SERVER" \
+  --python-image "$TOOL_TEST_PYTHON_IMAGE" --execute --resource-approved \
+  --native-pi-package "$PI14_PACKAGE" --web-access-extension "$PI_WEB_ACCESS_EXTENSION"
+```
+
+The Python/aiohttp image runs only fixture entrypoints, never a router/provider.
+One 2-GiB browser at a time, sufficient host reserve and 5-GB free-disk floor are
+required. Only fresh synthetic credentials/data and owned networks are used;
+cleanup is label-scoped, never main-stack `--remove-orphans`. Three networks are
+internal; a dedicated edge publishing bridge enables effective loopback binding.
+The restricted client must fail backend/intermediary/legacy and synthetic
+publishing-peer HTTP attempts. Edge itself has normal bridge reachability.
+
+Report real versus fixture proof precisely: actual Caddy and Camofox/PNG;
+actual Reader HTTP with a declared test-only public-address connection mapping;
+fresh native Pi SDK processes with actual tool/image hooks and disk resume/fork,
+but a **synthetic model** (no paid inference). Browser runs existing test-only
+analytics/addons-disabled mode, **not default-UBO runtime proof**. No active Pi,
+production credentials or deployment is used. Candidate hashes, eight phase
+receipts and cleanup remain separate from later operational acceptance.
 
 ## Deterministic quality and review
 

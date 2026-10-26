@@ -13,10 +13,20 @@ agent needs page text without launching a full browser session.
 - Downloads a bounded response and converts HTML to text.
 - Uses a fixed worker pool with a finite pending budget; excess requests receive
   an immediate `503` rather than creating threads or growing an unbounded queue.
+- Source now applies one monotonic fetch budget across validation DNS, checked
+  connection/TLS, headers, body and all redirects, capped by incoming admission.
+  Expiry shuts down/closes the owned outbound socket; partial EOF is not success.
+  Four fixed daemon DNS workers retain reservations until libc actually returns.
+  Four permanently stuck resolutions exhaust retrieval fail closed, not spawn
+  replacement threads; health remains available. Caller disconnect is not claimed
+  to cancel libc or remote work immediately. This source contract requires the
+  selected Reader image to be rebuilt/accepted before deployed behavior changes.
 - Fetches public HTTP(S) pages directly without requiring the Tinyproxy
   whitelist.
-- Is not published to the host; Hermes reaches it on the internal Docker
-  network.
+- Its raw port is not published to the host; Hermes reaches it internally.
+  Optional [shared tool access](shared-tool-access.md) adds a scoped authenticated
+  fixed `/fetch` transport, not raw Reader publication. It rejects redirects,
+  encoded/oversized responses and untrusted-marker loss at that transport.
 - Runs as fixed UID/GID `10001:10001` with all capabilities dropped,
   `no-new-privileges`, a read-only root, and a 64-PID Compose ceiling.
 - Logs only sanitized target origins with path/query markers; request access

@@ -74,7 +74,12 @@ class NativeEdgeTests(unittest.TestCase):
         config.write_text('{\n admin off\n auto_https off\n}\n' + source)
         log = (root / 'log').open('w+')
         self.addCleanup(log.close)
-        process = subprocess.Popen([binary, 'run', '--config', str(config), '--adapter', 'caddyfile'], stdout=log, stderr=log)
+        env = {**os.environ, 'HOME': str(root),
+               'XDG_CONFIG_HOME': str(root / 'config'),
+               'XDG_DATA_HOME': str(root / 'data'),
+               'XDG_CACHE_HOME': str(root / 'cache')}
+        process = subprocess.Popen([binary, 'run', '--config', str(config), '--adapter', 'caddyfile'],
+                                   stdout=log, stderr=log, env=env)
         self.addCleanup(process.wait, timeout=5)
         self.addCleanup(process.terminate)
         deadline = time.monotonic() + 5

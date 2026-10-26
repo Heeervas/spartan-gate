@@ -4,6 +4,23 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add opt-in shared managed-tool access for native host Pi and scoped HTTP
+  clients: a dedicated loopback Caddy edge, fixed bounded SearXNG/Reader
+  transports and server-issued browser workflow/tab authority. Reuse the native
+  Pi search provider; keep credentials outside model history, preserve actual
+  resume/fork identity and return bounded native PNG images. Add public-safe
+  setup/rollback and isolated native/container acceptance without installing
+  active clients or changing Hermes/Route connections. Deployment is pending.
+- Bound Reader's entire fetch/redirect chain with one deadline, interrupt owned
+  outbound sockets and account for residual DNS in four fixed workers. Add an
+  opt-in single-attempt Camofox click mode without changing existing defaults.
+  Keep profiles, storage and administrative authority separate.
+- Seal Route's Python fixture environment/auth paths and non-loopback DNS/TCP
+  before test discovery; isolate native Caddy fixture HOME/XDG state. Dedicated
+  tool-edge errors no longer log private query URLs. Historical unsealed test
+  side effects are disclosed in the shared-tool review; passing tests do not
+  certify production preservation or authorize cleanup/activation.
+
 - Complete the Hermes COMMON profile recipe beyond plugin enrollment: preserve
   native memory/USER learning, reviews and weekly curator behavior, explicit LCM
   settings, supported GPT-6 Luna helper assignments and distinct native/profile

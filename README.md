@@ -406,7 +406,7 @@ is the authenticated edge.
 
 ## Public Safety Rules
 
-The public Compose files do not include personal host paths, private credentials, certificate material, Codex profile mounts, or LAN-wide port binds. Runtime data defaults to `runtime/`, which is ignored by Git. Hermes is the bundled default agent. Alternate agent integrations belong in private Compose overrides that reuse Spartan Gate's Spartan Route, Camofox, Reader, SearXNG, proxy and internal network contracts.
+The public Compose files do not include personal host paths, private credentials, certificate material, Codex profile mounts, or LAN-wide port binds. Runtime data defaults to `runtime/`, which is ignored by Git. Hermes is the bundled default agent. The opt-in [shared tool-access source integration](docs/shared-tool-access.md) lets host Pi and scoped HTTP clients reuse SearXNG, Reader and managed Camofox without backend master credentials or joining backend networks. Installation and activation remain separate operator decisions; trusted desktop agents are not OS-sandboxed by these client tokens. Other alternate-agent integrations must preserve the same Route, browser, retrieval and egress ownership contracts.
 
 The public docs should remain generic and shareable. Machine-specific cutover notes, real port choices, token ownership, profile names, Tailscale hostnames, and migration notes belong in `private/docs/`.
 

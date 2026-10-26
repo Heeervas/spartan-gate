@@ -3,6 +3,37 @@ const fs = require('fs');
 const path = 'server.js';
 let source = fs.readFileSync(path, 'utf8');
 
+function installSingleAttemptClick(input) {
+  const start = input.indexOf("app.post('/tabs/:tabId/click', async (req, res) => {");
+  const end = input.indexOf('// --- /tabs/:tabId/upload timeouts (ms) ---', start);
+  if (start === -1 || end === -1) throw new Error('expected Camofox single-attempt click route boundaries');
+  let route = input.slice(start, end);
+  const guard = '        const click = async (options) => clickWithDownloadGuard(tabState, () => locator.click(options));';
+  const singleAttempt = `
+        // Spartan opt-in: never replay an ambiguous click, including Google SERPs.
+        if (req.body.singleAttempt === true) {
+          await click({ timeout: Math.max(1, Math.min(3000, remainingBudget())) });
+          return;
+        }`;
+  if (!route.includes(singleAttempt)) {
+    if (route.split(guard).length !== 2) throw new Error('expected one Camofox guarded locator click');
+    route = route.replace(guard, guard + singleAttempt);
+  }
+  const installedGuard = guard + singleAttempt;
+  if (route.split(installedGuard).length !== 2 || route.indexOf(installedGuard) > route.indexOf('        if (onGoogleSerp)')) {
+    throw new Error('Camofox single-attempt click implementation is incomplete');
+  }
+  input = input.slice(0, start) + route + input.slice(end);
+  const capability = '    singleAttemptBrowserClick: true,\n';
+  const capabilityAnchor = '    cleanupFailedOperatorNavigation: true,\n';
+  if (!input.includes(capability)) {
+    if (input.split(capabilityAnchor).length !== 2) throw new Error('expected one Camofox capability anchor');
+    input = input.replace(capabilityAnchor, capabilityAnchor + capability);
+  }
+  if (input.split(capability).length !== 2) throw new Error('duplicate Camofox single-attempt click capability');
+  return input;
+}
+
 if (source.includes('SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1')) {
   for (const [marker, label] of [
     ['SPARTAN_LIFECYCLE_COORDINATOR_VERSION = 1', 'lifecycle coordinator'],
@@ -25,6 +56,8 @@ if (source.includes('SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1')) {
   ]) {
     if (!source.includes(marker)) throw new Error(`Camofox 1.15 patch marker is incomplete: ${label}`);
   }
+  const updated = installSingleAttemptClick(source);
+  if (updated !== source) fs.writeFileSync(path, updated);
   process.exit(0);
 }
 
@@ -1819,6 +1852,7 @@ app.get('/live', (_req, res) => res.status(200).json({ ok: true, engine: 'camouf
   ]) {
     if (!source.includes(marker)) throw new Error(`Camofox 1.15 patch incomplete: ${label}`);
   }
+  source = installSingleAttemptClick(source);
   fs.writeFileSync(path, source);
   process.exit(0);
 }

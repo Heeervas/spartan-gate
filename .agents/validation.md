@@ -67,6 +67,74 @@ This integration does not authorize real doctor/private renders, stack starts,
 image builds, deployments or runtime profile operations.
 
 
+## Shared tool-access source acceptance
+
+Feature contract: `docs/shared-tool-access.md`. Source-only, not activation.
+Additive coverage independently approved for `infra/tool-access/**`, the exact
+`configure-shared-tools.mjs` installer/test paths, `package.json` and
+`.github/workflows/ci.yml`. Baseline, TOP floor, adapters, thresholds and existing
+exceptions are unchanged. Manifest/CI coverage is inventory/provenance only;
+metrics do not validate JSON/YAML/Caddy/Compose/Dockerfile semantics.
+
+`npm run test:route` now runs the Route-only isolated Python launcher before its
+unchanged JS group. Use that launcher for focused Route Python tests too; never
+start native app fixtures with ambient HOME/auth/proxy settings. It clears
+ambient auth, binds temporary HOME/XDG/Codex state and denies non-loopback DNS/TCP
+inside this test process. It is not a subprocess/UDP or OS sandbox. Historical
+unsealed results are not safe-fixture acceptance; see the feature review receipt.
+
+Pi's actual web provider is a required public program input, not an active home:
+
+```sh
+npm install --prefix .agents/pi-web-test --ignore-scripts --no-audit --no-fund pi-web-access@0.44.0
+export PI_WEB_ACCESS_EXTENSION="$PWD/.agents/pi-web-test/node_modules/pi-web-access/dist/index.js"
+npm run test:tools
+PI_CODING_AGENT_DIR="$PI13_PACKAGE" PI_TEST_PACKAGE_DIR="$PI13_PACKAGE" npm run test:pi
+PI_CODING_AGENT_DIR="$PI14_PACKAGE" PI_TEST_PACKAGE_DIR="$PI14_PACKAGE" npm run test:pi
+python3 -m unittest discover -s infra/reader -p 'test_*.py'
+CADDY_BIN="$CADDY_BIN" python3 -m unittest discover -s infra/caddy -p 'test_*.py'
+docker compose -f infra/compose/compose.yml --env-file .env.example --profile tool-access config --quiet
+```
+
+Caddy tests explicitly bind scratch HOME and XDG config/data/cache. The new
+outage regression proves private query text does not enter dedicated edge logs.
+Reader tests prove one total fetch budget, real header/body drip disconnection,
+redirect budgeting, bounded residual DNS and one-worker recovery. Camofox native
+checks additionally exercise opt-in one-application-level-click behavior against
+pristine pinned source; `CAMOFOX_PATCHED_SERVER` can select an explicitly supplied
+already-patched **program** file for upgrade/idempotence proof (not a profile).
+
+The actual joint fixture is a separate authorized operation, not a default unit
+test. Provide exact existing program image IDs and an explicitly extracted
+program-only `server.js`; no pulls/builds or runtime/profile extraction. The
+Python image must contain aiohttp and is invoked only through fixture entrypoints,
+never its normal router/provider startup. Source preflight starts nothing:
+
+```sh
+python3 infra/tool-access/isolated_acceptance.py \
+  --browser-image "$TOOL_TEST_BROWSER_IMAGE" --caddy-image "$TOOL_TEST_CADDY_IMAGE" \
+  --patched-server-source "$CAMOFOX_PATCHED_SERVER"
+# Only after resource/isolated-operation authority; synthetic credentials/data/nets:
+python3 infra/tool-access/isolated_acceptance.py \
+  --browser-image "$TOOL_TEST_BROWSER_IMAGE" --caddy-image "$TOOL_TEST_CADDY_IMAGE" \
+  --patched-server-source "$CAMOFOX_PATCHED_SERVER" \
+  --python-image "$TOOL_TEST_PYTHON_IMAGE" --execute --resource-approved \
+  --native-pi-package "$PI14_PACKAGE" --web-access-extension "$PI_WEB_ACCESS_EXTENSION"
+```
+
+Run through `sh .ultimate/run.sh` in this worktree to select Node 22/isolated
+Python. One 2-GiB browser fixture at a time; retain production memory headroom and
+5-GB disk floor. Browser fixture matches public Compose's existing runtime, uses
+fresh synthetic storage and **test-only analytics/addons-disabled mode**, not
+default-UBO acceptance. Positive Reader HTTP uses an explicit test-only public-IP
+transport mapping, not real public retrieval. The restricted client must fail
+backend/intermediary/legacy/publishing-peer HTTP attempts. Normal publishing
+bridge belongs only to edge (plus a negative-test peer in fixtures); no claim
+that the edge itself lacks egress. Native Pi uses fresh SDK processes, actual
+loader/tool/image hooks and disk resume/fork with a synthetic model; no paid
+provider or active installation. Receipts distinguish all these boundaries and
+confirm owned cleanup.
+
 ## Optional quality CLI image acceptance
 
 The build/recreation and runtime canary contract is documented in
@@ -128,7 +196,7 @@ python3 -m venv .agents/quality-venv
 .agents/quality-venv/bin/python -m pip install -r "$HOME/.agents/skills/shared/builder-assurance/requirements.txt"
 npm ci --ignore-scripts
 npm run pi:quality
-python3 -m unittest discover -s infra/spartan-route -p 'test_*.py'
+python3 infra/spartan-route/run_tests.py
 node --test infra/pi/test_*.mjs
 python3 -m unittest discover -s infra/pi -p 'test_*.py'
 git diff --check
@@ -216,11 +284,11 @@ OpenAI SDK 7.19.0. The test input locator supports npm-hoisted and bundled layou
 missing actual dependencies fail rather than skip.
 
 ```sh
-python3 -m unittest discover -s infra/spartan-route -p test_reasoning_replay.py
+python3 infra/spartan-route/run_tests.py --pattern test_reasoning_replay.py
 PI_CODING_AGENT_DIR="$PI13_PACKAGE" node --test infra/pi/test_standard_responses.mjs infra/pi/test_spartan_route_provider.mjs
 npm run test:route
-PI_CODING_AGENT_DIR="$PI13_PACKAGE" npm run test:pi
-PI_CODING_AGENT_DIR="$PI14_PACKAGE" npm run test:pi
+PI_CODING_AGENT_DIR="$PI13_PACKAGE" PI_TEST_PACKAGE_DIR="$PI13_PACKAGE" npm run test:pi
+PI_CODING_AGENT_DIR="$PI14_PACKAGE" PI_TEST_PACKAGE_DIR="$PI14_PACKAGE" npm run test:pi
 python3 -m unittest discover -s infra/hermes-plugins -p test_spartan_cache_lineage.py -v
 git diff --check
 ```

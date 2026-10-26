@@ -1,0 +1,47 @@
+{
+	admin off
+	auto_https off
+	# Reverse-proxy error logs otherwise contain query URLs even without access logs.
+	log default {
+		output discard
+	}
+	servers {
+		timeouts {
+			read_body 10s
+			read_header 5s
+			write 35s
+			idle 30s
+		}
+		max_header_size 16KB
+	}
+}
+
+# This dedicated service never imports the legacy edge listeners.
+:18792 {
+	route {
+		header Cache-Control "no-store"
+		header X-Content-Type-Options "nosniff"
+		@origin header Origin *
+		respond @origin "Forbidden" 403
+		@unexpected_host {
+			not host localhost 127.0.0.1 tool-edge
+		}
+		respond @unexpected_host "Forbidden" 403
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy tool-access:9081 {
+			header_up -Cookie
+			header_up -Forwarded
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			transport http {
+				dial_timeout 2s
+				response_header_timeout 32s
+				read_timeout 32s
+				write_timeout 10s
+			}
+		}
+	}
+}

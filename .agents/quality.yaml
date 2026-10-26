@@ -7,6 +7,8 @@ change_scope:
   detect_file_renames: true
 scope:
   include:
+  - package.json
+  - .github/workflows/ci.yml
   - apps/hermes-agent/patches/patch_external_skill_links.py
   - apps/hermes-agent/test_external_skill_links_patch.py
   - apps/hermes-agent/patches/*.py
@@ -14,9 +16,12 @@ scope:
   - apps/hermes-agent/proxy-bootstrap.py
   - apps/hermes-agent/Dockerfile
   - infra/pi/**
+  - infra/tool-access/**
   - infra/spartan-route/**
   - scripts/check-pi-route-quality.sh
   - scripts/*.py
+  - scripts/configure-shared-tools.mjs
+  - scripts/test_configure_shared_tools.mjs
   - scripts/doctor.sh
   - scripts/add-port.sh
   - scripts/install.sh

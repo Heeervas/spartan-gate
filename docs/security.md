@@ -58,6 +58,19 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   on other browser-facing dashboard pages. Protect it with local binding,
   Tailscale/private exposure, and Hermes' own application controls; do not
   publish the dashboard edge broadly.
+- Optional shared tool access uses a separate bearer-authenticated tool-only
+  Caddy listener, never the legacy browser/dashboard listeners. Client policy
+  reloads fail closed at each admission; opaque workflow authority and an exact
+  tab registry enforce conversation ownership server-side. Default binding is
+  loopback only. Its publishing bridge belongs only to tool-edge; confined
+  clients join only internal ingress and cannot directly reach backend services.
+  The edge itself has ordinary bridge reachability, not network confinement.
+  No cookie/CORS authentication, raw browser key distribution, general evaluate,
+  profile reset, supervisor or vault administration is exposed. Strict managed
+  search/retrieval has no hosted/direct fallback. See
+  [shared-tool-access.md](shared-tool-access.md) for disclosure, native-history,
+  revocation and trusted-desktop limitations. This opt-in source is not proof of
+  activation in a particular installation.
 - Tailscale exposure belongs in `private/compose.local.yml`; do not publish edge ports on `0.0.0.0` or LAN addresses in public files.
 - Extra Hermes app ports belong in `private/caddy.local.d` plus `private/compose.local.yml`; use `scripts/add-port.sh` instead of editing public Compose.
 - The OpenAI-compatible router stats, dashboards, and API endpoints require

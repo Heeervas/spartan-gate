@@ -55,7 +55,6 @@ MAX_REDIRECTS = 5
 UNTRUSTED_BEGIN = "BEGIN_UNTRUSTED_WEB_CONTENT"
 UNTRUSTED_END = "END_UNTRUSTED_WEB_CONTENT"
 UNTRUSTED_HEADER = "untrusted-web-content"
-_ORIGINAL_CREATE_CONNECTION = socket.create_connection
 OVERLOAD_BODY = b"Reader overloaded; retry later\n"
 
 # Internal Docker service names (prevent SSRF to internal services)
@@ -72,6 +71,170 @@ BLOCKED_HOSTNAME_SUFFIXES = (
 
 class BlockedDestination(Exception):
     """Raised when a requested or redirected URL targets a blocked destination."""
+
+
+class _BoundedResolver:
+    """Four actual outstanding DNS jobs, including abandoned running calls."""
+
+    def __init__(self):
+        self._slots = threading.BoundedSemaphore(4)
+        self._jobs = queue.Queue(maxsize=4)
+        self._lock = threading.Lock()
+        self._workers = []
+
+    def resolve(self, hostname, port, deadline, **kwargs):
+        deadline.remaining()
+        if not self._slots.acquire(blocking=False):
+            raise TimeoutError("Reader DNS capacity exhausted")
+        done = threading.Event()
+        result = []
+        try:
+            with self._lock:
+                while len(self._workers) < 4:
+                    worker = threading.Thread(target=self._run, name=f"reader-dns-{len(self._workers)}", daemon=True)
+                    worker.start()
+                    self._workers.append(worker)
+            self._jobs.put_nowait((hostname, port, kwargs, deadline, done, result))
+        except BaseException:
+            self._slots.release()
+            raise
+        while not done.wait(min(0.02, deadline.remaining())):
+            deadline.remaining()  # Server shutdown also releases DNS waiters.
+        deadline.remaining()  # A late DNS answer must never initiate a connect.
+        value = result[0]
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    def _run(self):
+        while True:
+            hostname, port, kwargs, deadline, done, result = self._jobs.get()
+            try:
+                deadline.remaining()  # Discard expired queued work without DNS.
+                result.append(socket.getaddrinfo(hostname, port, **kwargs))
+            except Exception as exc:
+                result.append(exc)
+            finally:
+                # Only the actual job owner releases admission, exactly once.
+                self._slots.release()
+                done.set()
+                self._jobs.task_done()
+
+
+class _FetchRuntime:
+    def __init__(self):
+        self.resolver = _BoundedResolver()
+        self.lock = threading.Lock()
+        self.deadlines = set()
+        self.stopped = threading.Event()
+        self.watchdog = threading.Thread(target=self._watch, name="reader-fetch-deadlines", daemon=True)
+        self.watchdog.start()
+
+    def _watch(self):
+        while not self.stopped.wait(0.02):
+            with self.lock:
+                expired = [item for item in self.deadlines if item.expires <= time.monotonic()]
+            for item in expired:
+                item.expire()
+
+    def close(self):
+        self.stopped.set()
+        with self.lock:
+            active = list(self.deadlines)
+        for item in active:
+            item.expire()
+        # DNS threads are daemonized: libc getaddrinfo cannot be cancelled.
+        self.watchdog.join(timeout=0.2)
+
+
+_fetch_runtime = None
+_fetch_runtime_lock = threading.Lock()
+
+
+def _get_fetch_runtime():
+    global _fetch_runtime
+    with _fetch_runtime_lock:
+        if _fetch_runtime is None:
+            _fetch_runtime = _FetchRuntime()
+        return _fetch_runtime
+
+
+def _close_socket(sock):
+    if sock is None:
+        return
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    finally:
+        sock.close()
+
+
+class _FetchDeadline:
+    def __init__(self, expires=None):
+        self.expires = time.monotonic() + REQUEST_TIMEOUT
+        if expires is not None:
+            self.expires = min(expires, self.expires)
+        self._lock = threading.Lock()
+        self._socket = None
+        self._expired = False
+        self._runtime = _get_fetch_runtime()
+        with self._runtime.lock:
+            self._runtime.deadlines.add(self)
+
+    def remaining(self):
+        remaining = self.expires - time.monotonic()
+        if self._expired or remaining <= 0:
+            raise TimeoutError("Reader fetch deadline exceeded")
+        return remaining
+
+    def attach(self, sock):
+        with self._lock:
+            expired = self._expired or self.expires <= time.monotonic()
+            if not expired:
+                self._socket = sock
+        if expired:
+            _close_socket(sock)
+            raise TimeoutError("Reader fetch deadline exceeded")
+
+    def wrap_tls(self, sock, context, hostname):
+        # wrap_socket transfers the descriptor. No handshake/network I/O under
+        # this lock, so expiry cannot close a detached raw socket and miss TLS.
+        with self._lock:
+            self.remaining()
+            wrapped = context.wrap_socket(sock, server_hostname=hostname, do_handshake_on_connect=False)
+            self._socket = wrapped
+        self.attach(wrapped)  # A transfer completed after expiry closes TLS now.
+        wrapped.settimeout(self.remaining())
+        wrapped.do_handshake()
+        self.remaining()
+        return wrapped
+
+    def release_socket(self):
+        with self._lock:
+            sock, self._socket = self._socket, None
+        _close_socket(sock)
+
+    def expire(self):
+        with self._lock:
+            self._expired = True
+            sock, self._socket = self._socket, None
+        _close_socket(sock)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.release_socket()
+        with self._runtime.lock:
+            self._runtime.deadlines.discard(self)
+
+
+def _resolve(hostname, port, deadline=None, **kwargs):
+    if deadline is None:
+        with _FetchDeadline() as owned:
+            return owned._runtime.resolver.resolve(hostname, port, owned, **kwargs)
+    return deadline._runtime.resolver.resolve(hostname, port, deadline, **kwargs)
 
 
 # ── Audit logger ──
@@ -165,7 +328,7 @@ def _is_blocked_ip(value: str) -> bool:
     )
 
 
-def is_blocked(url: str) -> bool:
+def is_blocked(url: str, *, _deadline=None) -> bool:
     """Check whether a URL violates the public global-address boundary."""
     try:
         parsed = urllib.parse.urlparse(url)
@@ -195,46 +358,37 @@ def is_blocked(url: str) -> bool:
     # Resolve every address and fail closed for any non-global result.
     try:
         default_port = 443 if parsed.scheme == "https" else 80
-        infos = socket.getaddrinfo(hostname, port or default_port)
+        infos = _resolve(hostname, port or default_port, _deadline)
     except socket.gaierror:
         return True
 
-    for info in infos:
-        if _is_blocked_ip(info[4][0]):
-            return True
-
-    return False
+    return not infos or any(_is_blocked_ip(info[4][0]) for info in infos)
 
 
-def create_checked_connection(address, timeout=None, source_address=None):
+def create_checked_connection(address, *, _deadline):
     host, port = address[:2]
-    try:
-        ipaddress.ip_address(host)
-        candidates = [(host, port)]
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-        except socket.gaierror as exc:
-            raise OSError(f"DNS resolution failed for {host}") from exc
-        candidates = [(info[4][0], info[4][1]) for info in infos]
-
-    if not candidates:
-        raise OSError(f"DNS resolution returned no addresses for {host}")
-
-    for candidate_host, _candidate_port in candidates:
-        if _is_blocked_ip(candidate_host):
-            raise BlockedDestination("Resolved address blocked: non-global network")
+    infos = _resolve(host, port, _deadline, type=socket.SOCK_STREAM)
+    if not infos:
+        raise OSError("DNS resolution returned no addresses")
+    if any(_is_blocked_ip(info[4][0]) for info in infos):
+        raise BlockedDestination("Resolved address blocked: non-global network")
 
     last_error = None
-    for candidate in candidates:
+    for family, socktype, proto, _canonname, candidate in infos:
+        _deadline.remaining()
         try:
-            return _ORIGINAL_CREATE_CONNECTION(candidate, timeout=timeout, source_address=source_address)
+            sock = socket.socket(family, socktype, proto)
+            _deadline.attach(sock)
+            sock.settimeout(_deadline.remaining())
+            # Numeric sockaddr from the checked resolution: no second DNS call.
+            sock.connect(candidate)
+            _deadline.remaining()
+            return sock
         except OSError as exc:
             last_error = exc
-
-    if last_error is not None:
-        raise last_error
-    raise OSError(f"Could not connect to {host}")
+            _deadline.release_socket()
+            _deadline.remaining()
+    raise last_error
 
 
 def mark_untrusted(text: str) -> str:
@@ -249,21 +403,17 @@ def _request_path(parsed: urllib.parse.ParseResult) -> str:
     return path
 
 
-def _open_checked_socket(hostname: str, port: int, use_tls: bool):
-    sock = create_checked_connection((hostname, port), timeout=REQUEST_TIMEOUT)
+def _open_checked_socket(hostname: str, port: int, use_tls: bool, *, _deadline):
+    sock = create_checked_connection((hostname, port), _deadline=_deadline)
     if not use_tls:
         return sock
     context = ssl.create_default_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    return context.wrap_socket(sock, server_hostname=hostname)
+    return _deadline.wrap_tls(sock, context, hostname)
 
 
-def fetch_url(url: str, redirects: int = 0) -> tuple[str, str]:
-    """Fetch URL content. Returns (content, content_type)."""
-    if redirects > MAX_REDIRECTS:
-        raise BlockedDestination("Redirect blocked: too many redirects")
-
-    if is_blocked(url):
+def _fetch_hop(url, deadline):
+    if is_blocked(url, _deadline=deadline):
         raise BlockedDestination("Destination blocked: non-global or internal destination")
 
     parsed = urllib.parse.urlparse(url)
@@ -283,29 +433,59 @@ def fetch_url(url: str, redirects: int = 0) -> tuple[str, str]:
         "\r\n"
     ).encode("ascii", errors="ignore")
 
-    sock = _open_checked_socket(hostname, port, use_tls)
+    resp = None
     try:
+        sock = _open_checked_socket(hostname, port, use_tls, _deadline=deadline)
+        sock.settimeout(deadline.remaining())
         sock.sendall(request)
         resp = http.client.HTTPResponse(sock)
         resp.begin()
+        deadline.remaining()
         if resp.status in {301, 302, 303, 307, 308}:
             location = resp.getheader("Location")
             if not location:
                 raise BlockedDestination("Redirect blocked: missing Location header")
-            newurl = urllib.parse.urljoin(url, location)
-            if is_blocked(newurl):
-                audit_log("BLOCKED-REDIRECT", newurl)
-                raise BlockedDestination("Redirect blocked: non-global or internal destination")
-            return fetch_url(newurl, redirects + 1)
+            return urllib.parse.urljoin(url, location), None
 
         content_type = resp.getheader("Content-Type", "text/html")
+        sock.settimeout(deadline.remaining())
         data = resp.read(MAX_RESPONSE_SIZE)
+        deadline.remaining()
         charset = "utf-8"
         if "charset=" in content_type:
             charset = content_type.split("charset=")[-1].split(";")[0].strip()
-        return data.decode(charset, errors="replace"), content_type
+        return None, (data.decode(charset, errors="replace"), content_type)
+    except Exception:
+        deadline.remaining()  # Normalize watchdog-induced socket errors to 504.
+        raise
     finally:
-        sock.close()
+        deadline.release_socket()
+        if resp is not None:
+            resp.close()
+
+
+def _fetch_chain(url, redirects, deadline):
+    while True:
+        deadline.remaining()
+        if redirects > MAX_REDIRECTS:
+            raise BlockedDestination("Redirect blocked: too many redirects")
+        newurl, content = _fetch_hop(url, deadline)
+        if newurl is None:
+            deadline.remaining()
+            return content
+        if is_blocked(newurl, _deadline=deadline):
+            audit_log("BLOCKED-REDIRECT", newurl)
+            raise BlockedDestination("Redirect blocked: non-global or internal destination")
+        url = newurl
+        redirects += 1
+
+
+def fetch_url(url: str, redirects: int = 0, *, _deadline=None) -> tuple[str, str]:
+    """Fetch URL content under one absolute DNS/transport/redirect budget."""
+    if _deadline is not None:
+        return _fetch_chain(url, redirects, _deadline)
+    with _FetchDeadline() as owned:
+        return _fetch_chain(url, redirects, owned)
 
 
 def extract_text(html_content: str) -> str:
@@ -331,6 +511,7 @@ class BoundedHTTPServer(HTTPServer):
         self._closing = threading.Event()
         self._connections_lock = threading.Lock()
         self._connections = {}
+        self._fetches = {}
         self._capacity = threading.BoundedSemaphore(max_workers + max_pending)
         self._requests = queue.Queue(maxsize=max_workers + max_pending)
         self._workers = [
@@ -382,9 +563,21 @@ class BoundedHTTPServer(HTTPServer):
             deadline = self._connections.get(request, 0)
             return self._closing.is_set() or deadline <= time.monotonic()
 
+    def fetch_deadline(self, request):
+        with self._connections_lock:
+            expires = self._connections.get(request, 0)
+        deadline = _FetchDeadline(expires)
+        with self._connections_lock:
+            self._fetches[request] = deadline
+            closing = self._closing.is_set()
+        if closing:
+            deadline.expire()
+        return deadline
+
     def _release_connection(self, request):
         with self._connections_lock:
             self._connections.pop(request, None)
+            self._fetches.pop(request, None)
         self.shutdown_request(request)
         self._capacity.release()
 
@@ -430,8 +623,12 @@ class BoundedHTTPServer(HTTPServer):
             if self._closing.is_set():
                 return
             self._closing.set()
-            for request in self._connections:
-                self._interrupt_connection(request)
+            requests = list(self._connections)
+            fetches = list(self._fetches.values())
+        for request in requests:
+            self._interrupt_connection(request)
+        for deadline in fetches:
+            deadline.expire()
         self._watchdog.join()
         super().server_close()
 
@@ -479,40 +676,44 @@ class ReaderHandler(BaseHTTPRequestHandler):
                 self._respond(400, "URL must start with http:// or https://")
                 return
 
-            if is_blocked(url):
-                audit_log("BLOCKED-DESTINATION", url)
-                self._respond(403, "URL blocked: non-global or internal destination")
-                return
-
-            audit_log("FETCH", url)
-
-            try:
-                content, content_type = fetch_url(url)
-
-                if "html" in content_type.lower():
-                    text = extract_text(content)
-                else:
-                    text = content[:MAX_TEXT_LENGTH]
-
-                self._respond(
-                    200,
-                    mark_untrusted(text),
-                    {"X-Spartan-Content-Trust": UNTRUSTED_HEADER},
-                )
-
-            except BlockedDestination as e:
-                self._respond(403, str(e))
-            except urllib.error.HTTPError as e:
-                self._respond(502, f"Remote server returned {e.code}: {e.reason}")
-            except urllib.error.URLError as e:
-                self._respond(502, f"Could not reach URL: {e.reason}")
-            except TimeoutError:
-                self._respond(504, "Request timed out")
-            except Exception as e:
-                self._respond(500, f"Error: {str(e)}")
+            self._fetch(url)
             return
 
         self._respond(404, "Not found. Use /fetch?url=... or /health")
+
+    def _fetch(self, url):
+        deadline = None
+        try:
+            deadline = (self.server.fetch_deadline(self.connection)
+                        if isinstance(self.server, BoundedHTTPServer) else _FetchDeadline())
+            if is_blocked(url, _deadline=deadline):
+                raise BlockedDestination("URL blocked: non-global or internal destination")
+            audit_log("FETCH", url)
+            content, content_type = fetch_url(url, _deadline=deadline)
+            deadline.remaining()
+            if "html" in content_type.lower():
+                text = extract_text(content)
+            else:
+                text = content[:MAX_TEXT_LENGTH]
+            self._respond(
+                200,
+                mark_untrusted(text),
+                {"X-Spartan-Content-Trust": UNTRUSTED_HEADER},
+            )
+        except BlockedDestination as e:
+            audit_log("BLOCKED-DESTINATION", url)
+            self._respond(403, str(e))
+        except urllib.error.HTTPError as e:
+            self._respond(502, f"Remote server returned {e.code}: {e.reason}")
+        except urllib.error.URLError as e:
+            self._respond(502, f"Could not reach URL: {e.reason}")
+        except TimeoutError:
+            self._respond(504, "Request timed out")
+        except Exception as e:
+            self._respond(500, f"Error: {str(e)}")
+        finally:
+            if deadline is not None:
+                deadline.__exit__(None, None, None)
 
     def do_POST(self):
         self._respond(405, "Method not allowed. Only GET requests are permitted.")
@@ -591,6 +792,8 @@ def main():
             server.shutdown()
         serving_thread.join()
         server.server_close()
+        if _fetch_runtime is not None:
+            _fetch_runtime.close()
 
 
 if __name__ == "__main__":

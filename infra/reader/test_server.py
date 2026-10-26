@@ -94,8 +94,8 @@ class ReaderServerTests(unittest.TestCase):
         reader_server.http.client.HTTPResponse = self.old_http_response
 
     def test_fetch_wraps_output_as_untrusted_content(self):
-        reader_server.is_blocked = lambda _url: False
-        reader_server.fetch_url = lambda _url: (
+        reader_server.is_blocked = lambda _url, **_kwargs: False
+        reader_server.fetch_url = lambda _url, **_kwargs: (
             "<html><head><title>x</title></head><body><h1>Visible</h1><script>ignore</script></body></html>",
             "text/html",
         )
@@ -184,12 +184,18 @@ class ReaderServerTests(unittest.TestCase):
             def begin(self):
                 pass
 
+            def close(self):
+                pass
+
             def getheader(self, name, default=None):
                 if name == "Location":
                     return "http://100.64.0.1/private"
                 return default
 
         class FakeSocket:
+            def settimeout(self, _timeout):
+                pass
+
             def sendall(self, _data):
                 pass
 
@@ -214,7 +220,7 @@ class ReaderServerTests(unittest.TestCase):
             reader_server.fetch_url("http://public.example/page")
 
     def test_actual_connection_rejects_cgnat_after_preflight(self):
-        reader_server.is_blocked = lambda _url: False
+        reader_server.is_blocked = lambda _url, **_kwargs: False
         reader_server.socket.getaddrinfo = lambda *_args, **_kwargs: [
             (reader_server.socket.AF_INET, reader_server.socket.SOCK_STREAM, 6, "", ("100.64.0.1", 80)),
         ]
@@ -262,8 +268,8 @@ class ReaderServerTests(unittest.TestCase):
         self.assertNotIn("password", stderr.getvalue())
 
     def test_access_log_does_not_reemit_fetched_path_or_query(self):
-        reader_server.is_blocked = lambda _url: False
-        reader_server.fetch_url = lambda _url: ("public text", "text/plain")
+        reader_server.is_blocked = lambda _url, **_kwargs: False
+        reader_server.fetch_url = lambda _url, **_kwargs: ("public text", "text/plain")
         target = "https://public.example/private/token?credential=secret"
 
         stderr = io.StringIO()
@@ -283,12 +289,12 @@ class ReaderServerTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def slow_fetch(_url):
+        def slow_fetch(_url, **_kwargs):
             started.set()
             release.wait(timeout=5)
             return "done", "text/plain"
 
-        reader_server.is_blocked = lambda _url: False
+        reader_server.is_blocked = lambda _url, **_kwargs: False
         reader_server.fetch_url = slow_fetch
         fetch_result = []
 
@@ -316,12 +322,12 @@ class ReaderServerTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def slow_fetch(_url):
+        def slow_fetch(_url, **_kwargs):
             started.set()
             release.wait(timeout=5)
             return "done", "text/plain"
 
-        reader_server.is_blocked = lambda _url: False
+        reader_server.is_blocked = lambda _url, **_kwargs: False
         reader_server.fetch_url = slow_fetch
 
         with BoundedReaderHarness(max_workers=1, max_pending=0) as harness:

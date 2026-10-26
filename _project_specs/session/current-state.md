@@ -1,5 +1,34 @@
 # Current State
 
+## Shared tool access — source candidate, activation pending (2026-10-26)
+
+The opt-in source candidate adds dedicated tool-only Caddy ingress, bounded
+fixed-target search/Reader transport, server-issued browser workflow/tab
+ownership and a native Pi client reusing pi-web-access. Reader now bounds the
+whole fetch chain and residual DNS; Camofox adds optional single-attempt clicks
+without changing existing defaults. Hermes instructions, profiles, Route/model
+routing and existing service paths are unchanged in this source.
+
+One isolated candidate served both a restricted protocol container and four
+fresh native Pi 1.4 SDK processes (first/resume/fork/cleanup). Actual browser/PNG,
+structured search, Reader HTTP, auth/revocation, owned-tab isolation and cleanup
+passed. Browser used test-only analytics/addons-disabled mode, not default-UBO
+proof. Reader used a declared test-only global-address transport, not real public
+retrieval. The model was synthetic; no paid inference or active installation.
+Design, candidate-bound evidence, review and the single approval-gated activation
+proposal live in `docs/shared-tool-access.md` and
+`docs/reviews/shared-tool-access-20261026.md`.
+
+Validation also exposed inherited unsafe fixture behavior: native Caddy wrote
+an autosave under default host XDG state, and the unsealed Route suite opened
+public TCP connections through a startup path that could select ambient Codex
+auth. Completed TLS/HTTP and actual credential use remain unknown; no private
+store inspection or cleanup was authorized. Fixtures now use scratch HOME/XDG
+and Route process-local auth/egress isolation; the sealed Route run passes.
+These historical effects are retained explicitly, not erased by a later green.
+No production build, service recreation, active client install, canonical merge
+or push is authorized by source acceptance. Operational F1–F9 remain W6-gated.
+
 ## Codex replay portability source accepted — final docs review pending (2026-10-25)
 
 The independently reviewed source plan restores subscription pool portability for
