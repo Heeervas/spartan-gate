@@ -28,11 +28,29 @@ function inspect(path) {
   }
 }
 
+function ownerOnlyAncestor(path) {
+  // inspect() already verified this same ancestor chain; never infer trust from
+  // a sibling, a sticky directory, a symlink, or an unreadable/unknown stat.
+  let current = dirname(path);
+  for (;;) {
+    const stat = fs.lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) reject();
+    if (stat.uid === process.getuid() && (stat.mode & 0o7777) === 0o700) return true;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
 function inspectDirectory(path) {
   const stat = inspect(path);
   if (stat && (!stat.isDirectory() || (stat.mode & 0o022))) {
-    // System temporary directories may be sticky, never writable installation roots.
-    if (!(stat.isDirectory() && (stat.mode & 0o1000))) reject();
+    // Ordinary root-owned system ancestors remain subject to the old checks.
+    // Only a verified owner-only enclosure blocks untrusted group traversal.
+    const enclosed = stat.isDirectory() && stat.uid === process.getuid()
+      && !(stat.mode & 0o002) && ownerOnlyAncestor(path);
+    // Preserve exactly the existing sticky-temporary-directory exception.
+    if (!(stat.isDirectory() && (stat.mode & 0o1000)) && !enclosed) reject();
   }
   return stat;
 }

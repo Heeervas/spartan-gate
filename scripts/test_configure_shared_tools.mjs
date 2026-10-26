@@ -114,6 +114,39 @@ test('apply creates strict configuration, preserves foreign fields, protects bac
   assert.deepEqual(snapshot(f.root), installed);
 });
 
+test('owner-only enclosure admits same-owner group-writable ancestors but not exposed or world-writable paths', t => {
+  const f = fixture(t);
+  const shared = join(f.root, 'group-writable');
+  fs.mkdirSync(shared);
+  fs.chmodSync(shared, 0o775);
+  const credential = join(shared, 'credential');
+  fs.renameSync(f.credential, credential);
+  f.args[f.args.indexOf('--credential-file') + 1] = credential;
+  let before = snapshot(f.root);
+  let result = f.run();
+  assert.equal(result.status, 0, 'same-owner 0775 below verified 0700 must preview safely');
+  assert.deepEqual(snapshot(f.root), before);
+  fs.chmodSync(f.root, 0o755);
+  before = snapshot(f.root);
+  result = f.run();
+  assert.equal(result.status, 1, 'exposed group-writable ancestor must fail closed');
+  assert.deepEqual(snapshot(f.root), before);
+  fs.chmodSync(f.root, 0o700);
+  fs.chmodSync(shared, 0o777);
+  before = snapshot(f.root);
+  result = f.run();
+  assert.equal(result.status, 1, 'private enclosure must not admit world-writable descendants');
+  assert.deepEqual(snapshot(f.root), before);
+  fs.chmodSync(shared, 0o775);
+  const preload = join(f.root, 'foreign-owner.mjs');
+  // Metadata fault fixture: unprivileged tests cannot chown a real directory.
+  fs.writeFileSync(preload, `import fs from 'node:fs'; const original = fs.lstatSync; fs.lstatSync = (path, ...args) => { const value = original(path, ...args); if (path === ${JSON.stringify(shared)}) value.uid += 1; return value; };`);
+  before = snapshot(f.root);
+  result = f.run([], { ...f.env, NODE_OPTIONS: `--import=${preload}` });
+  assert.equal(result.status, 1, 'private enclosure must not admit foreign-owner writable metadata');
+  assert.deepEqual(snapshot(f.root), before);
+});
+
 test('endpoint override mismatch and credential permissions deny without exposing values or changing targets', t => {
   const f = fixture(t);
   let before = snapshot(f.root);

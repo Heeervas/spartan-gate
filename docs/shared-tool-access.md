@@ -165,7 +165,10 @@ Unrelated settings are preserved. It never changes model/Route settings or
 installs packages. Native Pi and the
 supported `pi-web-access@0.44.0` program must already be provisioned. Select an
 agent directory explicitly; symlink/ownership/permission failures stop rather
-than switch to another home. Default preview prints paths/status only:
+than switch to another home. A same-owner group-writable directory is admitted
+only beneath a verified same-owner, symlink-free `0700` ancestor; exposed or
+foreign writable paths and world-writable descendants remain rejected. This does
+not protect against a hostile same-UID writer. Default preview prints paths/status only:
 
 ```sh
 PI_CODING_AGENT_DIR="$PI_AGENT_DIR" node scripts/configure-shared-tools.mjs \

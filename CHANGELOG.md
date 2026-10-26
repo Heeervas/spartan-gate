@@ -11,6 +11,8 @@ All notable changes to Spartan Gate are documented here.
   resume/fork identity and return bounded native PNG images. Add public-safe
   setup/rollback and isolated native/container acceptance without installing
   active clients or changing Hermes/Route connections. Deployment is pending.
+  Installer path checks admit same-owner group-writable directories only beneath
+  a verified owner-only `0700` enclosure, not exposed or world-writable paths.
 - Bound Reader's entire fetch/redirect chain with one deadline, interrupt owned
   outbound sockets and account for residual DNS in four fixed workers. Add an
   opt-in single-attempt Camofox click mode without changing existing defaults.
