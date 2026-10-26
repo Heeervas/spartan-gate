@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run Pi inside Hermes; never follow a host executable symlink.
+set -eu
+: "${HERMES_HOME:?Select the existing Hermes owner home explicitly}"
+export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HERMES_HOME/pi/agent}"
+export PI_CODING_AGENT_SESSION_DIR="${PI_CODING_AGENT_SESSION_DIR:-$HERMES_HOME/pi/sessions}"
+export PI_SPARTAN_ROUTE_CONFIG="${PI_SPARTAN_ROUTE_CONFIG:-$HERMES_HOME/pi/spartan-route/config.json}"
+exec node /opt/pi-package/dist/bundle/cli.js "$@"
