@@ -39,8 +39,10 @@ is also explicitly disabled in this initial configuration.
 
 Only `builder.md`, `reviewer.md`, `general-purpose.md` are bound read-only, not the
 whole canonical role directory. Their native discovery location is
-`getAgentDir()/agents`. Skills are ten individually named canonical packages in
+`getAgentDir()/agents`. Skills are nine individually named canonical packages in
 settings, not `/opt/shared-skills` as a discovery root; they remain **writable**.
+Builder boundary safeguards are routed by the integrated `builder-engineering-rules`
+base to `references/builder-boundary-safeguards.md`; no separate `-ext` enrollment.
 Native user/project discovery and project settings can add resources: inspect the
 actual trusted worktree and effective resources before use. These lists are not
 an OS sandbox or a server-side model authorization policy.

@@ -22,7 +22,6 @@
     "/opt/shared-skills/agent-team-orchestration",
     "/opt/shared-skills/builder-assurance",
     "/opt/shared-skills/builder-engineering-rules",
-    "/opt/shared-skills/builder-engineering-rules-ext",
     "/opt/shared-skills/builder-behavioral-verification",
     "/opt/shared-skills/systematic-debugging",
     "/opt/shared-skills/test-audit",
