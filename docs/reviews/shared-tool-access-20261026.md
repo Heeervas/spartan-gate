@@ -1,7 +1,7 @@
 # Shared tool access — candidate evidence and activation gate
 
 Date: 2026-10-26. Base: `0080763ef836c220bbe30d7d0f70f7017243db89`.
-Status: **source candidate / final integrated review in progress; not deployed**.
+Status: **W5 source accepted / deployment pending; not deployed**.
 The feature branch contains no authorization to merge, install, build production
 images, recreate services, inspect private stores or push.
 
@@ -138,8 +138,16 @@ routing, applies the actual installer, loads **the installed copied extension**
 and actual web provider, and performs structured search through native
 `session.prompt()`. It verifies unrelated fields survive. RED reproduced the
 native disabled-provider error; renewed Pi 1.3 and actual 1.4 each pass six native
-checks plus four installer checks. Focused delta rereview and immutable committed
-range acceptance are still pending at this checkpoint.
+checks plus four installer checks. Independent focused rereview accepted the
+entire R2 candidate (`80e135bb…`) with unchanged residual operational limits.
+
+Implementation commit: `44d21d463f8616f453ad2cfe8904fb36948f998b`.
+Independent native committed-range review approved
+`0080763ef836c220bbe30d7d0f70f7017243db89..44d21d463f8616f453ad2cfe8904fb36948f998b`
+with no findings: exact 50-path set and committed blobs match accepted R2; normal
+hooks introduced no drift. The reviewer verified postcommit TOP artifacts and
+accepted modular evidence reuse without running or claiming new suites/runtime
+checks. This acceptance receipt changes no implementation or deployment contract.
 
 The reviewer explicitly accepted modular reuse of W4 alongside the new real-HTTP
 parser proof and CLI-only portability preflight: unchanged browser/native-image
@@ -183,7 +191,7 @@ All operational portions remain **INCOMPLETE until separately approved W6**.
 | F6 | PASS strict managed paths, loopback publication and negative ingress tests; defaults preserved in native source | Default-UBO/live edge and neighbor acceptance not exercised here |
 | F7 | PASS real deadline/resource tests and bounded transports; declared public-address fixture seam | Live safe-public target and selected runtime limits/readback |
 | F8 | PASS explicit allowlist, single application-level click, no admin/evaluate/storage reset | Human/downstream approval remains necessary for high-impact actions; no generic click classifier guarantee |
-| F9 | Source procedures/rollback/evidence present; final integrated review/commit gate outstanding at this candidate | Canonical integration, installed-byte/config readback and approved rollback canary |
+| F9 | PASS source procedures/rollback/evidence, independent plan/source/evidence review and exact committed-byte readback | Canonical integration, installed-byte/config readback and approved rollback canary |
 
 ## One W6 proposal — approval required, not applied
 
