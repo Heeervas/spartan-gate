@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 import pathlib
 import re
@@ -41,9 +42,15 @@ class WhitelistDomainTests(unittest.TestCase):
             "#!/bin/sh\n"
             "printf '%s\\n' \"$*\" >> \"$FAKE_DOCKER_LOG\"\n"
             "case \" $* \" in\n"
+            "  *' ps --status running -q '*) [ \"$FAKE_DOCKER_NO_CONSUMER\" = 1 ] || printf 'fixture-container\\n'; exit 0 ;;\n"
+            "  *' inspect --format '*) printf '%s\\n' \"$FAKE_DOCKER_MOUNTS\"; exit 0 ;;\n"
+            "  *' policy-path '*) printf '%s\\n' \"$FAKE_DOCKER_POLICY_TARGET\"; exit 0 ;;\n"
             "  *' ps --services --status running '*) printf 'proxy\\ndns\\n'; exit 0 ;;\n"
             "  *' kill -s USR1 '*) exit 9 ;;\n"
             "  *' exec -T '*)\n"
+            "    if [ -n \"$SPARTAN_WHITELIST_TRANSACTION_DIR\" ] && ! flock -n \"$SPARTAN_WHITELIST_TRANSACTION_DIR/whitelist.private.txt.lock\" true; then\n"
+            "      echo lock-held >> \"$FAKE_DOCKER_LOG\"; exit 8\n"
+            "    fi\n"
             "    service=''\n"
             "    previous=''\n"
             "    for arg in \"$@\"; do\n"
@@ -84,7 +91,16 @@ class WhitelistDomainTests(unittest.TestCase):
         # Model an installed stack without depending on ignored operator env
         # files. An absent env makes the tier lookup fail under shell errexit.
         env_file = pathlib.Path(self.tmp.name) / "stack.env"
-        env_file.write_text("SPARTAN_TIER=L4\n", encoding="utf-8")
+        scratch = pathlib.Path(self.tmp.name) / "transactions"
+        scratch.mkdir(mode=0o700, exist_ok=True)
+        self.whitelist.touch(mode=0o600, exist_ok=True)
+        self.whitelist.chmod(0o600)
+        env_file.write_text(
+            f"SPARTAN_TIER=L4\nSPARTAN_PRIVATE_WHITELIST_PATH={self.whitelist}\n"
+            f"SPARTAN_WHITELIST_TRANSACTION_DIR={scratch}\n", encoding="utf-8")
+        env["FAKE_DOCKER_POLICY_TARGET"] = "/policy/whitelist.private.txt"
+        env["FAKE_DOCKER_MOUNTS"] = json.dumps([
+            {"Type": "bind", "Source": str(self.whitelist.parent), "Destination": "/policy", "RW": False}])
         env["SPARTAN_ENV_FILE"] = str(env_file)
         env["SPARTAN_TIER"] = "L4"
         env["SPARTAN_PRIVATE_COMPOSE"] = str(pathlib.Path(self.tmp.name) / "absent.yml")
@@ -105,7 +121,9 @@ class WhitelistDomainTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.whitelist = pathlib.Path(self.tmp.name) / "whitelist.private.txt"
+        policy_dir = pathlib.Path(self.tmp.name) / "policy"
+        policy_dir.mkdir(mode=0o700)
+        self.whitelist = policy_dir / "whitelist.private.txt"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -146,25 +164,10 @@ class WhitelistDomainTests(unittest.TestCase):
         self.assertEqual(self.whitelist.read_text(), original)
 
     def test_reload_does_not_hold_policy_lock(self):
-        bin_dir, log, _ = self.fake_docker_bin()
-        docker = bin_dir / "docker"
-        docker.write_text(docker.read_text().replace(
-            "#!/bin/sh\n",
-            '#!/bin/sh\n'
-            'if ! flock -n "$SPARTAN_WHITELIST_FILE.lock" true; then\n'
-            '  echo lock-held >> "$FAKE_DOCKER_LOG"; exit 8\n'
-            'fi\n',
-            1,
-        ))
-        result = subprocess.run(
-            ["bash", str(SCRIPT), "amzn.eu"],
-            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                 "FAKE_DOCKER_LOG": str(log),
-                 "SPARTAN_WHITELIST_FILE": str(self.whitelist)},
-            text=True, capture_output=True, timeout=15,
-        )
+        result, calls = self.run_helper_with_fake_docker("amzn.eu", extra_env={
+            "SPARTAN_WHITELIST_TRANSACTION_DIR": str(pathlib.Path(self.tmp.name) / "transactions")})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("lock-held", log.read_text())
+        self.assertNotIn("lock-held", calls)
         self.assertIn("Reload signal delivered: proxy", result.stdout)
         self.assertIn("Reload signal delivered: dns", result.stdout)
 
@@ -429,18 +432,26 @@ class WhitelistDomainTests(unittest.TestCase):
         self.assertIn("up -d --no-build --force-recreate --no-deps dns", calls)
         self.assertNotIn("up -d --no-build --force-recreate --no-deps proxy", calls)
 
-    def test_no_reload_alias_skips_runtime_update(self):
-        result, calls = self.run_helper_with_fake_docker("--no-reload", "example.com")
+    def test_no_reload_alias_validates_active_mounts_without_signals(self):
+        for flag in ("--no-reload", "--no-restart"):
+            with self.subTest(flag=flag):
+                (pathlib.Path(self.tmp.name) / "docker.log").unlink(missing_ok=True)
+                result, calls = self.run_helper_with_fake_docker(flag, "example.com")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("example.com", self.whitelist.read_text())
+                self.assertIn("ps --status running -q proxy", calls)
+                self.assertIn("ps --status running -q dns", calls)
+                self.assertEqual(calls.count("inspect --format"), 2)
+                self.assertNotIn("kill -USR1", calls)
+                self.assertIn("scheduled adoption", result.stdout)
 
+    def test_separate_offline_override_still_skips_docker(self):
+        offline = pathlib.Path(self.tmp.name) / "offline.txt"
+        result, calls = self.run_helper_with_fake_docker("--no-reload", "example.com",
+            extra_env={"SPARTAN_WHITELIST_FILE": str(offline)})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Added permanent: example.com", result.stdout)
-        self.assertEqual(calls, "")
-
-    def test_no_restart_alias_still_skips_runtime_update(self):
-        result, calls = self.run_helper_with_fake_docker("--no-restart", "example.com")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Added permanent: example.com", result.stdout)
+        self.assertIn("example.com", offline.read_text())
+        self.assertEqual(self.whitelist.read_text(), "")
         self.assertEqual(calls, "")
 
     def test_invalid_reload_fallback_env_fails_before_file_write(self):
@@ -451,8 +462,121 @@ class WhitelistDomainTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Invalid SPARTAN_WHITELIST_RELOAD_FALLBACK", result.stderr)
-        self.assertFalse(self.whitelist.exists())
+        self.assertEqual(self.whitelist.read_text(), "")
         self.assertEqual(calls, "")
+
+    def transaction_env(self):
+        scratch = pathlib.Path(self.tmp.name) / "scratch"
+        scratch.mkdir(mode=0o700)
+        self.whitelist.write_text("baseline.example\n")
+        self.whitelist.chmod(0o600)
+        env_file = pathlib.Path(self.tmp.name) / "selected.env"
+        env_file.write_text(f"SPARTAN_PRIVATE_WHITELIST_PATH={self.whitelist}\n"
+                            f"SPARTAN_WHITELIST_TRANSACTION_DIR={scratch}\n")
+        return scratch, {"SPARTAN_ENV_FILE": str(env_file)}
+
+    def test_selected_env_stages_outside_policy_and_process_scratch_wins(self):
+        scratch, env = self.transaction_env()
+        alternate = pathlib.Path(self.tmp.name) / "alternate"
+        alternate.mkdir(mode=0o700)
+        env.update({"SPARTAN_WHITELIST_FILE": "",
+                    "SPARTAN_WHITELIST_TRANSACTION_DIR": str(alternate)})
+        bin_dir, candidate_log = self.fake_mv_bin()
+        fake_mv = bin_dir / "mv"
+        fake_mv.write_text(fake_mv.read_text().replace("#!/bin/sh\n", "#!/bin/sh\n"
+            'test "$(stat -c %a "$1")" = 600 || exit 8\n'
+            'printf "%s\\n" "$1" > "$FAKE_CANDIDATE_PATH"\n'))
+        python = bin_dir / "python3"
+        python.write_text("#!/usr/bin/python3\nimport os, sys\n"
+            "if sys.argv[1] == '-c': os.execv('/usr/bin/python3', ['python3', *sys.argv[1:]])\n"
+            "original = os.replace\n"
+            "def publish(source, target):\n"
+            "    assert os.stat(source).st_mode & 0o777 == 0o600\n"
+            "    with open(os.environ['FAKE_CANDIDATE_PATH'], 'w') as receipt: receipt.write(source)\n"
+            "    original(source, target)\n"
+            "os.replace = publish\nsys.argv = sys.argv[1:]\nexec(sys.stdin.read())\n")
+        python.chmod(0o755)
+        env.update({"PATH": f"{bin_dir}:{self.tmp.name}/bin:{os.environ['PATH']}",
+                    "FAKE_MV_LOG": str(candidate_log),
+                    "FAKE_CANDIDATE_PATH": str(alternate / "observed")})
+        inode = self.whitelist.stat().st_ino
+        result, calls = self.run_helper_with_fake_docker("--no-reload", "added.example", extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(inode, self.whitelist.stat().st_ino)
+        self.assertEqual(self.whitelist.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(scratch.iterdir()), [])
+        candidate = pathlib.Path((alternate / "observed").read_text().strip())
+        self.assertEqual(candidate.parent, alternate)
+        self.assertTrue(candidate.name.startswith("whitelist.private.txt.tmp."))
+        self.assertFalse(candidate.exists())
+        self.assertEqual((alternate / "whitelist.private.txt.lock").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(self.whitelist.parent.iterdir()), [self.whitelist])
+        self.assertIn("scheduled adoption", result.stdout)
+        self.assertNotIn("kill -USR1", calls)
+
+    def test_active_no_reload_uses_selected_env_transaction_lock(self):
+        scratch, env = self.transaction_env()
+        lock_path = scratch / "whitelist.private.txt.lock"
+        lock_path.touch(mode=0o600)
+        with lock_path.open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = self.run_helper("added.example", extra_env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Whitelist is busy", result.stderr)
+        self.assertEqual(self.whitelist.read_text(), "baseline.example\n")
+
+    def test_active_without_scratch_rejects_alias_before_write(self):
+        _, env = self.transaction_env()
+        env["SPARTAN_WHITELIST_TRANSACTION_DIR"] = ""
+        alias = pathlib.Path(self.tmp.name) / "alias.txt"
+        alias.symlink_to(self.whitelist)
+        result = self.run_helper("added.example", whitelist=alias, extra_env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRANSACTION_DIR", result.stderr)
+        self.assertEqual(self.whitelist.read_text(), "baseline.example\n")
+
+    def test_transaction_metadata_fails_before_policy_write(self):
+        scratch, env = self.transaction_env()
+        for invalid in ("missing", "symlink", "mode", "file-mode"):
+            with self.subTest(invalid=invalid):
+                selected = scratch
+                if invalid == "missing":
+                    selected = scratch / "absent"
+                elif invalid == "symlink":
+                    selected = scratch / "link"
+                    selected.symlink_to(scratch, target_is_directory=True)
+                elif invalid == "mode":
+                    scratch.chmod(0o755)
+                else:
+                    self.whitelist.chmod(0o644)
+                result = self.run_helper("added.example", extra_env={**env,
+                    "SPARTAN_WHITELIST_TRANSACTION_DIR": str(selected)})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("transaction", result.stderr.lower())
+                self.assertEqual(self.whitelist.read_text(), "baseline.example\n")
+                scratch.chmod(0o700)
+
+    def test_live_mount_mismatch_fails_before_write_or_signal(self):
+        mounts_cases = ([], [{"Type": "bind", "Source": str(self.whitelist),
+                             "Destination": "/policy/whitelist.private.txt", "RW": False}],
+                       [{"Type": "bind", "Source": self.tmp.name,
+                         "Destination": "/unused", "RW": False}],
+                       [{"Type": "bind", "Source": str(self.whitelist.parent),
+                         "Destination": "/policy", "RW": False},
+                        {"Type": "bind", "Source": str(self.whitelist),
+                         "Destination": "/policy/whitelist.private.txt", "RW": False}])
+        cases = [{"FAKE_DOCKER_MOUNTS": json.dumps(mounts)} for mounts in mounts_cases]
+        cases.append({"FAKE_DOCKER_NO_CONSUMER": "1"})
+        for flags in ((), ("--no-reload",)):
+            for env in cases:
+                with self.subTest(flags=flags, env=env):
+                    self.whitelist.write_text("baseline.example\n")
+                    result, calls = self.run_helper_with_fake_docker(*flags, "added.example", extra_env=env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("running" if "FAKE_DOCKER_NO_CONSUMER" in env else "directory bind", result.stderr)
+                    self.assertEqual(self.whitelist.read_text(), "baseline.example\n")
+                    self.assertNotIn("kill -USR1", calls)
+                    self.assertNotIn("--force-recreate", calls)
 
 
 class WhitelistRuntimeGenerationTests(unittest.TestCase):

@@ -28,6 +28,7 @@ PUBLIC_WHITELIST_FILE="${SPARTAN_WHITELIST_PUBLIC_FILE:-$ROOT/infra/outbound-pro
 
 usage() {
     printf 'Usage: %s [--no-reload|--no-restart] [--recreate-on-reload-failure] [15m|6h|15d] domain.com[,api.example.com] [more-hosts]\n' "$0" >&2
+    printf 'All active policy writes, including --no-reload, require Python 3, protected SPARTAN_WHITELIST_TRANSACTION_DIR and running proxy/DNS with exact read-only directory binds. --no-reload suppresses helper signals only; scheduled adoption remains possible. Only a separate offline override is Docker-independent.\n' >&2
 }
 
 NORMALIZED_HOST=""
@@ -265,6 +266,112 @@ compose_cmd() {
     docker compose "${args[@]}" "$@"
 }
 
+validate_transaction_paths() {
+    python3 - "$WHITELIST" "$TRANSACTION_DIR" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+policy, scratch = map(pathlib.Path, sys.argv[1:])
+try:
+    for directory in (policy.parent, scratch):
+        metadata = directory.lstat()
+        if (not directory.is_absolute() or directory.resolve(strict=True) != directory
+                or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700):
+            raise ValueError()
+    metadata = policy.lstat()
+    if (policy.resolve(strict=True) != policy or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
+            or scratch == policy.parent or policy.parent in scratch.parents
+            or scratch.stat().st_dev != policy.parent.stat().st_dev
+            or metadata.st_dev != scratch.stat().st_dev):
+        raise ValueError()
+    lock = scratch / (policy.name + ".lock")
+    if lock.exists() or lock.is_symlink():
+        metadata = lock.lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600):
+            raise ValueError()
+except (OSError, ValueError, RuntimeError):
+    sys.exit("[whitelist] Invalid transaction paths: require existing non-symlink owned "
+             "700 policy/scratch directories, a regular owned 600 policy/lock, "
+             "and separate scratch on the same filesystem. No policy written.")
+PY
+}
+
+replace_policy_candidate() {
+    if [[ "$transaction" == true ]]; then
+        # Unlike mv, os.replace never copies on EXDEV: atomic rename or failure.
+        python3 - "$tmp" "$WHITELIST" <<'PY'
+import os
+import sys
+
+try:
+    os.replace(sys.argv[1], sys.argv[2])
+except OSError:
+    sys.exit(1)
+PY
+    else
+        mv "$tmp" "$WHITELIST"
+    fi
+}
+
+preflight_consumers() {
+    local service container target mounts
+    command -v docker >/dev/null 2>&1 || {
+        printf '[whitelist] Docker is required for all active policy writes, including --no-reload; only a separate offline whitelist override is Docker-independent.\n' >&2
+        return 1
+    }
+    for service in proxy dns; do
+        container="$(compose_cmd ps --status running -q "$service")" || return 1
+        if [[ -z "$container" || "$container" == *$'\n'* ]]; then
+            printf '[whitelist] Require exactly one running %s consumer before publication.\n' "$service" >&2
+            return 1
+        fi
+        # Read only the effective private-policy pointer, never Config.Env or auth.
+        target="$(compose_cmd exec -T "$service" sh -c '
+            case "$1" in
+                proxy) p=${SPARTAN_WHITELIST_PRIVATE:-/etc/tinyproxy/whitelist.private.txt} ;;
+                dns) p=${SPARTAN_DNS_WHITELIST_PRIVATE:-/etc/dns-whitelist.private.txt} ;;
+            esac
+            [ -f "$p" ] && [ ! -L "$p" ] && [ "$(readlink -f "$p")" = "$p" ] || exit 1
+            printf "%s\n" "$p"
+        ' policy-path "$service")" || {
+            printf '[whitelist] Cannot resolve regular non-symlink private-policy target in %s.\n' "$service" >&2
+            return 1
+        }
+        mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || return 1
+        if ! python3 -c '
+import json
+import os
+import posixpath
+import sys
+
+try:
+    policy, target = sys.argv[1:]
+    if not target.startswith("/") or posixpath.normpath(target) != target:
+        raise ValueError()
+    mounts = json.load(sys.stdin)
+    covering = [m for m in mounts if target == m["Destination"]
+                or target.startswith(m["Destination"].rstrip("/") + "/")]
+    mount = max(covering, key=lambda m: len(m["Destination"]))
+    if (mount["Type"] != "bind" or mount["RW"] is not False
+            or mount["Destination"] != posixpath.dirname(target)
+            or mount["Source"] != os.path.dirname(policy)
+            or os.path.realpath(mount["Source"]) != mount["Source"]
+            or posixpath.basename(target) != os.path.basename(policy)):
+        raise ValueError()
+except (ValueError, KeyError, TypeError, AttributeError, OSError):
+    sys.exit(1)
+' "$WHITELIST" "$target" <<< "$mounts"; then
+            printf '[whitelist] %s requires a read-only directory bind of the exact active policy parent at its effective target; remove stale file binds and provision the directory contract before retrying. No policy written or reload signalled.\n' "$service" >&2
+            return 1
+        fi
+    done
+}
+
 reload_consumers() {
     command -v docker >/dev/null 2>&1 || {
         printf '[whitelist] Docker is not available; reload proxy/dns manually if the stack is running.\n'
@@ -383,20 +490,52 @@ if [[ -n "$ttl" ]]; then
     expires_at="$((10#$now + ttl_seconds))"
 fi
 
-# Honor the installer-selected shared fragment unless the caller explicitly
-# chooses another file. This keeps L2/L3 edits attached to all three consumers.
-if [[ -z "${SPARTAN_WHITELIST_FILE:-}" ]]; then
-    configured_whitelist="$(policy_env_value "$(_default_env_file)" SPARTAN_PRIVATE_WHITELIST_PATH 2>/dev/null || true)"
-    if [[ -n "$configured_whitelist" ]]; then
-        [[ "$configured_whitelist" == /* ]] || { printf '[whitelist] Configured whitelist must be absolute.\n' >&2; exit 1; }
-        WHITELIST="$configured_whitelist"
-    fi
+# The selected active file is the only policy authority. Scratch is staging,
+# never another policy source. Explicit process settings override the same env.
+configured_whitelist="$(load_policy_limit SPARTAN_PRIVATE_WHITELIST_PATH '')"
+TRANSACTION_DIR="$(load_policy_limit SPARTAN_WHITELIST_TRANSACTION_DIR '')"
+# An explicitly empty process setting must not fall through to selected env.
+if [[ ${SPARTAN_WHITELIST_TRANSACTION_DIR+x} ]]; then
+    TRANSACTION_DIR="$SPARTAN_WHITELIST_TRANSACTION_DIR"
 fi
-mkdir -p "$(dirname "$WHITELIST")"
-exec 9>"${WHITELIST}.lock"
+active_whitelist="${configured_whitelist:-$ROOT/private/outbound-proxy/whitelist.private.txt}"
+[[ "$active_whitelist" == /* ]] || { printf '[whitelist] Configured whitelist must be absolute.\n' >&2; exit 1; }
+if [[ -z "${SPARTAN_WHITELIST_FILE:-}" ]]; then
+    WHITELIST="$active_whitelist"
+fi
+transaction=false
+if [[ "$(readlink -m -- "$WHITELIST")" == "$(readlink -m -- "$active_whitelist")" ]]; then
+    [[ -n "$TRANSACTION_DIR" ]] || {
+        printf '[whitelist] Active policy requires SPARTAN_WHITELIST_TRANSACTION_DIR, including --no-reload; no policy written.\n' >&2
+        exit 1
+    }
+    transaction=true
+elif [[ "$reload" == true ]]; then
+    printf '[whitelist] A separate whitelist override is offline-only; use --no-reload.\n' >&2
+    exit 1
+fi
+if [[ "$transaction" == true ]]; then
+    command -v python3 >/dev/null 2>&1 || { printf '[whitelist] Python 3 is required for transaction/preflight validation.\n' >&2; exit 1; }
+    validate_transaction_paths
+    lock="$TRANSACTION_DIR/$(basename "$WHITELIST").lock"
+    candidate_template="$TRANSACTION_DIR/$(basename "$WHITELIST").tmp.XXXXXX"
+    umask 077
+else
+    mkdir -p "$(dirname "$WHITELIST")"
+    lock="${WHITELIST}.lock"
+    candidate_template="${WHITELIST}.tmp.XXXXXX"
+fi
+exec 9>"$lock"
 if ! flock -x -w 30 9; then
     printf '[whitelist] Whitelist is busy; another helper holds the lock. Finish or cancel that command, then retry.\n' >&2
     exit 1
+fi
+
+if [[ "$transaction" == true ]]; then
+    validate_transaction_paths
+fi
+if [[ "$transaction" == true ]]; then
+    preflight_consumers
 fi
 
 declare -A seen=()
@@ -496,7 +635,8 @@ for domain in "${domains[@]}"; do
 done
 
 if [[ "${#replacements[@]}" -gt 0 ]]; then
-    tmp="$(mktemp "${WHITELIST}.tmp.XXXXXX")"
+    tmp="$(mktemp "$candidate_template")"
+    trap 'rm -f -- "$tmp"' EXIT
     declare -A wrote=()
 
     for line in "${whitelist_lines[@]}"; do
@@ -521,7 +661,10 @@ if [[ "${#replacements[@]}" -gt 0 ]]; then
         rm -f "$tmp"
         exit 1
     fi
-    if ! mv "$tmp" "$WHITELIST"; then
+    if [[ "$transaction" == true ]]; then
+        validate_transaction_paths
+    fi
+    if ! replace_policy_candidate; then
         rm -f "$tmp"
         printf '[whitelist] Atomic policy replacement failed\n' >&2
         exit 1
@@ -538,4 +681,8 @@ done
 
 if [[ "$reload" == true ]]; then
     reload_consumers
+elif [[ "$transaction" == true ]]; then
+    printf '[whitelist] Helper reload signals suppressed; scheduled adoption remains possible (--no-reload).\n'
+else
+    printf '[whitelist] Separate offline edit; no runtime effect (--no-reload).\n'
 fi

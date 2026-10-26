@@ -18,6 +18,8 @@ proxy_pid=""
 refresh_pid=""
 supervisor_pid="$$"
 refresh_performed=0
+reload_active=0
+reload_pending=0
 had_whitelist=0
 generated_count=0
 
@@ -353,7 +355,8 @@ scheduled_refresh() {
 
   refresh_performed=1
   echo "[outbound-proxy] Refreshing whitelist for scheduled window ${REFRESH_TIME} ${REFRESH_TZ}"
-  if ! reload_whitelist "$proxy_pid"; then
+  # The timer only requests a reload; the supervisor owns policy artifacts.
+  if ! kill -USR1 "$supervisor_pid" 2>/dev/null; then
     policy_freshness_lost "$proxy_pid"
     return 1
   fi
@@ -379,9 +382,19 @@ refresh_loop() {
 }
 
 handle_reload() {
-  if ! reload_whitelist "$proxy_pid"; then
-    policy_freshness_lost "$proxy_pid" || true
+  reload_pending=1
+  # A USR1 arriving during generation must not re-enter its fixed temp paths.
+  if [ "$reload_active" -eq 1 ]; then
+    return 0
   fi
+  while [ "$reload_pending" -eq 1 ]; do
+    reload_active=1
+    reload_pending=0
+    if ! reload_whitelist "$proxy_pid"; then
+      policy_freshness_lost "$proxy_pid" || true
+    fi
+    reload_active=0
+  done
 }
 
 shutdown() {
@@ -397,7 +410,7 @@ shutdown() {
   exit 143
 }
 
-trap 'handle_reload' USR1
+trap 'wait_interrupted=1; handle_reload' USR1
 trap 'shutdown' INT TERM
 
 validate_refresh_config
@@ -427,8 +440,16 @@ refresh_loop "$proxy_pid" &
 refresh_pid="$!"
 
 set +e
-wait "$proxy_pid"
-status="$?"
+while :; do
+  wait_interrupted=0
+  wait "$proxy_pid"
+  status="$?"
+  # A handled signal interrupts wait without reaping the child. Only retry
+  # after that trap; a genuine child exit (including nonzero) must propagate.
+  if [ "$wait_interrupted" -eq 0 ]; then
+    break
+  fi
+done
 if [ -n "$refresh_pid" ]; then
   kill "$refresh_pid" 2>/dev/null || true
   wait "$refresh_pid" 2>/dev/null || true

@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Repair proxy/DNS supervised reloads so a handled `USR1` does not terminate the
+  supervisor, and route scheduled regeneration through the same owner. Add
+  fail-closed active-policy publication preflight, a shared protected transaction
+  directory and no-copy atomic replacement for policy-only directory binds.
+  Existing file-bind installations need a separately approved migration; source
+  readiness does not activate services or make a legacy Hermes inspection mount
+  a current enforcement view.
+
 - Add opt-in shared managed-tool access for native host Pi and scoped HTTP
   clients: a dedicated loopback Caddy edge, fixed bounded SearXNG/Reader
   transports and server-issued browser workflow/tab authority. Reuse the native

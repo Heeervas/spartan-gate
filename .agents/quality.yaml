@@ -25,6 +25,7 @@ scope:
   - scripts/doctor.sh
   - scripts/add-port.sh
   - scripts/install.sh
+  - scripts/whitelist-domain.sh
   - scripts/aliases.sh
   - infra/reader/**
   - infra/hermes-plugins/**

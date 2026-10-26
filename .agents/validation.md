@@ -135,6 +135,97 @@ loader/tool/image hooks and disk resume/fork with a synthetic model; no paid
 provider or active installation. Receipts distinguish all these boundaries and
 confirm owned cleanup.
 
+## Policy publication and supervisor reload repair
+
+Additive TOP inventory coverage includes the exact `scripts/whitelist-domain.sh`
+path. The immutable baseline, adapters, thresholds and existing exceptions above
+are unchanged. Shell coverage remains source provenance plus required syntax,
+behavior and independent review, not invented shell AST metrics.
+
+```sh
+bash -n scripts/whitelist-domain.sh
+sh -n infra/outbound-proxy/entrypoint.sh
+sh -n infra/dns/entrypoint.sh
+python3 -m unittest scripts.test_whitelist_domain scripts.test_whitelist_supervisor
+npm run test:scripts
+npm run pi:quality
+git diff --check
+```
+
+The focused source regressions must reproduce interrupted-wait exit and timer
+artifact ownership before the fix; helper regressions cover selected-env scratch,
+active/source-only shared locking, real mount preflight even for active
+`--no-reload`/`--no-restart`, mount mismatch or absent consumers before mutation,
+and actual outside-directory staging. Only a truly separate offline override
+remains Docker-independent. No-reload suppresses helper signals, not later
+scheduled adoption. Retain the existing malformed/expired/overflow and
+rollback coverage. Injected UID/EXDEV metadata checks are explicitly predicate or
+failure-path evidence, not real ownership/mount integration.
+
+Native acceptance is a separate authorised operation. It requires exact existing
+program images and a local Unix Docker endpoint. The proxy fixture is a COPY-only
+derivative of the supplied exact installed image; no base, APK, pull or network
+upgrade is allowed. Missing image identity blocks the native gate, not a skipped
+PASS. All fixture configuration, policy, Compose selection and names are synthetic.
+No production env, profile, data, active client or service is used.
+
+```sh
+# Preflight parses inputs but starts/builds nothing:
+python3 infra/outbound-proxy/isolated_reload_acceptance.py \
+  --proxy-base-image "$POLICY_TEST_PROXY_BASE" --platform linux/amd64 \
+  --expected-proxy-manifest "$POLICY_TEST_PROXY_MANIFEST" \
+  --expected-proxy-program-sha256 "$POLICY_TEST_PROXY_ENTRYPOINT_SHA" \
+  --dns-image "$POLICY_TEST_DNS_IMAGE" --python-image "$POLICY_TEST_PYTHON_IMAGE"
+# Only with explicit isolated build/resource/fixture authority:
+python3 infra/outbound-proxy/isolated_reload_acceptance.py \
+  --proxy-base-image "$POLICY_TEST_PROXY_BASE" --platform linux/amd64 \
+  --expected-proxy-manifest "$POLICY_TEST_PROXY_MANIFEST" \
+  --expected-proxy-program-sha256 "$POLICY_TEST_PROXY_ENTRYPOINT_SHA" \
+  --dns-image "$POLICY_TEST_DNS_IMAGE" --python-image "$POLICY_TEST_PYTHON_IMAGE" --execute
+```
+
+The harness copies the exact helper into an owned synthetic repository so its
+normal selected-env and Compose path run unchanged. Native helper allow/renew,
+guarded removal under the same lock/atomic rename followed by normal helper
+reload, and both consumers' effective transitions are required. There is no
+native `--remove` API. The policy directory contains only the active file; lock
+and candidates remain outside. Docker-managed shared-label preparation targets
+only the dedicated transaction directory, with actual replacement-inode
+readability tested through both consumer boundaries.
+
+The fixture network is internal-only with no host ports. Actual Tinyproxy HTTP
+allow/deny is checked. The native DNS gate is deliberately pinned to dnsmasq 2.90
+and `/usr/sbin/dnsmasq` SHA-256
+`7637d0fd0243b924b13397438677d011bcc5809ea79d24396dc492f5fad8a6e3`.
+In this unrouted topology the original SERVFAIL/forwarded-log strategy fails:
+selected names return REFUSED with EDE 23 (network error), and unselected names
+return REFUSED with EDE 14 (not ready). Do not reinterpret that failed strategy
+as PASS or assign these codes universal allow/deny meanings.
+
+The independently reviewed replacement gate requires the complete controlled
+matrix: the exact same target question/options changes RCODE/EDE `5/[14]` →
+`5/[23]` → `5/[14]` across allow/revoke, while a permanently admitted control
+remains `5/[23]` and a continuously unlisted control remains `5/[14]`. Assert
+numeric response wire codes, exact per-query native log classifications, bound
+source and compiled route transitions, real HUP cache clearing and stable
+identities. Queries are serial and previous transactions finish before policy
+changes. This establishes **actual admission/upstream-policy selection and
+revocation for this fixed program/topology only**, not packet forwarding or
+successful external resolution. Missing or ambiguous observations block the
+gate; artifact changes or signal delivery alone fail. `--dns-diagnostic` collects
+this evidence without declaring full acceptance, and does not establish renewal,
+inactive-entry, overflow or lifecycle acceptance by itself.
+Repeated successful reloads must keep container/start/restart, supervisor and
+service-child identities unchanged. Runtime invalid/expired entries, byte-limit
+failure, genuine service-child death and TERM retain fail-closed behavior.
+Only exact owned fixture resources are cleaned; no volumes, orphans or global
+resources are removed.
+
+Current source-only readiness never authorises canonical/live-bound integration,
+private configuration, informational Hermes mount changes or production signals.
+Those require independently reviewed candidate evidence, the separate user
+scope decision and one explicitly approved affected-job/resource quiet window.
+
 ## Optional quality CLI image acceptance
 
 The build/recreation and runtime canary contract is documented in

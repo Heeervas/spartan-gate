@@ -1142,13 +1142,61 @@ sg-whitelist-domain 6h api.example.com
 sg-whitelist-domain 15d vendor.example.com
 ```
 
-The helper writes to the private file by default and hot-reloads running
-`proxy`/`dns` services by executing an in-container `USR1` signal. The normal
-path does not use `docker compose kill` and does not recreate containers. Before
-replacing the private file, the helper validates the byte limit for each public
-or private fragment and the combined normalized active-entry limit. Defaults are
-262144 bytes per fragment and 2048 active unique domains; configure them with
-`SPARTAN_WHITELIST_MAX_BYTES` and `SPARTAN_WHITELIST_MAX_ENTRIES`.
+Active-policy publication requires Python 3 and a protected transaction directory
+selected in the same operator env file as `SPARTAN_PRIVATE_WHITELIST_PATH`:
+
+```dotenv
+SPARTAN_PRIVATE_WHITELIST_PATH=/absolute/path/to/private/outbound-proxy/whitelist.private.txt
+SPARTAN_WHITELIST_TRANSACTION_DIR=/absolute/path/to/private/whitelist-transactions
+```
+
+The policy pathname remains the **sole authority**. Its parent must contain only
+that already-authorised policy input: no env, tokens, backups or other private
+files. Keep the lock and candidates in the separate transaction directory. Both
+directories must already exist, be owned by the operator with mode `0700`, contain
+no symlink path components and share a filesystem; the active file and lock use
+`0600`. Every writer of that active policy, including `--no-reload`, uses the same
+`<transaction-directory>/<policy-basename>.lock`. An explicit override resolving
+to the active file cannot select a second lock. A genuinely separate offline
+policy may retain the legacy source-only path.
+
+Both live consumers need a **read-only directory bind**, not an individual-file
+bind. Atomic replacement changes the child inode; an individual-file bind keeps
+reading the old inode even after a signal. Bind only the verified policy-only
+parent at `/run/spartan-policy`, with long-form `read_only: true`,
+`bind.create_host_path: false` and `bind.selinux: z`. Point proxy's
+`SPARTAN_WHITELIST_PRIVATE` and DNS's `SPARTAN_DNS_WHITELIST_PRIVATE` at
+`/run/spartan-policy/whitelist.private.txt`. Keep the public policy mounts and all
+unrelated configuration unchanged. Inventory every actual old-source consumer
+before migration; an unexplained third consumer blocks a two-service cutover.
+Installer/tier-wide migration is not automatic: legacy live file-bind layouts
+fail actionable preflight before publication or signalling.
+
+On SELinux hosts, outside-staged files retain their staging label after rename.
+Use separately authorised Docker-managed shared-label preparation of only the
+dedicated transaction directory, never a broad private parent. Verify actual
+consumer-UID readability after repeated replacements; labelling the policy
+directory alone is not proof of safe publication.
+
+The helper validates byte and normalized-entry limits, locks, stages a validated
+candidate outside the mounted policy directory, then uses Python's `os.replace`
+for atomic rename-or-failure. It never falls back to copying over the active
+file, including on `EXDEV`. Defaults are 262144 bytes per fragment and 2048 active
+unique domains; configure them with `SPARTAN_WHITELIST_MAX_BYTES` and
+`SPARTAN_WHITELIST_MAX_ENTRIES`. Runtime target/mount preflight happens before
+publication and signals, including active `--no-reload`/`--no-restart` calls.
+These active-policy edits require both running consumers and valid directory
+mounts; absent or legacy consumers block the edit before publication. Only a
+truly separate offline override remains Docker-independent. Active policy without
+its transaction configuration is also rejected.
+
+The normal runtime path requests an in-container `USR1` on existing `proxy` and
+`dns`; it does not use `docker compose kill` or recreate containers. Scheduled
+refresh requests go through the same supervisor owner, not a concurrent artifact
+writer. A handled reload signal must not be mistaken for service-child exit.
+**Signal delivery is not reload-effect proof:** confirm both bound input and
+compiled policy, real allow/revoke behaviour, and unchanged supervisor/child and
+container start/restart identities before claiming successful application.
 
 If the helper cannot deliver its outer reload request, it exits non-zero and
 the previous runtime policy remains active; the private file still contains the
@@ -1158,8 +1206,11 @@ failure, or failure to signal Tinyproxy/dnsmasq restores the complete previous
 generated policy set, then exits so Docker restarts the service through
 fail-closed startup. DNS treats its server and dnsmasq fragments as one
 transaction, so it never deliberately leaves a mixed generation installed.
-Use `--no-reload` to write only without touching running services; legacy
-`--no-restart` is accepted as the same operation. Use
+Use `--no-reload` to suppress helper reload signals; legacy `--no-restart` is
+accepted as the same operation. Active-policy calls still inspect the running
+consumers' effective targets and mounts before writing. They do not promise that
+the new source will remain inactive: a later scheduled refresh or manual reload
+can adopt it. Use
 `--recreate-on-reload-failure` or
 `SPARTAN_WHITELIST_RELOAD_FALLBACK=recreate` only when an explicit disruptive
 fallback is acceptable. Temporary entries are ignored after their timestamp
@@ -1167,12 +1218,35 @@ expires on the next startup, hot reload, explicit fallback recreate, or the
 daily runtime refresh at `02:00` Europe/Madrid. The private file is not
 automatically pruned, so expired lines can remain as history.
 
-After updating Spartan Gate source that changes proxy/DNS entrypoints, roll only
-those services to load the new reload handlers:
+There is no `--remove` API. Revocation requires a separately reviewed guarded
+removal using the same transaction lock, validated candidate and atomic rename,
+then the normal native-helper reload request. Do not invent a removal flag or
+perform an uncoordinated in-place write. Source removal and TTL expiry are not
+proof that already-bound or compiled runtime policy has changed.
+
+An existing Hermes `/etc/proxy-whitelist.private.txt` individual-file mount is a
+legacy **informational snapshot**, not live proxy/DNS authority; it may remain on
+an older inode after publication. Do not use it to assert the current effective
+allowlist. Leaving it unchanged requires explicit operator acceptance of that
+limitation and verification that no enforcement caller depends on it. Updating
+that inspection mount is a separate Hermes integration/recreation decision, not
+permission to mount a broader private directory or restart Hermes here.
+
+Entry-point or publication-mount changes require reviewed images/configuration,
+capacity and affected-job checks, and an explicitly authorised quiet window.
+Prepare only the required image first; a COPY-only derivative of the exact
+installed proxy image avoids base/package upgrades. DNS's source-bound entrypoint
+needs no image build. Activate only the two approved services using the main
+stack's scoped commands, without dependency starts, builds or pulls:
 
 ```sh
-sg up -d --build proxy dns
+sg up -d --no-deps --no-build --pull never proxy dns
 ```
+
+Preserve exact beforeimages and old image IDs. Backout is limited to those two
+services and guarded operator-owned configuration; restore clean original policy,
+never a temporary canary rule or later foreign edits. Source readiness does not
+authorise this activation window by itself.
 
 ## HTTPS Edge
 
