@@ -3,6 +3,8 @@ import ast
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from copy import copy
+from dataclasses import replace
 import hashlib
 import importlib.util
 import json
@@ -12,6 +14,7 @@ import signal
 import socket
 import sys
 import tempfile
+import threading
 import time
 from types import ModuleType, SimpleNamespace as NS
 from unittest.mock import patch
@@ -218,12 +221,61 @@ with tempfile.TemporaryDirectory(prefix="reminder-native-") as temp:
         assert jobs.get_job(job["id"])["state"] == "paused"
         assert jobs.get_job(job["id"])["last_delivery_error"] == "synthetic unknown send"
         assert evidence.read_text() == "synthetic uncertain-send receipt"
+    async def independent_turns():
+        cfg["plugins"]["entries"]["discord-reminders"]["requesters"] = ["100", "101"]
+        config()
+        gateway._is_user_authorized_for_source = lambda origin: origin.user_id in {"100", "101"}
+        barrier = threading.Barrier(2, timeout=10)
+        async def turn(user):
+            origin = copy(source)
+            origin.user_id = user
+            local_event = NS(source=origin, text="Explicit reminder for " + user, message_id="4" + user, internal=False)
+            ids = dict(task_id="task-" + user, session_id="session-" + user, turn_id="turn-" + user, tool_call_id="call-" + user)
+            sc.set_session_vars(platform="discord", chat_id="200", thread_id="200", user_id=user,
+                                session_id=ids["session_id"], profile="default")
+            await manager.ainvoke_hook("pre_gateway_dispatch", event=local_event, gateway=gateway)
+            text = gateway._prefix_inbound_sender_context(local_event, origin, local_event.text)
+            text = gateway._prepend_inbound_reply_context(local_event, origin, text)
+            agent = NS(session_id=ids["session_id"], model="synthetic", platform="discord", _user_id=user)
+            pre["_collect_pre_llm_call_context"](agent, effective_task_id=ids["task_id"], turn_id=ids["turn_id"],
+                original_user_message=text, messages=[], conversation_history=[])
+            def execute():
+                barrier.wait()  # Both independently bound contexts coexist before either executes.
+                args = {"duration": "30m", "note": "Task for " + user}
+                foreign = "101" if user == "100" else "100"
+                swapped = {**ids, "session_id": "session-" + foreign, "task_id": "task-" + foreign, "turn_id": "turn-" + foreign}
+                refused = json.loads(model_tools.handle_function_call(plugin.CREATE, args, **swapped))
+                assert not refused.get("success"), refused
+                result = json.loads(model_tools.handle_function_call(plugin.CREATE, args, **ids))
+                assert result.get("success"), result
+                record = plugin.H.load(scripts / plugin.H.INPUTS / result["reminder_id"] / "request.json")
+                assert record["owner"][2] == user and record["note"] == args["note"]
+                # A later inherited turn cannot bind a second time to this consumed ingress.
+                pre["_collect_pre_llm_call_context"](agent, effective_task_id=ids["task_id"], turn_id="later-" + user,
+                    original_user_message=text, messages=[], conversation_history=[])
+                reused = json.loads(model_tools.handle_function_call(plugin.CREATE, args, **{**ids, "turn_id": "later-" + user}))
+                assert not reused.get("success"), reused
+                return result["reminder_id"]
+            return await asyncio.to_thread(execute)
+        async def foreign_profile():
+            origin = copy(source)
+            setattr(origin, si._IDENTITY_ATTR, replace(routed, runtime_profile="secondary"))
+            sc.set_session_vars(platform="discord", chat_id="200", thread_id="200", user_id="100", profile="secondary")
+            await manager.ainvoke_hook("pre_gateway_dispatch", event=NS(source=origin, text="Foreign profile reminder",
+                                        message_id="499", internal=False), gateway=gateway)
+            await asyncio.sleep(0)  # Coexists with independently accepted default-profile turns.
+            assert not invoke().get("success")
+        before = len(jobs.list_jobs(include_disabled=True))
+        results = await asyncio.gather(turn("100"), turn("101"), foreign_profile())
+        results = results[:2]
+        assert len(set(results)) == 2 and len(jobs.list_jobs(include_disabled=True)) == before + 2
     async def journey():
         await baseline_and_denials()
         job, reminder_id = await crash_and_retry()
         await cancel_boundary(job, reminder_id)
+        await independent_turns()
         assert plugin.H.GRACE_SECONDS == jobs.ONESHOT_GRACE_SECONDS
         assert not ATTEMPTS
-        print("PASS native registration/IDs/denials, crash-released lock, ONE recovered job/due, scoped cancel and retained unknown-send evidence")
+        print("PASS native registration/IDs/denials, crash-released lock, ONE recovered job/due, scoped cancel, unknown-send evidence and independent concurrent owners/turns")
     with patch.dict(sys.modules, {"gateway.run": run, "gateway.run_inbound": inbound, "cron.scheduler": scheduler}):
         asyncio.run(journey())
