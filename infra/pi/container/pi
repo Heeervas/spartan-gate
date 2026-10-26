@@ -1,0 +1,55 @@
+#!/bin/sh
+# Run Pi inside Hermes; never follow a host executable symlink.
+set -eu
+: "${HERMES_HOME:?Select the existing Hermes owner home explicitly}"
+export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HERMES_HOME/pi/agent}"
+export PI_CODING_AGENT_SESSION_DIR="${PI_CODING_AGENT_SESSION_DIR:-$HERMES_HOME/pi/sessions}"
+export PI_SPARTAN_ROUTE_CONFIG="${PI_SPARTAN_ROUTE_CONFIG:-$HERMES_HOME/pi/spartan-route/config.json}"
+binding="$HERMES_HOME/pi/spartan-route/direct-https-origin"
+if [ -e "$binding" ] || [ -L "$binding" ]; then
+    direct=$(python3 - "$binding" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import sys
+from urllib.parse import urlsplit
+
+
+def origin(value):
+    if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError()
+    url = urlsplit(value)
+    host = url.hostname or ''
+    labels = host.split('.')
+    if (url.scheme != 'https' or url.username is not None or url.password is not None
+            or '?' in value or '#' in value or not re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]+)?', url.netloc)
+            or not host or len(host) > 253
+            or re.fullmatch(r'(?:[0-9]+|0x[0-9a-f]+)', labels[-1])
+            or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels)):
+        raise ValueError()
+    port = url.port if url.port is not None else 443
+    if not 1 <= port <= 65535:
+        raise ValueError()
+    return host, port
+
+
+try:
+    value = Path(sys.argv[1]).read_text().removesuffix('\n')
+    selected = origin(value)
+    if urlsplit(value).path not in ('', '/'):
+        raise ValueError()
+    config = json.loads(Path(os.environ['PI_SPARTAN_ROUTE_CONFIG']).read_text())
+    if selected != origin(config['baseUrl']):
+        raise ValueError()
+    print(f'{selected[0]}:{selected[1]}')
+except Exception:
+    sys.exit('Pi direct HTTPS binding invalid or unavailable.')
+PY
+    ) || exit 1
+    upper=${NO_PROXY-${no_proxy-}}
+    lower=${no_proxy-${NO_PROXY-}}
+    export NO_PROXY="${upper:+$upper,}$direct"
+    export no_proxy="${lower:+$lower,}$direct"
+fi
+exec node /opt/pi-package/dist/bundle/cli.js "$@"

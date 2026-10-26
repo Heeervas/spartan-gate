@@ -359,3 +359,16 @@ that field, so this is not an enforceable output cap. Nonempty opaque replay and
 successful terminal first/tool/continuation/fresh-process resume are required;
 zero-reasoning or partial text cannot count. No live source test or implicit key
 rotation, active installation, service build/recreation or DB mutation is authorized.
+
+## Hermes Pi source candidate acceptance (no activation)
+
+- Run `sh -n infra/pi/container/pi`; disposable fake-Node smoke must prove HERMES_HOME defaults, exact argv forwarding and missing-home refusal.
+- Validate `infra/pi/container/settings.json` against the installed Pi 1.4 `schemas/settings.schema.json`; parse the Route example with its existing HTTPS validator.
+- With disposable HOME/agent/config/catalog only and `PI_OFFLINE=1`, use native SettingsManager/DefaultResourceLoader (translate `/opt` sources to selected installed program inputs): four extensions, one Route provider, nine selected skills, no errors; resolve `getPackageDir()` RPC export and discover only three selected role links. This is host compatibility, not container acceptance.
+- Run `PI_CODING_AGENT_DIR="$PI14_PACKAGE" /usr/bin/node-22 --test infra/pi/test_spartan_route_provider.mjs infra/pi/test_spartan_route_cache.mjs infra/pi/test_spartan_route_usage.mjs infra/pi/test_spartan_route_sessions.mjs` and the existing `npm run pi:quality` gate; no new test framework.
+- Render the example overlay against a disposable synthetic Hermes service using `docker compose --env-file infra/pi/container/env.example -f <synthetic-base.yml> -f infra/pi/container/compose.example.yml config --quiet`; inspect rendered JSON for nine RO fail-on-missing binds and preserved writable skills. Never start services for this gate.
+- `docs/hermes-pi-jobs.md` owns provisioning/lifecycle/recovery limits; actual UID/container Node26 imports, approved HTTPS/auth/catalog, native background completion/stop and bounded live outcome remain controller/operator gates, not source PASS claims.
+
+### Pi-only direct HTTPS opt-in regression
+
+Run `sh -n infra/pi/container/pi` and `python3 -m unittest discover -s infra/pi -p test_container_launcher.py -v`. The disposable fake-Node test proves absent-file compatibility, same-origin host:port appending with both list baselines/proxy values/argv retained, and sanitized fail-closed rejection before Node. Run the existing TOP `npm run pi:quality` gate separately. Actual Undici/global-fetch non-inference acceptance and mounted launcher byte readback belong to the controller; these tests do not establish live transport, session, stop or coding-job success.

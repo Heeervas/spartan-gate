@@ -1,0 +1,59 @@
+# Source-only overlay proposal. Merge with the approved Hermes topology; no image,
+# network, user, HERMES_HOME or existing writable skill/state mounts are changed.
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: ${PI_PACKAGE_SOURCE:?Select the complete installed Pi package}
+        target: /opt/pi-package
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_CONTAINER_SOURCE:?Select this reviewed container source directory}
+        target: /opt/pi-container
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_CONTAINER_SOURCE:?Select this reviewed container source directory}/pi
+        target: /usr/local/bin/pi
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_ROUTE_EXTENSIONS_SOURCE:?Select the coherent installed Route root}
+        target: /opt/pi-route-extensions
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_SUBAGENT_SOURCE:?Select the complete local subagent package}
+        target: /opt/pi-subagent-local
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_ROLES_SOURCE:?Select the canonical role directory}/builder.md
+        target: /opt/pi-roles/builder.md
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_ROLES_SOURCE:?Select the canonical role directory}/reviewer.md
+        target: /opt/pi-roles/reviewer.md
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_ROLES_SOURCE:?Select the canonical role directory}/general-purpose.md
+        target: /opt/pi-roles/general-purpose.md
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_ROUTE_CREDENTIALS_SOURCE:?Select separately authorized Caddy env credentials}
+        target: /run/pi-route/credentials.env
+        read_only: true
+        bind:
+          create_host_path: false

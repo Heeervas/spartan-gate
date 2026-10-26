@@ -610,7 +610,13 @@ services:
     volumes:
       # Directory mount: atomic policy rotation must become visible immediately.
       # Contains scoped token digests only, never the full private environment.
-      - ../../private/tool-access:/run/tool-access:ro
+      - type: bind
+        source: ../../private/tool-access
+        target: /run/tool-access
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z
     networks:
       - tool_adapter_ingress
       - spartan_internal
@@ -634,7 +640,13 @@ services:
     ports:
       - "127.0.0.1:${SPARTAN_TOOL_EDGE_PORT:-18792}:18792"
     volumes:
-      - ../caddy/Caddyfile.tools:/etc/caddy/Caddyfile:ro
+      - type: bind
+        source: ../caddy/Caddyfile.tools
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     networks:
       # Docker needs a normal bridge for effective loopback publication.

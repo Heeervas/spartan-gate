@@ -1,0 +1,32 @@
+{
+  "defaultProvider": "spartan-route",
+  "defaultModel": "codex/gpt-6.1-sol-282kcontext",
+  "defaultThinkingLevel": "medium",
+  "enabledModels": ["spartan-route/codex/gpt-6.1-sol-282kcontext"],
+  "enableInstallTelemetry": false,
+  "cacheWarming": "off",
+  "packages": [],
+  "extensions": [
+    "-builtin:mcp",
+    "-builtin:llama.cpp",
+    "-builtin:codemode",
+    "-builtin:tool-search",
+    "/opt/pi-route-extensions/spartan-route.ts",
+    "/opt/pi-route-extensions/spartan-route-cache.ts",
+    "/opt/pi-route-extensions/spartan-route-usage.ts",
+    "/opt/pi-subagent-local/index.ts"
+  ],
+  "skills": [
+    "/opt/shared-skills/shared-skills",
+    "/opt/shared-skills/agent-managed-projects",
+    "/opt/shared-skills/agent-team-orchestration",
+    "/opt/shared-skills/builder-assurance",
+    "/opt/shared-skills/builder-engineering-rules",
+    "/opt/shared-skills/builder-behavioral-verification",
+    "/opt/shared-skills/systematic-debugging",
+    "/opt/shared-skills/test-audit",
+    "/opt/shared-skills/requesting-code-review"
+  ],
+  "prompts": [],
+  "themes": []
+}

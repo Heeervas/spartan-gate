@@ -1,0 +1,6 @@
+{
+  "baseUrl": "https://route.example.invalid/v1",
+  "credentialsFile": "/run/pi-route/credentials.env",
+  "refreshSeconds": 300,
+  "cacheMaxAgeSeconds": 86400
+}
