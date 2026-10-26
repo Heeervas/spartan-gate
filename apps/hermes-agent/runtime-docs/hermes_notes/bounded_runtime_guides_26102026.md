@@ -50,3 +50,28 @@ activation or proof of live delivery. Dedicated per-profile bots can share the
 native multiplex gateway process; bot credential ownership and runtime profile
 routing are separate concerns. Credential restoration and activation each
 require their own explicit authority.
+
+## COMMON baseline reconciliation
+
+Status: approved baseline applied to private configuration; effective/native
+acceptance and final review are recorded separately in restricted receipts.
+The earlier eight-plugin enrollment recipe was not sufficient to define all
+behavior: omitted native settings changed learning frequency, write approval,
+LCM threshold and delegation isolation. The current published recipe owns the
+complete approved configuration and dispositions, not a second profile method.
+
+Native memory/USER and weekly curator are enabled, normal native learning tool
+writes retain their built-in safeguards without a blanket proposal-only gate,
+and skill-creation review keeps the original 90-turn nudge. Explicit LCM threshold
+0.8 and five supported environment controls retain the operating contract.
+Vision and approval use advertised GPT-6 Luna, correcting the unsupported GPT-6.1
+Luna spelling found in the migrated private configuration. Model catalog presence
+is distinct from a saved configuration entry; no inference is needed to compare
+those metadata surfaces.
+
+Native delegation and the profile-delegate plugin remain separate mechanisms.
+The approved plugin override is concurrency 8 and depth 2, with async capacity 2,
+1200-second default wait, 1800-second cap and empty outgoing targets. This does
+not change native child depth 1 or authorize historical targets, queues or jobs.
+Restored profile memory and transport must come only from that profile's own
+approved preserved material; activation remains a separate operator decision.

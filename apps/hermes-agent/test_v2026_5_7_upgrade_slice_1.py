@@ -214,6 +214,36 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertIn('`POST /tabs/open` is intentionally disabled with HTTP 410', camofox_doc)
         self.assertIn('invalidate every active Hermes and operator', camofox_doc)
 
+    def test_profile_recipe_preserves_native_learning_and_distinct_delegation(self):
+        document = read_text(RUNTIME_DOCS_DIR / 'local/private/profile-creation.md')
+        recipe = yaml.safe_load(re.search(r'```yaml\n(.*?)\n```', document, re.DOTALL).group(1))
+        self.assertEqual(recipe['memory'], {
+            'memory_enabled': True, 'user_profile_enabled': True, 'memory_char_limit': 2200,
+            'user_char_limit': 1375, 'nudge_interval': 10, 'provider': '', 'write_approval': False,
+        })
+        self.assertFalse(recipe['skills']['write_approval'])
+        self.assertEqual(recipe['skills']['creation_nudge_interval'], 90)
+        self.assertEqual(recipe['curator'], {
+            'enabled': True, 'interval_hours': 168, 'min_idle_hours': 2, 'stale_after_days': 14,
+            'archive_after_days': 30, 'consolidate': False, 'prune_builtins': False,
+            'backup': {'enabled': True, 'keep': 5},
+        })
+        self.assertEqual(recipe['lcm']['context_threshold'], 0.8)
+        self.assertEqual(recipe['platform_toolsets']['discord'], ['connections', 'hermes-discord'])
+        self.assertEqual(recipe['plugins']['entries']['profile-delegate'], {
+            'allowed_profiles': [], 'max_concurrent': 8, 'max_async': 2, 'max_depth': 2,
+            'default_timeout_seconds': 1200, 'max_timeout_seconds': 1800,
+        })
+        self.assertEqual(recipe['delegation']['max_concurrent_children'], 10)
+        self.assertEqual(recipe['delegation']['max_spawn_depth'], 1)
+        self.assertEqual(recipe['delegation']['child_timeout_seconds'], 600)
+        self.assertFalse(recipe['delegation']['inherit_mcp_toolsets'])
+        self.assertFalse(recipe['delegation']['subagent_auto_approve'])
+        for role, timeout in (('vision', 120), ('approval', 30)):
+            self.assertEqual(recipe['auxiliary'][role]['model'], 'codex/gpt-6-luna-282kcontext')
+            self.assertEqual(recipe['auxiliary'][role]['timeout'], timeout)
+        self.assertNotIn('gpt-6.1-luna', re.search(r'```yaml\n(.*?)\n```', document, re.DOTALL).group(1))
+
     def test_config_migration_is_not_deferred_to_main_wrapper(self):
         entrypoint = read_text(ENTRYPOINT_PATH)
 

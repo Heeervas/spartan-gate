@@ -89,10 +89,77 @@ its owner is confirmed dead and the profile is unserved.
 
 ## 3. Complete the BASIC capabilities
 
-The BASIC profile has exactly these eight config enablements; this is a
-new-profile baseline, not authority to flatten intentional existing exceptions:
+BASIC is the following native configuration, not just a plugin inventory.
+This is a new-profile baseline, not authority to flatten approved existing
+exceptions. Model identifiers must exist in the deployment's advertised Route
+catalog: a saved config value alone is not support. In particular, use GPT-6
+Luna below, never the invalid `gpt-6.1-luna` spelling. Main reasoning defaults
+to medium; preserve explicitly approved profile exceptions such as high.
 
 ```yaml
+model:
+  default: codex/gpt-6.1-sol-282kcontext
+  provider: openai-api
+agent:
+  max_turns: 90
+  reasoning_effort: medium
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  nudge_interval: 10
+  provider: ""
+  write_approval: false
+skills:
+  external_dirs: []
+  inline_shell: false
+  selection_policy: required
+  creation_nudge_interval: 90
+  write_approval: false
+curator:
+  enabled: true
+  interval_hours: 168
+  min_idle_hours: 2
+  stale_after_days: 14
+  archive_after_days: 30
+  consolidate: false
+  prune_builtins: false
+  backup:
+    enabled: true
+    keep: 5
+delegation:
+  model: codex/gpt-6.1-sol-282kcontext
+  provider: openai-api
+  reasoning_effort: medium
+  max_iterations: 250
+  child_timeout_seconds: 600
+  max_concurrent_children: 10
+  max_spawn_depth: 1
+  inherit_mcp_toolsets: false
+  subagent_auto_approve: false
+  orchestrator_enabled: true
+auxiliary:
+  vision: {provider: openai-api, model: codex/gpt-6-luna-282kcontext, timeout: 120}
+  approval: {provider: openai-api, model: codex/gpt-6-luna-282kcontext, timeout: 30}
+  compression: {provider: openai-api, model: codex/gpt-6-luna-282kcontext, reasoning_effort: xhigh, timeout: 120}
+  title_generation: {provider: openai-api, model: codex/gpt-6-luna-282kcontext, reasoning_effort: "", timeout: 30}
+  skills_hub: {provider: openai-api, model: codex/gpt-6-luna-282kcontext, timeout: 30}
+  mcp: {provider: openai-api, model: codex/gpt-6.1-sol-282kcontext, timeout: 30}
+  background_review: {enabled: true, provider: auto, model: "", timeout: 120}
+  curator: {provider: auto, model: "", timeout: 600}
+terminal:
+  backend: local
+  timeout: 180
+  env_passthrough: []
+browser:
+  camofox:
+    managed_persistence: true
+timezone: Europe/Madrid
+platform_toolsets:
+  discord:
+    - connections
+    - hermes-discord
 plugins:
   enabled:
     - shared-master
@@ -106,11 +173,59 @@ plugins:
   entries:
     profile-delegate:
       allowed_profiles: []
+      max_concurrent: 8
+      max_async: 2
+      max_depth: 2
+      default_timeout_seconds: 1200
+      max_timeout_seconds: 1800
 context:
   engine: lcm
+lcm:
+  context_threshold: 0.8
 web:
   extract_backend: spartan-reader
 ```
+
+Set the profile's explicit `terminal.cwd` to its own workspace, as described
+above; do not paste another profile's path or identity. Retain the deployment's
+managed endpoint/authentication rather than copying provider credentials.
+
+Native automatic reviews stay enabled: memory nudge 10, skill-creation nudge
+90. Same-model reviews inherit the parent model and reasoning; the auxiliary
+review timeout is 120 seconds. Native curator performs weekly deterministic
+skill maintenance, not the retired custom orchestrator. Consolidation model
+calls and built-in pruning are off. The gateway's curator poll does not measure
+real inactivity even though the native CLI/serve documentation describes idle
+gating; do not promise that every gateway pass waits for two measured idle hours.
+
+`memory.write_approval` and `skills.write_approval` are native tool-write gates.
+They are off here to preserve ordinary native learning. Native destructive
+background memory replacements/removals still require staged approval. Turning
+these flags on stages tool writes; it is not a global filesystem sandbox or a
+blanket curator-archival gate. Required skill selection, MASTER/SOUL rules and
+proportional verification are instructions, not independent tool confinement.
+
+Discord explicitly selects the native `connections` and `hermes-discord`
+capabilities plus the selected providers. Do not transplant retired `rescuer` or
+`web-search-plus` toolset references. An explicit saved platform list differs
+from an implicit native fallback: the native resolver treats it as opt-in to
+that platform's default-off native tools. Preserve approved per-profile limits
+rather than treating this list as new external-action authorization.
+
+The two delegation mechanisms are deliberately different: native `delegate_task`
+uses ten children, depth one and a 600-second child timeout; `profile_delegate`
+allows eight concurrent and two asynchronous calls, depth two, a 1200-second
+default wait and an 1800-second maximum. Its empty target allowlist still denies
+unapproved outgoing profile delegation. Do not raise async capacity or restore
+old targets merely to match the concurrency setting.
+
+Other native auxiliary roles retain native AUTO defaults: profile describer and
+monitor 60 seconds; audio tags 30; triage 120; Kanban decomposition 180; MoA
+reference/aggregation 900 each if explicitly selected. Do not transplant retired
+`auxiliary.web_extract`, `auxiliary.session_search` or `auxiliary.flush_memories`
+blocks. Current extraction is deterministic; those old blocks are not supported
+helper assignments. Native title generation's thinking-off request takes
+precedence over a task reasoning setting.
 
 Implementation availability and config enablement are independent. Make an
 individual per-profile link for each required plugin from the mounted canonical
@@ -132,7 +247,26 @@ root setting for the standard vault layout is:
 
 ```dotenv
 NODE_SEARCH_ALLOWED_ROOTS=/opt/data/brain/obsidian-vault
+LCM_ASSERTION_EXTRACTION_MODEL=codex/gpt-6.1-sol-282kcontext
+LCM_EXPANSION_MODEL=codex/gpt-6.1-sol-282kcontext
+LCM_EXTRACTION_MODEL=codex/gpt-6.1-sol-282kcontext
+LCM_FRESH_TAIL_MAX_TOKENS=24000
+LCM_MAX_ASSEMBLY_TOKENS=256000
+PROFILE_DELEGATE_MAX_CONCURRENT=8
+PROFILE_DELEGATE_MAX_ASYNC=2
+PROFILE_DELEGATE_MAX_DEPTH=2
+PROFILE_DELEGATE_DEFAULT_TIMEOUT_SECONDS=1200
+PROFILE_DELEGATE_MAX_TIMEOUT_SECONDS=1800
 ```
+
+The five LCM controls above are supported environment settings, not arbitrary
+keys under YAML `lcm:`. That YAML section supports `context_threshold`; omitting
+both it and the compatible compressor threshold falls back to the plugin's
+0.35 threshold, not this baseline's 0.8. Check effective values after managed
+scope resolution. Profile-delegate policy resolves defaults, then profile YAML,
+then supported environment overrides; the env values above intentionally match
+its YAML limits. Native `delegate_task` uses separate configuration and is not
+changed by these variables.
 
 Do not copy an entire dotenv to obtain this one setting. The native default cache
 is `<profile-home>/.cache/hermes/node_search/index.json`; omit
@@ -232,3 +366,13 @@ Live messages, Reader fetches, inference, voice and delegation tests each need
 their own authorization. Record unperformed checks as pending; static checks do
 not establish live acceptance. Keep manual/stopped profiles in their intended
 state throughout.
+
+The native semantics above were reconciled against the
+[matching upstream documentation at revision e8c97320](https://github.com/NousResearch/hermes-agent/tree/e8c97320ac8691d4de92af49f98459f9ef9ddb08/website/docs/user-guide):
+configuration, memory, curator, skills, plugins, profiles, multi-profile gateways
+and managed scope. Installed Gate patches and mounted plugin consumers govern
+local differences. For example, installed native delegation defaults differ
+from the documentation's concurrency prose, so the approved explicit limits
+above avoid relying on that discrepancy. Reconcile this recipe with the actual
+installed version before an upstream refresh; a saved key is not deployment or
+capability evidence.

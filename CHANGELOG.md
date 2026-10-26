@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Complete the Hermes COMMON profile recipe beyond plugin enrollment: preserve
+  native memory/USER learning, reviews and weekly curator behavior, explicit LCM
+  settings, supported GPT-6 Luna helper assignments and distinct native/profile
+  delegation limits. Profile delegation permits eight concurrent calls at depth
+  two, without expanding async capacity or outgoing authorization. Keep recovered
+  profiles unserved until separately approved; never clone DEFAULT credentials.
+
 - Restrict Hermes runtime documentation to three curated public-safe guides in
   `apps/hermes-agent/runtime-guides`, mounted read-only at the existing
   `/opt/data/brain/runtime_docs` path. Move Camofox/package guidance and promote

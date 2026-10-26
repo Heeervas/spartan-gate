@@ -137,6 +137,27 @@ vault root, profile-local cache and PyYAML in the actual Hermes interpreter.
 Delegation availability is not authority: `allowed_profiles` defaults empty.
 These are new-profile requirements, not a migration of existing exceptions.
 
+BASIC is not only a plugin list: the linked runtime recipe is the single owner
+of the complete COMMON configuration. It enables native memory/USER (2200/1375
+characters, nudge 10), native background review (skill nudge 90), and weekly
+native curator (168 hours, stale/archive 14/30 days, backup keep 5), with LLM
+consolidation and bundled-skill pruning off. Native memory/skill write-approval
+gates are off to retain normal learning; destructive background memory changes
+still use native staged approval. These tool gates are not a filesystem sandbox,
+and skill-selection guidance is not independent enforcement. The gateway's
+curator poll does not prove measured inactivity; do not infer that from CLI/serve
+idle documentation.
+
+The recipe uses advertised `codex/gpt-6-luna-282kcontext` for vision (120 seconds)
+and approval (30), not the unsupported `gpt-6.1-luna` spelling. Main Sol reasoning
+and identity may have explicitly approved per-profile exceptions. LCM threshold
+is explicitly 0.8; retain its five supported environment controls rather than
+inventing YAML settings. Native `delegate_task` remains 250 iterations, 600
+seconds, 10 children and depth 1 without MCP inheritance or auto-approval.
+Separately, `profile_delegate` uses concurrency 8, async 2, depth 2 and wait/cap
+1200/1800 seconds. Its empty target policy still denies unapproved delegation;
+concurrency is not permission to restore old target allowlists or cron jobs.
+
 Reference only installed, enabled plugins in toolsets and profile config. Every
 **new profile** must link the mounted `spartan-cache-lineage` plugin, include
 it in `plugins.enabled`, and pass plugin doctor, discovery/import and actual
