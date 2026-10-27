@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Align Hermes startup health grace with native cold-start readiness: allow
+  75 seconds before counting startup failures, retaining all dependency checks
+  and existing per-request, command, interval and retry limits. Guarded activation
+  uses a finite 90-second healthy-observation budget with separate native-profile
+  acceptance. Existing containers require a separately approved recreation;
+  source readiness is not deployment.
+
 - Discover an existing managed-tools configuration in Pi's native agent directory
   when no explicit selector is set. Preserve strict explicit-selection guards,
   project only action-active browser arguments, and retain safe search error

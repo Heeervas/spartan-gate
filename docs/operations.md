@@ -34,6 +34,16 @@ roughly 30-60 seconds in `starting` while they warm up. That is normal. Treat
 it as a problem only if the state stays `starting` for much longer or flips to
 `unhealthy`.
 
+Hermes has a 75-second startup grace for its existing composite healthcheck:
+local API, proxy TCP connectivity, then Spartan Route health. Each socket timeout
+remains 3 seconds, with a 5-second outer command timeout, 15-second interval and
+three retries. Startup grace suppresses early failure counting; it does not
+waive a dependency check or make `starting` acceptable. A guarded activation
+should allow up to 90 seconds for an actual `healthy` observation, then verify
+the served native profile connections separately. Persistent dependency failure still
+fails acceptance. An existing container retains its old settings until an
+explicitly approved recreation; this source change does not activate them.
+
 ## Agent Runtime
 
 Hermes is the default public agent. If you want to use another agent, keep that integration in private Compose files and point it at Spartan Gate's internal Spartan Route, Camofox, Reader, SearXNG, proxy and DNS services.

@@ -582,7 +582,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 75s
 
   # Opt-in shared tools. Legacy Caddy never joins tool_client_ingress.
   tool-access:
