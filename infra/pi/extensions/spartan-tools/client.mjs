@@ -80,7 +80,11 @@ export class ToolsClient {
     if (event.toolName !== 'web_search') return;
     const details = event.details;
     const failed = event.isError || details?.error || details?.queries?.some(query => query.error);
-    if (failed) return { content: [{ type: 'text', text: FAILURE }], details: {}, isError: true };
+    if (failed) {
+      const message = details?.error === 'No query provided'
+        ? 'Managed search requires a non-empty query or queries.' : FAILURE;
+      return { content: [{ type: 'text', text: message }], details: { error: message }, isError: true };
+    }
     return redact({ content: event.content, details: event.details, structuredContent: event.structuredContent }, [...this.secrets]);
   }
 

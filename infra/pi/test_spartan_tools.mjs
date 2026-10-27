@@ -221,6 +221,33 @@ for (const scenario of ['unset-existing', 'explicit-override', 'explicit-empty',
   }));
 }
 
+test('native search errors retain a safe renderer error and an exact public query reason', async () => fixture(async f => {
+  const n = await native(f, undefined, [
+    [call('missing-query', 'web_search', { query: 'IANA example domains', queries: [] })], [{ type: 'text', text: 'done' }],
+    [call('query-only', 'web_search', { query: 'IANA example domains' })], [{ type: 'text', text: 'done' }],
+  ]);
+  try {
+    await n.session.prompt('Synthetic empty queries precedence candidate, not a user-cause claim.');
+    const failed = n.toolResults.get('missing-query');
+    assert.equal(failed.isError, true);
+    assert.equal(f.calls.length, 0, 'native empty-query rejection must precede HTTP');
+    assert.equal(failed.details.error, 'Managed search requires a non-empty query or queries.');
+    const renderer = n.loaded.extensions[0].tools.get('web_search').definition.renderResult;
+    const colors = [];
+    const rendered = renderer(failed, { expanded: false, isPartial: false }, { fg: (color, text) => { colors.push(color); return text; }, bg: (_color, text) => text, bold: text => text }).render(120).join('\n');
+    assert.match(rendered, /Managed search requires/);
+    assert.ok(colors.includes('error'));
+    assert.ok(!rendered.includes('undefined/undefined'));
+    const hidden = new ToolsClient(f.configPath, f.agentDir).searchResult({ toolName: 'web_search', isError: true,
+      content: [{ type: 'text', text: `private upstream ${token}` }], details: { error: `private upstream ${token}` } });
+    assert.equal(hidden.details.error, FAILURE);
+    assert.ok(!JSON.stringify(hidden).includes(token));
+    await n.session.prompt('Synthetic query-only control.');
+    assert.equal(Boolean(n.toolResults.get('query-only').isError), false);
+    assert.equal(f.calls.length, 1);
+  } finally { n.session.dispose(); }
+}));
+
 test('native prompt enforces strict search for model and nested calls with zero substitute requests', async () => fixture(async f => {
   const n = await native(f, undefined, [[
     call('valid','web_search',{ query: 'allowed', provider: 'searxng' }),

@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Discover an existing managed-tools configuration in Pi's native agent directory
+  when no explicit selector is set. Preserve strict explicit-selection guards,
+  project only action-active browser arguments, and retain safe search error
+  metadata instead of rendering failed calls as empty successful searches.
+
 - Repair proxy/DNS supervised reloads so a handled `USR1` does not terminate the
   supervisor, and route scheduled regeneration through the same owner. Add
   fail-closed active-policy publication preflight, a shared protected transaction
