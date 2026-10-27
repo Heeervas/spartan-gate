@@ -4,6 +4,15 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add optional per-account weekly and five-hour consumed-percent caps beside
+  the Codex quota rings. Pause new routing at either configured limit and resume
+  only after fresh provider readings confirm all capped windows are below their
+  limits. Keep manual disables and model discovery separate, persist settings
+  atomically, preserve dashboard drafts, and enforce caps on Chat, Responses,
+  images and new Realtime admissions. Pi account status distinguishes quota
+  pauses. Provider delays and in-flight/external use can overshoot these guards;
+  this is not exact spend enforcement. Source verification does not activate it.
+
 - Document explicit reuse of an already activated container Pi state by another
   Hermes owner through one symlink, without package copies or recreation. Preserve
   the owner's Hermes context and make shared configuration/session scope explicit.

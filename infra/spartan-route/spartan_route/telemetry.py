@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .slot_policy import load_policy, policy_snapshot, decode_override
+from .quota_limits import QuotaLimitStore
 
 import asyncio
 import contextlib
@@ -127,6 +128,7 @@ class TelemetryStore:
         self._init_schema()
         try:
             self._slot_policy = load_policy(self._conn, self._slot_override_from_row)
+            self.quota_limits = QuotaLimitStore(self._conn, self._lock)
             self.pi_usage = PiUsageStore(self._conn, self._lock)
             self.enforce_routing_retention(force_rebuild=True)
         except Exception:

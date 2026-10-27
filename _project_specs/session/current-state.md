@@ -1,5 +1,24 @@
 # Current State
 
+## Per-account Codex quota caps — source verification (2026-10-27)
+
+Optional weekly and five-hour consumed-percent caps are implemented beside the
+Codex rings with atomic per-account persistence and polling-safe drafts. Either
+cap pauses new Chat, Responses, image and Realtime admissions; recovery requires
+fresh provider observations below every configured cap. Manual disables and
+catalog discovery remain separate. Pi account status reports `quota_paused`.
+
+Revision 2 passes 517 Route Python and 48 JavaScript tests, plus the existing
+TOP quality gate with unchanged policy, baseline and exceptions. Independent
+candidate review found malformed explicit window durations could be coerced into
+valid identities; revision 2 requires exact recognized integer durations and adds
+one focused fetch-to-admission regression. The Pi status mismatch was also fixed.
+Final independent repair review returned PASS_WITH_NOTES with both findings
+closed and no blockers. Browser layout/accessibility and live provider acceptance
+remain unverified; no build, deployment or restart occurred.
+Provider-reporting delay and concurrent/external use can overshoot these guards.
+Source-only receipts: `.agents/quality-receipts/quota-limits/handoff.md` (ignored).
+
 ## Managed-tool failure repair — scoped activation (2026-10-27)
 
 On the canonical checkout, exact schema-shaped search arguments exposed strict

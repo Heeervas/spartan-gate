@@ -2751,10 +2751,11 @@ def classify_codex_slot_health(
     rate_limited = parse_float(slot.get("rateLimitedUntil"), 0.0) > now_value
     transient = parse_float(slot.get("transientUntil"), 0.0) > now_value
 
-    if not bool(slot.get("routingEnabled", True)):
-        status = "disabled"
-        reasons = ["Routing disabled by operator"]
-    elif has_check_error and not cached:
+    from .quota_limits import quota_health
+    early = quota_health(slot)
+    if early is not None:
+        return {**early, "healthCached": cached_error}
+    if has_check_error and not cached:
         status = "failed"
         reasons = []
         if has_slot_error:
@@ -2885,6 +2886,7 @@ async def attach_codex_telemetry(
         payload["cacheDaily"] = rows
 
     assert state.codex is not None
+    state.codex.quota.attach(payload)
     try:
         balancer = state.codex.balancer_status(include_paths=True)
         raw_slots = balancer.get("slots")
@@ -3266,6 +3268,8 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     app.router.add_get("/api/routing/live", api_routing_live)
     app.router.add_get("/api/routing/turns/{turn_id}", api_routing_turn)
     app.router.add_get("/api/codex/cache/day", api_codex_cache_day)
+    from .quota_limits import api_account_limits
+    app.router.add_patch("/api/codex/balancer/accounts/{account_key}/limits", api_account_limits)
     app.router.add_get("/api/codex/usage", api_codex_usage)
     app.router.add_post("/api/codex/usage/refresh", api_codex_usage_refresh)
     app.router.add_post(r"/api/codex/usage/slots/{slot_index:\d+}", api_codex_usage_slot)

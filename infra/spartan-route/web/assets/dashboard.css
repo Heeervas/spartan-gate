@@ -80,7 +80,13 @@ section { min-width: 0; }
 .plan-control select { width: auto; min-width: 64px; min-height: 32px; padding: 3px 8px; }
 .account-health { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
 .health-failed .account-health { color: var(--bad); }
-.health-unavailable .account-health { color: var(--warn); }
+.health-unavailable .account-health, .health-paused .account-health { color: var(--warn); }
+.account.health-paused { border-color: var(--warn); }
+.quota-window { min-width: 0; }
+.quota-limit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+.quota-limit input { width: 96px; min-height: 44px; }
+.quota-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 8px 16px; }
+.quota-error { flex-basis: 100%; }
 .account.health-failed { border-color: var(--bad); }
 .rings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-block: 4px 8px; }
 .ring-wrap { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 12px; }

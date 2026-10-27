@@ -296,6 +296,32 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exc.exception.status, 403)
         self.assertEqual(self.service.pool.entries, {})
 
+    async def test_quota_cap_changed_after_ticket_blocks_redemption_and_new_mints(self):
+        from spartan_route.quota_limits import QuotaAdmission
+        from spartan_route.telemetry import TelemetryStore
+        store = TelemetryStore(':memory:')
+        self.router.telemetry = store
+        self.router._invalidate_slot_leases = lambda slot: None
+        self.router._notify_availability_changed = lambda: None
+        self.router.quota = QuotaAdmission(self.router)
+        key = self.slot.account_key()
+        stamp = lambda seconds: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + seconds))
+        self.router.quota.observe(key, {'weekly': {'usedPercent': 20, 'updatedAt': stamp(0), 'resetAt': stamp(3600)}})
+        try:
+            ticket = (await (await self.mint()).json())['value']
+            store.quota_limits.set(key, {'weekly': 10, 'fiveHour': None})
+            with self.assertRaises(WSServerHandshakeError) as caught:
+                await self.connect(ticket)
+            self.assertEqual(caught.exception.status, 503)
+            response = await self.mint()
+            self.assertEqual(response.status, 503)
+            self.assertEqual((await response.json())['error']['code'], 'realtime_quota_paused')
+            self.assertEqual(len(self.mints), 1)
+            self.assertEqual(len(self.upstream_auth), 1)
+            self.assertEqual(self.service.pool.entries, {})
+        finally:
+            store.close()
+
     async def test_account_identity_change_between_mint_and_ws_denied(self):
         ticket = (await (await self.mint()).json())['value']
         self.slot.auth = CodexAuth('different-auth', account_id='different-account')

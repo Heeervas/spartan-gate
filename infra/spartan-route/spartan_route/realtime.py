@@ -471,6 +471,17 @@ class RealtimeService:
                 raise RealtimeError("realtime_authorized_slot_cooldown", 429)
         return slot
 
+    async def quota_ready(self, client: VoiceClient, slot: Any, auth: Any, account: str | None = None) -> None:
+        if auth is None:
+            raise RealtimeError("realtime_oauth_unavailable", 503)
+        quota = getattr(self.codex, "quota", None)
+        admitted = quota is None or await quota.admit(slot, auth)
+        if (self.slot_ready(client) is not slot or slot.auth is not auth
+                or (account is not None and slot.account_key() != account)):
+            raise RealtimeError("realtime_account_identity_changed", 409)
+        if not admitted:
+            raise RealtimeError("realtime_quota_paused", 503)
+
     async def mint(self, request: web.Request) -> web.Response:
         client: VoiceClient = request[CLIENT_KEY]
         reservation = self.pool.reserve(client)
@@ -485,7 +496,7 @@ class RealtimeService:
                 if auth is None or not auth.account_key or not slot.auth_persistence_healthy:
                     raise RealtimeError("realtime_oauth_unavailable", 503)
                 # Recheck policy after auth identity is known; no pool selection.
-                self.slot_ready(client)
+                await self.quota_ready(client, slot, auth)
                 self.pool.bind(reservation, slot, auth.account_key)
                 config = body["session"]
                 config.setdefault("output_modalities", ["audio"])
@@ -550,6 +561,7 @@ class RealtimeService:
             slot = self.slot_ready(reservation.client)
             if slot is not reservation.slot or slot.account_key() != reservation.account:
                 raise RealtimeError("realtime_account_identity_changed", 409)
+            await self.quota_ready(reservation.client, slot, slot.auth, reservation.account)
             proxy = checked_proxy()
             timeout = min(self.config.handshake_seconds, reservation.deadline - time.monotonic())
             if timeout <= 0:

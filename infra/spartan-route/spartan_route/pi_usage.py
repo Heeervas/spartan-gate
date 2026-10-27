@@ -157,6 +157,9 @@ def lease_view(router: Any, affinity: str | None, overrides: dict[int, Any], now
 
 def account_state(router: Any, indexes: list[int], now: float) -> str:
     slots = [slot for slot in router.slots if slot.index in indexes]
+    quota = getattr(router, "quota", None)
+    if slots and quota is not None and all(quota.status(slot.account_key())["paused"] for slot in slots):
+        return "quota_paused"
     usable = [slot for slot in slots if not slot.auth_unavailable_reason]
     if any(slot.rate_limited_until <= now and slot.transient_until <= now for slot in usable):
         return "available"

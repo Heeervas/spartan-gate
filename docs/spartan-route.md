@@ -399,6 +399,43 @@ Kept in v1:
   removes the override. Ring geometry and warning colors still use the raw
   provider percentage: 90-100% used is red, 70-89.9% is amber, and lower usage
   is green.
+- Per-account consumed-percent limits are optional and independent of plan capacity
+  and manual Enable/Disable. Beside the Weekly and Five-hour rings, enter a number
+  greater than 0 and at most 100, then **Save limits** to save both fields atomically.
+  Blank clears that window's limit; existing accounts have no default caps. For
+  example, weekly 70 and five-hour 50 pause the account when **either** provider
+  percentage is greater than or equal to its cap. The raw rings and x1/x5 units
+  remain unchanged. Drafts and save errors survive dashboard polling.
+  - Authenticated `PATCH /api/codex/balancer/accounts/{account_key}/limits` accepts
+    exactly `{"weekly":70,"fiveHour":50}` (each value can instead be `null`).
+    Unknown accounts and invalid, missing or extra fields are rejected. The response
+    contains the exact saved `quotaLimits` and current `quotaPolicy`. Usage accounts
+    and slots also expose these fields. Limits persist in an additive SQLite table
+    by stable account key across restarts and token/slot changes. Failed writes keep
+    the previous committed policy; policy-load failure refuses startup, never
+    silently removes caps.
+  - **Paused by limit** is separate from Disabled, Failed and provider cooldowns.
+    Manual settings are not changed. Paused accounts are excluded from Chat,
+    Responses, image fallback and new Realtime mint/ticket redemption, including
+    cache leases and replay preferences. Catalog discovery stays enabled. An
+    entirely paused pool returns `503 codex_quota_paused`; Pi's account usage view
+    reports `quota_paused` without changing capacity calculations. Existing streams are
+    not cancelled; an already-issued Realtime ticket cannot bypass a later cap.
+  - Incoming protected requests—not an autonomous poller—join the existing bounded
+    usage refresh when a configured window's observation is missing or older than
+    60 seconds. Refresh attempts are coalesced with a five-second retry throttle.
+    This works with the dashboard closed and does not scan request-history telemetry.
+    Provider observations, not sanitized dashboard rows or global cache age, decide
+    admission. A configured window with missing, invalid or stale evidence pauses
+    the account; controls remain visible so its cap can be cleared. An uncapped
+    missing five-hour window is harmless. Reset expiry alone never resumes routing:
+    a confirmed provider reading with a future reset and **all** configured windows
+    below their caps is required. A manually disabled slot stays disabled after
+    quota recovery. A restart requires new provider evidence for capped accounts.
+  - This is an admission guard, **not an exact spending guarantee**. Provider
+    reporting delay, external account use, and already in-flight/concurrent work
+    can overshoot a cap between observations. Leave a safety margin. Clearing
+    limits restores ordinary routing eligibility, not authentication or cooldowns.
 - Expected weekly use per model is calibrated from current-window rows that
   have both a stable selected Codex account key and observed usage metadata.
   Missing-usage and unattributed rows are reported as excluded coverage rather

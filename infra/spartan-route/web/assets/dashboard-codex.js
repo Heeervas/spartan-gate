@@ -123,6 +123,67 @@
         </div>
       </div>`;
     }
+    const limitDrafts = new Map();
+    function limitDraft(account) {
+      const key = account.accountKey;
+      let draft = limitDrafts.get(key);
+      if (!draft || (!draft.dirty && !draft.pending && !draft.error)) {
+        const limits = account.quotaLimits || {};
+        draft = { weekly: String(limits.weekly ?? ''), fiveHour: String(limits.fiveHour ?? ''), dirty: false, pending: false, error: '', invalid: {} };
+        limitDrafts.set(key, draft);
+      }
+      return draft;
+    }
+    function quotaRing(account, name, label, secondary = false) {
+      const draft = limitDraft(account);
+      const valid = /^[0-9a-f]{16}$/.test(account.accountKey || '');
+      return `<div class="quota-window">${balanceRing(label, account[name], secondary) || `<div class="muted">${esc(label)} · usage unavailable</div>`}
+        <label class="quota-limit">Pause at consumed %
+          <input type="number" min="0" max="100" step="any" inputmode="decimal" placeholder="No limit"
+            aria-label="${esc(label)} consumed percent limit" data-action="limit-${name}" data-account="${esc(account.accountKey)}"
+            value="${esc(draft[name])}"${valid && !draft.pending ? '' : ' disabled'}>
+        </label></div>`;
+    }
+    function limitActions(account) {
+      const draft = limitDraft(account);
+      if (!/^[0-9a-f]{16}$/.test(account.accountKey || '')) return '';
+      return `<div class="quota-actions"><button data-action="limits" data-account="${esc(account.accountKey)}"${draft.pending ? ' disabled' : ''}>${draft.pending ? 'Saving…' : 'Save limits'}</button>
+        <span class="muted">Blank = no limit</span><span class="bad quota-error" role="status">${esc(draft.error)}</span></div>`;
+    }
+    accountsEl.addEventListener('input', event => {
+      const input = event.target.closest('input[data-action^="limit-"]');
+      if (!input) return;
+      const draft = limitDrafts.get(input.dataset.account);
+      if (!draft || draft.pending) return;
+      const name = input.dataset.action.slice(6);
+      draft[name] = input.value;
+      draft.invalid[name] = input.validity?.badInput === true;
+      draft.dirty = true;
+      draft.error = '';
+    });
+    async function saveLimits(button, signal) {
+      const key = button.dataset.account;
+      const draft = limitDrafts.get(key);
+      const body = Object.fromEntries(['weekly', 'fiveHour'].map(name => [name, draft[name].trim() === '' ? null : Number(draft[name])]));
+      draft.pending = true;
+      try {
+        if (Object.values(draft.invalid).some(Boolean) || Object.values(body).some(value => value !== null && (!Number.isFinite(value) || value <= 0 || value > 100))) {
+          throw new Error('Limits must be greater than 0 and at most 100, or blank.');
+        }
+        const saved = await fetchJson(`/api/codex/balancer/accounts/${encodeURIComponent(key)}/limits`, {
+          method: 'PATCH', headers: headers(true), body: JSON.stringify(body), signal,
+        });
+        Object.assign(draft, { weekly: String(saved.quotaLimits.weekly ?? ''), fiveHour: String(saved.quotaLimits.fiveHour ?? ''), dirty: false, error: '' });
+      } catch (error) {
+        draft.error = error.message;
+        throw error;
+      } finally {
+        draft.pending = false;
+        const card = button.closest('article.account');
+        if (card) card.querySelector('.quota-error').textContent = draft.error;
+      }
+      return fetchJson('/api/codex/usage', { headers: headers(), signal });
+    }
     function slotPathText(paths) {
       const values = Array.isArray(paths) ? paths.filter(Boolean) : [];
       return values.length ? values.join(', ') : '-';
@@ -223,6 +284,8 @@
             stale: true,
             slotOnly: true,
             capacityMultiplier: slot.capacityMultiplier || 1,
+            quotaLimits: slot.quotaLimits,
+            quotaPolicy: slot.quotaPolicy,
           };
           byKey.set(key, card);
         }
@@ -261,14 +324,14 @@
       if (!enabled.length) {
         return { status: 'disabled', label: 'Disabled', reasons: ['All linked slots are disabled'], slotIndexes: slots.map(slot => slot.slotIndex) };
       }
-      const priority = { healthy: 0, history: 1, unavailable: 2, failed: 3 };
+      const priority = { healthy: 0, history: 1, unavailable: 2, paused: 3, failed: 4 };
       const status = enabled.reduce((current, slot) => {
         const candidate = slot.healthStatus || 'healthy';
         return (priority[candidate] || 0) > (priority[current] || 0) ? candidate : current;
       }, 'healthy');
       const affected = enabled.filter(slot => (slot.healthStatus || 'healthy') === status);
       const reasons = [...new Set(affected.flatMap(slot => slot.healthReasons || []))];
-      const labels = { failed: 'Failed', unavailable: 'Unavailable', history: 'History', disabled: 'Disabled', healthy: 'Healthy' };
+      const labels = { paused: 'Paused by limit', failed: 'Failed', unavailable: 'Unavailable', history: 'History', disabled: 'Disabled', healthy: 'Healthy' };
       return {
         status,
         label: labels[status] || 'Unknown',
@@ -307,7 +370,7 @@
       accountsEl.replaceChildren(...template.content.childNodes);
       if (focused?.isConnected) {
         if (document.activeElement !== focused) focused.focus({ preventScroll: true });
-      } else if (focusedKey && control && !mutationPending) {
+      } else if (focusedKey && control) {
         const card = [...accountsEl.querySelectorAll('article.account')].find(item => item.dataset.accountKey === focusedKey);
         const replacement = [...(card?.querySelectorAll('[data-action]') || [])].find(item => item.dataset.action === control.action
           && item.dataset.slot === control.slot && item.dataset.account === control.account);
@@ -341,9 +404,10 @@
           </div>
           <div class="account-health" role="status"></div>
           <div class="rings">
-            ${balanceRing('Weekly usage', account.weekly)}
-            ${balanceRing('Five-hour usage', account.fiveHour, true)}
+            ${quotaRing(account, 'weekly', 'Weekly usage')}
+            ${quotaRing(account, 'fiveHour', 'Five-hour usage', true)}
           </div>
+          ${limitActions(account)}
           ${activeLeaseStrip(account, leases)}
           ${resetCreditStrip(credits)}
           ${slotsHtml || '<div class="slot-row muted">No configured slot metadata.</div>'}
@@ -582,6 +646,15 @@
         }
       }
     });
+    async function accountAction(button, signal) {
+      if (button.dataset.action === 'limits') return saveLimits(button, signal);
+      if (button.dataset.action === 'usage') return forceSlot(button.dataset.slot, signal);
+      if (button.dataset.action === 'toggle') {
+        await patchSlot(button.dataset.slot, button.dataset.next === 'true', signal);
+        if (!signal.aborted) return fetchJson('/api/codex/usage', { headers: headers(), signal });
+      }
+      return null;
+    }
     accountsEl.addEventListener('click', async event => {
       const button = event.target.closest('button[data-action]');
       if (!button || mutationPending) return;
@@ -596,15 +669,7 @@
       button.disabled = true;
       button.textContent = 'Working…';
       try {
-        let payload;
-        if (button.dataset.action === 'toggle') {
-          await patchSlot(button.dataset.slot, button.dataset.next === 'true', controller.signal);
-          if (generation === loadGeneration && !controller.signal.aborted) {
-            payload = await fetchJson('/api/codex/usage', { headers: headers(), signal: controller.signal });
-          }
-        } else if (button.dataset.action === 'usage') {
-          payload = await forceSlot(button.dataset.slot, controller.signal);
-        }
+        const payload = await accountAction(button, controller.signal);
         if (payload && generation === loadGeneration && !controller.signal.aborted) renderPayload(payload);
       } catch (error) {
         if (generation === loadGeneration && !controller.signal.aborted) showError(error.message);
@@ -626,7 +691,7 @@
     function setMutationPending(pending) {
       mutationPending = pending;
       if (pending) {
-        for (const control of accountsEl.querySelectorAll('button[data-action], select[data-action]')) {
+        for (const control of accountsEl.querySelectorAll('button[data-action], select[data-action], input[data-action]')) {
           mutationControls.set(control, control.disabled);
           control.disabled = true;
         }
@@ -644,6 +709,7 @@
         renderedMarkup.delete(element);
       }
       errorsEl.replaceChildren();
+      limitDrafts.clear();
       previousErrors = null;
       modelUsageMeta.textContent = '';
       efficiencyMeta.textContent = '';

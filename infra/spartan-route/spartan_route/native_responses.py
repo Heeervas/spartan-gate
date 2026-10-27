@@ -205,11 +205,12 @@ async def open_response(
     body: dict[str, Any],
     auth: CodexAuth,
     scope: str | None = None,
+    slot: Any = None,
 ) -> OpenedResponse | CodexCallResult:
     headers = build_codex_responses_headers(body, auth)
     started = time.monotonic()
     try:
-        response = await router.open_inference(body, headers, auth, scope)
+        response = await router.open_inference(body, headers, auth, scope, slot=slot)
     except asyncio.TimeoutError:
         return CodexCallResult(
             status=502,
@@ -524,7 +525,7 @@ async def execute_codex_responses(
         slot.last_selected_at = time.time()
         pi_attempt = pi_request.start("codex") if pi_request is not None else None
         try:
-            opened = await open_response(router, body, auth, affinity_key)
+            opened = await open_response(router, body, auth, affinity_key, slot)
         except BaseException:
             diagnostics.finish(observation, success=False, error="request_aborted")
             finish_probe(False)

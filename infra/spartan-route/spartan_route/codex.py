@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from .reasoning_replay import prefers_auth
+from .quota_limits import QuotaAdmission, operational_admission, dispatch_admission, observe_usage, open_image_inference
+from .usage_windows import valid_live_usage_window, live_usage_allows_recovery, normalize_usage_windows, usage_account_row
 
 from .attempt import CodexAttempt, outcome_slot, valid_tool_arguments
 
@@ -17,7 +19,6 @@ import stat
 import struct
 import sys
 import time
-from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -65,103 +66,6 @@ CODEX_AUTH_STORE_ROOT = Path("/app/data/codex-auth")
 CODEX_AUTH_STORE_VERSION = 1
 CODEX_AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 CODEX_AUTH_MAX_BYTES = 1_048_576
-
-def valid_live_usage_window(source: dict[str, Any]) -> tuple[float, str] | None:
-    used = source.get("used_percent")
-    if isinstance(used, bool) or not isinstance(used, (int, float)):
-        return None
-    try:
-        used = float(used)
-    except OverflowError:
-        return None
-    if not math.isfinite(used) or not 0 <= used <= 100:
-        return None
-    reset_at = source.get("reset_at")
-    if isinstance(reset_at, bool):
-        return None
-    if isinstance(reset_at, (int, float)):
-        try:
-            reset_at = float(reset_at)
-        except OverflowError:
-            return None
-        if not math.isfinite(reset_at) or reset_at <= 0:
-            return None
-        try:
-            reset_at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(reset_at))
-        except (OverflowError, OSError, ValueError):
-            return None
-    if not isinstance(reset_at, str):
-        return None
-    try:
-        parsed_reset = datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed_reset.tzinfo is None:
-        return None
-    return used, reset_at
-
-
-def live_usage_allows_recovery(payload: dict[str, Any]) -> bool:
-    rate_limit = payload.get("rate_limit")
-    if rate_limit is not None and not isinstance(rate_limit, dict):
-        return False
-    sources = (payload, rate_limit or {})
-    saw_weekly = False
-    for source in sources:
-        for position in ("primary", "secondary"):
-            window = source.get(f"{position}_window")
-            if window is None:
-                continue
-            if not isinstance(window, dict):
-                return False
-            duration = window.get("limit_window_seconds")
-            if duration is None:
-                seconds = FIVE_HOURS_SECONDS if position == "primary" else SEVEN_DAYS_SECONDS
-            else:
-                if isinstance(duration, bool) or not isinstance(duration, int):
-                    return False
-                seconds = duration
-                if seconds not in (FIVE_HOURS_SECONDS, SEVEN_DAYS_SECONDS):
-                    return False
-            validated = valid_live_usage_window(window)
-            if validated is None or validated[0] >= 100:
-                return False
-            saw_weekly = saw_weekly or seconds == SEVEN_DAYS_SECONDS
-    return saw_weekly
-
-
-def normalize_usage_windows(payload: dict[str, Any]) -> dict[str, tuple[dict[str, Any], int]]:
-    """Return recognized usage windows, preferring declared duration over position."""
-    rate_limit = payload.get("rate_limit") if isinstance(payload.get("rate_limit"), dict) else {}
-    candidates = (
-        ("primary", payload.get("primary_window")),
-        ("secondary", payload.get("secondary_window")),
-        ("primary", rate_limit.get("primary_window")),
-        ("secondary", rate_limit.get("secondary_window")),
-    )
-    windows: dict[str, tuple[dict[str, Any], int]] = {}
-    for position, candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        duration = candidate.get("limit_window_seconds")
-        if duration is None:
-            window_name = "fiveHour" if position == "primary" else "weekly"
-            seconds = FIVE_HOURS_SECONDS if position == "primary" else SEVEN_DAYS_SECONDS
-        else:
-            try:
-                seconds = int(duration)
-            except (TypeError, ValueError):
-                continue
-            if seconds == FIVE_HOURS_SECONDS:
-                window_name = "fiveHour"
-            elif seconds == SEVEN_DAYS_SECONDS:
-                window_name = "weekly"
-            else:
-                continue
-        windows.setdefault(window_name, (candidate, seconds))
-    return windows
-
-
 
 
 class CodexAuthStoreError(RuntimeError):
@@ -270,6 +174,7 @@ class SlotAvailability:
     total: int = 0
     eligible: int = 0
     disabled: int = 0
+    quota_paused: int = 0
     auth_unavailable: int = 0
     rate_limited: int = 0
     transient_5xx: int = 0
@@ -281,6 +186,7 @@ class SlotAvailability:
             "total": self.total,
             "eligible": self.eligible,
             "disabled": self.disabled,
+            "quota_paused": self.quota_paused,
             "auth_unavailable": self.auth_unavailable,
             "rate_limited": self.rate_limited,
             "transient_5xx": self.transient_5xx,
@@ -707,6 +613,7 @@ class CodexRouter:
         self.control_session = control_session or session
         self.transport = CodexTransport(session, transport_mode)
         self.telemetry = telemetry
+        self.quota = QuotaAdmission(self)
         self.slots: list[CodexSlot] = []
         self.model_catalog: Any = None
         self.leases: dict[str, CacheLease] = {}
@@ -754,6 +661,7 @@ class CodexRouter:
         self._usage_progress_snapshot = None
         self._notify_availability_changed()
         self._usage_cache = None
+        self.quota.observations.clear()
         self._init_slots()
 
     async def cleanup(self) -> None:
@@ -793,6 +701,8 @@ class CodexRouter:
                 "accountKey": auth.account_key if auth else None,
                 "slotPathHash": sha(slot.path, 16) if slot.path else None,
                 "authFingerprintHash": sha(slot.auth_fingerprint, 16) if slot.auth_fingerprint else None,
+                "quotaLimits": self.quota.store.limits(slot.account_key()) if hasattr(self, "quota") else {},
+                "quotaPolicy": self.quota.status(slot.account_key()) if hasattr(self, "quota") else {"paused": False, "reasons": []},
                 "routingEnabled": routing["routingEnabled"],
                 "requestedRoutingEnabled": routing["requestedRoutingEnabled"],
                 "routingOverrideUpdatedAt": routing["overrideUpdatedAt"],
@@ -1541,14 +1451,7 @@ class CodexRouter:
             auth = await self.load_auth(slot)
             if auth is not None:
                 candidates.append((slot, auth))
-        # Loading another slot's auth can yield. Recheck mutable gates after all awaits.
-        now = time.time()
-        return [(slot, auth) for slot, auth in candidates
-                if slot.index not in excluded
-                and (not auth.account_key or auth.account_key not in excluded_accounts)
-                and self.slot_routing_status(slot)["routingEnabled"]
-                and slot.rate_limited_until <= now and slot.transient_until <= now
-                and slot.auth is auth]
+        return await operational_admission(self, candidates, excluded, excluded_accounts)
 
     async def model_selection_diagnostics(self, excluded: set[int], excluded_accounts: set[str], model_id: str, reasoning_effort: str | None = None) -> dict[str, Any]:
         catalog = getattr(self, "model_catalog", None)
@@ -1610,6 +1513,9 @@ class CodexRouter:
             auth = await self.load_auth(slot)
             if not auth:
                 state.auth_unavailable += 1
+                continue
+            if hasattr(self, "quota") and self.quota.status(auth.account_key)["paused"]:
+                state.quota_paused += 1
                 continue
             state.eligible += 1
         return state
@@ -1747,6 +1653,9 @@ class CodexRouter:
     async def _unavailable_error(self) -> dict[str, Any]:
         state = await self.slot_availability()
         now = time.time()
+        if state.eligible == 0 and state.quota_paused:
+            return {"message": "Codex account pool paused by quota limits; waiting for confirmed usage below all configured limits.",
+                    "type": "upstream_error", "code": "codex_quota_paused", "slot_diagnostics": state.diagnostics()}
         if state.eligible == 0 and state.transient_5xx:
             retry_at = state.earliest_transient_until or now
             return {
@@ -1919,7 +1828,7 @@ class CodexRouter:
         timeout_ms = codex_request_timeout_ms()
         try:
             upstream_started = time.monotonic()
-            response = await self.open_inference(body, headers, auth)
+            response = await self.open_inference(body, headers, auth, slot=slot)
             upstream_response_time_ms = max(0, int((time.monotonic() - upstream_started) * 1000))
         except asyncio.TimeoutError:
             upstream_response_time_ms = max(0, int((time.monotonic() - upstream_started) * 1000))
@@ -1968,7 +1877,10 @@ class CodexRouter:
         collected.transport_details = getattr(response, "transport_details", None)
         return collected
 
-    async def open_inference(self, body: dict[str, Any], headers: dict[str, str], auth: CodexAuth, scope: str | None = None) -> Any:
+    async def open_inference(self, body: dict[str, Any], headers: dict[str, str], auth: CodexAuth, scope: str | None = None, slot: CodexSlot | None = None) -> Any:
+        blocked = await dispatch_admission(self, auth, slot)
+        if blocked is not None:
+            return blocked
         transport = getattr(self, "transport", None)
         if transport is not None:
             return await transport.open(
@@ -2820,14 +2732,8 @@ class CodexRouter:
         }
         if auth.account_id:
             headers["chatgpt-account-id"] = auth.account_id
-        timeout_ms = codex_request_timeout_ms()
         try:
-            response = await asyncio.wait_for(self.session.post(
-                CODEX_RESPONSES_URL,
-                json=body,
-                headers=headers,
-                timeout=ClientTimeout(total=None),
-            ), timeout=timeout_ms / 1000)
+            response = await open_image_inference(self, body, headers, auth, slot)
         except asyncio.TimeoutError:
             error = {
                 "message": "Codex image request timed out while waiting for response headers",
@@ -3509,26 +3415,20 @@ class CodexRouter:
     ) -> dict[str, Any]:
         generation = int(getattr(self, "_usage_generation", 0))
         slot = slots[0]
-        slot_paths = [path for path in (self.slot_path_label(item) for item in slots) if path]
-        row = {
-            "accountKey": account_key,
-            "slotIndexes": [item.index for item in slots],
-            "slotPaths": list(dict.fromkeys(slot_paths)),
-            "source": "live",
-            "stale": False,
-            "fiveHour": None,
-            "weekly": None,
-            "resetCredits": persisted_reset,
-        }
+        row = usage_account_row(self, account_key, slots, persisted_reset)
+        usage_observed_at = None
         headers = {"Authorization": f"Bearer {auth.access_token}"}
         if auth.account_id:
             headers["chatgpt-account-id"] = auth.account_id
 
         async def fetch_usage() -> Any:
+            nonlocal usage_observed_at
             async with getattr(self, "control_session", self.session).get(CODEX_USAGE_URL, headers=headers, timeout=ClientTimeout(total=10)) as response:
                 if response.status != 200:
                     raise RuntimeError(f"Codex usage HTTP {response.status}")
-                return await response.json()
+                payload = await response.json()
+                usage_observed_at = now_iso()
+                return payload
 
         async def fetch_reset() -> Any:
             reset_headers = {**headers, "OpenAI-Beta": "codex-1", "originator": "Codex Desktop"}
@@ -3565,7 +3465,7 @@ class CodexRouter:
                     "remainingPercent": 100.0 - used,
                     "resetAt": reset_at,
                     "windowMinutes": seconds // 60,
-                    "updatedAt": now_iso(),
+                    "updatedAt": usage_observed_at,
                 }
                 row[window_name] = window
                 usage_records.append({
@@ -3619,13 +3519,13 @@ class CodexRouter:
                 row["resetCredits"] = reset["api"]
                 reset_record = reset["db"]
 
-        return {
+        return observe_usage(self, generation, account_key, {
             "row": row,
             "usageError": usage_error,
             "resetError": reset_error,
             "usageRecords": usage_records,
             "resetRecord": reset_record,
-        }
+        })
 
 
 async def parse_sse_response(response: Any) -> AsyncIterator[tuple[str | None, str]]:
