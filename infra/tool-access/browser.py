@@ -295,6 +295,8 @@ class Browser:
                 raise AccessError("stale_tab")
             if response.status == 429:
                 raise AccessError("capacity")
+            if response.status == 403 and decode_json(response).get("code") == "proxy_forbidden":
+                raise AccessError("egress_denied")
             raise AccessError("upstream_error")
         except BaseException as error:
             if mutating:
@@ -305,7 +307,7 @@ class Browser:
                 else:
                     workflow.retired = True
                 if isinstance(error, AccessError) and error.code in {
-                    "stale_tab", "stale_workflow"
+                    "stale_tab", "stale_workflow", "egress_denied"
                 }:
                     raise
                 if isinstance(error, asyncio.CancelledError):

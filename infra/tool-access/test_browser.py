@@ -92,6 +92,9 @@ class BrowserHTTPTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"error": "synthetic-backend-master"}, status=404)
         if fault == "capacity":
             return web.json_response({"error": "capacity"}, status=429)
+        denial_codes = {"proxy-denied": "proxy_forbidden", "unclassified-denial": "other"}
+        if fault in denial_codes:
+            return web.json_response({"code": denial_codes[fault], "error": "synthetic-backend-master"}, status=403)
         if fault == "generation":
             self.generation += 1
         if request.method == "POST" and request.path == "/tabs":
@@ -282,6 +285,18 @@ class BrowserHTTPTests(unittest.IsolatedAsyncioTestCase):
                          data={"tabId": tab, "ref": "e1"})
         self.assertEqual(sum(r[1].endswith("/click") for r in self.records), 1)
         self.assertFalse(any(r[0] == "DELETE" for r in self.records))
+
+    async def test_explicit_proxy_denial_is_sanitized_without_replay_or_handle_revival(self):
+        for fault, code in (("proxy-denied", "egress_denied"),
+                            ("unclassified-denial", "remote_outcome_unknown")):
+            workflow = await self.mint()
+            self.fault = fault
+            await self.error("POST", "/v1/browser/create", code, workflow=workflow,
+                             data={"url": "https://www.wikipedia.org"})
+            before = len(self.records)
+            await self.error("GET", "/v1/browser/tabs", "stale_workflow", workflow=workflow)
+            self.assertEqual(len(self.records), before, "retired workflow cannot dispatch or replay")
+        self.assertEqual([record[1] for record in self.mutations()], ["/tabs", "/tabs"])
 
     async def test_actual_transport_timeout_retires_unknown_create_without_cleanup(self):
         workflow = await self.mint()

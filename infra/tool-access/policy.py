@@ -20,7 +20,8 @@ class AccessError(Exception):
               "capacity": 429, "upstream_error": 502, "unavailable": 503,
               "deadline": 504, "not_found": 404, "stale_workflow": 409,
               "stale_tab": 409, "remote_outcome_unknown": 502,
-              "workflow_busy": 429, "unsupported_backend": 503}
+              "workflow_busy": 429, "unsupported_backend": 503,
+              "egress_denied": 403}
 
     def __init__(self, code):
         self.code = code if code in self.STATUS else "unavailable"

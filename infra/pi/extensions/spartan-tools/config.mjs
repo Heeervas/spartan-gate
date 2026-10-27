@@ -64,10 +64,22 @@ function checkDisabledFeatures(web) {
 
 export function searchArguments(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(FAILURE);
-  if (input.provider !== undefined && input.provider !== 'searxng') throw new Error(FAILURE);
+  const provider = input.provider;
+  const allowed = Array.isArray(provider)
+    ? provider.length === 1 && provider[0] === 'searxng'
+    : [undefined, 'auto', 'searxng'].includes(provider);
+  if (!allowed) throw new Error(FAILURE);
   if (input.includeContent !== undefined && input.includeContent !== false) throw new Error(FAILURE);
   if (input.workflow !== undefined && input.workflow !== 'none') throw new Error(FAILURE);
-  if (Object.hasOwn(input, 'proxy') || Buffer.byteLength(JSON.stringify(input)) > 16384) throw new Error(FAILURE);
+  if ((Object.hasOwn(input, 'proxy') && input.proxy !== '') || Buffer.byteLength(JSON.stringify(input)) > 16384) throw new Error(FAILURE);
+  normalizeSearchDefaults(input);
+}
+
+// Separate schema-default normalization from security validation above. Only
+// validated calls are mutated, using the native tool_call input contract.
+function normalizeSearchDefaults(input) {
+  if (input.proxy === '') delete input.proxy;
+  if (Array.isArray(input.queries) && input.queries.length === 0 && typeof input.query === 'string' && input.query.trim()) delete input.queries;
 }
 
 export function redact(value, secrets) {

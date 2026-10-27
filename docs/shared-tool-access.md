@@ -102,6 +102,18 @@ URLs even with access logging disabled. Diagnose by bounded client error codes
 and health checks; enabling verbose private diagnostics is a separate privacy
 choice.
 
+A backend HTTP 403 with the exact structured `proxy_forbidden` code is exposed
+as sanitized `egress_denied`, not a transport timeout or unknown-result diagnosis.
+Raw backend text is never returned. A rejected mutating request still retires
+its tab/workflow conservatively; this code does not promise allocation was
+undone, authorize replay or restore authority. Other unclassified mutation
+failures remain `remote_outcome_unknown`. A subsequent `stale_workflow` is
+therefore expected until explicit cleanup; never silently remint or reattach.
+Egress denial requires an operator policy decision, not a browser restart or
+longer timeout. Use the existing temporary-domain helper described in
+[Operations](operations.md#whitelist-changes); source verification does
+not authorize changing the active whitelist.
+
 Backend numeric generation is not a process epoch. Generation changes, missing
 tabs (404/410), and ambiguous mutation outcomes retire handles explicitly. Exact
 IDs are never rebound from backend listing. No automatic click/submission replay,
@@ -122,7 +134,16 @@ selects only SearXNG, disables alternate fetch/source-check/search/curator
 commands, and guards ordinary and nested `web_search` calls against provider,
 content-fetch, workflow and proxy overrides. Invalid managed configuration blocks
 managed tools and known alternate fetch/source-check tools, not unrelated local
-terminal/editor tools; other plugins are outside this supported contract. The configured loopback ingress
+terminal/editor tools; other plugins are outside this supported contract.
+Schema-shaped neutral defaults are accepted: `provider:"auto"` resolves only to
+the strictly configured SearXNG, `["searxng"]` selects that same single provider,
+and `proxy:""` is removed (no per-call override). Nonempty proxies, `all`, foreign
+or mixed provider selections remain blocked. When a nonempty `query` accompanies
+`queries:[]`, remove the empty list before native execution so it does not shadow
+the query. A nonempty query list retains native precedence; an empty list without
+a usable query retains the explicit no-query error. This normalization occurs
+only after configuration and call-policy validation, also for nested calls.
+The configured loopback ingress
 must be the sole search endpoint, including environment precedence. Reader and
 browser use the small native extension. Real Pi 1.4 is the current consumer;
 1.3 remains the inherited compatibility gate.

@@ -1,5 +1,19 @@
 # Current State
 
+## Managed-tool failure repair — source candidate (2026-10-27)
+
+On the canonical checkout, exact schema-shaped search arguments exposed strict
+neutral-default rejection and the native empty-query-list precedence issue.
+The reported Wikipedia failure was a confirmed backend proxy-policy denial
+(HTTP 403 in 233 ms), not a timeout. The adapter had collapsed it into unknown
+mutation outcome, retiring the workflow before the subsequent stale response.
+The candidate normalizes safe search defaults and exposes only the fixed
+`egress_denied` code; conservative retirement and no replay remain unchanged.
+Source verification is separate from active installation and domain admission:
+no policy grant, restart, browser replay or W6 activation is included. See
+`apps/hermes-agent/runtime-docs/hermes_notes/managed_tool_denials_27102026.md`
+and `docs/shared-tool-access.md` for the retained operational boundary.
+
 ## Shared tool access — source candidate, activation pending (2026-10-26)
 
 The opt-in source candidate adds dedicated tool-only Caddy ingress, bounded

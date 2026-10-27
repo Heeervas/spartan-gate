@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Accept schema-shaped neutral managed-search defaults without widening the
+  configured SearXNG-only boundary; an empty optional query list no longer
+  shadows a usable single query. Expose confirmed browser proxy-policy rejection
+  as sanitized `egress_denied`, preserving conservative handle retirement and
+  no replay. Active whitelist and timeouts remain unchanged; source verification
+  is not installation or browser-domain authorization.
+
 - Align Hermes startup health grace with native cold-start readiness: allow
   75 seconds before counting startup failures, retaining all dependency checks
   and existing per-request, command, interval and retry limits. Guarded activation

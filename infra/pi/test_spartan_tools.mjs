@@ -223,7 +223,7 @@ for (const scenario of ['unset-existing', 'explicit-override', 'explicit-empty',
 
 test('native search errors retain a safe renderer error and an exact public query reason', async () => fixture(async f => {
   const n = await native(f, undefined, [
-    [call('missing-query', 'web_search', { query: 'IANA example domains', queries: [] })], [{ type: 'text', text: 'done' }],
+    [call('missing-query', 'web_search', { queries: [] })], [{ type: 'text', text: 'done' }],
     [call('query-only', 'web_search', { query: 'IANA example domains' })], [{ type: 'text', text: 'done' }],
   ]);
   try {
@@ -245,6 +245,29 @@ test('native search errors retain a safe renderer error and an exact public quer
     await n.session.prompt('Synthetic query-only control.');
     assert.equal(Boolean(n.toolResults.get('query-only').isError), false);
     assert.equal(f.calls.length, 1);
+  } finally { n.session.dispose(); }
+}));
+
+test('native search accepts real neutral defaults and only the configured provider', async () => fixture(async f => {
+  const defaults = { query: 'Spartan Gate GitHub', queries: [], numResults: 3,
+    includeContent: false, recencyFilter: 'year', domainFilter: [], category: '',
+    provider: 'auto', workflow: 'none', proxy: '' };
+  const n = await native(f, undefined, [[
+    call('actual-search', 'web_search', defaults),
+    call('provider-list', 'web_search', { query: 'allowed', provider: ['searxng'] }),
+    call('all-providers', 'web_search', { query: 'denied', provider: 'all' }),
+    call('mixed-providers', 'web_search', { query: 'denied', provider: ['searxng', 'tavily'] }),
+  ]]);
+  try {
+    await n.session.prompt('Synthetic actual search arguments; no real engines.');
+    for (const id of ['actual-search', 'provider-list']) {
+      assert.equal(Boolean(n.toolResults.get(id).isError), false, id);
+      assert.equal(n.toolResults.get(id).structuredContent?.queries[0].results[0].title, 'Managed fixture', id);
+    }
+    assert.equal(f.calls.length, 2, 'forbidden providers must issue zero HTTP');
+    assert.equal(new URL(f.calls[0].path, f.baseUrl).searchParams.get('q'), 'Spartan Gate GitHub');
+    const messages = n.session.agent.state.messages.filter(message => message.role === 'toolResult');
+    for (const id of ['all-providers', 'mixed-providers']) assert.equal(messages.find(message => message.toolCallId === id).isError, true);
   } finally { n.session.dispose(); }
 }));
 
@@ -398,6 +421,30 @@ test('native service errors and redirects are sanitized; stale workflow authorit
     assert.equal((await readdir(f.config.stateDir)).length, 0);
     assert.equal(f.calls.at(-1).method, 'DELETE');
     assert.equal(f.calls.at(-1).path, '/v1/workflows');
+  } finally { n.session.dispose(); }
+}));
+
+test('native browser exposes only the fixed egress denial code and never remints stale authority', async () => fixture(async f => {
+  f.faults.set('/v1/browser/create', (_req, res) => {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 'egress_denied', message: token } }));
+  });
+  f.faults.set('/v1/browser/tabs', (_req, res) => {
+    res.writeHead(409, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 'stale_workflow' } }));
+  });
+  const n = await native(f, undefined, [[
+    call('denied-create', 'gate_browser', { action: 'create', url: 'https://www.wikipedia.org' }),
+    call('retired-list', 'gate_browser', { action: 'tabs' }),
+  ]]);
+  try {
+    await n.session.prompt('Synthetic proxy denial only; no public navigation.');
+    const results = n.session.agent.state.messages.filter(message => message.role === 'toolResult');
+    assert.ok(results.every(result => result.isError));
+    assert.match(JSON.stringify(results[0].content), /egress_denied/);
+    assert.match(JSON.stringify(results[1].content), /stale_workflow/);
+    assert.ok(!JSON.stringify(results).includes(token));
+    assert.deepEqual(f.calls.map(request => request.path), ['/v1/workflows', '/v1/browser/create', '/v1/browser/tabs']);
   } finally { n.session.dispose(); }
 }));
 
