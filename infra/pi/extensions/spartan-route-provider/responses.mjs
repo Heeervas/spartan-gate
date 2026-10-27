@@ -106,21 +106,26 @@ export function createResponsesStream(nativeStream, request, scope, realmForMode
     return bindings.get(key);
   }
   return (model, context, options = {}) => {
-    let identity, realm, binding;
+    let identity, realm, binding, owner, ownershipError;
+    // Capture native ownership before native conversion or caller callbacks can
+    // await. options.sessionId remains an independent provider routing/cache ID.
+    try { owner = fence.capture(); }
+    catch (error) { ownershipError = error; }
     return nativeStream(model, context, {
       ...options,
       onPayload: async (payload, requestModel) => {
+        if (ownershipError) throw ownershipError;
         const changed = await options.onPayload?.(payload, requestModel);
         const actual = changed === undefined ? payload : changed;
         realm = realmForModel(actual?.model);
         if (!REALMS.has(realm)) throw new Error('Route reasoning realm unavailable');
         options.signal?.throwIfAborted();
-        const ticket = fence.reserve(options.sessionId, realm);
+        const ticket = fence.reserve(owner, realm);
         try {
           // Native cross-model conversion may already have omitted old reasoning.
           // Its saved provenance still needs validation before a durable realm lock.
           if (legacyItems(actual) || legacyHistory(context)) {
-            binding = await legacyBinding(routeSessionId(options.sessionId), realm, options.signal);
+            binding = await legacyBinding(routeSessionId(owner.sessionId), realm, options.signal);
           }
           options.signal?.throwIfAborted();
           const prepared = prepareRequest(actual, ticket.identity, realm, options.sessionId, binding);

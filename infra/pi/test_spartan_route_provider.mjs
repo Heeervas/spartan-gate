@@ -13,6 +13,7 @@ import { SessionFence, replayIdentity, LOCK } from './extensions/spartan-route-p
 import { piDir, piDependency } from './pi_test_inputs.mjs';
 const native = await import(pathToFileURL(piDependency('@earendil-works/pi-ai', 'dist/api/openai-responses.js')).href);
 const { SessionManager } = await import(pathToFileURL(resolve(piDir, 'dist/core/session-manager.js')).href);
+const { ExtensionRunner, createExtensionRuntime } = await import(pathToFileURL(resolve(piDir, 'dist/index.js')).href);
 const session = 'a7becb62-8311-466d-89ca-e8b215d0a700';
 const fork = 'ac10e7cc-cdb6-4e29-9b15-7c8d87bdf5bd';
 const realm = 'codex_subscription';
@@ -49,8 +50,9 @@ function harness(manager = SessionManager.inMemory('.', { id: session }), reques
   throw new Error('New conversations must not request a binding');
 }, selectedScope = scope) {
   const fence = new SessionFence(selectedScope, (type, data) => manager.appendCustomEntry(type, data));
-  fence.activate({ sessionManager: manager });
-  return { manager, fence, stream: createResponsesStream(native.streamSimple, request, selectedScope, () => realm, fence) };
+  const runner = new ExtensionRunner([], createExtensionRuntime(), '.', manager, {});
+  fence.activate(runner.createContext());
+  return { manager, fence, runner, stream: createResponsesStream(native.streamSimple, request, selectedScope, () => realm, fence) };
 }
 async function run(stream, messages, received, options = {}) {
   return stream(model, { messages }, { apiKey: 'synthetic', sessionId: session, reasoning: 'high', maxRetries: 0,
@@ -223,15 +225,74 @@ test('concurrent first requests cannot initialize the same identity in two realm
   assert.equal(received.length, 1);
 });
 
-test('invalid IDs, mismatched native context and cancellation cannot submit', async () => {
-  const { stream } = harness();
+test('independent routing IDs preserve native replay identity and caller cache routing', async () => {
+  const { manager, stream } = harness();
   const received = [];
-  for (const sessionId of [undefined, '', '../invalid', 'bad\nvalue', 'x'.repeat(257), fork]) {
-    assert.equal((await run(stream, prompt, received, { sessionId })).stopReason, 'error');
+  const result = await run(stream, prompt, received, { sessionId: fork });
+  assert.equal(result.stopReason, 'toolUse', result.errorMessage);
+  assert.equal(received[0].body.prompt_cache_key, fork);
+  const item = JSON.parse(result.content.find(block => block.type === 'thinking').thinkingSignature);
+  assert.equal(item._spartan_replay_identity, replayIdentity(scope, session));
+  assert.equal(manager.getEntries().find(entry => entry.customType === LOCK).data.identity, replayIdentity(scope, session));
+});
+
+test('invalid native IDs, unavailable context and cancellation cannot submit', async () => {
+  const received = [];
+  for (const id of [undefined, '', '../invalid', 'bad\nvalue', 'x'.repeat(257)]) {
+    const { fence, stream } = harness();
+    fence.activate({ sessionManager: { getSessionId: () => id } });
+    assert.equal((await run(stream, prompt, received)).stopReason, 'error');
   }
+  const { fence, runner, stream } = harness();
+  runner.invalidate();
+  assert.equal((await run(stream, prompt, received)).stopReason, 'error');
+  fence.deactivate();
+  assert.equal((await run(stream, prompt, received)).stopReason, 'error');
   const controller = new AbortController(); controller.abort();
-  assert.equal((await run(stream, prompt, received, { signal: controller.signal })).stopReason, 'aborted');
+  assert.equal((await run(harness().stream, prompt, received, { signal: controller.signal })).stopReason, 'aborted');
   assert.equal(received.length, 0);
+});
+
+async function suspendedOwnership(stage, replace) {
+  let resume, began;
+  const started = new Promise(resolve => { began = resolve; });
+  const wait = () => new Promise(resolve => { resume = resolve; began(); });
+  const request = async () => { await wait(); return { version: 1, binding }; };
+  const h = harness(undefined, request);
+  const messages = structuredClone(prompt);
+  if (stage === 'legacy') {
+    const history = await run(harness().stream, prompt, []);
+    history.content.find(block => block.type === 'thinking').thinkingSignature = JSON.stringify({ type: 'reasoning', id: 'rs_old',
+      encrypted_content: 'opaque', _spartan_chain_id: binding.spartan_chain_id,
+      _spartan_binding_mac: binding.spartan_binding_mac, _spartan_reasoning_realm: realm });
+    messages.push(history);
+  }
+  const received = [];
+  const pending = run(h.stream, messages, received, stage === 'payload' ? { onPayload: wait } : {});
+  await started;
+  replace(h);
+  resume();
+  const result = await pending;
+  assert.equal(result.stopReason, 'error');
+  assert.match(result.errorMessage, /session state unavailable/);
+  assert.equal(received.length, 0);
+  assert.equal(h.manager.getEntries().filter(entry => entry.customType === LOCK).length, 0);
+}
+
+test('native ownership cannot change during payload callbacks or legacy lookup', async t => {
+  for (const stage of ['payload', 'legacy']) {
+    await t.test(`${stage}: shutdown`, () => suspendedOwnership(stage, h => h.fence.deactivate()));
+    await t.test(`${stage}: invalidated guarded context`, () => suspendedOwnership(stage, h => h.runner.invalidate()));
+    await t.test(`${stage}: different manager with same ID`, () => suspendedOwnership(stage, h => {
+      h.runner.sessionManager = SessionManager.inMemory('.', { id: session });
+    }));
+    await t.test(`${stage}: native ID replaced on retained manager`, () => suspendedOwnership(stage, h => {
+      h.manager.newSession({ id: fork });
+    }));
+    await t.test(`${stage}: reactivation on retained manager`, () => suspendedOwnership(stage, h => {
+      h.fence.deactivate(); h.fence.activate(h.runner.createContext());
+    }));
+  }
 });
 
 test('legacy saved reasoning uses one lazy binding and remains raw; failure and cancellation never submit', async () => {
@@ -243,11 +304,16 @@ test('legacy saved reasoning uses one lazy binding and remains raw; failure and 
     _spartan_binding_mac: binding.spartan_binding_mac });
   history.content.find(block => block.type === 'thinking').thinkingSignature = JSON.stringify(item);
   let calls = 0;
-  const request = async () => { calls++; return { version: 1, binding }; };
+  const request = async (_action, document) => {
+    calls++;
+    assert.equal(document.sessionId, session);
+    return { version: 1, binding };
+  };
   const { stream } = harness(undefined, request);
   const received = [];
   for (let i = 0; i < 2; i++) {
-    const result = await run(stream, [...prompt, history, toolResult(history)], received, { fetch: fakeFetch(received, responseEvents('old-opaque')) });
+    const result = await run(stream, [...prompt, history, toolResult(history)], received,
+      { sessionId: fork, fetch: fakeFetch(received, responseEvents('old-opaque')) });
     assert.notEqual(result.stopReason, 'error', result.errorMessage);
     assert.equal(received[i].body.spartan_binding_mac, binding.spartan_binding_mac);
   }

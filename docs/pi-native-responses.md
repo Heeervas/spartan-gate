@@ -128,12 +128,33 @@ IDs and call/result IDs remain intact. A matching same-session realm change fail
 start a new session/fork instead. Local tags/locks protect cooperative mistakes,
 not malicious edits of session files or requests.
 
-Realm locks survive resume, compaction and branch navigation. Requests reserve
-local concurrency ownership provisionally, validate any saved legacy provenance,
-then commit the durable realm lock before HTTP submission. Wrong-realm legacy
-rejection releases that reservation without writing a new lock; the original
-realm remains resumable, including after reopen. Native conversion may already
-have removed cross-model reasoning, so retained session provenance is checked too.
+Realm locks survive resume, compaction and branch navigation. Provider-stream
+entry captures the active native extension context, its activation, the actual
+SessionManager object and its native session ID before conversion/callbacks can
+await. Reservation and commit both re-read the guarded context and require the
+same activation, manager and native ID. Shutdown, replacement or reload cannot
+revive an old pending request, even on a retained manager or a different manager
+with the same textual ID. Requests reserve local concurrency ownership
+provisionally, validate any saved legacy provenance, then commit the durable realm
+lock before HTTP submission. Wrong-realm legacy rejection releases that reservation
+without writing a new lock; the original realm remains resumable, including after
+reopen. Native conversion may already have removed cross-model reasoning, so
+retained session provenance is checked too.
+
+Pi's stream `options.sessionId` is a separate **routing/cache ID**, not proof of
+native persisted identity. Built-in branch summaries (including provider-neutral
+navigation commands such as `/return`) and default manual/automatic compaction
+intentionally use fresh routing IDs with cache retention disabled. Route leaves
+those options unchanged and uses the captured native ID only for replay identity,
+durable realm locks and legacy binding. Cache-key preparation still uses the
+original routing ID; no summary detection, ID substitution or navigator dependency
+is involved. Missing/invalid native identity or stale ownership still fails closed.
+
+This integration supports Pi's native per-session model-runtime lifecycle,
+validated on Pi 1.3 and 1.4. SDK hosts must keep this provider registration/runtime
+session-owned: deliberately sharing one mutable `ModelRuntime` across independent
+sessions can overwrite another session's provider closure and is not supported.
+This adapter is not a universal SDK request-provenance or hostile-tenant boundary.
 
 An append failure latches that identity unavailable on the retained SessionManager,
 including replacement extension modules/fences after `/reload`: native Pi may
@@ -157,10 +178,10 @@ legacy history drops mismatching opaque items. Pre-upgrade history with no opaqu
 items has no server-proven old realm; its requested realm initializes the new
 local lock. Normal telemetry remains subordinate to inference.
 
-Pi's existing native-ID adapter is unchanged: UUIDs are preserved; valid named
-IDs such as `subagent.<hash>` deterministically map to UUIDv8 for shared identity
-and usage. Raw session names/files/cache keys remain unchanged, including case.
-Invalid IDs still fail before submission. Unsigned traffic uses Route's existing
+Pi's existing native-ID canonicalization is unchanged: UUIDs are preserved; valid
+named IDs such as `subagent.<hash>` deterministically map to UUIDv8 for shared
+identity and usage. Raw session names/files/cache keys remain unchanged, including
+case. Invalid native IDs still fail before submission. Unsigned traffic uses Route's existing
 cache-key/content dashboard fallback, not the signed-chain grouping label. Cache
 keys do not guarantee cache residency or savings.
 
@@ -180,7 +201,9 @@ The validation owner is `.agents/validation.md`; public setup is in
 1.3/1.4, real loopback Route/native selection and synthetic upstream HTTP. They
 cover tool/encrypted continuation, fresh-client/Route resume, receipt integrity,
 advisory issuer selection, mixed-issuer failover and legacy raw compatibility.
-Those are not live-provider proof.
+Native command navigation, default manual/automatic compaction and reload tests
+also check summary/usage attachment, independent routing/cache behavior and
+fail-closed pending-request ownership. Those are not live-provider proof.
 Source review, isolated image acceptance and parent-authorized live acceptance
 remain separate gates.
 

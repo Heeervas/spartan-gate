@@ -19,11 +19,25 @@ export function replayIdentity(scope, sessionId) {
 // Local cooperative safety only. Server authorization never trusts this record.
 export class SessionFence {
   constructor(scope, append) { this.scope = scope; this.append = append; }
-  activate(ctx) { this.ctx = ctx; }
-  deactivate() { this.ctx = undefined; }
-  check(sessionId, identity, realm) {
-    const manager = this.ctx?.sessionManager;
-    if (!manager || manager.getSessionId() !== sessionId) throw unavailable();
+  activate(ctx) { this.activation = { ctx }; }
+  deactivate() { this.activation = undefined; }
+  capture() {
+    try {
+      const activation = this.activation;
+      const manager = activation?.ctx.sessionManager;
+      const sessionId = manager?.getSessionId();
+      const identity = replayIdentity(this.scope, sessionId);
+      return { activation, manager, sessionId, identity };
+    } catch { throw unavailable(); }
+  }
+  check(owner, realm) {
+    const { activation, manager, sessionId, identity } = owner;
+    try {
+      // Read the guarded context again: a retained raw manager cannot authorize
+      // work after native replacement/reload, even when its ID is unchanged.
+      if (!activation || activation !== this.activation || activation.ctx.sessionManager !== manager ||
+          manager.getSessionId() !== sessionId) throw unavailable();
+    } catch { throw unavailable(); }
     if (!managers.has(manager)) managers.set(manager, { failed: new Set(), pending: new Map() });
     const state = managers.get(manager);
     if (state.failed.has(identity)) throw unavailable();
@@ -32,17 +46,17 @@ export class SessionFence {
     if (locks.some(entry => entry.data.version !== 2 || entry.data.realm !== realm)) throw mismatch();
     return { manager, state, locks };
   }
-  reserve(sessionId, realm) {
-    const identity = replayIdentity(this.scope, sessionId);
-    const { manager, state } = this.check(sessionId, identity, realm);
+  reserve(owner, realm) {
+    const { identity } = owner;
+    const { manager, state } = this.check(owner, realm);
     let pending = state.pending.get(identity);
     if (pending && pending.realm !== realm) throw mismatch();
     if (!pending) state.pending.set(identity, pending = { realm, count: 0 });
     pending.count++;
-    return { sessionId, identity, realm, manager, state, pending, active: true };
+    return { ...owner, realm, manager, state, pending, active: true };
   }
   commit(ticket) {
-    const { manager, state, locks } = this.check(ticket.sessionId, ticket.identity, ticket.realm);
+    const { manager, state, locks } = this.check(ticket, ticket.realm);
     if (!ticket.active || manager !== ticket.manager) throw unavailable();
     if (!locks.length) {
       try { this.append(LOCK, { version: 2, identity: ticket.identity, realm: ticket.realm }); }
@@ -61,7 +75,9 @@ export class SessionFence {
     if (--ticket.pending.count === 0) ticket.state.pending.delete(ticket.identity);
   }
   claim(sessionId, realm) {
-    const ticket = this.reserve(sessionId, realm);
+    const owner = this.capture();
+    if (owner.sessionId !== sessionId) throw unavailable();
+    const ticket = this.reserve(owner, realm);
     try { return this.commit(ticket); }
     finally { this.release(ticket); }
   }

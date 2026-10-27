@@ -5,8 +5,13 @@ For native Responses and the standard-client subset, see
 sessions use server-owned opaque replay receipts without a binding RPC. The
 provider's `session.mjs` helper owns provisional concurrency reservations and the
 post-validation durable realm lock, including manager-owned append-failure retry/
-reload safety; install it with the other provider helpers. Legacy raw saved
-histories use a lazy cached binding and are not rewritten. Both Pi 1.3 and 1.4
+reload safety; install it with the other provider helpers. Native ownership is
+captured from the guarded per-session extension context and revalidated before
+reservation/commit, independently of the unchanged routing/cache ID. This lets
+native branch summaries and manual/automatic compaction use fresh routing IDs
+without depending on navigator commands. Deliberately shared SDK model runtimes
+across independent sessions are outside this integration's supported lifecycle.
+Legacy raw saved histories use a lazy cached binding and are not rewritten. Both Pi 1.3 and 1.4
 are validated with isolated configuration; restart fully after installation.
 No active installation or Route deployment is implied by source tests. Codex
 receipts authenticate ciphertext/realm; their last issuer is an advisory scheduling
