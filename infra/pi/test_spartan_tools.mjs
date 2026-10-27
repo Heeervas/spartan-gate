@@ -10,7 +10,7 @@ import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { loadConfig, FAILURE } from './extensions/spartan-tools/config.mjs';
 import { pngImage } from './extensions/spartan-tools/http.mjs';
-import { ToolsClient } from './extensions/spartan-tools/client.mjs';
+import { ToolsClient, browserBody } from './extensions/spartan-tools/client.mjs';
 import { configure } from '../../scripts/configure-shared-tools.mjs';
 
 const packageDir = process.env.PI_TEST_PACKAGE_DIR || process.env.PI_CODING_AGENT_DIR;
@@ -256,6 +256,57 @@ test('native prompt enforces strict search for model and nested calls with zero 
     assert.ok(!n.loaded.extensions[0].commands.has('curator'));
     assert.ok(!n.loaded.extensions[0].commands.has('websearch'));
   } finally { n.session.dispose(); }
+}));
+
+test('native browser tabs drops the actual user optional defaults without weakening active fields', async () => fixture(async f => {
+  const defaults = { tabId: '', url: '', ref: '', selector: '', text: '', direction: 'down', amount: 1 };
+  f.faults.set('/v1/browser/tabs', (_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ tabs: [{ tabId: 'owned-tab' }] }));
+  });
+  f.faults.set('/v1/browser/navigate', (_req, res) => {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 'invalid_request' } }));
+  });
+  const n = await native(f, undefined, [[
+    call('actual-tabs', 'gate_browser', { action: 'tabs', ...defaults }),
+    call('empty-tab', 'gate_browser', { action: 'snapshot', ...defaults }),
+    call('invalid-amount', 'gate_browser', { action: 'scroll', ...defaults, tabId: 'owned-tab', amount: 0 }),
+    call('invalid-url', 'gate_browser', { action: 'navigate', ...defaults, tabId: 'owned-tab' }),
+    call('unknown-null', 'gate_browser', { action: 'tabs', extra: null }),
+    call('unsupported-action', 'gate_browser', { action: 'evaluate' }),
+  ]]);
+  try {
+    await n.session.prompt('Synthetic browser argument regression only.');
+    const results = n.session.agent.state.messages.filter(message => message.role === 'toolResult');
+    assert.equal(results.length, 6);
+    assert.equal(results[0].isError, false, 'the actual user tabs arguments must succeed');
+    assert.match(JSON.stringify(results[0].content), /owned-tab/);
+    assert.ok(results.slice(1).every(result => result.isError === true));
+    assert.deepEqual(f.calls.map(request => request.path), ['/v1/workflows', '/v1/browser/tabs', '/v1/browser/navigate']);
+    assert.equal(f.calls[1].method, 'GET');
+    assert.equal(f.calls[1].body, '', 'tabs must not forward optional defaults');
+    assert.equal(f.calls[1].headers['x-spartan-workflow'], workflowTokens[0]);
+    assert.deepEqual(JSON.parse(f.calls[2].body), { tabId: 'owned-tab', url: '' }, 'invalid active URL must reach backend validation unchanged');
+  } finally { n.session.dispose(); }
+
+  const activeByAction = {
+    create: { url: 'https://example.com' }, tabs: {}, cleanup: {}, snapshot: { tabId: 'owned-tab' },
+    navigate: { tabId: 'owned-tab', url: 'https://example.com' },
+    click: { tabId: 'owned-tab', ref: 'button', selector: '#button' },
+    type: { tabId: 'owned-tab', ref: 'input', selector: '#input', text: 'typed text' },
+    scroll: { tabId: 'owned-tab', direction: 'up', amount: 7 },
+    screenshot: { tabId: 'owned-tab' }, close: { tabId: 'owned-tab' },
+  };
+  for (const [action, active] of Object.entries(activeByAction)) {
+    assert.deepEqual(browserBody({ action, ...defaults, ...active }), active, `${action} keeps only its active fields`);
+    assert.throws(() => browserBody({ action, ...defaults, ...active, extra: null }), new RegExp(FAILURE));
+  }
+  assert.deepEqual(browserBody({ action: 'type', tabId: 'owned-tab', text: null }), { tabId: 'owned-tab', text: null });
+  assert.deepEqual(browserBody({ action: 'scroll', tabId: 'owned-tab', direction: 'sideways', amount: 0 }),
+    { tabId: 'owned-tab', direction: 'sideways', amount: 0 });
+  assert.throws(() => browserBody({ action: 'snapshot', ...defaults }), new RegExp(FAILURE));
+  assert.throws(() => browserBody({ action: 'evaluate', ...defaults }), new RegExp(FAILURE));
 }));
 
 test('native prompt Reader/image pipeline and actual disk resume/fork keep workflow authority outside history', async () => fixture(async f => {

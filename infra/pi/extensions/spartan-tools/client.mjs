@@ -8,10 +8,11 @@ const BROWSER_FIELDS = {
   click: ['tabId', 'ref', 'selector'], type: ['tabId', 'ref', 'selector', 'text'],
   scroll: ['tabId', 'direction', 'amount'], screenshot: ['tabId'], close: ['tabId'],
 };
+const BROWSER_KNOWN_FIELDS = new Set(Object.values(BROWSER_FIELDS).flat());
 
 export function browserBody(input) {
   const fields = BROWSER_FIELDS[input.action];
-  if (!fields || Object.keys(input).some(key => key !== 'action' && !fields.includes(key))) throw new Error(FAILURE);
+  if (!fields || Object.keys(input).some(key => key !== 'action' && !BROWSER_KNOWN_FIELDS.has(key))) throw new Error(FAILURE);
   const body = Object.fromEntries(fields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
   if (!['create', 'tabs', 'cleanup'].includes(input.action) && (typeof body.tabId !== 'string' || !body.tabId || body.tabId.length > 256)) throw new Error(FAILURE);
   return body;
