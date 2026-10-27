@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document explicit reuse of an already activated container Pi state by another
+  Hermes owner through one symlink, without package copies or recreation. Preserve
+  the owner's Hermes context and make shared configuration/session scope explicit.
+
 - Accept schema-shaped neutral managed-search defaults without widening the
   configured SearXNG-only boundary; an empty optional query list no longer
   shadows a usable single query. Expose confirmed browser proxy-policy rejection

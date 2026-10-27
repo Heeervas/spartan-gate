@@ -68,6 +68,19 @@ actual workload UID. Launcher defaults `PI_CODING_AGENT_DIR`,
 `HERMES_HOME`; deliberate nonempty overrides remain supported. Settings and links
 are provisioning, not launcher side effects. No host auth or session mount.
 
+### Reuse an already activated Pi state
+
+When explicitly authorized to share Pi configuration, credentials and sessions,
+another existing Hermes owner can use a single `$HERMES_HOME/pi` symlink to the
+already activated Pi state directory. Verify the destination and workload UID,
+refuse an occupied link path, and preserve the owner's actual `HERMES_HOME`.
+This reuses the settings, roles, Route config and optional direct-HTTPS binding;
+it does not copy packages or require container recreation, a rebuild or new mounts.
+Run from the authorized repository with unique task session IDs; reopen only the
+recorded session file, never an ambiguous `--continue`. This mode provides **no
+profile isolation of Pi state**. To withdraw it, establish cessation of the owner's
+jobs and remove only the owned symlink, not the shared destination or sessions.
+
 Replace the example's `.invalid` endpoint with an **already-approved,
 credential-free HTTPS** Route `/v1` URL reachable under unchanged proxy/DNS/TLS
 rules. `http://spartan-route:18790/v1` is unsupported. The existing gateway parser
