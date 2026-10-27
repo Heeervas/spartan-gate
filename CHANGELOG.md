@@ -9,7 +9,8 @@ All notable changes to Spartan Gate are documented here.
   and existing per-request, command, interval and retry limits. Guarded activation
   uses a finite 90-second healthy-observation budget with separate native-profile
   acceptance. Existing containers require a separately approved recreation;
-  source readiness is not deployment.
+  source readiness is not deployment. Operator notes distinguish verified
+  current-state reconciliation from missing original execution/timing evidence.
 
 - Discover an existing managed-tools configuration in Pi's native agent directory
   when no explicit selector is set. Preserve strict explicit-selection guards,
