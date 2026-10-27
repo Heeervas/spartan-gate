@@ -1,6 +1,6 @@
 # Current State
 
-## Managed-tool failure repair — source candidate (2026-10-27)
+## Managed-tool failure repair — scoped activation (2026-10-27)
 
 On the canonical checkout, exact schema-shaped search arguments exposed strict
 neutral-default rejection and the native empty-query-list precedence issue.
@@ -13,6 +13,16 @@ Source verification is separate from active installation and domain admission:
 no policy grant, restart, browser replay or W6 activation is included. See
 `apps/hermes-agent/runtime-docs/hermes_notes/managed_tool_denials_27102026.md`
 and `docs/shared-tool-access.md` for the retained operational boundary.
+
+Subsequent explicit operator approval activated only this repair: installed Pi
+helpers (configuration/credentials unchanged), built and recreated tool-access
+alone. Its image passes 29 isolated Python tests; active source readback matches
+300d366, all neighbor containers are unchanged, unauthenticated admission denies
+401 and the managed Reader canary succeeds. Running Pi still needs a full process
+restart for imported helper freshness. Browser canary requires a deliberate fresh
+native session because adapter recreation invalidated old workflows; no saved
+capability was silently reminted or deleted. No whitelist change or Wikipedia
+replay occurred; remaining W6 stays paused.
 
 ## Shared tool access — source candidate, activation pending (2026-10-26)
 
