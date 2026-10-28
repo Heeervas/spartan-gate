@@ -14,24 +14,28 @@ owning task evidence, including failures and explicit limits.
   operation is included. Manual worktrees require owner cessation confirmation.
 - Canonical source remains this checkout. Manual task placement exception is
   envelope `.worktrees/<id>/`; Ultimate/Codex keep native storage and controls.
-- Foreign Route speed work and Hermes notes remain preserved, not task-owned.
+- Foreign Route speed implementation and Hermes notes remain preserved, not task-owned.
   Do not stage them as part of lifecycle commits.
-- Historical plan families are now readable under envelope `tasks/<id>/task.md`,
-  not scattered under ignored `plans/`. Review/pending means unverified closeout,
-  not a claim that source implementation never happened. Pending packages remain
-  visible; archive only through required closeout.
+- Reconciled family locations are indexed in `../../../tasks/README.md`. Each
+  current record owns its specific proposal, acceptance or native/resource gate;
+  historical evidence is not a claim of current deployment. Archive only through
+  the required read-only closeout phases.
 
 ## Active-task pointers and constraints
 
+- Dashboard speed: `../../../tasks/route-dashboard-speed/task.md` owns adoption/readback.
+  Earlier receipt: BUILT_NOT_ACTIVATED; later parent receipt: RECREATED_PENDING_READBACK, quiet_window_observed:false.
+  Final deployed-asset/browser acceptance remains unproved; this record grants no service action.
 - `../../../tasks/hermes-log-remediation/task.md`: remaining refresh/runtime
   remediation; rebaseline before any separate authorized execution.
 - `../../../tasks/shared-tool-access/task.md`: source/fixture acceptance does not
   authorize remaining operational activation. Preserve historical fixture side effects.
-- `../../../tasks/codex-replay-portability/task.md` and
-  `../../../tasks/route-standard-responses/task.md`: distinguish accepted source,
-  historical deployment and SDK/helper continuity limits; no new inference implied.
-- `../../../tasks/quota-limits/task.md`: source verified; browser/provider behavior
-  and activation remain separate claims. Provider delay permits overshoot.
+- `../../../tasks/route-standard-responses/task.md` and
+  `../../../tasks/route-sdk-stream/task.md`: exact remaining writer/recovery and
+  SDK postcondition gates remain separate from accepted metadata/source repairs.
+- Replay-portability/quota source records are located through task navigation.
+  Source acceptance does not certify deployment, browser/provider behavior or
+  lossless reasoning continuity. Provider delay permits quota overshoot.
 - Existing independent Hermes migration/skills/Pi task packages retain their
   established owners and native controls; no automatic relocation or closure.
 - Current disk floor is 5 GB; historical low-disk exceptions are not current grants.

@@ -162,6 +162,39 @@ class TaskCloseoutTests(unittest.TestCase):
         self.receipt["scope"]["owned_paths"].append("ignored-owned.txt")
         self.refuses("owned scope has ignored untracked data")
 
+    def test_record_only_scope_preserves_identified_ignored_foreign_data(self):
+        foreign = self.repo / "foreign-ignored.txt"
+        (self.repo / ".git/info/exclude").write_text("foreign-ignored.txt\n")
+        foreign.write_text("another task's preserved ignored data\n")
+        self.receipt["scope"]["owned_paths"] = []
+        self.receipt["scope"]["no_owned_source_reason"] = "This task owns only its record and evidence."
+        self.receipt["scope"]["foreign_preserved"] = [self.file_identity(foreign, foreign.name)]
+        self.passes("ready")
+        self.archive()
+        self.passes("closed")
+        self.assertEqual(foreign.read_text(), "another task's preserved ignored data\n")
+
+    def test_empty_owned_scope_requires_reason(self):
+        self.receipt["scope"]["owned_paths"] = []
+        self.refuses("expected nonempty text")
+        for reason in ("", None):
+            with self.subTest(reason=reason):
+                self.receipt["scope"]["no_owned_source_reason"] = reason
+                self.refuses("expected nonempty text")
+
+    def test_record_only_scope_still_refuses_unknown_dirty_source(self):
+        self.receipt["scope"]["owned_paths"] = []
+        self.receipt["scope"]["no_owned_source_reason"] = "This task owns only metadata."
+        (self.repo / "unknown-source.py").write_text("unclaimed source change\n")
+        self.refuses("unknown ownership of dirty path: unknown-source.py")
+
+    def test_no_owned_source_reason_is_forbidden_with_owned_paths(self):
+        for reason in ("Source path remains owned.", "", None):
+            with self.subTest(reason=reason):
+                self.receipt["scope"]["no_owned_source_reason"] = reason
+                self.refuses("reason is valid only when owned_paths is empty")
+                del self.receipt["scope"]["no_owned_source_reason"]
+
     def test_foreign_overlap_and_changed_foreign_identity_refuse(self):
         self.passes()
         self.receipt["scope"]["foreign_preserved"] = [self.file_identity(self.repo / "owned.txt", "owned.txt")]

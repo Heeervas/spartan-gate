@@ -26,8 +26,11 @@ keys and the tested synthetic example are owned by
 `scripts/check_task_closeout.py` and `scripts/test_task_closeout.py`. Use one
 embedded `task-closeout:v1` JSON receipt for a package; do not add a second state
 file. Ready verifies a vacant intended archive; closed verifies terminal metadata,
-actual archive/resources/Git and references. Evidence hashes prove file identity,
-not the truth of human/native cessation or recovery assertions. This is local
+actual archive/resources/Git and references. A record/evidence-only task with no
+currently owned source paths must state `scope.no_owned_source_reason` explicitly;
+this is forbidden with nonempty `owned_paths`. Every dirty source identity must
+still be classified and preserved, including declared ignored foreign files.
+Evidence hashes prove file identity, not human/native cessation or recovery. This is local
 cooperative workflow enforcement, not remote CI or an OS security boundary.
 
 
@@ -364,9 +367,10 @@ git diff --check
 ```
 
 The runner validates policy, collects fresh metrics, then reports the same
-baseline/all-scope TOP snapshot. Canonical artifacts remain ignored at
-`.agents/oxlint-metrics.json` and `.agents/pi-route-quality.json`; retain raw
-command receipts under ignored `.agents/quality-receipts/` when freezing a batch.
+baseline/all-scope TOP snapshot. Canonical generated reports remain ignored at
+`.cache/quality/oxlint-metrics.json` and `.cache/quality/pi-route-quality.json`.
+Retain required frozen raw receipts in the owning task evidence package outside
+`.agents/`; these reports are reusable outputs, not a second execution owner.
 Recollect immediately before the report after every coherent source edit.
 A scoped PASS_WITH_EXCEPTION is not product, infrastructure or release acceptance.
 Existing/new debt may still fail on subsequent production edits: report exact
@@ -381,8 +385,8 @@ This does not replace the final all-scope feature gate. Use the same immutable
 baseline and policy, and verify staged source bytes match the tested/reviewed ones:
 
 ```sh
-python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/collect_oxlint_metrics.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope index --oxlint ./node_modules/.bin/oxlint --output .agents/oxlint-metrics.json
-python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/quality_report.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope index --level top --config .agents/quality.yaml --format json --output .agents/pi-route-quality.json
+python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/collect_oxlint_metrics.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope index --oxlint ./node_modules/.bin/oxlint --output .cache/quality/oxlint-metrics.json
+python3 "$HOME/.agents/skills/shared/builder-assurance/scripts/quality_report.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope index --level top --config .agents/quality.yaml --format json --output .cache/quality/pi-route-quality.json
 ```
 
 ## Portable native planning entrypoint
@@ -448,22 +452,17 @@ normalizer; its live continuation acceptance is still incomplete after the bound
 2026-10-24 metadata follow-up. Do not equate the synthetic replay green with
 strict upstream input-schema acceptance.
 
-For the task worktree, retain the stronger inherited policy unchanged as an ignored
-frozen input `.agents/route-standard-inputs/quality.yaml` (file SHA-256
-`18b4582cb69dec698867cff5cb6d2837e9a08531438ba28e75bb4d84545da5db`). The
-original dirty policy is not task-owned source. TOP preflight/final reporting use
-that exact input in addition to the ordinary runner; do not substitute the narrower
-committed copy, change baseline/thresholds or self-approve exceptions. Reuse only
-explicit existing dependency inputs; an ignored `node_modules/.bin` directory link
-may expose pinned Oxlint without changing shared packages.
-
-```sh
-assurance_dir="${BUILDER_ASSURANCE_DIR:-$HOME/.agents/skills/shared/builder-assurance}"
-assurance_python="${BUILDER_ASSURANCE_PYTHON:-python3}"
-"$assurance_python" "$assurance_dir/scripts/validate_quality_policy.py" .agents/route-standard-inputs/quality.yaml
-"$assurance_python" "$assurance_dir/scripts/collect_oxlint_metrics.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope all --oxlint ./node_modules/.bin/oxlint --output .agents/oxlint-metrics.json
-"$assurance_python" "$assurance_dir/scripts/quality_report.py" --repo . --base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope all --level top --config .agents/route-standard-inputs/quality.yaml --format json --output .agents/pi-route-quality.json
-```
+The historical 2026-10-24 task used a stronger frozen inherited policy, SHA-256
+`18b4582cb69dec698867cff5cb6d2837e9a08531438ba28e75bb4d84545da5db`.
+Its original task-worktree recipe is preserved with `route-standard-responses`
+evidence, not a current execution prerequisite. The exact policy survives in both
+retained replay-portability dirty-source snapshots and remains unchanged; its
+original metric binding is not the new `.cache/quality/` binding. Neither the old
+recipe nor a mixed old-policy/new-output variant may run in this checkout.
+Historical reconstruction requires its own isolated authorized inputs and binding
+review, never substitution of a weaker policy. New work uses the current reviewed
+repository policy and required runner above, without changing the baseline,
+thresholds or exception authority.
 
 A base RED check can set fixture-only `ROUTE_FIXTURE_SOURCE` to an explicit pristine
 `infra/spartan-route` snapshot of the starting commit and run the two `unmodified

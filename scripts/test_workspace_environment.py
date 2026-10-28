@@ -129,6 +129,11 @@ fi
         self.log.unlink()
         self.assertEqual(len(calls), 3)
         self.assertIn("--base 75651cc0c5baa1db5a6523b790564988698f2a43 --scope all --level top", calls[-1])
+        self.assertIn("--output .cache/quality/oxlint-metrics.json", calls[1])
+        self.assertIn("--output .cache/quality/pi-route-quality.json", calls[2])
+        self.assertTrue((self.root / ".cache/quality").is_dir())
+        self.assertNotIn(".agents/oxlint-metrics.json", "\n".join(calls))
+        self.assertNotIn(".agents/pi-route-quality.json", "\n".join(calls))
         return calls
 
     def test_quality_prefers_new_then_legacy_and_preserves_override(self):

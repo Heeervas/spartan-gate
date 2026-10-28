@@ -27,8 +27,10 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
   source/private installation candidates. Preserve exact images, keys, data and
   scoped rollback; no remove-orphans or volume deletion. Historical preparation
   and activation entries do not prove every latest candidate is deployed.
-- **ROUTE-001** — Dashboard-speed quiet-window activation and browser acceptance:
-  retain candidate/rollback and do not interrupt in-flight requests.
+- **ROUTE-001** — Reconcile dashboard-speed parent recreation and finish
+  deployed-asset/browser readback. [Task](../tasks/route-dashboard-speed/task.md).
+  Preserve candidate/rollback and the recorded `quiet_window_observed:false`;
+  no fresh service action or interruption is implied.
 
 ## Backlog
 
@@ -41,6 +43,3 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
 - **TTS-001** — Evaluate a fixed Spanish-from-Spain Pocket TTS voice from a
   consented, suitably licensed recording and private versioned safetensors state.
   Preserve offline read-only runtime, no dynamic uploads/provider fallback/rebuild.
-- **LEGACY-001** — Reconcile review/pending historical task families in envelope
-  `tasks/`. Each package owns its exact next action and authority; no age-based
-  archive or automatic implementation. Unknown native ownership remains a blocker.

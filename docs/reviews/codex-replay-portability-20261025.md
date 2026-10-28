@@ -6,14 +6,16 @@ Parent owns acceptance. Implementation follows the independently reviewed plan
 (`PASS_WITH_RESIDUAL_RISK`) to retain unmodified standard Responses clients and
 server-owned opaque receipts while restoring subscription pool failover. Independent
 revision-1 source review returned `PASS_WITH_NOTES`, with no blocking source/evidence
-issues, and parent accepted the source. A local commit is now authorized but has
-not been performed; parent will handle it after final documentation review.
+issues, and parent accepted the source. The final revision-2 closeout subsequently
+committed the accepted source as `bedef4627330663764738a5d1f60e593f4f554fc`.
+This resolves the earlier pre-commit wording; it does not establish deployment.
 No build, deployment, restart, push, new live inference, production config/DB
 mutation or Pi production change is authorized by this closeout.
 
 Starting source: `49b92d4c86b23412732e9fbad404e88f6040c514`. The independently
 reviewed revision-1 patch, file hashes, environment and raw receipts are retained
-unchanged under the ignored `.agents/quality-receipts/replay-portability/` directory.
+unchanged in private task `codex-replay-portability`, under
+`evidence/replay-portability/` after readable relocation.
 Revision-1 patch SHA-256:
 `d2d8923b6035eb4a8551be51cadbdbe0fb09cd323cde2f0f9e06f3e6f3f24fda`;
 manifest SHA-256:

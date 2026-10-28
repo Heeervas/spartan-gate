@@ -88,6 +88,14 @@ local configuration and Docker metadata. Do not paste private renders in logs.
 
 ## Mandatory pristine-source integration
 
+Reusable operator-provisioned program inputs belong under `.cache/test-inputs/native/`, not `.agents/`. The documented layout is:
+
+- Hermes source: `.cache/test-inputs/native/hermes/`, with `tools/skills_sync.py` inside it; optional archive: `.cache/test-inputs/native/hermes.tar.gz`.
+- Camofox source: `.cache/test-inputs/native/camofox/`; optional archive: `.cache/test-inputs/native/camofox.tar.gz`.
+- Compatible Caddy executable: `.cache/test-inputs/native/caddy`; optional Docker image archive: `.cache/test-inputs/native/caddy-image.tar`.
+
+These are expected paths, not a claim that the inputs exist in every checkout. Set only variables for inputs that you have explicitly provisioned and verified. For the complete native-source suite, bind `HERMES_UPSTREAM_SOURCE` to the Hermes source directory, `HERMES_SYNC_SOURCE` to its `tools/skills_sync.py`, and `PYTHONPATH` to the Hermes source root. Also bind `CAMOFOX_UPSTREAM_SOURCE` to its source directory and `CAMOFOX_EXPRESS_MODULE` to the installed matching Express module. The native edge suite uses `CADDY_BIN` for the compatible executable. CI provisions these inputs in the same `.cache/test-inputs/native/` layout.
+
 Provide **unmodified program source**, not installed patched source or a profile:
 
 - Hermes commit `e8c97320ac8691d4de92af49f98459f9ef9ddb08`, corresponding to

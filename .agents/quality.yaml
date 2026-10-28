@@ -58,7 +58,7 @@ adapters:
   type: external_json
   implementation: external_metrics_v2
   paths:
-  - .agents/oxlint-metrics.json
+  - .cache/quality/oxlint-metrics.json
   languages:
   - javascript
   - typescript

@@ -13,7 +13,8 @@ repository-relative files/directories (not globs). Unknown fields fail.
 Required objects/keys:
  version=1, task_id, owner, repository={common_dir,head},
  outcome={disposition:accepted|rejected|superseded,evidence},
- scope={owned_paths:[path,...],foreign_preserved:[{path,sha256},...]},
+ scope={owned_paths:[path,...],foreign_preserved:[{path,sha256},...],
+        no_owned_source_reason:text only when owned_paths is empty},
  writers={state:ceased,authority,observed_at,evidence},
  consumers={state:reconciled,authority,observed_at,evidence},
  recovery={state:verified,evidence}, promotions={state:reconciled,reason},
@@ -37,8 +38,11 @@ Required objects/keys:
 Both phases require a registered checkout, exact HEAD/common directory, no
 Git locks, classified dirt, clean owned scope (including ignored untracked files),
 evidence readback, no unresolved flags, and attributable writer/consumer
-assertions. Observations must have a timezone, must not be in the future, and
-must not predate package updated_at.
+assertions. A record/evidence-only package may declare an empty owned_paths list
+with no_owned_source_reason; this skips only the owned-scope ignored-file query.
+Every dirty source identity still requires classification, and explicitly
+identified ignored foreign files remain protected. Observations must have a
+timezone, must not be in the future, and must not predate package updated_at.
 Ready permits intended resource removal and reference targets not yet present;
 archive placement must be vacant (or already this package). Closed also requires
 removed resources absent/unregistered, retained resources present, references
@@ -238,12 +242,18 @@ def foreign_identity(item, repo):
 
 
 def check_scope(scope, repo):
-    fields(scope, ("owned_paths", "foreign_preserved"))
-    owned = [relative(path) for path in sequence(scope["owned_paths"], nonempty=True)]
+    fields(scope, ("owned_paths", "foreign_preserved"), ("no_owned_source_reason",))
+    owned = [relative(path) for path in sequence(scope["owned_paths"])]
+    if owned:
+        require("no_owned_source_reason" not in scope,
+                "no_owned_source_reason is valid only when owned_paths is empty")
+    else:
+        text(scope.get("no_owned_source_reason"))
     require(all(inside((repo / path).resolve(), repo) for path in owned), "owned path escapes checkout")
-    ignored = git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
-                  *(f":(literal){path}" for path in owned))
-    require(not ignored, "owned scope has ignored untracked data")
+    if owned:
+        ignored = git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
+                      *(f":(literal){path}" for path in owned))
+        require(not ignored, "owned scope has ignored untracked data")
     foreign = set()
     for item in sequence(scope["foreign_preserved"]):
         name = relative(item.get("path"))

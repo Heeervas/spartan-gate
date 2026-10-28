@@ -90,8 +90,15 @@ stamping/raw-replay bridge against the new HTTP handler. Python 3.14 emits
 resource warnings in the full-suite fixtures; they are retained in raw logs, not hidden
 or treated as proof of resource cleanup. New owned subprocess fixtures are reaped.
 
-The command owner is `.agents/validation.md`. Raw task evidence is ignored and
-local under `.agents/quality-receipts/route-standard/`:
+The current command owner is `.agents/validation.md`. The original raw artifact
+location was `.agents/quality-receipts/route-standard/`; that directory was already
+absent during workspace reconciliation. The historical report and preserved source
+remain evidence, but the raw files listed below are not asserted recovered.
+The original stronger-policy recipe is preserved with the private
+`route-standard-responses` task; its exact frozen policy survives in the retained
+replay-portability snapshots. The old task's writer/worktree and ignored-input
+disposition still require attributable reconciliation, not an inference from
+an absent path. Historical artifact names and reported purposes follow:
 
 - `sdk-base-final-red.log`: the final decisive SDK cases against a pristine base
   Route source snapshot. First turns succeed; both encrypted continuations fail

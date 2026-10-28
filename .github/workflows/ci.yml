@@ -44,23 +44,23 @@ jobs:
         run: npm run test:hermes
       - name: Provision pinned native Caddy for operator fixtures
         run: &provision-caddy |
-          mkdir -p .agents/native
+          mkdir -p .cache/test-inputs/native
           docker pull caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
-          docker image save caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794 -o .agents/native/caddy-image.tar
+          docker image save caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794 -o .cache/test-inputs/native/caddy-image.tar
           python3 - <<'PY'
           import io, json, pathlib, tarfile
-          with tarfile.open('.agents/native/caddy-image.tar') as image:
+          with tarfile.open('.cache/test-inputs/native/caddy-image.tar') as image:
               manifest = json.load(image.extractfile('manifest.json'))
               for layer in manifest[0]['Layers']:
                   with tarfile.open(fileobj=io.BytesIO(image.extractfile(layer).read())) as archive:
                       for member in archive:
                           if member.name.lstrip('./') == 'usr/bin/caddy':
-                              target = pathlib.Path('.agents/native/caddy')
+                              target = pathlib.Path('.cache/test-inputs/native/caddy')
                               target.write_bytes(archive.extractfile(member).read())
                               target.chmod(0o755)
           PY
-          echo "CADDY_BIN=$PWD/.agents/native/caddy" >> "$GITHUB_ENV"
-          .agents/native/caddy version
+          echo "CADDY_BIN=$PWD/.cache/test-inputs/native/caddy" >> "$GITHUB_ENV"
+          .cache/test-inputs/native/caddy version
       - name: Operator helpers and full public Compose matrix
         run: npm run test:scripts
       - name: Reader, edge and Camofox fixtures
@@ -102,19 +102,19 @@ jobs:
           echo "$PWD/.venv/test/bin" >> "$GITHUB_PATH"
       - name: Fetch immutable public program sources and verify archive bytes
         run: |
-          mkdir -p .agents/native/hermes .agents/native/camofox
-          curl -fL --retry 2 https://codeload.github.com/NousResearch/hermes-agent/tar.gz/e8c97320ac8691d4de92af49f98459f9ef9ddb08 -o .agents/native/hermes.tar.gz
-          curl -fL --retry 2 https://codeload.github.com/jo-inc/camofox-browser/tar.gz/771b610a7b5994759c138b912741de58b0edd588 -o .agents/native/camofox.tar.gz
-          echo '64f49146525ad21e63e4a9b0cf3418a35ead2173989a94c7b5e1304078625cf9  .agents/native/hermes.tar.gz' | sha256sum -c -
-          echo '8fe0ae67988f29ee9da75c55aa277a8c2744c3cedbc53cdc53f2f1a04b0ee0a8  .agents/native/camofox.tar.gz' | sha256sum -c -
-          tar -xzf .agents/native/hermes.tar.gz --strip-components=1 -C .agents/native/hermes
-          tar -xzf .agents/native/camofox.tar.gz --strip-components=1 -C .agents/native/camofox
-          npm ci --prefix .agents/native/camofox --ignore-scripts --omit=dev --no-audit --no-fund
-          echo "HERMES_UPSTREAM_SOURCE=$PWD/.agents/native/hermes" >> "$GITHUB_ENV"
-          echo "HERMES_SYNC_SOURCE=$PWD/.agents/native/hermes/tools/skills_sync.py" >> "$GITHUB_ENV"
-          echo "PYTHONPATH=$PWD/.agents/native/hermes" >> "$GITHUB_ENV"
-          echo "CAMOFOX_UPSTREAM_SOURCE=$PWD/.agents/native/camofox" >> "$GITHUB_ENV"
-          echo "CAMOFOX_EXPRESS_MODULE=$PWD/.agents/native/camofox/node_modules/express" >> "$GITHUB_ENV"
+          mkdir -p .cache/test-inputs/native/hermes .cache/test-inputs/native/camofox
+          curl -fL --retry 2 https://codeload.github.com/NousResearch/hermes-agent/tar.gz/e8c97320ac8691d4de92af49f98459f9ef9ddb08 -o .cache/test-inputs/native/hermes.tar.gz
+          curl -fL --retry 2 https://codeload.github.com/jo-inc/camofox-browser/tar.gz/771b610a7b5994759c138b912741de58b0edd588 -o .cache/test-inputs/native/camofox.tar.gz
+          echo '64f49146525ad21e63e4a9b0cf3418a35ead2173989a94c7b5e1304078625cf9  .cache/test-inputs/native/hermes.tar.gz' | sha256sum -c -
+          echo '8fe0ae67988f29ee9da75c55aa277a8c2744c3cedbc53cdc53f2f1a04b0ee0a8  .cache/test-inputs/native/camofox.tar.gz' | sha256sum -c -
+          tar -xzf .cache/test-inputs/native/hermes.tar.gz --strip-components=1 -C .cache/test-inputs/native/hermes
+          tar -xzf .cache/test-inputs/native/camofox.tar.gz --strip-components=1 -C .cache/test-inputs/native/camofox
+          npm ci --prefix .cache/test-inputs/native/camofox --ignore-scripts --omit=dev --no-audit --no-fund
+          echo "HERMES_UPSTREAM_SOURCE=$PWD/.cache/test-inputs/native/hermes" >> "$GITHUB_ENV"
+          echo "HERMES_SYNC_SOURCE=$PWD/.cache/test-inputs/native/hermes/tools/skills_sync.py" >> "$GITHUB_ENV"
+          echo "PYTHONPATH=$PWD/.cache/test-inputs/native/hermes" >> "$GITHUB_ENV"
+          echo "CAMOFOX_UPSTREAM_SOURCE=$PWD/.cache/test-inputs/native/camofox" >> "$GITHUB_ENV"
+          echo "CAMOFOX_EXPRESS_MODULE=$PWD/.cache/test-inputs/native/camofox/node_modules/express" >> "$GITHUB_ENV"
       - name: Native patch chains and integrations (missing inputs fail)
         run: |
           npm run test:hermes:native

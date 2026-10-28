@@ -8,7 +8,10 @@ All notable changes to Spartan Gate are documented here.
   inline receipts. Refuse incomplete ownership, evidence, writer, recovery,
   workspace and archive claims while preserving identified foreign changes.
   Keep dependency environments checkout-owned outside agent instruction sources.
-  This workflow gate does not authorize cleanup, deployment or native operations.
+  Require an explicit no-owned-source reason for record-only archival scopes;
+  preserve foreign identity checks. Put generated reports and pinned native test
+  inputs in checkout caches, not agent instructions. This workflow gate does not
+  authorize cleanup, deployment or native operations.
 
 - Add optional per-account weekly and five-hour consumed-percent caps beside
   the Codex quota rings. Pause new routing at either configured limit and resume

@@ -166,8 +166,9 @@ separately authorized activation.
   40sessions/~101MB and seven repetitions; base/candidate payload digests match.
   Candidate medians slightly slower; no performance gain or production latency
   guarantee claimed. Live contention/OS-cold timing remains untested.
-- Final evidence is under ignored `.agents/remediation-evidence/final/` and
-  per-owner directories. It contains local paths and is not publishable verbatim.
+- Final evidence is retained by private task `source-remediation-20261022`,
+  under `evidence/final/` and its per-owner evidence directories after readable
+  relocation. It contains local paths and is not publishable verbatim.
   Source/test/docs are tracked; native source archives and dependency caches are
   reproducible from pinned provisioning documented in CI. Keep receipts locally.
 - Status `done` refers to the authorized source remediation/retirement, not

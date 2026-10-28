@@ -30,8 +30,9 @@ three pre-existing untracked runtime notes are included in these commits.
 Coordinator reran the consolidated candidate after workers completed. The last
 source deltas (ports regression and benchmark) received focused independent
 review and fresh full affected-suite runs. Raw results and candidate manifests
-are retained locally under ignored `.agents/remediation-evidence/`; do not copy
-those files publicly without sanitizing paths. No stale intermediate failure is
+are retained locally by private task `source-remediation-20261022`, in its
+per-owner evidence directories after readable relocation; do not copy those
+files publicly without sanitizing paths. No stale intermediate failure is
 counted as a final pass.
 
 | Gate | Result |
