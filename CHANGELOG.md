@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add a read-only, task-scoped local closeout verifier with package and small
+  inline receipts. Refuse incomplete ownership, evidence, writer, recovery,
+  workspace and archive claims while preserving identified foreign changes.
+  Keep dependency environments checkout-owned outside agent instruction sources.
+  This workflow gate does not authorize cleanup, deployment or native operations.
+
 - Add optional per-account weekly and five-hour consumed-percent caps beside
   the Codex quota rings. Pause new routing at either configured limit and resume
   only after fresh provider readings confirm all capped windows are below their
