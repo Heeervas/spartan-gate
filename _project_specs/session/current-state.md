@@ -7,11 +7,11 @@ owning task evidence, including failures and explicit limits.
 
 ## Authority and active integration
 
-- Workspace lifecycle standardization: complete-target local source/migration
-  authority; execution and blockers in
-  `../../../tasks/workspace-lifecycle-standardization/task.md`.
-  No push, service change, build, native workspace force-cleanup or credential
-  operation is included. Manual worktrees require owner cessation confirmation.
+- Workspace/lifecycle source and historical reconciliation are accepted.
+  Final closeout, evidence and retained limits are owned by
+  `../../../tasks/archive/2026/workspace-lifecycle-standardization/task.md`.
+  No push, service/build, native-disposal or credential authority follows.
+  New manual worktrees still require task ownership and attributable cessation.
 - Canonical source remains this checkout. Manual task placement exception is
   envelope `.worktrees/<id>/`; Ultimate/Codex keep native storage and controls.
 - Foreign Route speed implementation and Hermes notes remain preserved, not task-owned.

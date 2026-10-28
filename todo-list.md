@@ -6,8 +6,6 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
 
 ## Active
 
-- **WS-001** — Complete workspace lifecycle standardization and actual historical
-  reconciliation. [Task](../tasks/workspace-lifecycle-standardization/task.md).
 - **HERMES-001** — Refresh Hermes main and finish runtime remediation.
   [Task](../tasks/hermes-log-remediation/task.md). Use the native refresh entry;
   rebaseline October accepted source, pin upstream/image, reconcile patches,
