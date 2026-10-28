@@ -25,7 +25,12 @@ sh .ultimate/run.sh python3 -m unittest discover -s infra/reader -p 'test_*.py'
 
 For a manual retry in a worktree, set `ULTIMATE_SOURCE` to the original checkout
 and run `sh -e .ultimate/worktree-setup.sh`. Dependencies live in ignored
-`node_modules/` and `.agents/test-venv/`, not shared writable source directories.
+`node_modules/` and `.venv/test/`, not shared writable source directories.
+The wrapper also refuses symlinked `.venv` or `.venv/test` directories. A Node
+executable link inside the local environment remains supported. Setup does not
+move existing environments; migrate them separately with stopped consumers and
+same-checkout absolute-shebang compatibility, or provision a fresh environment
+only when authorized. Do not share writable environments between worktrees.
 No automatic checks, push or deployment are configured on landing.
 
 ## Explicit remaining inputs

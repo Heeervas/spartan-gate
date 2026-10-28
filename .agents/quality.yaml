@@ -19,6 +19,8 @@ scope:
   - infra/tool-access/**
   - infra/spartan-route/**
   - scripts/check-pi-route-quality.sh
+  - .ultimate/run.sh
+  - .ultimate/worktree-setup.sh
   - scripts/*.py
   - scripts/configure-shared-tools.mjs
   - scripts/test_configure_shared_tools.mjs

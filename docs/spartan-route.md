@@ -760,7 +760,9 @@ returned by the Config API. Query-string bearer tokens remain unsupported.
   the selector and app-server scaffolding, but the upstream multi-agent
   integration is still under review. Spartan Route therefore fails closed
   instead of translating ordinary OpenAI-compatible requests into `max`.
-  The reviewed implementation plan is `plans/ultra-bridge/plan.md`.
+  Implementation remains deferred; the current release supports `max` and
+  explicitly rejects `ultra`. Operator-local research is not a public setup or
+  validation prerequisite.
 - Balance-loader scheduling, early activation, manual slot activation,
   cold-migration approval flow, cache-miss breaker, alerting, and the full
   analysis dashboard.

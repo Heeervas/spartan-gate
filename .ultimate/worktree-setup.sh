@@ -10,7 +10,7 @@ source_root=$(cd "$ULTIMATE_SOURCE" && pwd -P) || fail 'source checkout path is 
 [ "$(pwd -P)" != "$source_root" ] || fail 'run in a worktree, not the source checkout'
 [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] || fail 'run at the worktree root'
 [ -f package-lock.json ] && [ -f infra/spartan-route/requirements.txt ] && [ -f .agents/test-requirements.txt ] || fail 'missing tracked dependency inputs'
-for path in .agents .agents/test-venv node_modules; do
+for path in .agents .venv .venv/test node_modules; do
     [ ! -L "$path" ] || fail "refusing shared/symlinked $path"
 done
 node22=$(command -v node-22 || command -v node || true)
@@ -18,17 +18,17 @@ node22=$(command -v node-22 || command -v node || true)
 [ "$("$node22" -p 'process.versions.node.split(".")[0]')" = 22 ] || fail 'Node 22 is required (node-22 or node on PATH)'
 command -v npm >/dev/null || fail 'npm is required'
 python3 -c 'import sys, venv, ensurepip; assert sys.version_info[:2] == (3, 14), "Python 3.14 is required"'
-if [ -e .agents/test-venv ]; then
-    [ -x .agents/test-venv/bin/python ] || fail 'existing test-venv is incomplete; remove it explicitly before retrying'
-    .agents/test-venv/bin/python -c 'import sys; assert sys.version_info[:2] == (3, 14), "existing test-venv must use Python 3.14"'
+if [ -e .venv/test ]; then
+    [ -x .venv/test/bin/python ] || fail 'existing test environment is incomplete; remove it explicitly before retrying'
+    .venv/test/bin/python -c 'import sys; assert sys.version_info[:2] == (3, 14), "existing test environment must use Python 3.14"'
 fi
 
 # Each checkout owns its writable dependencies. Only the Node executable is linked.
-if [ ! -d .agents/test-venv ]; then
-    python3 -m venv .agents/test-venv
+if [ ! -d .venv/test ]; then
+    python3 -m venv .venv/test
 fi
-ln -sf "$node22" .agents/test-venv/bin/node
-export PATH="$PWD/.agents/test-venv/bin:$PATH"
+ln -sf "$node22" .venv/test/bin/node
+export PATH="$PWD/.venv/test/bin:$PATH"
 npm ci --ignore-scripts --no-audit --no-fund
 python -m pip install --disable-pip-version-check -r .agents/test-requirements.txt
 printf '%s\n' 'Source-only setup ready. Use sh .ultimate/run.sh <command> for Node 22 and isolated Python.'

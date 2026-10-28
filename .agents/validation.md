@@ -1,5 +1,36 @@
 # Validation authority
 
+## Workspace lifecycle and environment migration
+
+Independent `reviewer` (GPT-6.1 Sol high, 2026-10-28) approved additive
+`core_source_v1` inventory coverage for exactly `.ultimate/run.sh` and
+`.ultimate/worktree-setup.sh`. Immutable baseline, TOP floor, adapters, thresholds
+and existing exceptions are unchanged. Inventory is not shell semantic proof:
+run shell syntax, synthetic setup/refusal behavior and independent candidate
+review separately. Environments remain checkout-owned; no shared writable venvs.
+
+Mandatory local task-closeout acceptance (read-only; never run a cleanup mode):
+
+```sh
+python3 -m unittest scripts.test_task_closeout scripts.test_workspace_environment -v
+python3 scripts/check_task_closeout.py --repo "$PWD" --task "$TASK_PACKAGE/task.md" --phase ready
+# After authorized readable archive/resource/reference disposition:
+python3 scripts/check_task_closeout.py --repo "$PWD" --task "$ARCHIVED_PACKAGE/task.md" --phase closed
+# Genuinely small work without a package uses the same compact JSON contract:
+python3 scripts/check_task_closeout.py --repo "$PWD" --inline "$INLINE_RECEIPT" --phase closed
+```
+
+Adopted project entries must invoke the applicable check before terminal closure.
+Exit 1 means incomplete/unsafe closure, not a cleanup instruction. Exact receipt
+keys and the tested synthetic example are owned by
+`scripts/check_task_closeout.py` and `scripts/test_task_closeout.py`. Use one
+embedded `task-closeout:v1` JSON receipt for a package; do not add a second state
+file. Ready verifies a vacant intended archive; closed verifies terminal metadata,
+actual archive/resources/Git and references. Evidence hashes prove file identity,
+not the truth of human/native cessation or recovery assertions. This is local
+cooperative workflow enforcement, not remote CI or an OS security boundary.
+
+
 ## Current-stack integration and retirement
 
 Public mirror: `docs/development.md`. Existing policy baseline, TOP floor,
@@ -8,8 +39,8 @@ Local minimal host requirements are pinned in `.agents/test-requirements.txt`;
 public CI explicitly provisions the same pins because `.agents/` is ignored.
 
 ```sh
-.agents/quality-venv/bin/python -m pip install -r .agents/test-requirements.txt
-export PATH="$PWD/.agents/quality-venv/bin:$PATH"
+.venv/quality/bin/python -m pip install -r .agents/test-requirements.txt
+export PATH="$PWD/.venv/quality/bin:$PATH"
 npm ci --ignore-scripts
 npm run test:route
 npm run test:hermes
@@ -86,8 +117,8 @@ unsealed results are not safe-fixture acceptance; see the feature review receipt
 Pi's actual web provider is a required public program input, not an active home:
 
 ```sh
-npm install --prefix .agents/pi-web-test --ignore-scripts --no-audit --no-fund pi-web-access@0.44.0
-export PI_WEB_ACCESS_EXTENSION="$PWD/.agents/pi-web-test/node_modules/pi-web-access/dist/index.js"
+npm install --prefix .cache/test-inputs/pi-web-test --ignore-scripts --no-audit --no-fund pi-web-access@0.44.0
+export PI_WEB_ACCESS_EXTENSION="$PWD/.cache/test-inputs/pi-web-test/node_modules/pi-web-access/dist/index.js"
 npm run test:tools
 PI_CODING_AGENT_DIR="$PI13_PACKAGE" PI_TEST_PACKAGE_DIR="$PI13_PACKAGE" npm run test:pi
 PI_CODING_AGENT_DIR="$PI14_PACKAGE" PI_TEST_PACKAGE_DIR="$PI14_PACKAGE" npm run test:pi
@@ -275,7 +306,7 @@ in the root development dependencies. The canonical measurement dependency is
 builder-assurance v1.1.0 under `$HOME/.agents/skills/shared/builder-assurance`;
 `BUILDER_ASSURANCE_DIR` may select an explicitly provisioned equivalent package.
 Provision its declared pinned Python requirements in the repository-local ignored
-`.agents/quality-venv`. The runner automatically selects that environment when
+`.venv/quality`. The runner automatically selects that environment when
 present; `BUILDER_ASSURANCE_PYTHON` explicitly overrides it. Without either it
 uses `python3`, which must already satisfy the declared requirements. Missing
 dependencies are failures, not skipped checks. No global installation is needed.
@@ -283,8 +314,8 @@ dependencies are failures, not skipped checks. No global installation is needed.
 Run from the repository root:
 
 ```sh
-python3 -m venv .agents/quality-venv
-.agents/quality-venv/bin/python -m pip install -r "$HOME/.agents/skills/shared/builder-assurance/requirements.txt"
+python3 -m venv .venv/quality
+.venv/quality/bin/python -m pip install -r "$HOME/.agents/skills/shared/builder-assurance/requirements.txt"
 npm ci --ignore-scripts
 npm run pi:quality
 python3 infra/spartan-route/run_tests.py
@@ -327,7 +358,7 @@ Focused prerequisite checks (no images, stack starts or private configuration):
 
 ```sh
 bash -n scripts/check-pi-route-quality.sh
-.agents/quality-venv/bin/python "$HOME/.agents/skills/shared/builder-assurance/scripts/validate_quality_policy.py" .agents/quality.yaml
+.venv/quality/bin/python "$HOME/.agents/skills/shared/builder-assurance/scripts/validate_quality_policy.py" .agents/quality.yaml
 npm run pi:quality
 git diff --check
 ```

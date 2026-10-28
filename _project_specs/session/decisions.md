@@ -1,5 +1,17 @@
 # Decisions
 
+## SG-D-20261028 — Task lifecycle and knowledge ownership
+
+- Adopt one envelope task package for material work, a source checkout plus
+  envelope `.worktrees/<id>/` manual placement exception, and readable closed
+  archives. Native-managed workspaces retain native controls and storage.
+- Keep priority, current cross-task state, durable choices, reusable lessons and
+  task execution in their distinct existing owners; preserve unique history.
+- Require canonical workspace closeout and the repository read-only verifier
+  before terminal closure. Identified foreign dirt is preserved, not swept.
+- Recovery, ownership and actual resource/readback evidence govern cleanup; age
+  does not. Local source acceptance grants no deployment or privileged action.
+
 ## 2026-10-26 — Shared managed-tool source contract
 
 - Keep host Pi native and services in the existing Gate stack. Reuse Pi's

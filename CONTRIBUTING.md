@@ -9,14 +9,16 @@ with the security boundaries in [docs/security.md](docs/security.md).
 git clone https://github.com/Heeervas/spartan-gate.git
 cd spartan-gate
 npm ci --ignore-scripts
-python3 -m venv .agents/test-venv
-.agents/test-venv/bin/python -m pip install -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.1 packaging==26.3 requests==2.32.5 httpx==0.28.1 ruamel.yaml==0.18.16
-export PATH="$PWD/.agents/test-venv/bin:$PATH"
+python3 -m venv .venv/test
+.venv/test/bin/python -m pip install -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.1 packaging==26.3 requests==2.32.5 httpx==0.28.1 ruamel.yaml==0.18.16
+export PATH="$PWD/.venv/test/bin:$PATH"
 ```
 
 Use Node.js 22, Python 3.14 and Docker with the Compose plugin. See
 [Development](docs/development.md) for the host requirements fallback in a public
 clone, isolated Pi loader provisioning and mandatory pristine-source gates.
+Keep writable dependencies checkout-local; do not symlink environments or
+`node_modules` to another worktree.
 
 ## Before A Pull Request
 

@@ -123,7 +123,7 @@ class IsolatedFixture:
         self.receipt["sourceHashes"] = {name: digest(code / name) for name in sorted(os.listdir(code))}
         shutil.copyfile(self.patched_server_source, code / "server.js")
         (code / "server.js").chmod(0o644)
-        node = str(ROOT / ".agents/test-venv/bin/node")
+        node = str(ROOT / ".venv/test/bin/node")
         run([node, "patch-server.js"], cwd=code)
         once = digest(code / "server.js")
         run([node, "patch-server.js"], cwd=code)
@@ -383,7 +383,7 @@ class IsolatedFixture:
                "PI_SPARTAN_TOOLS_CONFIG": str(state / "agent/spartan-tools.json")}
         try:
             for mode in ("first", "resume", "fork", "cleanup"):
-                command = [str(ROOT / ".agents/test-venv/bin/node"), str(helper),
+                command = [str(ROOT / ".venv/test/bin/node"), str(helper),
                            "--connection", str(connection), "--state-dir", str(state), "--mode", mode]
                 try:
                     output = run(command, cwd=ROOT, env=env, timeout=180)

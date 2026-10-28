@@ -1,121 +1,46 @@
 # Task List
 
-Last updated: 2026-10-22
+Last reconciled: 2026-10-28. Priority and outstanding outcomes only.
+Execution status belongs in the linked task record once a package exists.
+A newly confirmed P0/P1 interrupts this order. No completed-work log here.
 
-Work from the top down. A newly confirmed P0 or P1 interrupts this order.
+## Active
 
-## Completed
+- **WS-001** — Complete workspace lifecycle standardization and actual historical
+  reconciliation. [Task](../tasks/workspace-lifecycle-standardization/task.md).
+- **HERMES-001** — Refresh Hermes main and finish runtime remediation.
+  [Task](../tasks/hermes-log-remediation/task.md). Use the native refresh entry;
+  rebaseline October accepted source, pin upstream/image, reconcile patches,
+  verify disk/review/recovery before separately approved build/activation.
+  Preserve the 24-hour log review and seven-day rollback obligations.
+- **DEP-001** — Recheck dependency alerts against current source AND deployed
+  versions. Do not rebuild retired applications to close obsolete alerts.
 
-- [x] Complete the public-source audit, reviewed remediation and Browserless/
-  legacy ClawRoute source retirement. Preserve shared Route configuration and
-  private data. See `docs/reviews/2026-10-22-remediation-result.md`.
-  - Source acceptance is not deployment: private override migration, image
-    preparation and live acceptance remain separate below.
+## Blocked / monitoring
 
-- [x] Integrate native Hermes vault tools with Camofox and deploy reviewed images.
-  - Preserve native prompts/backends and payment consent; enforce session/tab
-    ownership, authenticated secret transport and exact-origin OTP checks.
-  - Sequential builds, affected suites, independent adversarial review and real
-    synthetic login/payment/address/OTP acceptance passed. Text is redacted;
-    native screenshot/vision limitations are explicitly accepted and documented.
-
-- [x] Restore proxy inheritance through native managed scope and activate
-  reviewed image-only dependency admission without rebuilding Hermes.
-  - Same image; only Hermes recreated. Configuration, credentials and PM facts
-    unchanged; all adapters connected and health passed. Discord's reported
-    nonresponse was a mobile-app issue; no Discord migration was applied.
-  - Upstream patch comparison and rollback contract recorded in `docs/patches.md`
-    and `docs/operations.md`; remaining refresh work below stays separate.
-
-- [x] Activate Camofox 1.15 with reviewed add-on and VNC readiness gates.
-  - Cold start, exact analytics mode, malformed-mode protection, open-WebSocket
-    recovery, immediate generation-2 protection and production health pass.
-  - Superseded local Camofox images are pruned after acceptance; immutable 1.14
-    rebuild coordinates remain in `docs/camofox-refresh.md`.
-
-## Blocked
-
-- [ ] Complete the privileged Tailscale hostname and certificate cutover.
-  - Blocked on interactive `sudo`. Keep the current hostname and certificate
-  active until the replacement is issued, validated, and has a rollback path.
-
-## Monitoring — Astra Cache Baseline
-
-- [ ] Re-establish the current deployed baseline epoch before evaluating cache
-  behavior. Historical September timing is not a current acceptance window.
-  - Require real native traffic and the documented recurring-prefix pattern;
-    a Route restart resets the baseline epoch. Do not enable probes/cohorts by
-    inference. See `docs/spartan-route-cache-experiments.md`.
-
-## Priority 1 — Refresh Hermes Main And Complete Runtime Remediation
-
-- [ ] Run `.github/prompts/hermes-main-refresh.prompt.md`, using
-  `plans/2026-07-21-hermes-log-remediation.md` as the remediation baseline.
-  - Rebaseline against the accepted October source remediation before edits.
-    Recheck capacity rather than use historical disk figures; require more than
-    10 GB for a Hermes build and budget backups before database maintenance.
-  - Resolve and pin the exact current upstream Hermes `main` commit and image
-    digest. Pre-analyze upstream source, release changes, runtime contracts,
-    and plugin surfaces before downloading or rebuilding.
-  - Inventory every active Hermes patch, plugin, boot hook, and broker. For
-    each, prove whether to remove, simplify, update, archive, upstream, or
-    replace it with a plugin; preserve security-boundary behavior with focused
-    regression tests.
-  - Search current upstream Hermes and Spartan Gate for evidence-backed
-    simplifications and optimizations. Review security and operational impact
-    before applying any candidate in a small verified batch.
-  - Complete the remaining MCP, Tirith, Codex fail-fast, session database,
-    transcript durability, gateway recovery, delivery, and log-signal work in
-    the remediation plan.
-  - Only after patch tests, independent review, and disk gates pass, download
-    the selected immutable base, build Hermes once, retain the rollback image,
-    deploy, and complete runtime acceptance, the 24-hour log review, and the
-    seven-day rollback window. Do not build Browserless or ClawRoute images.
-
-## Priority 2 — Close Dependency Vulnerabilities
-
-- [ ] Recheck dependency alerts against current source and deployed versions.
-  - Route source now pins aiohttp 3.14.4; this does not establish the deployed
-    version or closure of historical alerts. Validate those after activation.
-  - The legacy ClawRoute package/lockfile is retired; do not upgrade or rebuild
-    a deleted application to close obsolete alerts.
-
-## Activation — Reviewed Source Remediation
-
-- [x] Prepare the selected installation's private Compose/Caddy overrides for
-  rebuild without activating services. Retired references and baked-code overlays
-  removed; signed listeners validated against actual TLS inputs; existing keys,
-  persistent data, resource limits and rollback images preserved.
-- [ ] Build and accept the prepared candidate before activation.
-  - Prepare only required images, preserving image/code-overlay guards. Build
-    and recreate only after preflight; do not use `--remove-orphans` or delete
-    volumes as a shortcut. Do not build retired images.
-  - Verify live health, auth denial, signed-cookie expiry, WebSocket access,
-    Camofox workflows and Hermes/Route behavior. Remote CI and dependency-alert
-    closure require their own evidence.
-  - Track Reader outbound DNS/fetch and executor shutdown global deadlines as
-    residual investigation, not a solved cancellation contract.
+- **HOST-001** — Tailscale hostname/certificate cutover: interactive sudo required.
+  Preserve current hostname/certificate until validated replacement and rollback.
+- **CACHE-001** — Establish a fresh deployed cache-baseline epoch using ordinary
+  native traffic before evaluation. Restarts reset it; no inferred probe/cohort grant.
+  See `docs/spartan-route-cache-experiments.md`.
+- **ACT-001** — Complete separately authorized runtime acceptance of prepared
+  source/private installation candidates. Preserve exact images, keys, data and
+  scoped rollback; no remove-orphans or volume deletion. Historical preparation
+  and activation entries do not prove every latest candidate is deployed.
+- **ROUTE-001** — Dashboard-speed quiet-window activation and browser acceptance:
+  retain candidate/rollback and do not interrupt in-flight requests.
 
 ## Backlog
 
-- [ ] Future: review a better way to connect the Hermes safecopy to Windows.
-  - Evaluate connection reliability, startup/recovery and access boundaries.
-    Deferred work; not part of the current migration fixes.
-
-- [ ] Audit effective private configuration, deployed services and recovery
-  after separately authorized activation. The completed public-source audit
-  does not certify those runtime boundaries.
-
-- [ ] Discovery: evaluate a fixed Spanish-from-Spain Pocket TTS voice from a
-  consented, suitably licensed recording, exported to a private versioned
-  `.safetensors` voice state. Preserve the offline, read-only runtime with no
-  dynamic voice uploads, fallback provider, or Hermes rebuild.
-
-## Recently Completed
-
-- [x] Review and commit uncommitted Hermes/Camofox and Reader cleanup.
-- [x] Implement Spartan Gate layers/addons/Hermes mode install model.
-- [x] Complete final validation and independent code review.
-- [x] Resolve uncommitted review findings outside Browserless.
-- [x] Optimize active Codex account rotation by weekly reset urgency.
-- [x] Install the Coordinator agent system from project-agent-installer.
+- **RECOVERY-001** — Review a better Hermes safecopy-to-Windows connection:
+  reliability, startup/recovery and access boundaries.
+- **AUDIT-001** — Audit effective private configuration, services and recovery
+  after separately authorized activation; public-source audit is not runtime proof.
+- **READER-001** — Investigate residual outbound DNS/fetch and executor shutdown
+  global deadlines; do not claim cancellation is solved by thread relocation.
+- **TTS-001** — Evaluate a fixed Spanish-from-Spain Pocket TTS voice from a
+  consented, suitably licensed recording and private versioned safetensors state.
+  Preserve offline read-only runtime, no dynamic uploads/provider fallback/rebuild.
+- **LEGACY-001** — Reconcile review/pending historical task families in envelope
+  `tasks/`. Each package owns its exact next action and authority; no age-based
+  archive or automatic implementation. Unknown native ownership remains a blocker.

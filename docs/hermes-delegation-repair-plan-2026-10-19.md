@@ -152,7 +152,9 @@ queues, or lost quarantine evidence.
 ## Continuation request
 
 "Implement the reviewed Hermes delegation repair plan in
-`docs/hermes-delegation-repair-plan-2026-10-19.md` using `.prompts/rev-impl.md`.
+`docs/hermes-delegation-repair-plan-2026-10-19.md` using the operator's explicitly
+registered adversarial implementation entry. Project prompt sources are private
+operator inputs, not prerequisites of this public plan.
 Revalidate the deployed native source and ledger inventory, implement and test
 the provenance and quarantine boundary first, then prepare the complete guarded
 overlay and dry-run recovery. Do not activate the overlay or mutate production

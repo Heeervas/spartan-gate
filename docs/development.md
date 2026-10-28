@@ -16,18 +16,25 @@ starting the stack, rebuilding images or rendering private configuration.
 
 ```sh
 npm ci --ignore-scripts
-python3 -m venv .agents/test-venv
-.agents/test-venv/bin/python -m pip install -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.1 packaging==26.3 requests==2.32.5 httpx==0.28.1 ruamel.yaml==0.18.16
-export PATH="$PWD/.agents/test-venv/bin:$PATH"
+python3 -m venv .venv/test
+.venv/test/bin/python -m pip install -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.1 packaging==26.3 requests==2.32.5 httpx==0.28.1 ruamel.yaml==0.18.16
+export PATH="$PWD/.venv/test/bin:$PATH"
 # The native Pi loader test requires a real installed package, not a stub.
-npm install --prefix .agents/pi-test --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.3.0
-export PI_CODING_AGENT_DIR="$PWD/.agents/pi-test/node_modules/@earendil-works/pi-coding-agent"
-npm install --prefix .agents/pi-web-test --ignore-scripts --no-audit --no-fund pi-web-access@0.44.0
-export PI_WEB_ACCESS_EXTENSION="$PWD/.agents/pi-web-test/node_modules/pi-web-access/dist/index.js"
+npm install --prefix .cache/test-inputs/pi-test --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.3.0
+export PI_CODING_AGENT_DIR="$PWD/.cache/test-inputs/pi-test/node_modules/@earendil-works/pi-coding-agent"
+npm install --prefix .cache/test-inputs/pi-web-test --ignore-scripts --no-audit --no-fund pi-web-access@0.44.0
+export PI_WEB_ACCESS_EXTENSION="$PWD/.cache/test-inputs/pi-web-test/node_modules/pi-web-access/dist/index.js"
 ```
 
 Operator-local `.agents/test-requirements.txt`, when provisioned, pins the same
 minimal host requirements. It is not the complete Hermes native dependency set.
+Each checkout owns `.venv/test`, `.venv/quality`, `node_modules` and its public
+program inputs under `.cache/test-inputs/`. Never share these writable dependency
+directories through symlinks between worktrees. Moving an existing environment
+requires a separate, serialized migration: stop its consumers, verify a vacant
+checkout-local destination and preserve absolute-shebang compatibility. Do not
+copy environments or infer that ignored files are disposable.
+
 No global installation is needed. Spartan Route owns its runtime dependency pin
 in `infra/spartan-route/requirements.txt`; the retired TypeScript router has no
 build/test/package lane. Keep `config/clawroute` and routing auto aliases used by
@@ -194,6 +201,12 @@ receipts and cleanup remain separate from later operational acceptance.
 `npm run pi:quality` requires the explicitly provisioned canonical
 builder-assurance v1.1.0 package via `BUILDER_ASSURANCE_DIR` (default documented
 operator home), its isolated Python requirements and root pinned Oxlint 1.80.0.
+Provision the quality environment separately in `.venv/quality`; the runner prefers
+its Python. During migration only, it falls back to the old checkout-local
+`.agents/quality-venv` if the new Python is absent. `BUILDER_ASSURANCE_PYTHON`
+retains its explicit override semantics. Neither default environment may be a
+shared directory symlink.
+
 It validates policy, collects fresh metrics and reports the immutable baseline
 `75651cc0c5baa1db5a6523b790564988698f2a43`, all-scope, TOP candidate. The policy,
 receipts and canonical commands are operator-local `.agents/` surfaces; portable

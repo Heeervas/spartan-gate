@@ -27,6 +27,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Python
+.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -37,6 +38,8 @@ __pycache__/
 .vscode/
 
 # Local agent/operator packs
+.prompts/
+.pi/prompts/
 .agents/
 .github/agents/
 .github/hooks/
