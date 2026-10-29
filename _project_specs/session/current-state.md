@@ -14,6 +14,10 @@ owning task evidence, including failures and explicit limits.
   New manual worktrees still require task ownership and attributable cessation.
 - Canonical source remains this checkout. Manual task placement exception is
   envelope `.worktrees/<id>/`; Ultimate/Codex keep native storage and controls.
+- Route Providers/Decisions is activated with the normal OpenAI key and opt-out
+  defaults. Exact source/asset readback, healthy service and unchanged neighbors
+  were verified without billable inference. Receipt and retained rollback:
+  `../../../tasks/archive/2026/route-decisions-api/task.md`.
 - Foreign Route speed implementation and Hermes notes remain preserved, not task-owned.
   Do not stage them as part of lifecycle commits.
 - Reconciled family locations are indexed in `../../../tasks/README.md`. Each
@@ -23,11 +27,6 @@ owning task evidence, including failures and explicit limits.
 
 ## Active-task pointers and constraints
 
-- Providers/Decisions source is merged locally in `3380925` and source-verified.
-  `../../../tasks/route-decisions-api/task.md` owns pending Route-only activation:
-  the operator-supplied key input file was absent. Existing router remains unchanged;
-  no credential was read and no paid inference ran. Worktree retirement follows
-  source acceptance; activation/closeout remain nonterminal.
 - Dashboard speed: `../../../tasks/route-dashboard-speed/task.md` owns adoption/readback.
   Earlier receipt: BUILT_NOT_ACTIVATED; later parent receipt: RECREATED_PENDING_READBACK, quiet_window_observed:false.
   Final deployed-asset/browser acceptance remains unproved; this record grants no service action.
