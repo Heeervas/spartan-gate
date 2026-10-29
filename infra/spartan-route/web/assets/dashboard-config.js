@@ -30,6 +30,19 @@
     const variantSave = document.getElementById('variant-save');
     const variantAdd = document.getElementById('variant-add');
     const variantDirtyEl = document.getElementById('variant-dirty');
+    const providersEl = document.getElementById('providers');
+    const providerStatus = document.getElementById('provider-status');
+    const providerError = document.getElementById('provider-error');
+    const providerSuccess = document.getElementById('provider-success');
+    const providerSave = document.getElementById('provider-save');
+    const providerDirtyEl = document.getElementById('provider-dirty');
+    let providerState = null;
+    let providerEtag = null;
+    let providerDraft = null;
+    let providersLoaded = false;
+    let providerBusy = false;
+    let providerDirty = false;
+    const providerModelInputDrafts = {};
 
     tokenInput.value = sessionStorage.getItem('spartanRouteToken') || '';
 
@@ -261,6 +274,237 @@
       }
     }
 
+    function providerEditable(source) {
+      return {
+        enabled: source.enabled !== false,
+        rejectEndpoints: [...new Set(source.rejectEndpoints || [])].sort(),
+        rejectModels: [...new Set(source.rejectModels || [])].sort(),
+      };
+    }
+
+    function providerSnapshot(providers) {
+      return Object.fromEntries(Object.keys(providers || {}).sort().map(id => [id, providerEditable(providers[id])]));
+    }
+
+    function updateProviderDirty() {
+      providerDirty = JSON.stringify(providerSnapshot(providerDraft)) !== JSON.stringify(providerSnapshot(providerState?.providers || {}));
+      providerDirtyEl.textContent = providerDirty ? 'Unsaved changes' : '';
+      providerDirtyEl.className = providerDirty ? 'dirty' : 'muted';
+      providerSave.disabled = providerBusy || !providersLoaded || !providerDirty;
+    }
+
+    function validProviderModel(value, provider) {
+      if (typeof value !== 'string' || value.length === 0 || value.length > 272
+        || !/^[A-Za-z0-9._:/-]+$/.test(value) || value.startsWith('/') || value.endsWith('/')
+        || value.includes('//') || value.split('/').some(part => part === '.' || part === '..')) return false;
+      const owner = value.split('/', 1)[0];
+      return !Object.hasOwn(providerState.providers, owner) || owner === provider;
+    }
+
+    function renderProviders() {
+      providersEl.replaceChildren();
+      const entries = Object.entries(providerState?.providers || {}).sort(([a], [b]) => a.localeCompare(b));
+      entries.forEach(([id, metadata], index) => {
+        const editable = providerDraft[id];
+        const card = document.createElement('section');
+        card.className = 'provider-card';
+        const header = document.createElement('div');
+        header.className = 'provider-head';
+        const identity = document.createElement('div');
+        const heading = document.createElement('h3');
+        heading.textContent = id;
+        const credential = addText(identity, 'muted', `Credential: ${String(metadata.credentialStatus || 'unknown').replaceAll('_', ' ')}`);
+        credential.setAttribute('aria-label', `${id} credential status: ${String(metadata.credentialStatus || 'unknown').replaceAll('_', ' ')}`);
+        identity.prepend(heading);
+        const enabledLabel = document.createElement('label');
+        enabledLabel.className = 'provider-toggle';
+        const enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.checked = editable.enabled;
+        enabled.disabled = providerBusy || !providersLoaded;
+        enabled.addEventListener('change', () => { editable.enabled = enabled.checked; setMessage(providerSuccess, ''); updateProviderDirty(); });
+        enabledLabel.append(enabled, document.createTextNode('Provider enabled'));
+        header.append(identity, enabledLabel);
+        card.appendChild(header);
+
+        const endpointGroup = document.createElement('fieldset');
+        endpointGroup.className = 'provider-group';
+        const endpointLegend = document.createElement('legend');
+        endpointLegend.textContent = 'Supported endpoints';
+        endpointGroup.appendChild(endpointLegend);
+        const endpointList = document.createElement('div');
+        endpointList.className = 'provider-endpoints';
+        const rejected = new Set(editable.rejectEndpoints);
+        for (const endpoint of [...new Set(metadata.supportedEndpoints || [])].sort()) {
+          const label = document.createElement('label');
+          label.className = 'provider-endpoint';
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = !rejected.has(endpoint);
+          checkbox.disabled = providerBusy || !providersLoaded;
+          checkbox.addEventListener('change', () => {
+            const next = new Set(editable.rejectEndpoints);
+            if (checkbox.checked) next.delete(endpoint); else next.add(endpoint);
+            editable.rejectEndpoints = [...next].sort();
+            setMessage(providerSuccess, '');
+            updateProviderDirty();
+          });
+          label.append(checkbox, document.createTextNode(` ${endpoint}`));
+          endpointList.appendChild(label);
+        }
+        endpointGroup.appendChild(endpointList);
+        card.appendChild(endpointGroup);
+
+        const modelGroup = document.createElement('fieldset');
+        modelGroup.className = 'provider-group';
+        const modelLegend = document.createElement('legend');
+        modelLegend.textContent = 'Rejected model IDs';
+        modelGroup.appendChild(modelLegend);
+        const modelList = document.createElement('ul');
+        modelList.className = 'provider-model-list';
+        editable.rejectModels.forEach((model, modelIndex) => {
+          const item = document.createElement('li');
+          const value = document.createElement('code');
+          value.textContent = model;
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.textContent = 'Remove';
+          remove.setAttribute('aria-label', `Remove rejected model ${model}`);
+          remove.disabled = providerBusy || !providersLoaded;
+          remove.addEventListener('click', () => {
+            editable.rejectModels.splice(modelIndex, 1);
+            setMessage(providerSuccess, '');
+            renderProviders();
+            providersEl.querySelector(`#provider-model-${index}`).focus();
+          });
+          item.append(value, remove);
+          modelList.appendChild(item);
+        });
+        modelGroup.appendChild(modelList);
+        const addRow = document.createElement('div');
+        addRow.className = 'provider-model-add';
+        const input = document.createElement('input');
+        input.id = `provider-model-${index}`;
+        input.type = 'text';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.maxLength = 272;
+        input.placeholder = 'Exact model ID';
+        input.value = providerModelInputDrafts[id] || '';
+        input.addEventListener('input', () => { providerModelInputDrafts[id] = input.value; });
+        input.setAttribute('aria-label', `Model ID to reject for ${id}`);
+        input.setAttribute('list', `provider-models-${index}`);
+        input.disabled = providerBusy || !providersLoaded;
+        const datalist = document.createElement('datalist');
+        datalist.id = `provider-models-${index}`;
+        for (const model of [...new Set(metadata.models || [])].sort()) {
+          const option = document.createElement('option');
+          option.value = model;
+          datalist.appendChild(option);
+        }
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.textContent = 'Add model';
+        add.disabled = providerBusy || !providersLoaded;
+        add.addEventListener('click', () => {
+          const model = input.value.trim();
+          if (!validProviderModel(model, id)) {
+            setMessage(providerError, `Enter a valid exact model ID for ${id}, using letters, numbers, dot, underscore, colon, slash, or hyphen.`);
+            input.focus();
+            return;
+          }
+          if (editable.rejectModels.includes(model)) {
+            setMessage(providerError, 'That exact model ID is already rejected for this provider.');
+            input.focus();
+            return;
+          }
+          editable.rejectModels.push(model);
+          editable.rejectModels.sort();
+          providerModelInputDrafts[id] = '';
+          input.value = '';
+          setMessage(providerError, '');
+          setMessage(providerSuccess, '');
+          updateProviderDirty();
+          renderProviders();
+          providersEl.querySelector(`#provider-model-${index}`).focus();
+        });
+        addRow.append(input, add, datalist);
+        modelGroup.appendChild(addRow);
+        card.appendChild(modelGroup);
+        providersEl.appendChild(card);
+      });
+      providersEl.setAttribute('aria-busy', String(providerBusy));
+      updateProviderDirty();
+    }
+
+    function receiveProviders(result) {
+      providerState = result.payload;
+      providerEtag = result.etag;
+      providerDraft = Object.fromEntries(Object.entries(providerState.providers || {}).map(([id, value]) => [id, providerEditable(value)]));
+      providersLoaded = true;
+      providerStatus.textContent = providerState.configured ? 'Source: managed' : 'Source: defaults';
+      setMessage(providerError, '');
+      renderProviders();
+    }
+
+    async function loadProviders(loadGeneration) {
+      providersLoaded = false;
+      providerBusy = true;
+      providerStatus.textContent = 'Loading…';
+      setMessage(providerSuccess, '');
+      if (providerState) renderProviders();
+      else updateProviderDirty();
+      try {
+        const result = await request('/api/config/providers', { headers: headers() });
+        if (loadGeneration !== generation) return;
+        receiveProviders(result);
+      } catch (error) {
+        if (loadGeneration !== generation) return;
+        providerStatus.textContent = 'Reload required';
+        setMessage(providerError, error.message);
+      } finally {
+        if (loadGeneration !== generation) return;
+        providerBusy = false;
+        if (providerState) renderProviders();
+        else updateProviderDirty();
+      }
+    }
+
+    async function saveProviders() {
+      if (!providerDirty || providerBusy || !providersLoaded) return;
+      const loadGeneration = generation;
+      const submitted = Object.fromEntries(Object.entries(providerDraft).map(([id, value]) => [id, providerEditable(value)]));
+      providerBusy = true;
+      renderProviders();
+      setMessage(providerError, '');
+      setMessage(providerSuccess, '');
+      try {
+        const providers = Object.fromEntries(Object.entries(submitted).map(([id, value]) => [id, {
+          enabled: value.enabled,
+          rejectEndpoints: value.rejectEndpoints,
+          rejectModels: value.rejectModels,
+        }]));
+        const result = await request('/api/config/providers', {
+          method: 'PUT',
+          headers: { ...headers(true), 'If-Match': providerEtag },
+          body: JSON.stringify({ providers }),
+        });
+        if (loadGeneration !== generation) return;
+        receiveProviders(result);
+        setMessage(providerSuccess, 'Provider settings saved.');
+      } catch (error) {
+        if (loadGeneration !== generation) return;
+        if (error.status === 412) {
+          providersLoaded = false;
+          setMessage(providerError, 'Configuration changed in another tab. Your edits are preserved; reload before saving.');
+        } else setMessage(providerError, error.message);
+      } finally {
+        if (loadGeneration !== generation) return;
+        providerBusy = false;
+        renderProviders();
+      }
+    }
+
     function variantId(model, contextWindow) {
       const context = Number(contextWindow);
       if (!model || !Number.isSafeInteger(context) || context < 1) return 'Enter a model and whole token count';
@@ -475,23 +719,28 @@
       generation += 1;
       routingLoaded = false;
       variantsLoaded = false;
+      providersLoaded = false;
       busy = false;
       variantBusy = false;
+      providerBusy = false;
       setMessage(successEl, '');
       setMessage(variantSuccess, '');
+      setMessage(providerSuccess, '');
       statusEl.textContent = 'Reload required';
       variantStatus.textContent = 'Reload required';
       if (documentState) render();
       updateVariantControls();
+      if (providerState) renderProviders();
     }
 
     function load() {
       invalidateResources();
-      return Promise.all([loadRouting(generation), loadVariants(generation)]);
+      return Promise.all([loadRouting(generation), loadVariants(generation), loadProviders(generation)]);
     }
 
     tokenInput.addEventListener('input', invalidateResources);
     variantSave.onclick = saveVariants;
+    providerSave.onclick = saveProviders;
     variantAdd.onclick = () => {
       if (variantAdd.disabled) return;
       const model = variantState.models.find(model => model.eligible);
@@ -511,7 +760,7 @@
     saveButton.onclick = () => save();
     resetButton.onclick = () => reset();
     window.addEventListener('beforeunload', event => {
-      if (!dirty && !variantDirty) return;
+      if (!dirty && !variantDirty && !providerDirty) return;
       event.preventDefault();
       event.returnValue = '';
     });

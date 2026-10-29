@@ -23,13 +23,15 @@ from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key,
 from .codex_catalog import CodexModelDiscovery, SlotCatalog
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
 from .model_variants import VariantPolicy, VariantCatalog, VARIANT_LIKE_PATTERN, base_eligible
+from .provider_policy import ProviderPolicy, require_admission, register as register_provider_policy, model_payload as policy_model_payload, auto_capabilities, realtime_payload
+from .decisions import register as register_decisions
 from .native_responses import annotate_realm, capture_telemetry, execute_codex_responses, response_event_name, usage_values
 from .native_cache import NativeCacheDiagnostics, Observation, request_diagnostics
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected, PROBE_HEADER
-from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, public_model as realtime_model, register as register_realtime, voice_dispatch
+from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, register as register_realtime, voice_dispatch
 from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
 from .pi_usage import CorrelationError, PiUsage, observe_chat, register_routes as register_pi_routes
-from .pi_responses import auto_capabilities, model_payload, register_routes as register_pi_responses
+from .pi_responses import register_routes as register_pi_responses
 from .reasoning_replay import ReplayError, legacy_binding, policy as replay_policy, replay_request
 from .transport import create_client_session
 from .sse import frames as parse_sse_frames
@@ -114,6 +116,7 @@ class SpartanRouteState:
     recent_session_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
     routing_policy: RoutingPolicySnapshot | None = None
     model_variants: VariantPolicy = field(default_factory=VariantPolicy)
+    provider_policy: ProviderPolicy = field(default_factory=ProviderPolicy)
     variant_reserved_ids: frozenset[str] = frozenset()
     routing_policy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cache_guard: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -1753,6 +1756,7 @@ def get_state(request: web.Request) -> SpartanRouteState:
 
 @require_policy
 @require_correlation
+@require_admission
 async def chat_completions(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -1794,6 +1798,7 @@ async def chat_completions(request: web.Request) -> web.StreamResponse:
 
 @require_policy
 @require_correlation
+@require_admission
 async def responses(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -1967,6 +1972,7 @@ def summarize_image_multipart_payload(fields: Any, log_content: bool) -> dict[st
 
 
 @require_policy
+@require_admission
 async def image_generations(request: web.Request) -> web.StreamResponse:
     body = await read_json_object(request)
     if isinstance(body, web.Response):
@@ -2022,6 +2028,7 @@ async def proxy_openai_multipart(state: SpartanRouteState, endpoint: str, fields
 
 
 @require_policy
+@require_admission
 async def image_edits(request: web.Request) -> web.StreamResponse:
     try:
         fields = await request.post()
@@ -2098,12 +2105,12 @@ async def models(request: web.Request) -> web.Response:
             auto,
             {**auto, "id": "custom-1/clawroute/auto"},
             {**auto, "id": "spartan-route/clawroute/auto"},
-            *[model_payload(m, state.codex_catalog) for m in state.config.models.values() if m.enabled],
+            *[policy_model_payload(state, m) for m in state.config.models.values() if m.enabled],
             *[
-                model_payload(m, state.codex_catalog, variants.bases[m.id])
+                policy_model_payload(state, m, variants.bases[m.id])
                 for m in variants.values()
             ],
-            *([realtime_model()] if request.app[RT_KEY].config.enabled else []),
+            *([realtime_payload(state)] if request.app[RT_KEY].config.enabled else []),
         ],
     })
 
@@ -2112,7 +2119,7 @@ async def model_detail(request: web.Request) -> web.Response:
     state = get_state(request)
     model_id = normalize_model_id(request.match_info["model_id"])
     if model_id == request.app[RT_KEY].config.model and request.app[RT_KEY].config.enabled:
-        return web.json_response(realtime_model())
+        return web.json_response(realtime_payload(state))
     if model_id in {"clawroute/auto", "auto"}:
         return web.json_response({"id": request.match_info["model_id"], "object": "model", "owned_by": "spartan-route", "max_context": 1_000_000, "tool_capable": True, "multimodal": True, **auto_capabilities(state)})
     entry = state.config.models.get(model_id)
@@ -2121,7 +2128,7 @@ async def model_detail(request: web.Request) -> web.Response:
     entry = entry or variant
     if not entry:
         return response_json_error(f"The model '{request.match_info['model_id']}' does not exist", 404, "model_not_found", "invalid_request_error")
-    payload = model_payload(entry, state.codex_catalog, variants.bases.get(entry.id))
+    payload = policy_model_payload(state, entry, variants.bases.get(entry.id))
     return web.json_response(payload)
 
 
@@ -2142,6 +2149,9 @@ def effective_routing_policy(state: SpartanRouteState) -> RoutingPolicySnapshot:
 
 
 def model_readiness(state: SpartanRouteState, entry: ModelEntry) -> str:
+    denial = state.provider_policy.denial(entry.provider, "/v1/chat/completions", entry.id)
+    if denial:
+        return denial
     if entry.provider == "codex":
         if not state.codex or not getattr(state.codex, "slots", []):
             return "no_codex_slots"
@@ -2191,7 +2201,7 @@ def routing_config_document(state: SpartanRouteState) -> dict[str, Any]:
                 "toolCapable": entry.tool_capable,
                 "multimodal": entry.multimodal,
                 "enabled": entry.enabled,
-                "eligible": model_is_routing_eligible(state.config, entry.id),
+                "eligible": model_is_routing_eligible(state.config, entry.id) and not state.provider_policy.denial(entry.provider, "/v1/chat/completions", entry.id),
                 "readiness": model_readiness(state, entry),
             }
             for entry in state.config.models.values()
@@ -2338,7 +2348,7 @@ def model_variants_response(state: SpartanRouteState, status: int = 200) -> web.
     etag = policy.etag(state.config, reserved_ids=state.variant_reserved_ids)
     return web.json_response({
         "variants": policy.snapshot(state.config, reserved_ids=state.variant_reserved_ids)[0],
-        "models": [{"id": e.id, "maxContext": e.max_context, "eligible": base_eligible(e),
+        "models": [{"id": e.id, "maxContext": e.max_context, "eligible": base_eligible(e) and not state.provider_policy.denial(e.provider, "/v1/chat/completions", e.id),
                     "readiness": model_readiness(state, e)} for e in state.config.models.values()],
         "configured": policy.rows is not None, "updatedAt": policy.updated_at,
         "warning": policy.warning, "etag": etag,
@@ -2481,7 +2491,7 @@ async def api_models(request: web.Request) -> web.Response:
                 "outputCostPer1M": entry.output_cost_per_1m,
                 "toolCapable": entry.tool_capable,
                 "multimodal": entry.multimodal,
-                "enabled": entry.enabled,
+                "enabled": policy_model_payload(state, entry)["enabled"],
             }
             for entry in state.config.models.values()
         ]
@@ -3253,6 +3263,8 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
         routing_policy=build_routing_policy_snapshot(config, telemetry),
         model_variants=VariantPolicy.load(telemetry),
     )
+    register_provider_policy(app, STATE_KEY, read_bounded_json_object)
+    register_decisions(app, get_state)
     register_realtime(app, RealtimeConfig.from_env(config.token))
     register_pi_routes(app, get_state)
     register_pi_responses(app, get_state)

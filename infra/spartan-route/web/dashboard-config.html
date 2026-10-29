@@ -50,6 +50,22 @@
       </div>
       <ul id="limitations" class="limitations"></ul>
     </section>
+    <section class="panel settings-panel" aria-labelledby="providers-title">
+      <div class="section-head">
+        <div>
+          <h2 id="providers-title">Providers</h2>
+          <div class="muted">Disable providers, endpoints, or exact model IDs. Empty reject lists add no restrictions.</div>
+        </div>
+        <span id="provider-status" class="muted" role="status" aria-live="polite"></span>
+      </div>
+      <div id="provider-error" class="panel banner bad hidden" role="alert"></div>
+      <div id="provider-success" class="panel banner good hidden" role="status"></div>
+      <div id="providers" aria-busy="true"></div>
+      <div class="actions form-actions">
+        <span id="provider-dirty" class="muted"></span>
+        <button id="provider-save" class="primary" disabled>Save provider settings</button>
+      </div>
+    </section>
     <section class="panel settings-panel" aria-labelledby="variants-title">
       <div class="section-head">
         <div>

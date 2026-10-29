@@ -638,6 +638,99 @@ errors are returned without silently retrying at a normal tier.
 Existing Hermes images can use the guarded overlay described in
 [operations](operations.md#hermes-fast-mode-overlay) until the next image build.
 
+## Providers configuration
+
+The **Providers** section of `/dashboard-config` controls the providers already
+implemented by Spartan Route. All providers are enabled and both reject lists
+are empty by default. Adding a provider key does not require enabling each
+endpoint or model separately. An existing installation with no saved Providers
+configuration retains its current behavior.
+
+Each provider exposes:
+
+- **Enabled**: admit new requests to that provider. Turning it off does not
+  cancel requests already in flight.
+- **Endpoints**: supported Route endpoint paths, enabled by default. Turning
+  one off adds that exact path to the provider's `rejectEndpoints` list.
+- **Rejected models**: exact canonical model IDs to exclude. Add or remove an
+  ID using catalog suggestions or manual entry; no patterns or wildcards.
+- **Credential status**: whether credentials are configured, never their value.
+
+For example, this OpenAI configuration leaves Chat, Responses, Decisions and
+other models available while rejecting image generation and one exact model:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "enabled": true,
+      "rejectEndpoints": ["/v1/images/generations"],
+      "rejectModels": ["openai/gpt-6-astra"]
+    }
+  }
+}
+```
+
+OpenAI API and Codex Subscription remain independent. Disabling OpenAI's
+`/v1/responses` does not disable Codex's endpoint. The router normalizes model
+IDs and resolves context variants before checking the actual provider/base
+model, so a variant cannot bypass a rejection of its base. Image paths also
+check the provider and Codex host model actually selected. A rejected explicit
+request returns a clear error rather than silently selecting another provider.
+Auto-routing checks the configured target for the current endpoint and reports
+when it is unavailable; these controls do not introduce a new fallback strategy.
+
+- `GET /api/config/providers` returns effective provider settings, supported
+  endpoints, model suggestions, non-secret credential status and an `ETag`.
+- `PUT /api/config/providers` requires the current `ETag` in `If-Match`. Send
+  only `enabled`, `rejectEndpoints` and `rejectModels` for each included provider.
+  Omitted providers retain their settings.
+
+Settings are stored in `spartan-route.db`, apply to new requests immediately and
+survive restart. Updates use the existing authenticated Config save/conflict
+workflow. There is no provider-policy environment variable, no allowlist and no
+new client credential. Provider keys remain in the existing private environment.
+
+Use `codex/<model>` for subscription inference and `openai/<model>` for OpenAI
+API inference. Adding an API key does not change existing auto-tier assignments.
+OpenAI API models and their supported speed parameters remain available unless
+you explicitly reject them; provider/account eligibility still determines which
+mode is actually served.
+
+## Decisions API
+
+`POST /v1/decisions` forwards the native OpenAI Decisions request using the normal
+`OPENAI_API_KEY`. Clients use the same Route base URL and Bearer token as other
+normal inference endpoints, not the upstream key. No Decisions-specific token,
+key or activation flag is required.
+
+The currently supported model is `gpt-6-luna`; Route also accepts
+`openai/gpt-6-luna` and sends its native ID upstream. Questions use OpenAI's
+`predicate`, `choice` and `score` types. Inputs, supported request options,
+`answers`, usage and upstream errors retain their native meaning. Decisions is
+not converted to Chat or Responses, and returned choices do not execute tools.
+
+```sh
+curl "$SPARTAN_ROUTE_URL/v1/decisions" \
+  -H "Authorization: Bearer $CLAWROUTE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "openai/gpt-6-luna",
+    "input": "The customer asks for a duplicate charge to be refunded.",
+    "questions": [{
+      "type": "predicate",
+      "name": "billing_issue",
+      "instructions": "Is this request about billing?"
+    }]
+  }'
+```
+
+Decisions is listed under OpenAI in Providers and follows the same provider,
+endpoint and exact-model rejection controls. API usage is separate from Codex
+subscription quota; Decisions pricing is not the price of Chat with the same
+model. See the [OpenAI Decisions guide](https://developers.openai.com/api/docs/guides/decisions)
+for current input limits, availability and pricing.
+
 ## Dashboard Runtime Routing Overrides
 
 `/dashboard-config` edits the primary model used by `clawroute/auto` for the

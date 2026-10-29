@@ -181,6 +181,21 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .variant-row { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1.4fr) minmax(0,1fr) auto; gap: 16px; align-items: end; padding-block: 20px; border-top: 1px solid var(--line); }
 .variant-row > * { min-width: 0; }
 .variant-meta { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.provider-card { padding-block: 20px; border-top: 1px solid var(--line); }
+.provider-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.provider-head > div { display: grid; gap: 4px; min-width: 0; }
+.provider-toggle, .provider-endpoint { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
+.provider-toggle { white-space: nowrap; }
+.provider-toggle input, .provider-endpoint input { width: 18px; height: 18px; min-height: 18px; margin: 0; accent-color: var(--accent); }
+.provider-group { min-width: 0; padding: 12px 0 0; margin: 12px 0 0; border: 0; border-top: 1px solid var(--line); }
+.provider-group legend { padding: 0 8px 0 0; color: var(--muted); font-size: 12px; }
+.provider-endpoints { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+.provider-endpoint { overflow-wrap: anywhere; }
+.provider-model-list { display: grid; gap: 8px; padding: 0; margin: 0 0 12px; list-style: none; }
+.provider-model-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.provider-model-list code { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.provider-model-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.provider-model-add datalist { display: none; }
 .form-actions { padding-top: 16px; border-top: 1px solid var(--line); }
 .form-actions .primary { margin-left: auto; }
 .limitations { padding-left: 20px; margin: 16px 0 0; color: var(--muted); font-size: 12px; }
@@ -236,6 +251,10 @@ details[open] > summary .chev { transform: rotate(90deg); }
   .request-primary, .request-latency { grid-column: 1 / -1; }
   .diagnostic-list { flex-direction: column; align-items: stretch; }
   .tier-row, .variant-row { grid-template-columns: 1fr; gap: 12px; }
+  .provider-head { flex-direction: column; }
+  .provider-toggle { white-space: normal; }
+  .provider-model-add { grid-template-columns: 1fr; }
+  .provider-model-add button { justify-self: start; }
   .variant-row button { justify-self: start; }
   .form-actions .primary { margin-left: 0; }
   .form-actions { justify-content: space-between; }

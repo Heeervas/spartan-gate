@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add Providers controls to Spartan Route Config: provider enablement,
+  endpoint reject lists and exact-model reject lists, persisted with immediate
+  application to new requests. Defaults preserve existing access; no allowlist,
+  policy environment variable or additional client credential is required.
+  Add native OpenAI `/v1/decisions` using the normal API key and router Bearer.
+  Keep OpenAI API models, speed parameters and Codex Subscription independent.
+
 - Add a read-only, task-scoped local closeout verifier with package and small
   inline receipts. Refuse incomplete ownership, evidence, writer, recovery,
   workspace and archive claims while preserving identified foreign changes.

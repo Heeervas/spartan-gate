@@ -743,6 +743,16 @@ async def voice_dispatch(request: web.Request, handler: Any) -> web.StreamRespon
             raise RealtimeError("realtime_disabled", 503)
         if request.path != "/v1/realtime":
             request[CLIENT_KEY] = service.config.client(request.headers.get("Authorization", ""))
+        from .app import STATE_KEY, get_state
+        if request.path == "/v1/realtime/client_secrets" and STATE_KEY in request.app:
+            from .provider_policy import admission_error, MINT, REALTIME
+            # Mint admits the whole session. Existing tickets and sockets keep
+            # their admission when settings change; no API key participates.
+            state = get_state(request)
+            for endpoint in (MINT, REALTIME):
+                error = admission_error(state, "codex", endpoint, service.config.model)
+                if error is not None:
+                    return error
         return await handler(request)
     except RealtimeError as exc:
         return web.json_response(exc.payload(), status=exc.status, headers={"Cache-Control": "no-store"})

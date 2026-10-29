@@ -58,6 +58,7 @@ class Element {
 function harness() {
   const elements = new Map();
   const requests = [];
+  const providerRequests = [];
   const events = {};
   const timers = new Map();
   let timerId = 0;
@@ -68,21 +69,34 @@ function harness() {
     document: {
       getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
       createElement(tag) { return new Element(tag); },
+      createTextNode(text) { const node = new Element('#text'); node.textContent = text; return node; },
     },
     window: { addEventListener(type, handler) { events[type] = handler; } },
     sessionStorage: { getItem() { return 'old-token'; }, setItem() {} },
-    fetch(path, options) { return new Promise((resolve, reject) => { options.signal.addEventListener('abort', () => reject(new Error('aborted'))); requests.push({path, options, resolve}); }); },
+    fetch(path, options) {
+      if (path === '/api/config/providers') {
+        providerRequests.push({path, options});
+        return Promise.resolve({ok: true, status: 200, json: async () => providerConfig, headers: {get: () => providerConfig.etag}});
+      }
+      return new Promise((resolve, reject) => { options.signal.addEventListener('abort', () => reject(new Error('aborted'))); requests.push({path, options, resolve}); });
+    },
   });
   vm.runInContext(script, context);
   const run = code => vm.runInContext(code, context);
   const respond = (request, payload, status = 200) => request.resolve({ok: status < 400, status, json: async () => payload, headers: {get: () => payload.etag || 'etag'}});
-  return { context, run, requests, elements, events, timers, respond };
+  return { context, run, requests, providerRequests, elements, events, timers, respond };
 }
 const routing = {effective: {simple: 'base'}, editableTiers: [], fileDefaults: {}, sources: {}, overrides: {}, models, enabled: true};
 const variants = {variants: [{model: 'base', contextWindow: 282000, id: 'base-282kcontext', available: true}], models, configured: false, etag: 'variants-etag'};
+const providerConfig = {
+  providers: {openai: {enabled: true, rejectEndpoints: [], rejectModels: [], supportedEndpoints: [], models: [], credentialStatus: 'configured'}},
+  configured: false, updatedAt: null, etag: 'providers-etag',
+};
 const flush = () => new Promise(resolve => setImmediate(resolve));
 async function loaded() {
   const h = harness();
+  assert.deepEqual(h.providerRequests.map(request => request.path), ['/api/config/providers']);
+  assert.equal(h.providerRequests[0].options.headers.Authorization, 'Bearer old-token');
   h.respond(h.requests[0], routing);
   h.respond(h.requests[1], variants);
   await flush();
@@ -130,6 +144,8 @@ test('token edits and failed reloads prevent saving old account data', async () 
   assert.equal(h.requests.length, 2);
   h.run('load();');
   assert.equal(h.requests[2].options.headers.Authorization, 'Bearer new-token');
+  assert.equal(h.providerRequests.length, 2);
+  assert.equal(h.providerRequests[1].options.headers.Authorization, 'Bearer new-token');
   h.respond(h.requests[2], {error: {message: 'unavailable'}}, 503);
   h.respond(h.requests[3], {error: {message: 'unavailable'}}, 503);
   await flush();
