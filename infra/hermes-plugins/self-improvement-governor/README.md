@@ -1,26 +1,33 @@
-# Native skill-review prompt addition
+# Native skill learning and maintenance
 
-Prompt-only replacement for the historical governor. The installed source owns
-`_SKILL_REVIEW_PROMPT` and `_COMBINED_REVIEW_PROMPT` in
-`agent/background_review.py`; `run_agent.AIAgent` exposes their overridable class
-attributes. Native `spawn_background_review_thread` selects those attributes.
+The plugin overrides Hermes' two skill-bearing review prompts, retaining native
+lesson, read-before-write, protected-ownership and memory-routing blocks. It
+replaces update pressure with evidence-based candidates and package-level,
+subtraction-first review of total required reading. No-op is successful. Native
+spawning, tools, memory-only review and write-approval configuration are unchanged.
+Unsupported native prompt shapes refuse registration before partial assignment.
+These are model instructions, not an OS filesystem boundary.
 
-Registration appends one instruction block to both skill-bearing prompts. It
-requires full optimizer/refiner and mandatory Hermes-support reads, and separates
-generic additions/removals in `SKILL.md` from topical detail in `references/`,
-with routing. It does not replace native text, wrap spawning, register middleware,
-change permissions, tools, triggers, write approval, memory routing or delivery.
-These are model instructions, not a new mechanical enforcement guarantee.
+Ordinary learning stages eligible proposals; it never approves its own changes.
+A separately authorized native cron may review and apply local skill-text changes
+using optimizer/refiner, then verify files and exact profile/proposal IDs and
+report. External/shared packages, executable changes, ownership/config changes
+and whole-package deletion/renaming remain excluded. No parallel skill writers.
+The cron's outcome-led prompt and pinned model/reasoning live in its native job.
 
-The required canonical skill packages/supports must be available through their
-separately reviewed adoption gate. This package neither installs nor adopts them.
-No configuration, enablement, image rebuild or runtime activation is included.
+`pending_skill_review.py` is a read-only wake precheck for Hermes' native scripts
+directory: no pending records means no model call; unreadable records or a disabled
+approval gate wake the reviewer to report the problem. It uses the native profile
+registry and separate profile contexts, never copies queue stores. Installation,
+job creation and runtime adoption are separately authorized operations; no new
+mount, queue, service or skill package is required.
 
-One focused check in the pinned Hermes environment:
+Focused checks in the pinned Hermes environment (no agent/provider calls):
 
 ```sh
 python -B infra/hermes-plugins/test_self_improvement_governor.py
 ```
 
-The check imports native program modules and composes prompts without constructing
-an agent, running the review target, starting threads or calling a provider.
+Required review methods must be available under existing native controls; this
+plugin does not install/adopt them. The historical `scripts/hermes-self-improvement-governor.py`
+embeds a superseded implementation and is not this plugin's activation route.

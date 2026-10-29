@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Make native skill learning evidence-led rather than update-driven, preserving
+  approval staging and native safety/memory routing. Add a native pending-queue
+  wake precheck for separately authorized autonomous skill-text maintenance.
+
 - Add Providers controls to Spartan Route Config: provider enablement,
   endpoint reject lists and exact-model reject lists, persisted with immediate
   application to new requests. Defaults preserve existing access; no allowlist,
