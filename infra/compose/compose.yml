@@ -658,6 +658,60 @@ services:
       tool-access:
         condition: service_started
 
+  mcphub:
+    profiles: [mcphub]
+    # Upstream logs include tool traffic; discard rather than retaining payloads.
+    logging:
+      driver: none
+    image: samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:size=67108864,mode=1777
+    environment:
+      NODE_ENV: production
+      USE_DB: "false"
+      HOME: /state/home
+      MCPHUB_SETTING_PATH: /state/mcp_settings.json
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,::1
+    entrypoint: ["/bin/sh", "/opt/spartan/entrypoint.sh"]
+    volumes:
+      - type: bind
+        source: ${SPARTAN_MCPHUB_STATE_PATH:-../../private/mcphub}
+        target: /state
+        bind:
+          create_host_path: false
+          selinux: z
+      - type: bind
+        source: ../mcphub/entrypoint.sh
+        target: /opt/spartan/entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z
+    dns:
+      - ${SPARTAN_DNS_IP:-172.28.0.53}
+    networks:
+      - spartan_internal
+    depends_on:
+      proxy:
+        condition: service_started
+      dns:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   caddy:
     logging: *spartan-logging
     image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
@@ -686,6 +740,8 @@ services:
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${SPARTAN_GATE_PORT:-18789}:18789"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${CLAWROUTE_EDGE_PORT:-18790}:18790"
       - "${SPARTAN_BIND_LOCALHOST:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
+      # Native MCPHub authentication, independent of browser Basic Auth.
+      - "127.0.0.1:${SPARTAN_MCPHUB_PORT:-18793}:18793"
     environment:
       # recommended: auth still applies even on local/Tailscale HTTP.
       CADDY_AUTH_USER: ${CADDY_AUTH_USER:-admin}

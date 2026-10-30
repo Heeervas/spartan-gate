@@ -38,6 +38,8 @@ scope:
   - infra/caddy/**
   - infra/camofox/**
   - infra/compose/**
+  - infra/mcphub/**
+  - .env.example
   exclude: []
   languages: []
 baseline:

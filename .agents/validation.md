@@ -1,5 +1,28 @@
 # Validation authority
 
+## MCPHub opt-in source acceptance
+
+Independent plan review (2026-10-30, READY / PASS_WITH_NOTES) approved additive
+inventory coverage for exactly `infra/mcphub/**` and `.env.example`. Existing
+baseline, TOP floor, adapters, thresholds and exceptions remain unchanged.
+Shell/Caddy/Compose coverage is inventory plus the checks below, not AST proof.
+No source check authorizes private provisioning or stack activation.
+
+```sh
+.venv/quality/bin/python -m unittest scripts.test_configure_mcphub -v
+.venv/quality/bin/python -m unittest discover -s infra/pi -p test_prepare_parity.py -v
+sh -n infra/mcphub/entrypoint.sh
+docker compose -f infra/compose/compose.yml --env-file .env.example --profile mcphub config --quiet
+npm run pi:quality
+git diff --check
+```
+
+The pinned-image compatibility canary uses only synthetic state and named disposable
+resources, with explicit operator authority. Run `.venv/quality/bin/python infra/mcphub/isolated_acceptance.py --help` for its exact program inputs. It must prove constrained startup/persistence,
+MCP authentication, management denial, execution-time tool allow/deny and real proxy
+traffic. Native Pi session loading and native Hermes routing remain separate client
+acceptance; a shell `pi mcp list` does not prove built-in session enablement.
+
 ## Workspace lifecycle and environment migration
 
 Independent `reviewer` (GPT-6.1 Sol high, 2026-10-28) approved additive

@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add opt-in pinned MCPHub file-mode source and native Hermes/Pi provisioning,
+  with internal-only proxy-controlled networking, a separate native-auth localhost
+  listener, group-scoped client keys and execution-time exact tool grants.
+  Preserve default Pi MCP disables unless explicitly enrolled. Private activation
+  and real backend enrollment remain separate operator steps.
+
 - Upgrade Reader with offline bounded Markdown extraction, publisher Markdown
   negotiation, GitHub source/listing adapters and preserved raw-source formatting.
   Queue Pi Reader bursts within gateway capacity and expose sanitized upstream,

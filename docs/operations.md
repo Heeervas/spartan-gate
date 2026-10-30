@@ -44,6 +44,14 @@ the served native profile connections separately. Persistent dependency failure 
 fails acceptance. An existing container retains its old settings until an
 explicitly approved recreation; this source change does not activate them.
 
+## Optional MCPHub
+
+For the L4 `mcphub` profile, selected native-client preparation, bootstrap-password
+location, first server/tool grants, persistence and scoped rollback, see
+[mcphub.md](mcphub.md). The new native-auth Caddy listener is independent of browser
+Basic Auth. Prepare and review private state before starting the hub; preserve
+existing profiles and do not rebuild/recreate Hermes to add this service.
+
 ## Agent Runtime
 
 Hermes is the default public agent. If you want to use another agent, keep that integration in private Compose files and point it at Spartan Gate's internal Spartan Route, Camofox, Reader, SearXNG, proxy and DNS services.

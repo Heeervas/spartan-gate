@@ -105,6 +105,19 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   runtime behavior. User-level tool installs must stay under `/opt/data` or
   language caches and still pass through Tinyproxy/DNS controls.
 
+## Optional MCPHub
+
+The opt-in [MCPHub integration](mcphub.md) keeps the hub internal-only and routes
+shared admin-owned HTTP connectors through Tinyproxy. Its separate localhost
+Caddy listener preserves native bearer authorization, not browser Basic Auth.
+Three distinct MCP-only system keys are restricted to the agents group; an
+applicable closed allow set and exact tool policies deny unlisted/new tools at
+execution. The admin controls trusted backend enrollment; stdio backends share
+the hub container and are not separate sandboxes. Protect the complete file-mode
+state and encryption sidecar/backups: shared connector secrets may be plaintext.
+Personal/OAuth modes need connector-specific proxy/refresh validation. No active
+installation or real backend account is implied by source availability.
+
 ## Ownership Boundaries
 
 Keep service ownership explicit when changing security-sensitive behavior:

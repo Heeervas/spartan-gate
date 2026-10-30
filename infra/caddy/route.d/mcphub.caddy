@@ -1,0 +1,11 @@
+# Dedicated native-auth listener: never import the Basic Auth/header-stripping
+# browser handlers here. MCPHub owns dashboard auth and MCP bearer verification.
+:18793 {
+	log {
+		output discard
+	}
+	header Cache-Control "no-store"
+	reverse_proxy mcphub:3000 {
+		flush_interval -1
+	}
+}
