@@ -54,6 +54,7 @@ normally returns a compact accessibility snapshot with element refs.
 | `browser_get_images` | Derive image URLs and alt text from the accessibility snapshot. |
 | `browser_vision` | Save a PNG and analyze it with the configured auxiliary vision model. |
 | `browser_console` | Evaluate a supplied JavaScript expression; console-log capture itself is unavailable and otherwise returns an empty result with a note. |
+| `browser_viewport` | With the native viewport patch installed, resize the current tab's real CSS viewport and return effective dimensions without restarting the browser. |
 
 Refs belong to the current page state. Refresh the snapshot after navigation or
 an interaction that materially changes the DOM. Do not replay a click, type,
@@ -62,8 +63,7 @@ or JavaScript action after `stale_browser_generation`; call
 replayed.
 
 Hermes does not expose browser tools for forward, refresh, arbitrary waits,
-downloads, structured extraction, explicit tab close, or viewport changes in
-Camofox mode. The service has low-level endpoints for some of these operations,
+downloads, structured extraction, or explicit tab close in Camofox mode. The service has low-level endpoints for some of these operations,
 but that does not make them normal Hermes tool capabilities.
 
 `browser_vision` can send the screenshot to the configured auxiliary vision
@@ -201,9 +201,12 @@ and the relevant safety policy.
 `/spartan/health/deep`, `/spartan/recover`, destructive session deletion,
 cookie-import, or admin stop routes from an agent workflow.
 
-For a trusted low-level call from inside Hermes, use the installed auth-aware
-client helpers so the bearer token stays out of command arguments. Supply only
-an exact `userId` and `tabId` already owned by the current workflow:
+For a trusted low-level call inside Hermes' native scoped execution, the installed
+client helpers keep the bearer token out of command arguments. Importing these
+helpers in terminal or sandbox code does **not** inherit the parent's secret
+scope; endpoint/authentication can be absent there. Prefer `browser_viewport`
+for resizing; do not export managed keys to work around terminal filtering.
+Supply only an exact `userId` and `tabId` already owned by the current workflow:
 
 ```python
 from tools.browser_camofox import _get, _post
@@ -223,8 +226,19 @@ whenever they expose the required operation.
 
 ## Runtime Viewports
 
-Hermes has no `browser_viewport` tool. Spartan Gate adds these equivalent,
-authenticated routes for a known tab:
+The native viewport patch adds `browser_viewport(width, height)` to the existing
+browser toolset in Camofox mode. Call `browser_navigate` first, then request
+`width: 1440, height: 900` or `width: 390, height: 844`. Check `success` and the
+returned `effective.innerWidth` / `effective.innerHeight` before capturing. The
+tool uses the current durable Hermes session, preserves private-page checks,
+never creates a tab, and never relaunches the shared browser. Missing/stale tabs
+require an explicit navigation; other failures are not retried automatically.
+
+The tool becomes available only after the patch is adopted by the running Hermes
+image/process. If absent, report that integration gap; do not treat the terminal
+client example as a working fallback or silently restart anything.
+
+Spartan Gate also provides these equivalent authenticated low-level routes:
 
 ```http
 POST /tabs/{tabId}/spartan/viewport

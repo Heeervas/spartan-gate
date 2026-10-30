@@ -192,6 +192,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_camofox_tab_isolation.py \
     && python3 /opt/hermes/patches/patch_camofox_managed_policy.py \
     && python3 /opt/hermes/patches/patch_camofox_vault.py \
+    && python3 /opt/hermes/patches/patch_camofox_viewport.py \
     && python3 /opt/hermes/patches/patch_prompt_load_callback.py \
     && python3 /opt/hermes/patches/patch_checkpoint_rollback_scan.py \
     && python3 /opt/hermes/patches/patch_mcp_proxy_env.py \

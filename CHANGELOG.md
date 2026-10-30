@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add a Camofox-only native `browser_viewport` tool that resizes the current
+  Hermes session's real CSS viewport without terminal credential passthrough,
+  tab creation or shared-browser relaunch. Existing-runtime activation remains
+  a separate operator action.
+
 - Make native skill learning evidence-led rather than update-driven, preserving
   approval staging and native safety/memory routing. Add a native pending-queue
   wake precheck for separately authorized autonomous skill-text maintenance.

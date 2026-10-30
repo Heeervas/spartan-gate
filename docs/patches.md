@@ -8,8 +8,8 @@ patch.
 The 2026-10-01 refresh targets upstream main
 `e8c97320ac8691d4de92af49f98459f9ef9ddb08`, OCI digest
 `sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde`.
-The Dockerfile invokes 23 common build-time patches and one additional patch
-for the Camofox-only variant (24 in that image), including the
+The Dockerfile invokes 26 common build-time patches and one additional patch
+for the Camofox-only variant (27 in that image), including the
 post-refresh Camofox policy and Spartan Route fast-mode adaptations. Python 3.14 uses
 `/opt/data/hermes-extra-site-py314`; the Python 3.13 directory is retained but
 excluded from the new runtime import path. Synced plugin versions are retained.
@@ -56,6 +56,7 @@ extension points.
 | `patch_clawroute_prompt_cache_key.py` | Uses the shared Chat Completions finalization seam to forward one cache key (native key preferred, session fallback, bounded to 64 characters) and preserve raw `reasoning_config.effort`, including `ultra`. Native Responses owns its top-level cache key and nested reasoning fields. |
 | `patch_spartan_fast_mode.py` | Allows the shared upstream fast-mode resolver only for eligible explicit `codex/*` and `openai/*` models at the exact internal Spartan Route URL with `openai-api`. Keeps session/static/timed modes and other route restrictions upstream-owned. A request middleware cannot repair this earlier eligibility decision, so it remains a narrow build-time patch with a guarded overlay for existing images. |
 | `patch_camofox_tab_isolation.py` | Scopes Camofox registry state by durable Hermes `session_id` (with task fallback), adopts only the exact tab group, recreates stale 404/410 tabs only for explicit navigation, and makes other stale actions require a new navigation. Managed close deletes the tab without deleting its persistent profile context. This remains a build-time adapter because Hermes plugins and hooks do not expose these browser-tool decisions. |
+| `patch_camofox_viewport.py` | Registers a Camofox-only `browser_viewport` tool using the current durable session, native managed credentials, existing private-page guard and verified Spartan viewport endpoint. It creates no tabs, exposes no relaunch option, hides raw transport errors and requires explicit navigation after a stale tab. Terminal credential filtering is unchanged; activation in an existing runtime is separate from source integration. |
 | `patch_camofox_managed_policy.py` | Enforces the administrator's Camofox mode before driver, cloud-provider, stored-selection and CDP fallbacks. Five selectors call the strict shared runtime policy; unrelated modalities and unmanaged browser modes retain upstream behavior. The cont-init hook supplies endpoint/auth through native managed secret scopes, without changing `get_secret` or profile identities. Current images can use fingerprinted read-only private mounts; the next build incorporates the same deterministic patch. |
 | `spartan-cache-lineage` 0.4.0 plugin | HMAC-binds Responses reasoning to profile/session/realm and fingerprints Chat `messages` or Responses `instructions` plus `input`, with canonical tool hashing and transport-separated bounded state. Native background reviews inherit a compatible foreground cache lineage without overwriting foreground tracking, using the existing Hermes origin API. It stores only hashes and treats invalid or foreign reasoning as a cold chain. |
 | Camofox auth env mapping | Passes the protected-route `CAMOFOX_ACCESS_KEY` to Hermes under upstream's expected `CAMOFOX_API_KEY` client variable. |
