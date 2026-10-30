@@ -27,6 +27,13 @@ owning task evidence, including failures and explicit limits.
 
 ## Active-task pointers and constraints
 
+- MCPHub is live with authenticated empty discovery for selected native Hermes
+  and host/container Pi clients; no real backend enrollment was performed.
+  Source checkpoint `42c5367` excludes two inherited, untracked Pi parity
+  foundations: their reviewed MCP opt-in deltas are preserved, not swept into a
+  commit. Acceptance/recovery and pending source-control closeout are owned by
+  `../../../tasks/mcphub-integration/task.md`.
+
 - Reader Markdown/admission upgrade is live for Reader, tool-access and installed
   host Pi helpers; six-call managed-path public retrieval and installed identities
   were verified. Already-open Pi processes need a restart for imported helpers.
