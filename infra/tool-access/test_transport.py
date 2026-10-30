@@ -39,6 +39,11 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def upstream(self, request):
         self.calls.append((request.path, list(request.query.items()), dict(request.headers)))
+        if self.mode.startswith("reader-error:"):
+            _, status, code, remote = self.mode.split(":")
+            return web.Response(status=int(status), text="private remote exception",
+                                headers={"X-Spartan-Reader-Error": code,
+                                         "X-Spartan-Upstream-Status": remote})
         if self.mode == "redirect":
             return web.Response(status=302, headers={"Location": "http://secret.invalid/?secret"})
         if self.mode == "malformed":
@@ -150,6 +155,24 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         for mode in ("truncated", "untrusted_header_missing"):
             self.mode = mode
             await self.assert_error(await self.get(path), 502, "upstream_error")
+
+    async def test_reader_errors_preserve_bounded_codes_and_remote_status(self):
+        for status, code in ((504, "deadline"), (503, "reader_overloaded"),
+                             (403, "egress_denied"), (422, "needs_render"),
+                             (422, "response_too_large"), (422, "extraction_failed")):
+            self.mode = f"reader-error:{status}:{code}:404"
+            await self.assert_error(await self.get("/fetch?url=https://example.com"), status, code)
+        for remote in ("404", "429", "500", "private-secret", "999"):
+            self.mode = f"reader-error:502:remote_http_error:{remote}"
+            response = await self.get("/fetch?url=https://example.com")
+            self.assertEqual(response.status, 502)
+            expected = {"code": "remote_http_error"}
+            if remote in {"404", "429", "500"}:
+                expected["upstreamStatus"] = int(remote)
+            self.assertEqual(await response.json(), {"error": expected})
+        self.mode = "reader-error:429:capacity:429"
+        await self.assert_error(await self.get("/fetch?url=https://example.com"), 502, "upstream_error")
+        self.assertEqual(self.app["transport"].inflight, 0)
 
     async def test_per_principal_immediate_capacity_and_release(self):
         self.mode = "hold"

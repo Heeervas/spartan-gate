@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Upgrade Reader with offline bounded Markdown extraction, publisher Markdown
+  negotiation, GitHub source/listing adapters and preserved raw-source formatting.
+  Queue Pi Reader bursts within gateway capacity and expose sanitized upstream,
+  overload and deadline errors rather than false successes or generic rejections.
+  Retain public-address, redirect, byte, process and total-time limits; no browser
+  fallback, persistent-profile access or expanded general egress is introduced.
+
 - Add a Camofox-only native `browser_viewport` tool that resizes the current
   Hermes session's real CSS viewport without terminal credential passthrough,
   tab creation or shared-browser relaunch. Existing-runtime activation remains

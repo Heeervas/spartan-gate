@@ -30,7 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from html.parser import HTMLParser
+from extraction import ExtractionError, extract_markdown
 from datetime import datetime, timezone
 
 
@@ -275,37 +275,6 @@ def audit_log(action: str, url: str = "", detail: str = ""):
     sys.stderr.flush()
 
 
-class TextExtractor(HTMLParser):
-    """Extracts readable text from HTML, ignoring scripts/styles."""
-
-    def __init__(self):
-        super().__init__()
-        self._text = []
-        self._skip = False
-        self._skip_tags = {"script", "style", "noscript", "svg", "head"}
-
-    def handle_starttag(self, tag, attrs):
-        if tag in self._skip_tags:
-            self._skip = True
-        if tag in ("p", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-                    "li", "tr", "blockquote", "article", "section"):
-            self._text.append("\n")
-
-    def handle_endtag(self, tag):
-        if tag in self._skip_tags:
-            self._skip = False
-
-    def handle_data(self, data):
-        if not self._skip:
-            self._text.append(data)
-
-    def get_text(self):
-        text = " ".join(self._text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = re.sub(r" {2,}", " ", text)
-        return text.strip()
-
-
 def _is_blocked_ip(value: str) -> bool:
     try:
         ip = ipaddress.ip_address(value)
@@ -427,7 +396,8 @@ def _fetch_hop(url, deadline):
         f"GET {_request_path(parsed)} HTTP/1.1\r\n"
         f"Host: {host_header}\r\n"
         "User-Agent: Mozilla/5.0 (compatible; SpartanGate-Reader/1.0)\r\n"
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8\r\n"
+        "Accept: text/markdown,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,text/plain;q=0.8\r\n"
+        "Accept-Encoding: identity\r\n"
         "Accept-Language: en,de;q=0.5\r\n"
         "Connection: close\r\n"
         "\r\n"
@@ -447,9 +417,15 @@ def _fetch_hop(url, deadline):
                 raise BlockedDestination("Redirect blocked: missing Location header")
             return urllib.parse.urljoin(url, location), None
 
+        if not 200 <= resp.status < 300:
+            raise RemoteHTTPError(resp.status)
+        if resp.getheader("Content-Encoding", "identity").lower() != "identity":
+            raise ExtractionError("extraction_failed")
         content_type = resp.getheader("Content-Type", "text/html")
         sock.settimeout(deadline.remaining())
-        data = resp.read(MAX_RESPONSE_SIZE)
+        data = resp.read(MAX_RESPONSE_SIZE + 1)
+        if len(data) > MAX_RESPONSE_SIZE:
+            raise ExtractionError("response_too_large")
         deadline.remaining()
         charset = "utf-8"
         if "charset=" in content_type:
@@ -464,7 +440,7 @@ def _fetch_hop(url, deadline):
             resp.close()
 
 
-def _fetch_chain(url, redirects, deadline):
+def _fetch_chain(url, redirects, deadline, final_url=None):
     while True:
         deadline.remaining()
         if redirects > MAX_REDIRECTS:
@@ -472,6 +448,8 @@ def _fetch_chain(url, redirects, deadline):
         newurl, content = _fetch_hop(url, deadline)
         if newurl is None:
             deadline.remaining()
+            if final_url is not None:
+                final_url.append(url)
             return content
         if is_blocked(newurl, _deadline=deadline):
             audit_log("BLOCKED-REDIRECT", newurl)
@@ -480,20 +458,36 @@ def _fetch_chain(url, redirects, deadline):
         redirects += 1
 
 
-def fetch_url(url: str, redirects: int = 0, *, _deadline=None) -> tuple[str, str]:
+def fetch_url(url: str, redirects: int = 0, *, _deadline=None, _final_url=None) -> tuple[str, str]:
     """Fetch URL content under one absolute DNS/transport/redirect budget."""
     if _deadline is not None:
-        return _fetch_chain(url, redirects, _deadline)
+        return _fetch_chain(url, redirects, _deadline, _final_url)
     with _FetchDeadline() as owned:
-        return _fetch_chain(url, redirects, owned)
+        return _fetch_chain(url, redirects, owned, _final_url)
+
+
+class RemoteHTTPError(Exception):
+    def __init__(self, status):
+        self.status = status
+        super().__init__("remote_http_error")
 
 
 def extract_text(html_content: str) -> str:
-    """Extract readable text from HTML."""
-    parser = TextExtractor()
-    parser.feed(html_content)
-    text = parser.get_text()
-    return text[:MAX_TEXT_LENGTH]
+    """Compatibility helper; production supplies its original fetch deadline."""
+    with _FetchDeadline() as deadline:
+        return extract_markdown(html_content, "https://example.com/", deadline)[0]
+
+
+def representation(content, content_type, url, deadline):
+    media = content_type.split(";", 1)[0].strip().lower()
+    if media in {"text/html", "application/xhtml+xml"}:
+        return extract_markdown(content, url, deadline)
+    if media.startswith("text/") or media in {
+        "application/xml", "application/json", "application/javascript",
+        "application/x-yaml", "application/toml",
+    } or media.endswith(("+xml", "+json")):
+        return content[:MAX_TEXT_LENGTH], "native-source", len(content) > MAX_TEXT_LENGTH
+    raise ExtractionError("extraction_failed")
 
 
 class BoundedHTTPServer(HTTPServer):
@@ -606,6 +600,7 @@ class BoundedHTTPServer(HTTPServer):
             b"Content-Type: text/plain; charset=utf-8\r\n"
             b"X-Content-Type-Options: nosniff\r\n"
             b"Retry-After: 1\r\n"
+            b"X-Spartan-Reader-Error: reader_overloaded\r\n"
             b"Connection: close\r\n"
             + f"Content-Length: {len(OVERLOAD_BODY)}\r\n\r\n".encode("ascii")
             + OVERLOAD_BODY
@@ -689,31 +684,36 @@ class ReaderHandler(BaseHTTPRequestHandler):
             if is_blocked(url, _deadline=deadline):
                 raise BlockedDestination("URL blocked: non-global or internal destination")
             audit_log("FETCH", url)
-            content, content_type = fetch_url(url, _deadline=deadline)
+            final_url = []
+            content, content_type = fetch_url(url, _deadline=deadline, _final_url=final_url)
             deadline.remaining()
-            if "html" in content_type.lower():
-                text = extract_text(content)
-            else:
-                text = content[:MAX_TEXT_LENGTH]
+            text, method, truncated = representation(content, content_type, final_url[-1] if final_url else url, deadline)
+            deadline.remaining()  # CPU conversion must never publish after expiry.
             self._respond(
-                200,
-                mark_untrusted(text),
-                {"X-Spartan-Content-Trust": UNTRUSTED_HEADER},
+                200, mark_untrusted(text),
+                {"X-Spartan-Content-Trust": UNTRUSTED_HEADER,
+                 "X-Spartan-Extraction": method,
+                 "X-Spartan-Truncated": str(truncated).lower()},
             )
-        except BlockedDestination as e:
+        except BlockedDestination:
             audit_log("BLOCKED-DESTINATION", url)
-            self._respond(403, str(e))
-        except urllib.error.HTTPError as e:
-            self._respond(502, f"Remote server returned {e.code}: {e.reason}")
-        except urllib.error.URLError as e:
-            self._respond(502, f"Could not reach URL: {e.reason}")
+            self._error(403, "egress_denied")
+        except RemoteHTTPError as error:
+            self._error(502, "remote_http_error", {"X-Spartan-Upstream-Status": str(error.status)})
+        except ExtractionError as error:
+            status = 503 if error.code == "reader_overloaded" else 422
+            self._error(status, error.code)
         except TimeoutError:
-            self._respond(504, "Request timed out")
-        except Exception as e:
-            self._respond(500, f"Error: {str(e)}")
+            self._error(504, "deadline")
+        except Exception:
+            self._error(502, "upstream_error")
         finally:
             if deadline is not None:
                 deadline.__exit__(None, None, None)
+
+    def _error(self, status, code, headers=None):
+        body = {"deadline": "Request timed out", "egress_denied": "URL blocked"}.get(code, code + "\n")
+        self._respond(status, body, {"X-Spartan-Reader-Error": code, **(headers or {})})
 
     def do_POST(self):
         self._respond(405, "Method not allowed. Only GET requests are permitted.")

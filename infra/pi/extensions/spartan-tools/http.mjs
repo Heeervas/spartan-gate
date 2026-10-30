@@ -40,9 +40,9 @@ async function checkedResponse(response, limit, signal) {
 
 async function serviceFailure(response, signal) {
   const raw = await boundedBody(response, 4096, signal);
-  let code;
-  try { code = JSON.parse(raw.toString('utf8'))?.error?.code; } catch { /* Never expose raw upstream errors. */ }
-  return new ServiceError(SERVICE_ERRORS.has(code) ? code : 'service_rejected');
+  let error;
+  try { error = JSON.parse(raw.toString('utf8'))?.error; } catch { /* Never expose raw upstream errors. */ }
+  return new ServiceError(SERVICE_ERRORS.has(error?.code) ? error.code : 'service_rejected', error?.upstreamStatus);
 }
 
 async function boundedBody(response, limit, signal) {

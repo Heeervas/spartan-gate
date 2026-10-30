@@ -21,11 +21,15 @@ class AccessError(Exception):
               "deadline": 504, "not_found": 404, "stale_workflow": 409,
               "stale_tab": 409, "remote_outcome_unknown": 502,
               "workflow_busy": 429, "unsupported_backend": 503,
-              "egress_denied": 403}
+              "egress_denied": 403, "reader_overloaded": 503,
+              "remote_http_error": 502, "response_too_large": 422,
+              "extraction_failed": 422, "needs_render": 422}
 
-    def __init__(self, code):
+    def __init__(self, code, *, upstream_status=None):
         self.code = code if code in self.STATUS else "unavailable"
         self.status = self.STATUS[self.code]
+        self.upstream_status = (upstream_status if self.code == "remote_http_error"
+                                and type(upstream_status) is int and 300 <= upstream_status <= 599 else None)
         super().__init__(self.code)
 
 

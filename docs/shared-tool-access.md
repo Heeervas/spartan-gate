@@ -58,7 +58,10 @@ source tests use synthetic identities only.
 - `GET /fetch?url=...`: fixed Reader `/fetch`, reader capability. Reader owns
   GET-only/public-address/redirect/connection enforcement. Maximum UTF-8 response
   512 KiB, mandatory complete untrusted markers and trust header. No direct or
-  hosted fallback, no forwarding a private target to a public reader.
+  hosted fallback, no forwarding a private target to a public reader. HTML is
+  locally extracted Markdown; native text/source/XML/Markdown retains whitespace.
+  `X-Spartan-Truncated: true` is forwarded when Reader clips output. Plain UTF-8
+  success bodies and mandatory trust framing remain compatible with Hermes.
 - `POST /v1/workflows`: browser capability; server mints an opaque workflow
   capability and random backend group. Return `{workflowToken: ...}` only to the
   protocol client, never as a Pi tool result. A client token and guessed group
@@ -88,7 +91,7 @@ and cause high-impact actions. This contract does not pretend to classify safe
 clicks or substitute for human approval/downstream authorization.
 
 Bounds: 16 KiB request bodies; 30-second total transport deadline; finite
-immediate admission; at most 8 workflows/client, 64 total, 4 tabs/workflow.
+immediate gateway admission (eight total, two per principal); at most 8 workflows/client, 64 total, 4 tabs/workflow.
 Screenshots are non-full-page PNG, at most 2 MiB, at most 4096 pixels/dimension
 and 16 megapixels before returning native image data. Count actual bytes before
 parsing. Inbound parser auto-decompression is disabled and every Content-Encoding
@@ -101,6 +104,26 @@ logging is discarded too: its default proxy errors otherwise include full query
 URLs even with access logging disabled. Diagnose by bounded client error codes
 and health checks; enabling verbose private diagnostics is a separate privacy
 choice.
+
+Reader failures expose only fixed safe codes: `reader_overloaded`/503,
+`deadline`/504, `egress_denied`/403, `needs_render`, `extraction_failed` or
+`response_too_large`/422, `remote_http_error`/502 and generic `upstream_error`/502.
+The latter is also used for invalid/mismatched Reader error metadata. For
+`remote_http_error` only, an integer `upstreamStatus` from 300 through 599 may
+appear in the JSON error object. Remote bodies/exception text never cross this
+boundary. In particular remote HTTP 429 remains `remote_http_error`/502, distinct
+from this gateway's `capacity`/429. No remote failure triggers a browser fallback.
+
+The Pi Reader client smooths bursts through two local active slots and sixteen
+pending slots; a seventeenth pending call returns `reader_queue_full` without
+HTTP dispatch. The absolute 30-second client budget begins at enqueue and covers
+queue wait, HTTP and complete body consumption. Queued abort/session stop removes
+pending work; active cancellation retains its slot until transport/body cleanup.
+`cancelled` and `deadline` are explicit local outcomes. Truncated Reader success
+adds a separate Pi text notice without changing the untrusted content bytes.
+There are no automatic retries, including browser mutations. This is one-client
+admission only: independent processes and browser/search traffic may still cause
+authoritative gateway `capacity` rejection. No server limit or policy is raised.
 
 A backend HTTP 403 with the exact structured `proxy_forbidden` code is exposed
 as sanitized `egress_denied`, not a transport timeout or unknown-result diagnosis.
@@ -248,10 +271,14 @@ remain required. Real Caddy, actual native Pi lifecycle/image hooks, actual
 isolated Camofox and a restricted protocol container must be distinguished from
 fault fixtures. Missing required inputs are INCOMPLETE, never accepted skips.
 
-Reader's existing per-socket timeout alone does not bound total outbound work or
-prove worker release on client cancellation. A narrow total-fetch/redirect
-budget and slow-drip capacity-recovery evidence are required before claiming
-that F7 portion. Existing fixed workers/finite pending queue are preserved.
+Reader's total fetch/redirect deadline, bounded residual DNS work and slow-drip
+capacity recovery retain their existing regression gates. Offline extraction now
+has its own single-slot killable child budget within that deadline, with no late
+success or abandoned-worker replacement. Existing fixed fetch workers/finite
+incoming queue are preserved. Host tests do not establish the selected Python
+3.12 image's read-only UID10001/128-MiB/64-PID compatibility; require the bounded
+image canary before activation. Client cancellation is not a claim that libc DNS
+or a remote server stopped immediately.
 
 Installation, real credentials, image preparation, canonical integration and live
 canaries require one separately approved W6 proposal. Disable the opt-in ingress

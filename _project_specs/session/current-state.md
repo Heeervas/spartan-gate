@@ -27,6 +27,12 @@ owning task evidence, including failures and explicit limits.
 
 ## Active-task pointers and constraints
 
+- Reader Markdown/admission upgrade is live for Reader, tool-access and installed
+  host Pi helpers; six-call managed-path public retrieval and installed identities
+  were verified. Already-open Pi processes need a restart for imported helpers.
+  Static-only extraction and cross-process gateway capacity limits remain.
+  Acceptance, recovery and closeout: `../../../tasks/archive/2026/reader-markdown-research/task.md`.
+
 - Dashboard speed: `../../../tasks/route-dashboard-speed/task.md` owns adoption/readback.
   Earlier receipt: BUILT_NOT_ACTIVATED; later parent receipt: RECREATED_PENDING_READBACK, quiet_window_observed:false.
   Final deployed-asset/browser acceptance remains unproved; this record grants no service action.

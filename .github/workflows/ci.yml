@@ -26,7 +26,7 @@ jobs:
         run: |
           python3 -m venv .venv/test
           # .agents inputs are operator-local; public CI provisions explicitly.
-          .venv/test/bin/python -m pip install -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.2 packaging==26.3 requests==2.33.0 httpx==0.28.1 ruamel.yaml==0.18.16
+          .venv/test/bin/python -m pip install -r infra/reader/requirements.txt -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.2 packaging==26.3 requests==2.33.0 httpx==0.28.1 ruamel.yaml==0.18.16
           echo "$PWD/.venv/test/bin" >> "$GITHUB_PATH"
           npm ci --ignore-scripts
       - name: Provision pinned Pi native loader in an isolated prefix

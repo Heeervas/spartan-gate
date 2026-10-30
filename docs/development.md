@@ -17,7 +17,7 @@ starting the stack, rebuilding images or rendering private configuration.
 ```sh
 npm ci --ignore-scripts
 python3 -m venv .venv/test
-.venv/test/bin/python -m pip install -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.1 packaging==26.3 requests==2.32.5 httpx==0.28.1 ruamel.yaml==0.18.16
+.venv/test/bin/python -m pip install -r infra/reader/requirements.txt -r infra/spartan-route/requirements.txt PyYAML==6.0.3 python-dotenv==1.2.1 packaging==26.3 requests==2.32.5 httpx==0.28.1 ruamel.yaml==0.18.16
 export PATH="$PWD/.venv/test/bin:$PATH"
 # The native Pi loader test requires a real installed package, not a stub.
 npm install --prefix .cache/test-inputs/pi-test --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.3.0
@@ -38,7 +38,12 @@ copy environments or infer that ignored files are disposable.
 No global installation is needed. Spartan Route owns its runtime dependency pin
 in `infra/spartan-route/requirements.txt`; the retired TypeScript router has no
 build/test/package lane. Keep `config/clawroute` and routing auto aliases used by
-Spartan Route.
+Spartan Route. Reader's complete pinned extraction closure is in
+`infra/reader/requirements.txt`; install it in the same isolated test environment
+before Reader tests. Extraction tests launch that interpreter's isolated child,
+so another venv's installed packages do not satisfy the gate. The selected
+Reader image still requires its separate Python 3.12/resource-limited canary;
+host Python 3.14 tests are not image compatibility proof.
 
 `npm run test:pi` also exercises unmodified OpenAI SDK 7.19.0 (pinned by Pi),
 actual loopback Route/native selection and synthetic upstream HTTP. It proves

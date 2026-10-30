@@ -42,7 +42,7 @@ Local minimal host requirements are pinned in `.agents/test-requirements.txt`;
 public CI explicitly provisions the same pins because `.agents/` is ignored.
 
 ```sh
-.venv/quality/bin/python -m pip install -r .agents/test-requirements.txt
+.venv/quality/bin/python -m pip install -r .agents/test-requirements.txt -r infra/reader/requirements.txt
 export PATH="$PWD/.venv/quality/bin:$PATH"
 npm ci --ignore-scripts
 npm run test:route

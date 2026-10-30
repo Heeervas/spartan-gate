@@ -1,6 +1,7 @@
 import { loadConfig, checkSearchConfig, searchArguments, redact, TOKEN, FAILURE } from './config.mjs';
 import { request, jsonResponse, readerText, pngImage } from './http.mjs';
 import { ServiceError } from './errors.mjs';
+import { ReaderAdmission } from './admission.mjs';
 import { readWorkflow, saveWorkflow, deleteWorkflow, stateKey } from './state.mjs';
 
 const BROWSER_FIELDS = {
@@ -52,6 +53,7 @@ export class ToolsClient {
     this.agentDir = agentDir;
     this.epoch = 0;
     this.pending = new Map();
+    this.readerAdmission = new ReaderAdmission();
     this.secrets = new Set();
   }
 
@@ -140,8 +142,12 @@ export class ToolsClient {
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error(FAILURE);
     const path = `/fetch?${new URLSearchParams({ url: url.href })}`;
     if (Buffer.byteLength(path) > 16384) throw new Error(FAILURE);
-    const text = readerText(await request(config, path, { signal, limit: 524288 }));
-    return [{ type: 'text', text }];
+    return this.readerAdmission.run(signal, async admitted => {
+      const response = await request(config, path, { signal: admitted, limit: 524288 });
+      const content = [{ type: 'text', text: readerText(response) }];
+      if (response.headers.get('x-spartan-truncated') === 'true') content.push({ type: 'text', text: 'Reader output was truncated at its declared content limit.' });
+      return content;
+    });
   }
 
   async browser(config, input, signal, ctx, epoch) {

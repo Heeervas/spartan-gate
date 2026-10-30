@@ -21,7 +21,10 @@ SEARCH_FIELDS = {"q", "format", "num", "language", "time_range", "categories",
 
 
 def error_response(error):
-    return web.json_response({"error": {"code": error.code}}, status=error.status)
+    data = {"code": error.code}
+    if error.upstream_status is not None:
+        data["upstreamStatus"] = error.upstream_status
+    return web.json_response({"error": data}, status=error.status)
 
 
 async def bounded_body(request):
@@ -141,9 +144,9 @@ def public_url(value):
 
 
 def reader_text(response):
-    if response.status != 200:
-        raise AccessError("upstream_error")
     headers = {key.lower(): value for key, value in response.headers.items()}
+    if response.status != 200:
+        reader_failure(response.status, headers)
     if headers.get("x-spartan-content-trust") != "untrusted-web-content":
         raise AccessError("upstream_error")
     try:
@@ -157,6 +160,18 @@ def reader_text(response):
     return text
 
 
+def reader_failure(status, headers):
+    code = headers.get("x-spartan-reader-error")
+    allowed = {"deadline": 504, "reader_overloaded": 503, "egress_denied": 403,
+               "remote_http_error": 502, "response_too_large": 422,
+               "extraction_failed": 422, "needs_render": 422, "upstream_error": 502}
+    if allowed.get(code) != status:
+        raise AccessError("upstream_error")
+    remote = headers.get("x-spartan-upstream-status", "")
+    upstream_status = int(remote) if len(remote) == 3 and remote.isascii() and remote.isdigit() else None
+    raise AccessError(code, upstream_status=upstream_status)
+
+
 async def fetch(request):
     principal = authenticate(request, "reader")
     if request._read_bytes or list(request.query.keys()) != ["url"]:
@@ -165,8 +180,12 @@ async def fetch(request):
     async with request.app["transport"].admit(principal):
         result = await request.app["transport"].request(
             "reader", "GET", "/fetch", limit=READER_LIMIT, params=[("url", url)])
-        return web.Response(text=reader_text(result), content_type="text/plain",
-                            headers={"X-Spartan-Content-Trust": "untrusted-web-content"})
+        text = reader_text(result)
+        headers = {"X-Spartan-Content-Trust": "untrusted-web-content"}
+        metadata = {key.lower(): value for key, value in result.headers.items()}
+        if metadata.get("x-spartan-truncated") == "true":
+            headers["X-Spartan-Truncated"] = "true"
+        return web.Response(text=text, content_type="text/plain", headers=headers)
 
 
 def create_app(settings=None, *, policy_path=None, install_browser=None):
