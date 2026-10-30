@@ -28,7 +28,8 @@ owning task evidence, including failures and explicit limits.
 ## Active-task pointers and constraints
 
 - MCPHub is live with authenticated empty discovery for selected native Hermes
-  and host/container Pi clients; no real backend enrollment was performed.
+  and host/container Pi clients. Authorized legacy connector preparation is
+  recorded privately; it grants no client tools or new account/OAuth consent.
   Source checkpoint `42c5367` excludes two inherited, untracked Pi parity
   foundations: their reviewed MCP opt-in deltas are preserved, not swept into a
   commit. Acceptance/recovery and pending source-control closeout are owned by
