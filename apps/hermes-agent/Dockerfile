@@ -173,6 +173,7 @@ COPY --chown=0:0 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/bootstrap/spartan_browser_policy.py
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/spartan_browser_policy.py
 COPY --chown=0:0 --chmod=0644 spartan_camofox_vault.py /opt/hermes/spartan_camofox_vault.py
+COPY --chown=0:0 --chmod=0644 spartan_branch_navigation.py spartan_branch_gateway.py /opt/hermes/
 COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/patches/spartan_browser_variant.py
 COPY --chown=0:0 spartan-browser-variant-init.sh /opt/hermes/patches/spartan-browser-variant-init.sh
 COPY --chown=0:0 spartan-browser-policy-init.sh /etc/cont-init.d/0195-spartan-browser-policy
@@ -209,6 +210,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_cron_thread_diagnostic.py \
     && python3 /opt/hermes/patches/patch_external_skill_links.py \
     && python3 /opt/hermes/patches/patch_skill_selection_guidance.py \
+    && python3 /opt/hermes/patches/patch_branch_navigation.py \
     && python3 /opt/hermes/patches/patch_stage2_image_dependencies.py \
     && python3 /opt/hermes/patches/freeze_image_features.py \
     && if [ -f /etc/spartan/hermes-browser-mode ]; then \

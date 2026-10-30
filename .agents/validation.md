@@ -493,3 +493,46 @@ rotation, active installation, service build/recreation or DB mutation is author
 ### Pi-only direct HTTPS opt-in regression
 
 Run `sh -n infra/pi/container/pi` and `python3 -m unittest discover -s infra/pi -p test_container_launcher.py -v`. The disposable fake-Node test proves absent-file compatibility, same-origin host:port appending with both list baselines/proxy values/argv retained, and sanitized fail-closed rejection before Node. Run the existing TOP `npm run pi:quality` gate separately. Actual Undici/global-fetch non-inference acceptance and mounted launcher byte readback belong to the controller; these tests do not establish live transport, session, stop or coding-job success.
+
+## Hermes branch navigation source acceptance
+
+Contract: `docs/hermes-branch-navigation.md`. Parent independently approved exact
+additive Python coverage for `apps/hermes-agent/spartan_branch_navigation.py` and
+`apps/hermes-agent/spartan_branch_gateway.py`; patch/tests/Dockerfile already fall
+inside existing scope. TOP floor, immutable baseline, adapters, thresholds and all
+existing exceptions are unchanged. Inventory is not Dockerfile semantic proof.
+
+Use the pinned pristine Hermes program input declared above, with its native
+Python dependencies, and disposable task scratch (`TMPDIR`) when supplied. No
+active HOME, model requests, Discord messages, services or image builds:
+
+```sh
+: "${HERMES_UPSTREAM_SOURCE:?Select the existing pinned pristine Hermes source}"
+PYTHONDONTWRITEBYTECODE=1 .venv/quality/bin/python -m unittest discover -s apps/hermes-agent -p test_branch_navigation.py -v
+# Existing patch-chain/native gates remain mandatory, with their declared inputs:
+npm run test:hermes
+npm run test:hermes:native
+npm run pi:quality
+git diff --check
+```
+
+The focused suite runs an isolated subprocess with native SessionDB, session
+store, branch commands, FIFO recursion, turn-inner completion and approval-scoped
+invocation. Terminal command methods are AST-loaded; the full terminal UI,
+AIAgent/provider startup and external Discord transport are not exercised. A
+synthetic agent/provider and Discord-shaped adapter replace only application/I/O
+assembly. Native auxiliary request shape is checked before provider execution.
+No source-input skips satisfy native acceptance. The branch suite is a separate
+required invocation (the existing native npm lane's fixed list does not include
+it). The full patch-chain suite picks the patch up from the Dockerfile list.
+For the focused dispatch-denial RED control only, set
+`BRANCH_TEST_TOOL_GUARD_RED=1`: the disposable fixture restores pristine native
+`agent/turn_tool_round.py` after patching; the tool-denial case must fail because
+it reaches validation/dispatch instead of the branch acknowledgment guard.
+Re-run without that fixture-only selector for GREEN. No runtime flag is added.
+
+Parent-owned deployment acceptance remains separate: integrated candidate review,
+installed helper/patch identities, existing image/runtime canary, native terminal
+and Discord return/notice readback. Interrupted/pending returns require history
+inspection rather than automatic replay; completion does not certify final-bubble
+Discord delivery. No new release/operational authority follows from these checks.

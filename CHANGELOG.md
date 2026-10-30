@@ -742,3 +742,13 @@ All notable changes to Spartan Gate are documented here.
   completion semantics.
 - Added regression coverage for five-hour Codex safety, malformed whitelist
   recovery, URL ports, and Camofox tab-close locking.
+
+- Add native terminal/Discord branch navigation: `/start-branch`, `/start-fresh`,
+  `/return` and `/cancel`, preserving histories and immediate-parent nesting.
+  Return imports a branch-only summary once in ordinary use and generates a
+  tool-disabled parent acknowledgment; busy Discord parents queue rather than
+  interrupt, and the child receives its acknowledgment outcome. Preserve native
+  compression continuity and legacy Discord in-place forks, reject deliberately
+  replaced parent conversations and leave summary failures usable. No crash-safe
+  exactly-once promise or automatic
+  activation. See `docs/hermes-branch-navigation.md`.
