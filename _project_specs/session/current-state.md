@@ -27,12 +27,13 @@ owning task evidence, including failures and explicit limits.
 
 ## Active-task pointers and constraints
 
-- MCPHub is live with authenticated empty discovery for selected native Hermes
-  and host/container Pi clients. Authorized legacy connector preparation is
-  recorded privately; it grants no client tools or new account/OAuth consent.
-  Source checkpoint `42c5367` excludes two inherited, untracked Pi parity
-  foundations: their reviewed MCP opt-in deltas are preserved, not swept into a
-  commit. Acceptance/recovery and pending source-control closeout are owned by
+- MCPHub runtime recovery and exact tool grants are applied for selected native
+  Hermes and host/container Pi clients; the prior empty/drafts-only checkpoint is
+  superseded. Account/application blockers remain explicit in the private operator
+  guide; no new OAuth consent or network-policy expansion was performed. The
+  independent Pi parity foundation ownership issue still blocks source-control
+  closeout, not runtime use; its reviewed MCP opt-in deltas remain preserved.
+  Acceptance, recovery and operator prerequisites are owned by
   `../../../tasks/mcphub-integration/task.md`.
 
 - Reader Markdown/admission upgrade is live for Reader, tool-access and installed

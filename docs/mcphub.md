@@ -21,9 +21,10 @@ There is no fork, database service, Docker socket or custom client extension.
   profile is disabled (then there is no hub upstream). Private exposure needs
   a separate decision. Caddy already has a normal publishing bridge; neither
   MCPHub nor Hermes gains one.
-- One process, file mode, non-root UID/GID, read-only root, 512 MiB memory,
-  128 PIDs and bounded `/tmp`. Writable HOME/cache is inside the protected state.
-  Image tools run in this same container, **not** one sandbox per backend.
+- One hub, file mode, non-root UID/GID and read-only root. Defaults are 512 MiB
+  memory, 128 PIDs and bounded `/tmp`; connector-specific private limits must be
+  based on measured combined use. Writable HOME/cache is inside protected state.
+  Stdio backend processes share this container, **not** one sandbox per backend.
   Only the administrator should enroll trusted backend commands/packages.
 
 Initial supported onboarding is **admin-owned shared HTTP/API-key connectors**.
@@ -146,6 +147,32 @@ installation. No sample backend or test tool is retained in production. Local
 source canaries prove protocol/auth/proxy behavior with an inert peer, not a real
 connector account, browser login or OAuth refresh.
 
+## Local stdio runtimes and account readiness
+
+A stdio definition needs an actual executable and its compatible dependencies
+inside the hub; an old host/workspace path or `enabled: true` is not a restored
+runtime. Keep trusted runtime closures under protected `/state/runtimes` and
+connector-specific bindings under `/state/bindings`, rather than mounting an old
+home or whole workspace. Preserve each selected context and its matching encrypted
+state/key together. Bound source access and use trusted, non-world-writable cache
+ancestry when a backend requires it. Copied virtual environments can depend on the
+exact pinned image's interpreter ABI and their deployment path.
+
+Preflight all required artifacts/bindings before activation. Retain exact group
+selections and execution policies; do not auto-grant newly discovered tools or
+broaden write/publish/trading access. Measure the hub and its children together,
+including startup peak; a successful isolated per-backend probe is not a combined
+memory acceptance.
+
+Connected/discovered means MCP protocol readiness, not authenticated account
+access. Some status tools only check credential-file presence, and some backends
+return business errors inside a successful MCP result. Use a minimal authorized
+read-only check before claiming account usability. Expired credentials need the
+operator's login; desktop adapters need their running application/addon. An
+already-admitted provider endpoint can still fail DNS or be unavailable. Do not
+relax egress, consent on the user's behalf or repair an unrelated service to hide
+these blockers.
+
 ## Secrets, persistence, upgrades and rollback
 
 Protect the **entire state directory** and its backups, including
@@ -153,8 +180,11 @@ Protect the **entire state directory** and its backups, including
 any `.credentials.key` sidecar created for personal credentials. Shared connector
 secrets can be plaintext in file-mode settings; do not describe all state as
 encrypted. Personal encryption is useless without its original key. Back up the
-whole directory privately while the hub is stopped; preserve 0700/0600 ownership
-and metadata. Never mount state or backups into an agent workspace.
+whole directory privately while the hub is stopped, including any installed
+runtime closures and connector bindings. Preserve private directory/credential
+permissions, executable bits and runtime symlinks; do not chmod executable
+programs to 0600. Keep the compatible image and exact runtime paths. Never mount
+state or backups into an agent workspace.
 
 Hub Docker log retention is disabled because upstream logs may contain tool
 traffic; activity tool-payload storage is explicitly off. Caddy access logging for

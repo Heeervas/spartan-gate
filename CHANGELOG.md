@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document real MCP stdio runtime/state recovery, combined resource sizing and
+  exact grants. Distinguish protocol discovery from authenticated account or
+  desktop-application readiness without widening network or consent boundaries.
+
 - Add opt-in pinned MCPHub file-mode source and native Hermes/Pi provisioning,
   with internal-only proxy-controlled networking, a separate native-auth localhost
   listener, group-scoped client keys and execution-time exact tool grants.
