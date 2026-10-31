@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Run Codebase Memory as native current-repository stdio for Hermes and Pi,
+  with full-root indexing, isolated caches and analysis-only tools; retire its
+  duplicate hub exposure. Preserve shared API connectors and separate agent
+  bearer access from operator-owned Google OAuth.
+
 - Prepare `shared-masterv2`: one common-root MASTER section through native prompt
   assembly, without middleware, profile exclusions or plugin-owned truncation.
   Keep the ordinary 4,000-character default; raise the measured section/aggregate

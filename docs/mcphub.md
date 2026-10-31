@@ -173,6 +173,125 @@ already-admitted provider endpoint can still fail DNS or be unavailable. Do not
 relax egress, consent on the user's behalf or repair an unrelated service to hide
 these blockers.
 
+## Google authorization is separate from agent access
+
+The agent's MCPHub bearer key authorizes access to the hub, not to a Google
+account. The operator authorizes Google OAuth for the selected backend account;
+Google API access then follows that account's GTM/GA4 permissions and the granted
+scopes. Agents do not supply their own Google API keys or receive refresh tokens.
+
+The GTM backend consumes an OAuth client plus its matching refresh-token file;
+the GA4 backend consumes user Application Default Credentials. Keep the originating
+OAuth client/account pairing. A connected MCP transport does not prove either
+token is valid. Renewing those tokens is an operator-owned consent operation,
+followed by a targeted backend reload—not new hub keys or a Hermes rebuild.
+
+The existing Workspace login helper does not populate these MCPHub bindings.
+Unifying the operator command requires a separately named, verified read-only
+grant and each backend's native credential format. Do not copy a broad Workspace
+refresh token or label its GTM write scopes read-only. No automatic consent or
+credential bridging is provided by the hub/client provisioning helper.
+
+## Native local Codebase Memory (current-repository workflow)
+
+Codebase Memory is different from shared account connectors: use native local
+stdio for the selected coding repository, not the hub's shared cache or an empty
+Docker workspace. With Python 3.11+ and Git, `scripts/codebase_memory_local.py` supports the approved native
+**0.12.1** binary (its exact SHA-256 is pinned in the launcher). Installation,
+client enrollment and retiring duplicate hub grants are separate operator steps;
+this source helper does not change native settings, mounts or services.
+
+Create an existing trusted, user-owned state parent **outside the repository**
+(recommended mode 0700, with no symlink or group/other-writable ancestry). Install
+reviewed launcher/program bytes in stable trusted locations. Keep the cache prefix
+short (for example `~/.cache/cbm-local`): native Unix-socket coordination can fail
+before indexing with a deeply nested runtime path. Generic stdio command:
+
+```sh
+python3 /installed/codebase_memory_local.py \
+  --binary /installed/codebase-memory-mcp \
+  --state-parent /protected/codebase-memory-sessions
+```
+
+Set native Pi stdio `cwd: "."` relative to its selected session directory. For
+Hermes, select the coding directory before startup (`hermes chat --in DIR`), and
+bind its native stdio cwd to the selected workspace (`${workspaceFolder}`), not
+a guessed generic workspace/home. Container Pi and Hermes can only see repositories
+already available through their authorized filesystem; local stdio cannot expose
+unmounted host repositories. No all-projects/home mount is implied.
+
+At each startup/reconnect the launcher resolves the canonical full Git root,
+including linked worktrees. Starting in a subdirectory still indexes **the full
+root**, never an arbitrary subroot. HOME, its ancestors and non-repositories are
+refused. Preflight normally lists Git-tracked and nonignored untracked filenames
+only; it does not read credential contents. Opaque directory inventory entries
+(including embedded repositories and populated submodules) are refused, not
+recursively authorized. Only repository `.gitignore` rules may hide
+untracked candidates; global/system ignores and `.git/info/exclude` are not trusted.
+It refuses visible private/credential
+paths, `.env*` files and key-file names, including tracked files even when a Git
+ignore rule matches them (native 0.12.1 indexes forced-tracked ignored files).
+Only exact generic basenames `.env.example`,
+`.env.sample` and `.env.template` are exempt. These filename checks are conservative
+and may refuse public documentation under a `private/` directory; they are **not a
+universal secret detector**. Authorize the repository and exclude sensitive
+untracked material with repository ignore policy before launch. Do not force-add
+secrets or rename them to evade preflight. Root ignore-policy symlinks are refused.
+
+If an operator has separately audited a **public template/document** whose exact
+path triggers the conservative classifier, an optional repeatable argument grants
+permission to read and verify only that public file:
+
+```sh
+# Add to the launcher command only after independently approving these public bytes:
+--public-template "docs/private/public_example.py=$APPROVED_PUBLIC_SHA256"
+```
+
+Pin syntax and duplicate names are always validated. A valid exact pin whose
+relative filename is absent from the current VCS inventory is **unused** and
+grants no exemption, allowing the same global client arguments in other repositories.
+When present, the pin must identify a sensitive-path **regular file** relative to
+the full Git root, with its exact lowercase SHA-256. No glob, directory,
+absolute/outside path, symlink component or duplicate pin is accepted. A wrong
+hash or changed bytes refuses startup **before indexing**. Each remaining sensitive
+file still refuses startup unless independently pinned or properly excluded.
+Pins do not discover public files, enroll directories or authorize credential
+reads. Never hash a credential merely to bypass the refusal. Supply only approved
+public pins explicitly in the selected private client configuration; the launcher
+contains no project-specific exemptions or absolute-root binding. Authorization
+follows only the exact audited public bytes plus relative filename, so copies and
+Git worktrees can reuse the same pins. An unrelated repository without that file
+receives no exemption; unknown bytes or any other sensitive file remain refused.
+No pins means unchanged default behavior. Re-audit and reconnect when approved
+public bytes change; changing a file during an active session is not revocation.
+
+Each launch uses a fresh mode-0700 session cache/runtime, disables native UI,
+auto-index and both watcher settings, indexes the exact root once with the native
+CLI in `full` mode, with repository graph persistence and doc-candidate generation
+explicitly off, then executes native `analysis` stdio with `--ui=false`. Native
+`fast` mode filters out directories such as `scripts/`; it is not used for the
+full selected coding repository. Startup configuration
+and index output never enter MCP stdout; failures emit only a generic sanitized
+stderr diagnostic and do not start the analysis transport. Runtime
+`index_repository` is mechanically unavailable, avoiding native subroot-ignore
+bypasses. No custom MCP message proxy is introduced.
+
+**Reconnect after ordinary source edits as well as exclusion/sensitivity changes**:
+watchers are disabled and an existing connection does not switch roots when a
+terminal changes directory. Select the new repository and start/reconnect its MCP
+connection. Native cache reads do not enforce current ignore rules retroactively.
+Stop using a session immediately when its source authorization changes. This is a
+trusted coding-repository workflow, **not a global filesystem sandbox or protection
+against malicious concurrent repository/policy changes**.
+
+Session caches contain source-derived data and are deliberately retained on both
+normal EOF and startup failure: native daemons may outlive a CLI/client. The
+launcher neither deletes possibly-live storage nor discovers/kills PIDs. Operator
+cleanup may remove only the exact generated session directory after independently
+confirming no native consumer still uses it; there is no age-based cleanup. Budget
+storage accordingly. Host/container client index → search → snippet acceptance,
+actual native installation and cache disposition remain operator-owned checks.
+
 ## Secrets, persistence, upgrades and rollback
 
 Protect the **entire state directory** and its backups, including

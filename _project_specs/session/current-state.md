@@ -27,11 +27,14 @@ owning task evidence, including failures and explicit limits.
 
 ## Active-task pointers and constraints
 
-- MCPHub runtime recovery and exact tool grants are applied for selected native
-  Hermes and host/container Pi clients; the prior empty/drafts-only checkpoint is
-  superseded. Account/application blockers remain explicit in the private operator
-  guide; no new OAuth consent or network-policy expansion was performed. The
-  independent Pi parity foundation ownership issue still blocks source-control
+- MCPHub is active for selected native Hermes and host/container Pi clients:
+  seven shared backends/101 exact tools. Codebase Memory now runs native local
+  stdio per selected Git repository (13 analysis tools), with real index/search/
+  snippet acceptance; the duplicate shared backend/grants were retired. Reconnect
+  after source/root changes; container filesystem visibility is unchanged.
+  Account/application blockers remain explicit in the private operator guide;
+  no new Google consent, token bridging or network-policy expansion occurred.
+  The independent Pi parity foundation ownership issue still blocks source-control
   closeout, not runtime use; its reviewed MCP opt-in deltas remain preserved.
   Acceptance, recovery and operator prerequisites are owned by
   `../../../tasks/mcphub-integration/task.md`.
