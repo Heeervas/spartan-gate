@@ -1,0 +1,4 @@
+name: shared-masterv2
+version: "0.1.0"
+description: Loads common MASTER instructions as one native system prompt section.
+kind: standalone

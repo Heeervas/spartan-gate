@@ -65,7 +65,9 @@ AGENTS loading follows the **effective cwd**. Prefer an explicit named workspace
 cwd with `workspace/AGENTS.md` containing one instruction body for paths,
 workflow and verification. A file named `AGENTS_<name>.md` is not automatically
 injected. Verify effective cwd and actual instruction loading in a fresh session;
-file existence is not prompt evidence. Keep outputs in an explicitly writable
+file existence is not prompt evidence. If cwd moves outside the profile workspace
+and its AGENTS instructions are absent, conditionally read that profile's intended
+AGENTS directly. Common MASTER injection does not replace this recovery. Keep outputs in an explicitly writable
 domain root and sources read-only where applicable.
 
 An empty dotenv does not prove absence of inherited container credentials.
@@ -162,7 +164,7 @@ platform_toolsets:
     - hermes-discord
 plugins:
   enabled:
-    - shared-master
+    - shared-masterv2
     - node-search
     - profile-delegate
     - discord-deferred-thread-title
@@ -273,14 +275,40 @@ is `<profile-home>/.cache/hermes/node_search/index.json`; omit
 `NODE_SEARCH_CACHE` to retain that isolation. Confirm that the selected vault
 exists in the running deployment; do not silently broaden the root.
 
-`shared-master` reads common `/opt/data/MASTER.md` from the default root, also
-for named/custom-root profiles; do not make profile-local MASTER copies.
-Native project/gateway AGENTS stays separate. Verify prompt inclusion in a new
-session. Keep `prompt-load-bridge` disabled and preserve peer overrides and
-intentional divergences. Every new profile must pass plugin doctor,
-discovery/import and actual cache-lineage `llm_request` middleware and
-`post_api_request` hook registration. Links/list entries alone do not prove
-registration; registration does not prove cache hits or a successful fetch.
+The prepared `shared-masterv2` baseline requires the patched image and its
+individual read-only mount at `/opt/data/plugins/shared-masterv2`. Do not enable
+it against old core or enable both v1 and v2. Existing mounted v1 source remains
+owned by its current consumer until user recreation and separate retirement;
+this recipe does not authorize deleting it. Source preparation is not live
+activation: after authorized image preparation and user recreation, start fresh
+sessions and verify complete prompt inclusion before claiming adoption.
+
+V2 reads `get_default_hermes_root()/MASTER.md` once at each native render/freeze
+boundary: `/opt/data/MASTER.md` in the standard container, or the common root
+above `profiles/<name>` for custom roots. Cwd and profile-local MASTER files do
+not change this source. There are no profile-name exclusions, including `empty`,
+`workstation`, `ssr`, `ssr-*` and `ssr_*`; keep their independently configured
+memory/history/tool restrictions. Link only the v2 implementation into each
+named profile's plugins and select `shared-masterv2` in `plugins.enabled`.
+
+The measured content is 16,416 stripped characters, 16,576 with native framing.
+The native patch preserves the ordinary default of 4,000, permits at most 20,000
+characters per opted-in section and 24,000 aggregate including framing. V2 uses
+the native maximum, without its own cap/truncation or request middleware. Count
+other enabled sections before activation. Missing, empty, unreadable or invalid
+UTF-8 input warns without content leakage. Native limit or reserved-marker
+failures omit the section with a warning, not truncation or request refusal.
+Within the prompt's life native assembly reuses the frozen section; resume
+retains the persisted snapshot. Native invalidation, such as compaction, rereads
+MASTER and adopts edits. Routine manual MASTER reads are unnecessary; plugin
+reload alone cannot install the core patch or refresh a persisted session.
+
+Native project/gateway AGENTS stays separate and cwd-based. Keep
+`prompt-load-bridge` disabled and preserve peer overrides and intentional
+divergences. Every new profile must pass plugin doctor, discovery/import and
+actual cache-lineage `llm_request` middleware and `post_api_request` hook
+registration. Links/list entries alone do not prove registration; registration
+does not prove cache hits or a successful fetch.
 
 Curate complete individual skill directories with supporting files; retain
 `.no-bundled-skills`, intentional divergences and `skills.external_dirs: []`.

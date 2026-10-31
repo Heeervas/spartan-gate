@@ -127,7 +127,7 @@ required; follow the
 [runtime Camofox guide](../apps/hermes-agent/runtime-guides/local/camofox.md).
 Do not configure Chromium or another backend as an availability fallback.
 
-The new-profile BASIC config enables exactly `shared-master`, `node-search`,
+The prepared new-profile BASIC config enables exactly `shared-masterv2`, `node-search`,
 `profile-delegate`, `discord-deferred-thread-title`, `spartan-cache-lineage`,
 `web-spartan-reader`, `hermes-lcm`, and `self-improvement-governor`, with
 `context.engine: lcm` and `web.extract_backend: spartan-reader`. Use individual
@@ -166,15 +166,48 @@ hook. A symlink or list entry alone is insufficient. This new-profile
 completion requirement does not retroactively override existing intentional
 exceptions or change the [explicit runtime activation policy](spartan-route.md). Do not bulk-enable domain plugins to satisfy it.
 
-The local profile baseline also uses the shared `shared-master` plugin for
-eligible profiles. Link and enable it so new sessions receive the common
-`MASTER.md` from Hermes' default root (`/opt/data/MASTER.md` in the standard
-container). Custom roots and active named profiles use that same default-root
-source, not a profile-local copy. Native project/gateway `AGENTS.md` remains
-separate. Follow the published runtime recipe and explicitly approved local
-exceptions, then verify prompt inclusion in a new session after the gateway
-reload. The [historical shared transport note](../apps/hermes-agent/runtime-docs/hermes_notes/shared_master_instructions_17102026.md)
-is an unserved, host-only operator archive reference, not runtime guidance.
+### Common instructions: shared-masterv2 (prepared source, activation pending)
+
+`shared-masterv2` registers one native SYSTEM section for every profile where
+it is enabled, without name exclusions: `empty`, `workstation`, `ssr`, `ssr-*`
+and `ssr_*` names receive the same common instructions as other profiles.
+This does not enable memory, history or any capability disabled in a profile.
+The public Compose source mounts only this plugin read-only at
+`/opt/data/plugins/shared-masterv2`; use individual named-profile links and
+`plugins.enabled: [shared-masterv2, ...]`, replacing v1 enablement rather than
+running both. Do not link the whole plugins directory.
+
+The callback reads `get_default_hermes_root()/MASTER.md`, independent of cwd.
+In the standard container this is `/opt/data/MASTER.md`; a custom
+`<root>/profiles/<name>` home resolves to `<root>/MASTER.md`. Follow the native
+root resolver, not a profile-local MASTER copy. Native cwd-based project/gateway
+`AGENTS.md` discovery remains independent and unchanged. When cwd moves outside
+the profile workspace and its AGENTS instructions are absent, conditionally read
+the intended profile AGENTS directly; do not make routine MASTER rereads part of
+the workflow or assume a specially named AGENTS file is auto-injected.
+
+The measured common content is **16,416 stripped characters / 16,576 with native
+framing** for this one-section inventory. The build patch retains the ordinary
+**4,000** default, raises the native maximum to **20,000** per opted-in section
+and aggregate budget to **24,000** including framing. V2 uses that native maximum,
+not its own cap, truncation or provider middleware. Other enabled sections also
+consume the aggregate budget; verify the actual inventory before activation.
+Missing, empty or unreadable/invalid-UTF8 MASTER produces a useful warning
+without its contents. Native oversized/reserved-marker/aggregate failures omit
+the section with a warning; they do not truncate it or refuse the user request.
+
+Native assembly reads once per render/freeze boundary, reusing the snapshot
+within that prompt's life. Persisted sessions retain their full prompt snapshot;
+native invalidation (for example compaction) rereads the file and adopts edits.
+This is not v1's per-request reconciliation. The patched image **and** plugin
+mount must be adopted by an explicitly authorized user recreation, followed by
+fresh sessions and prompt verification; a plugin reload alone cannot install
+the core patch. Source preparation is not live adoption. The currently mounted
+v1 payload remains intact for its existing consumer until recreation and
+separately authorized retirement. See the
+[v2 preparation note](../apps/hermes-agent/runtime-docs/hermes_notes/shared_masterv2_31102026.md).
+The [historical v1 transport note](../apps/hermes-agent/runtime-docs/hermes_notes/shared_master_instructions_17102026.md)
+is an unserved operator archive, not the v2 contract.
 
 For Reader, use the Gate-owned `infra/hermes-plugins/web/spartan-reader`
 package, discovered as `web/spartan-reader` (manifest alias `web-spartan-reader`

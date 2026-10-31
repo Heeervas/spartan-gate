@@ -175,7 +175,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         recipe = yaml.safe_load(basic.group(1))
         self.assertEqual(
             recipe['plugins']['enabled'],
-            ['shared-master', 'node-search', 'profile-delegate',
+            ['shared-masterv2', 'node-search', 'profile-delegate',
              'discord-deferred-thread-title', 'spartan-cache-lineage',
              'web-spartan-reader', 'hermes-lcm', 'self-improvement-governor'],
         )

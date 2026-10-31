@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Prepare `shared-masterv2`: one common-root MASTER section through native prompt
+  assembly, without middleware, profile exclusions or plugin-owned truncation.
+  Keep the ordinary 4,000-character default; raise the measured section/aggregate
+  ceilings to 20,000/24,000 and preserve native profile-aware prompt restoration.
+  Replace obsolete transport tests with real assembly and persistence checks.
+  Patched-image adoption and retirement of the active v1 payload remain operator steps.
+
 - Document real MCP stdio runtime/state recovery, combined resource sizing and
   exact grants. Distinguish protocol discovery from authenticated account or
   desktop-application readiness without widening network or consent boundaries.

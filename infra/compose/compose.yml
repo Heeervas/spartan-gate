@@ -570,6 +570,13 @@ services:
       - ../../apps/hermes-agent/runtime-guides:/opt/data/brain/runtime_docs:ro
       # required: agent can inspect but not modify the public proxy whitelist fragment.
       - ../outbound-proxy/whitelist.txt:/etc/proxy-whitelist.public.txt:ro
+      # optional: common native SYSTEM instructions; enable per profile only after patched-image recreation.
+      - type: bind
+        source: ../hermes-plugins/shared-masterv2
+        target: /opt/data/plugins/shared-masterv2
+        read_only: true
+        bind:
+          create_host_path: false
       # optional: Spartan Route cache-lineage plugin, enabled by user-owned Hermes config.
       - ../hermes-plugins/spartan-cache-lineage:/opt/data/plugins/spartan-cache-lineage:ro
       # optional: approval-gated fixed-workstation terminal plugin; remains disabled until explicitly enabled.

@@ -210,6 +210,7 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && python3 /opt/hermes/patches/patch_cron_thread_diagnostic.py \
     && python3 /opt/hermes/patches/patch_external_skill_links.py \
     && python3 /opt/hermes/patches/patch_skill_selection_guidance.py \
+    && python3 /opt/hermes/patches/patch_shared_master_prompt_capacity.py \
     && python3 /opt/hermes/patches/patch_branch_navigation.py \
     && python3 /opt/hermes/patches/patch_stage2_image_dependencies.py \
     && python3 /opt/hermes/patches/freeze_image_features.py \
