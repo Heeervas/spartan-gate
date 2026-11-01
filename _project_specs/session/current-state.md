@@ -20,9 +20,11 @@ owning task evidence, including failures and explicit limits.
   `../../../tasks/archive/2026/route-decisions-api/task.md`.
 - Route storage source integration now explicitly includes the inherited speed,
   UI r5, retention/backoff and Pi parity/MCP foundations under exclusive canonical
-  source/index ownership acknowledged by the operator. Final integrated review,
-  commits and authorized remote readback remain pending; no deployment is implied.
-  `../../../tasks/route-degraded-storage/task.md` owns the frozen candidate/checks.
+  source/index ownership acknowledged by the operator. Independent integrated
+  review passed; exact accepted tree was committed as `ae0fa4226c4927cad21934704c0589045fb6808c`
+  and published to GitHub master with matching remote readback. No new deployment
+  occurred. Visual/mobile/live-click and lifecycle/resource gaps remain open.
+  `../../../tasks/route-degraded-storage/task.md` owns the candidate and receipts.
   Unrelated Hermes notes remain preserved and excluded from this integration.
 - Reconciled family locations are indexed in `../../../tasks/README.md`. Each
   current record owns its specific proposal, acceptance or native/resource gate;
@@ -39,8 +41,9 @@ owning task evidence, including failures and explicit limits.
   Account/application blockers remain explicit in the private operator guide;
   no new Google consent, token bridging or network-policy expansion occurred.
   Pi parity foundation integration and its reviewed MCP opt-in deltas are now
-  explicitly authorized in the storage integration batch; final review/commit
-  remains pending, not a runtime-use blocker or completed lifecycle closeout.
+  included in the accepted storage integration commit and published to GitHub.
+  Source ownership/integration no longer blocks this batch; account/application
+  prerequisites and formal lifecycle closeout remain separate.
   Acceptance, recovery and operator prerequisites are owned by
   `../../../tasks/mcphub-integration/task.md`.
 
@@ -54,8 +57,8 @@ owning task evidence, including failures and explicit limits.
   historical BUILT_NOT_ACTIVATED and later RECREATED_PENDING_READBACK receipts
   (quiet_window_observed:false). The later storage deployment verified all 46
   module/asset identities, including the inherited speed implementation; browser
-  acceptance remains open. Source integration is awaiting final review, not a
-  new service action.
+  acceptance remains open. Source integration is accepted and published with
+  the storage foundations; no new service action or visual PASS is implied.
 - `../../../tasks/hermes-log-remediation/task.md`: remaining refresh/runtime
   remediation; rebaseline before any separate authorized execution.
 - `../../../tasks/shared-tool-access/task.md`: source/fixture acceptance does not
