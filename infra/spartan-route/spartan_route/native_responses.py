@@ -26,6 +26,7 @@ from .codex import (
     should_retry,
     sse,
 )
+from .speed import capture_service_tier
 from .util import stable_json, token_count_estimate
 from .native_cache import NativeCacheDiagnostics, provider_cache_fields, request_diagnostics, cache_read_known
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected
@@ -151,6 +152,7 @@ def capture_telemetry(result: CodexCallResult, payload: dict[str, Any], event_na
         if not result.cache_read_known:
             result.cached_input_tokens = 0  # Compatibility counter; v2 marks this unknown.
         result.usage_event_type = event_name
+    capture_service_tier(result, payload, event_name)
     response = response_object(payload)
     if response is not None and isinstance(response.get("id"), str) and len(response["id"]) <= 256:
         result.cache_response_id = response["id"]

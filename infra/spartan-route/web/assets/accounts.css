@@ -1,0 +1,114 @@
+/* Compact fleet summaries; one native disclosure owns every account's controls. */
+.codex-page .accounts-heading { align-items: center; margin-bottom: 20px; gap: 16px; }
+.codex-page h1 { font-size: 36px; font-weight: 850; letter-spacing: -.045em; }
+.codex-page .workspace-label { margin: 0 0 4px; font-size: 11px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+.codex-page .accounts-heading button { min-height: 44px; }
+.codex-page .account-workspace { margin-top: 0; }
+.workspace-status { padding-bottom: 8px; border-bottom: 1px solid var(--accent); margin-bottom: 16px; background: var(--raised); box-shadow: inset 3px 0 0 var(--accent); padding-left: 12px; }
+.workspace-status h2 { font-size: 14px; font-weight: 800; }
+.workspace-status #usage-status { max-width: 70%; font-size: 12px; }
+.codex-page #accounts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.codex-page article.account { display: block; min-width: 0; padding: 0; border-radius: 4px; overflow: clip; box-shadow: 3px 3px 0 var(--line); }
+.codex-page .account-head { margin: 0; padding: 16px 20px 12px; border-bottom: 1px solid var(--line); background: var(--ink); color: var(--on-ink); box-shadow: inset 0 3px 0 var(--signal); }
+.codex-page .account-head .account-eyebrow, .codex-page .account-head .account-health { color: var(--ink-muted); }
+.codex-page .account-meta { min-width: 0; width: 100%; gap: 4px; }
+.account-eyebrow { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.codex-page .account-meta h3 { font: 600 18px/1.25 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: -.02em; overflow-wrap: anywhere; }
+.codex-page .account-health { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.codex-page .health-badge { background: var(--panel); color: var(--text); font-weight: 650; letter-spacing: 0; text-transform: none; padding: 2px 6px; }
+.codex-page .health-healthy .health-badge { color: var(--good); }
+.codex-page .health-paused .health-badge, .codex-page .health-unavailable .health-badge { color: var(--warn); }
+.codex-page .health-failed .health-badge { color: var(--bad); }
+.codex-page .rings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 0; padding: 16px 20px; }
+.codex-page .ring-wrap { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 10px; align-items: center; min-width: 0; }
+.codex-page .ring-wrap h4 { grid-column: 1 / -1; margin: 0; font-size: 13px; font-weight: 650; }
+.codex-page .ring { width: 72px; }
+.codex-page .ring::after { inset: 6px; }
+.codex-page .ring-value { font-size: 17px; letter-spacing: -.04em; font-weight: 700; }
+.codex-page .ring-unavailable { background: var(--line); }
+.usage-bar { display: none; }
+.codex-page .window-values { min-width: 0; }
+.codex-page .usage-primary { margin: 0 0 4px; }
+.codex-page .usage-primary strong { font-size: 12px; font-weight: 650; }
+.codex-page .window-values .muted { font-size: 12px; overflow-wrap: anywhere; }
+.observation { grid-column: 1 / -1; color: var(--muted); font-size: 11px; margin: 0; overflow-wrap: anywhere; }
+#accounts[data-stale="true"] .observation::before { content: "Last-good · stale · "; color: var(--warn); font-weight: 650; }
+.account-controls { border-top: 1px solid var(--line); }
+.account-controls > summary { background: var(--raised); }
+.account-controls > summary::before { color: var(--accent); font-weight: 800; }
+.account-controls[open] > summary { box-shadow: inset 3px 0 0 var(--accent); }
+.account-controls > summary:hover { text-decoration: underline; text-underline-offset: 3px; }
+.account-controls > summary:focus-visible, .account-detail > summary:focus-visible { outline-offset: -4px; }
+.account-controls > summary, .account-detail > summary { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 8px 20px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.account-controls > summary::before, .account-detail > summary::before { content: "+"; font-size: 18px; }
+.account-controls[open] > summary::before, .account-detail[open] > summary::before { content: "−"; }
+.detail-source { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px; font-weight: 400; }
+.control-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); }
+.codex-page .quota-limit, .codex-page .plan-control { display: grid; gap: 6px; font-size: 13px; }
+.control-window-state { font-size: 11px; margin-top: 8px; overflow-wrap: anywhere; }
+.codex-page .quota-limit input { width: 100%; min-height: 44px; font-size: 16px; font-variant-numeric: tabular-nums; }
+.codex-page .plan-control select { width: 88px; min-height: 44px; font-size: 16px; }
+.codex-page .quota-actions { margin: 0; padding: 0 20px 16px; }
+.codex-page .quota-actions button { min-height: 44px; font-size: 14px; font-weight: 600; }
+.codex-page .quota-actions .muted { font-size: 12px; }
+.slot-deck { min-width: 0; padding: 16px 20px; border-top: 1px solid var(--line); }
+.slot-deck > h4 { margin: 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.slot-deck > h4 span { margin-left: 8px; }
+.codex-page .slot-row { display: flex; flex-wrap: wrap; margin: 12px 0 0; padding: 0; gap: 8px 12px; border: 0; align-items: center; }
+.codex-page .slot-row-main { flex: 1 1 120px; display: grid; gap: 4px; }
+.codex-page .slot-row-main > strong { font-size: 14px; }
+.slot-state { font-size: 12px; overflow-wrap: anywhere; }
+.codex-page .slot-actions { display: flex; gap: 8px; }
+.codex-page .slot-actions button { min-height: 44px; padding: 8px 12px; font-size: 13px; }
+.codex-page .slot-actions .danger { border-color: var(--bad); }
+.account-detail { border-top: 1px solid var(--line); }
+.account-detail > summary { color: var(--muted); font-weight: 400; }
+.account-detail > :not(summary) { margin-inline: 20px; overflow-wrap: anywhere; }
+.account-detail[open] { padding-bottom: 16px; }
+.slot-diagnostics { margin-top: 16px; }
+.codex-page .account .active-lease-strip, .codex-page .account .reset-credit-strip { margin-block: 12px; }
+.account-analytics, .dashboard-access { margin-top: 24px; border-top: 1px solid var(--line); }
+.account-analytics > summary, .dashboard-access > summary { padding-block: 16px; cursor: pointer; font-size: 15px; font-weight: 600; }
+.account-analytics > summary .muted, .dashboard-access > summary .muted { margin-left: 12px; font-weight: 400; }
+.dashboard-access .toolbar { margin-top: 0; }
+@media (min-width: 901px) and (max-width: 1200px) {
+  .codex-page .ring-wrap { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .codex-page #accounts { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .codex-page .accounts-heading { align-items: start; margin-bottom: 12px; gap: 8px; flex-wrap: wrap; }
+  .codex-page h1 { font-size: 28px; }
+  .codex-page .workspace-label, .codex-page .accounts-heading p:not(.workspace-label) { display: none; }
+  .codex-page .accounts-heading .actions { gap: 8px; }
+  .codex-page .accounts-heading button { padding-inline: 10px; font-size: 12px; }
+  .workspace-status { margin-bottom: 12px; padding-bottom: 8px; }
+  .workspace-status h2 { display: none; }
+  .workspace-status #usage-status { max-width: 100%; text-align: left; font-size: 11px; }
+  .codex-page .account-head { padding: 10px 12px 8px; }
+  .codex-page .account-meta { gap: 2px; }
+  .codex-page .account-meta h3 { font-size: 16px; }
+  .account-eyebrow { font-size: 10px; letter-spacing: 0; }
+  .codex-page .account-health { font-size: 11px; }
+  .codex-page .rings { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 12px; }
+  .codex-page .ring-wrap { grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; }
+  .codex-page .ring { display: none; }
+  .codex-page .ring-wrap h4 { grid-column: 1; grid-row: 1; font-size: 12px; }
+  .codex-page .window-values { display: contents; }
+  .codex-page .window-values > .raw-consumed { grid-column: 2; grid-row: 1; color: var(--text); font-size: 12px; }
+  .usage-bar { display: block; grid-column: 1 / -1; grid-row: 2; height: 5px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .usage-bar > span { display: block; height: 100%; width: var(--used); background: var(--tone); }
+  .bar-unavailable { background: repeating-linear-gradient(90deg, var(--line) 0 8px, transparent 8px 12px); }
+  .codex-page .window-values > .muted:last-child { grid-column: 1; grid-row: 3; font-size: 10px; }
+  /* Full weighted units and observation text remain in the expanded controls. */
+  .codex-page .usage-primary { display: none; }
+  .observation { grid-column: 2; grid-row: 3; max-width: 160px; font-size: 10px; text-align: right; }
+  .account-controls > summary, .account-detail > summary { padding-inline: 12px; font-size: 12px; }
+  .control-fields { padding: 12px; gap: 12px; }
+  .codex-page .quota-actions, .slot-deck { padding: 12px; }
+  .account-detail > :not(summary) { margin-inline: 12px; }
+  .account-analytics > summary .muted, .dashboard-access > summary .muted { display: block; margin: 4px 0 0; }
+}
+@media (max-width: 350px) {
+  .codex-page .accounts-heading .actions { flex-basis: 100%; }
+  .control-fields { grid-template-columns: minmax(0, 1fr); }
+}

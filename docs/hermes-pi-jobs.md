@@ -1,6 +1,8 @@
 # Native Pi jobs from Hermes
 
-Operator integration recipe; source changes alone do not activate it. Hermes owns
+Operator integration recipe; native migration settings/binds require deliberate
+activation. Existing directory/file binds can expose source edits to future
+launches before recreation; source preparation is not guaranteed runtime-inert. Hermes owns
 intake, assignment permission, native process control and acceptance; Pi owns the
 coding work inside the container. No daemon, queue, host bridge or new RPC client
 is needed. Verify actual container Node compatibility, resources and lifecycle
@@ -20,10 +22,16 @@ only the approved coding worktree already available within the boundary.
 
 The package mount must contain the complete installed Pi 1.4.0 tree (dependencies,
 assets and `dist/bundle/rpc-entry.js` included), not a host executable symlink.
-The launcher execs **container** `node /opt/pi-package/dist/bundle/cli.js`; local
-subagent uses `getPackageDir()` and the package's RPC export with `process.execPath`.
-The selected complete local subagent package is v3.1.0, Git `65dac36`, including
-its `node_modules`; do not replace it with an entry-file-only mount.
+The launcher execs **container** `node /opt/pi-package/dist/bundle/cli.js`.
+The prepared migration selects **nicobailon/pi-subagents v0.84.0**, pinned to Git
+`0398b9e8d6f03dc6054dbf13dfe851c7a20bff3a`, at `/opt/pi-subagents-nicobailon`.
+Keep the complete checkout and its lockfile-installed production dependencies,
+not an entry-file-only mount. It supports Pi >=1.2.0; its pinned Undici requires
+Node >=22.19.0. The selected npm Pi 1.4 package supplies SDK peers to detached
+runners; do not install a second physical Pi SDK in the extension checkout.
+The launcher sets the explicit container Pi package root for child discovery.
+Preserve the old pi-subagent-local checkout, named conversations and sessions for
+rollback; no conversion of its session handles is supported.
 
 Mount the entire selected installed Route extension root read-only at
 `/opt/pi-route-extensions`. This candidate selects the coherent installed bundle,
@@ -34,7 +42,11 @@ provider/cache match versioned source. Installed usage is older and has no
 missing-file repair request. Preserve its matching helpers. Freeze/read back the
 whole chosen bundle before activation; do not combine current source usage with
 installed helpers. Explicit settings load only its provider/cache/usage entries
-and the local subagent. No other package is enrolled, including the disabled
+the small `subagents.ts` native entry, and the reviewed `pi-codex-fast` entry. It sets `PI_SUBAGENTS_TEMP_ROOT`
+below the selected native agent directory **before** importing pinned upstream;
+container package selection is `/opt/pi-subagents-nicobailon`, while host default
+selection is its native local-share checkout. Do not load upstream a second time
+through packages/extensions. No other package is enrolled, including the disabled
 competing subagent. Preserve that native disable. Built-in extension enrollment
 is also explicitly disabled in this initial configuration.
 
@@ -53,7 +65,8 @@ owner's actual `HERMES_HOME` and workload UID, reconcile jobs/foreign state, bac
 owned bytes/links outside discovery, then create these native resources as that UID:
 
 ```text
-$HERMES_HOME/pi/agent/settings.json       reviewed copy of /opt/pi-container/settings.json
+$HERMES_HOME/pi/agent/settings.json       reviewed materialized native settings
+$HERMES_HOME/pi/agent/extensions/subagent/config.json reviewed native subagent config
 $HERMES_HOME/pi/agent/agents/builder.md   -> /opt/pi-roles/builder.md
 $HERMES_HOME/pi/agent/agents/reviewer.md  -> /opt/pi-roles/reviewer.md
 $HERMES_HOME/pi/agent/agents/general-purpose.md -> /opt/pi-roles/general-purpose.md
@@ -87,8 +100,11 @@ rules. `http://spartan-route:18790/v1` is unsupported. The existing gateway pars
 reads only `CADDY_AUTH_USER` and `CADDY_AUTH_PASSWORD` from the authorized env file
 at `/run/pi-route/credentials.env`; it never sources it. No credentials in URLs,
 CLI arguments or public files; do not copy laptop auth. Confirm credential scope,
-catalog/model metadata and Sol/Luna permission separately. Initial settings select
-only `spartan-route/codex/gpt-6.1-sol-282kcontext`; cached synthetic metadata in
+catalog/model metadata and Sol/Luna permission separately. Initial parent settings select
+`spartan-route/codex/gpt-6.1-sol-282kcontext`; child model scope permits the
+operator-approved GPT-6 families, with exceptional-only Astra still governed by
+instructions. Model and reasoning are chosen independently per child and encoded
+as `model: "provider/id:high"`. Cached synthetic metadata in
 source tests is not evidence of the live catalog, auth or cache hits.
 
 ### Optional Pi-only direct HTTPS origin
@@ -131,6 +147,137 @@ gateways/jobs. Then verify workload UID, version, dependency/RPC imports, resour
 one provider registration, HTTPS/auth/catalog and unchanged neighbors before a
 separately authorized live assignment. Stop if any gate fails; do not install,
 upgrade or weaken networking to make the candidate run.
+
+## Common baseline and preparation (option B)
+
+`infra/pi/common-baseline.json` is the sole maintained, allowlisted **nonsecret**
+behavior policy. `prepare_parity.py` merges it into the two selected native JSON
+surfaces, preserving unrelated fields/packages and native resource exclusions.
+The checked-in container `settings.json` and `subagent-config.json` are generated
+examples, not separate policy owners. Host-only navigator/web/timing/plan/stop
+resources and legitimate extra specialists stay local; parity does not enroll them
+in Hermes. Shared roles explicitly opt into project/global context and lazy skill
+metadata under the new engine; their no-further-delegation/tool boundaries remain.
+
+Prepare each side from **its own** settings/config, never from the other side's
+home. A bindings JSON supplies exactly `home`, `agentDir`, `routeRoot`,
+`containerRoot`, `skillsRoot`, `fastRoot`, all absolute nonsecret paths. Container examples
+use `/opt/data/pi/agent`, `/opt/pi-route-extensions`, `/opt/pi-container`, and
+`/opt/shared-skills`, with `fastRoot: /opt/pi-codex-fast`; verify its actual OS home independently. Host roots resolve
+to its selected native paths. The helper neither reads nor copies credentials,
+auth, models, trust, instructions or sessions, and never activates candidates:
+
+```sh
+python3 infra/pi/prepare_parity.py --settings /selected/native/settings.json \
+  --bindings /reviewed/local-bindings.json --output /outside-discovery/candidate
+# Add --config /selected/native/extensions/subagent/config.json when present.
+# Host migration only: --old-package '../../.local/share/pi-subagent-local'
+# After preparation, the same inputs plus --check verify candidate drift.
+```
+
+Output must be vacant and outside the selected native agent directory. Parsing
+and policy/input preflight complete before any output write; occupied destinations,
+malformed/unknown policy, unresolved placeholders and explicit required-resource
+disables refuse preparation. It is an offline preparation/check helper, not a
+transactional live installer. Compare-before-write installation/rollback and
+backups outside discovery belong to the controller after final review.
+
+Both native config files matter. The extension reads
+`<agent-dir>/extensions/subagent/config.json` in addition to Pi settings:
+
+- Async and fresh context are default; depth-0 async is forced. Explicit child
+  extension paths load a coherent Route provider/cache/usage bundle. Inherited
+  providers alone do **not** bring SessionFence session hooks; never weaken that
+  fence to make a child work. Only async local native children are certified here.
+- Automatic workflow resumption, schedules, missions, upstream built-in agents,
+  external/machine/pane/watchdog/agent-management/workflow-script features are off.
+  Simple `tasks`/`chain` replaces workflow scripts. No automatic review campaign.
+- Sessions/output/artifacts live below each native owner; temp runtime, run/result
+  indexes and supervisor channels use its own `PI_SUBAGENTS_TEMP_ROOT`. Automatic
+  role memory is not enabled. No writable state in shared program checkout or
+  project-scoped defaults. Native overrides/per-call absolute outputs can still
+  change this; review trusted project settings and each task's authority.
+- Recursive legacy `.agents/**/*.md` discovery must prune skill/support trees with
+  `subagents.agentExcludeDirs` (including symlink targets), not enroll every named
+  Markdown document as an agent. Keep legitimate native agent discovery and skill
+  discovery; new project support roots need the same preflight.
+
+Focused source checks require the pinned upstream checkout, its production deps,
+actual Pi 1.4, Node 22 and existing OpenSSL. The native test requires `PI_CODEX_FAST_SOURCE` pointing to the reviewed fast
+program entry and uses disposable homes,
+synthetic local HTTPS/credentials/catalog, three selected role fixtures and nine
+common skill fixtures. It proves native loading, a detached child with its own
+Route replay identity, retained run-ID continuation with ciphertext, unchanged
+parent replay/history prefix, observed runner termination and missing-child-provider
+refusal before HTTP. It captures completion notifications without triggering an
+extra parent inference; live parent wake/TUI and real required-read traces are
+separate acceptance, not claimed by this fixture.
+
+```sh
+python3 -m unittest discover -s infra/pi -p test_prepare_parity.py -v
+PI_CODING_AGENT_DIR=/selected/pi-package node --test infra/pi/test_parity_runtime.mjs
+# Optional explicit program-only coherent installed Route root:
+# PI_PARITY_ROUTE_SOURCE=/selected/route-extension-root (never a profile/auth home)
+npm run pi:quality
+```
+
+### Parent Fast / Ultrafast / off inheritance
+
+Both parent and detached child explicitly load the reviewed existing fast entry.
+Hermes needs only one additional narrow read-only fail-on-missing **program-file**
+bind at `/opt/pi-codex-fast/extensions/codex-fast.ts`, not host settings/state.
+Native Pi deduplicates the same canonical extension path if the host already
+loads it through its local package registration. Host settings remain host-owned;
+container defaults remain off unless its own native setting, `/codex-fast`,
+`/codex-ultrafast` or `--fast`/`--ultrafast` selects otherwise.
+
+The fast extension publishes its effective mode in the nonsecret
+`PI_CODEX_FAST_PARENT_MODE` environment scalar after startup flags and live
+commands. Nicobailon's normal detached spawn snapshots that environment;
+`PI_SUBAGENT_PARENT_SESSION` identifies a child, which uses the snapshot instead
+of a stale saved default. Invalid snapshots stay off. No upstream patch,
+`fast:true` (unsupported for Spartan Route), parent history/credentials or copied
+host settings are involved. Fast requests priority; eligible Ultrafast requests
+ultrafast; off does not request priority. Existing exact model/API eligibility
+and native controls remain unchanged, so unsupported tiers stay inactive.
+
+Each new launch or retained revival takes the then-current parent mode. A later
+toggle does not mutate an already running child. Host/container share behavior,
+not a mode store; a container parent uses its own CLI/live mode. Isolated native
+HTTPS acceptance exercises actual startup `--fast` over disk off, live Ultrafast
+over disk off and live off over disk Fast → child priority/ultrafast/default.
+It proves payload tier selection, not upstream entitlement, price or speed.
+Set `PI_CODEX_FAST_SOURCE` to the reviewed program file for the native test.
+
+### Cutover and rollback boundary
+
+Preparation is **not activation**. Do not overwrite the old mounted checkout or
+reload a parent still using it, especially while it owns work. After independent
+review: freeze candidate and beforeimages; obtain an exact current host Pi child
+and Hermes terminal/gateway/job inventory and operator-approved quiet window;
+compare every owned target with its saved expected bytes; stop on drift. Install
+only reviewed native settings/config/role/instruction deltas as the proper owner.
+Canonical shared adapter edits have a separate assigned writer and must accompany
+schema adoption, not precede it in old running sessions. Keep all disabled entries,
+credentials/trust/session stores and foreign native fields unchanged.
+
+Change only the owned private package bind to the **new** stable pinned checkout
+and target. Existing container source/role mounts remain narrow read-only binds.
+A new bind target requires separately approved Hermes recreation, **not a rebuild**;
+it terminates same-container work, so the controller alone schedules it. Start
+fresh host Pi processes, never hot-reload an old parent across schema changes.
+Verify package/Route/roles/settings bytes, actual Node/UID/SDK imports, effective
+resources, HTTPS/auth/catalog and neighbor identities. A bounded Sol/Luna live
+smoke may be separately used within the remaining explicit budget; synthetic
+acceptance is not live-provider or deployed-container proof.
+
+Rollback also needs quiet/cessation evidence: compare installed owned bytes against
+the accepted afterimages, restore only unchanged owned targets from beforeimages,
+remove only newly created config files, restore the old package bind/registration,
+then perform the separately authorized recreation/fresh-process restart. Preserve
+both engines' sessions and all artifacts; never overwrite newer foreign settings
+or use whole-home rollback. Do not attempt to resume an old logical session handle
+through the new schema.
 
 ## Assignment and native lifecycle
 
@@ -189,6 +336,15 @@ session, e.g. `pi --print --session /absolute/path/to/recorded-session.jsonl
 Reconcile surviving processes, partial worktree effects, session contents and
 checks before any recovery. Never automatically replay ambiguous external actions.
 Print mode is not promised live steering; RPC is not added by this proposal.
+Inside a newly accepted Pi runtime, one child uses
+`subagent({agent:"builder",task:"<complete packet>",model:"spartan-route/codex/gpt-6.1-sol-282kcontext:medium",async:true,options:{context:"fresh"}})`.
+Parallel independent children use `tasks:[{agent,task,cwd?,model?},...]`.
+Dispatch `thinking` is ignored; reasoning belongs in the model suffix. Continue
+eligible settled work with `{action:"resume",id:"<returned runId>",message:"..."}`;
+save the new returned runId. Use `{action:"stop",id}` for stop and exact-ID status
+for diagnosis. Stop acknowledgment is not process-terminal proof. The old local
+`calls/prompt/initialContext/session/inactivityTimeout/timeout` contract is retired
+only in newly cut-over processes; do not send new parameters to an old parent.
 
 Ordinary disconnect, Hermes lifecycle cleanup, explicit stop and container death
 are different. The installed terminal has `persist_on_release` only for explicitly

@@ -5,6 +5,8 @@ set -eu
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HERMES_HOME/pi/agent}"
 export PI_CODING_AGENT_SESSION_DIR="${PI_CODING_AGENT_SESSION_DIR:-$HERMES_HOME/pi/sessions}"
 export PI_SPARTAN_ROUTE_CONFIG="${PI_SPARTAN_ROUTE_CONFIG:-$HERMES_HOME/pi/spartan-route/config.json}"
+export PI_SUBAGENTS_PACKAGE_ROOT="${PI_SUBAGENTS_PACKAGE_ROOT:-/opt/pi-subagents-nicobailon}"
+export PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT="${PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT:-/opt/pi-package}"
 binding="$HERMES_HOME/pi/spartan-route/direct-https-origin"
 if [ -e "$binding" ] || [ -L "$binding" ]; then
     direct=$(python3 - "$binding" <<'PY'

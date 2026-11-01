@@ -46,6 +46,24 @@
 
     tokenInput.value = sessionStorage.getItem('spartanRouteToken') || '';
 
+    // Section navigation changes visibility only: resource controllers retain their DOM and drafts.
+    const settingsSections = ['routing', 'providers', 'model-variants'];
+    function showSettingsSection() {
+      const hash = window.location?.hash?.slice(1);
+      const selected = settingsSections.includes(hash) ? hash : 'routing';
+      for (const id of settingsSections) {
+        document.getElementById(`settings-${id}`).hidden = id !== selected;
+        const link = document.getElementById(`settings-link-${id}`);
+        if (id === selected) link.setAttribute('aria-current', 'location');
+        else link.removeAttribute('aria-current');
+      }
+    }
+    function sectionDirty(id, changed) {
+      document.getElementById(`settings-dirty-${id}`).textContent = changed ? 'Unsaved' : '';
+    }
+    window.addEventListener('hashchange', showSettingsSection);
+    showSettingsSection();
+
     function headers(json = false) {
       const token = tokenInput.value.trim();
       const result = token ? { Authorization: `Bearer ${token}` } : {};
@@ -56,6 +74,10 @@
     function setMessage(element, message) {
       element.textContent = message || '';
       element.classList.toggle('hidden', !message);
+    }
+
+    function accessFailure(status, message) {
+      if (status === 401 || status === 403) setMessage(document.getElementById('access-error'), message);
     }
 
     async function request(path, options = {}) {
@@ -85,6 +107,7 @@
 
     function markDirty(next) {
       dirty = next;
+      sectionDirty('routing', dirty);
       dirtyEl.textContent = dirty ? 'Unsaved changes' : '';
       dirtyEl.className = dirty ? 'dirty' : 'muted';
       saveButton.disabled = busy || !routingLoaded || !dirty;
@@ -206,6 +229,7 @@
         renderDocument(result.payload, result.etag);
       } catch (error) {
         if (loadGeneration !== generation) return;
+        accessFailure(error.status, error.message);
         statusEl.textContent = '';
         setMessage(errorEl, error.message);
       } finally {
@@ -233,6 +257,7 @@
         setMessage(successEl, 'Routing models saved and active.');
       } catch (error) {
         if (loadGeneration !== generation) return;
+        accessFailure(error.status, error.message);
         if (error.status === 412) {
           setMessage(errorEl, 'Configuration changed in another tab. Your selections are preserved; reload before saving.');
         } else {
@@ -262,6 +287,7 @@
         setMessage(successEl, 'Runtime override removed. File defaults are active.');
       } catch (error) {
         if (loadGeneration !== generation) return;
+        accessFailure(error.status, error.message);
         if (error.status === 412) {
           setMessage(errorEl, 'Configuration changed in another tab. Reload before resetting.');
         } else {
@@ -288,6 +314,7 @@
 
     function updateProviderDirty() {
       providerDirty = JSON.stringify(providerSnapshot(providerDraft)) !== JSON.stringify(providerSnapshot(providerState?.providers || {}));
+      sectionDirty('providers', providerDirty);
       providerDirtyEl.textContent = providerDirty ? 'Unsaved changes' : '';
       providerDirtyEl.className = providerDirty ? 'dirty' : 'muted';
       providerSave.disabled = providerBusy || !providersLoaded || !providerDirty;
@@ -460,6 +487,7 @@
         receiveProviders(result);
       } catch (error) {
         if (loadGeneration !== generation) return;
+        accessFailure(error.status, error.message);
         providerStatus.textContent = 'Reload required';
         setMessage(providerError, error.message);
       } finally {
@@ -494,6 +522,7 @@
         setMessage(providerSuccess, 'Provider settings saved.');
       } catch (error) {
         if (loadGeneration !== generation) return;
+        accessFailure(error.status, error.message);
         if (error.status === 412) {
           providersLoaded = false;
           setMessage(providerError, 'Configuration changed in another tab. Your edits are preserved; reload before saving.');
@@ -545,6 +574,7 @@
 
     function updateVariantControls() {
       variantDirty = JSON.stringify(variantPairs(variantDraft)) !== JSON.stringify(variantPairs(variantState?.variants || []));
+      sectionDirty('model-variants', variantDirty);
       variantDirtyEl.textContent = variantDirty ? 'Unsaved changes' : '';
       variantDirtyEl.className = variantDirty ? 'dirty' : 'muted';
       variantSave.disabled = variantBusy || !variantsLoaded || (!variantDirty && variantState?.configured !== false);
@@ -675,6 +705,7 @@
         receiveVariants(result);
       } catch (error) {
         if (loadGeneration !== generation) return;
+        accessFailure(error.status, error.message);
         variantStatus.textContent = 'Reload required';
         setMessage(variantError, error.message);
       } finally {
@@ -704,6 +735,7 @@
         setMessage(variantSuccess, 'Context variants saved. Refresh your client’s model list.');
       } catch (error) {
         if (loadGeneration !== generation) return;
+        accessFailure(error.status, error.message);
         if (error.status === 412) {
           variantsLoaded = false;
           setMessage(variantError, 'Configuration changed in another tab. Your edits are preserved; reload before saving.');
@@ -726,6 +758,7 @@
       setMessage(successEl, '');
       setMessage(variantSuccess, '');
       setMessage(providerSuccess, '');
+      document.getElementById('access-status').textContent = 'Reload required. Unsaved drafts are retained until reload.';
       statusEl.textContent = 'Reload required';
       variantStatus.textContent = 'Reload required';
       if (documentState) render();
@@ -733,9 +766,17 @@
       if (providerState) renderProviders();
     }
 
-    function load() {
+    async function load() {
       invalidateResources();
-      return Promise.all([loadRouting(generation), loadVariants(generation), loadProviders(generation)]);
+      const loadGeneration = generation;
+      const accessStatus = document.getElementById('access-status');
+      setMessage(document.getElementById('access-error'), '');
+      accessStatus.textContent = 'Loading settings…';
+      await Promise.all([loadRouting(generation), loadVariants(generation), loadProviders(generation)]);
+      if (loadGeneration !== generation) return;
+      accessStatus.textContent = routingLoaded && variantsLoaded && providersLoaded
+        ? 'Settings loaded. Each section saves independently.'
+        : 'Some settings could not load. Check section feedback or update access and reload.';
     }
 
     tokenInput.addEventListener('input', invalidateResources);

@@ -28,8 +28,14 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ${PI_SUBAGENT_SOURCE:?Select the complete local subagent package}
-        target: /opt/pi-subagent-local
+        source: ${PI_SUBAGENT_SOURCE:?Select the complete pinned nicobailon package}
+        target: /opt/pi-subagents-nicobailon
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PI_FAST_EXTENSION_SOURCE:?Select the reviewed fast extension source file}
+        target: /opt/pi-codex-fast/extensions/codex-fast.ts
         read_only: true
         bind:
           create_host_path: false

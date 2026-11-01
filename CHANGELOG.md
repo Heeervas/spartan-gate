@@ -4,6 +4,23 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add an explicit default-on optional-telemetry switch for degraded storage.
+  Turning it off omits optional history/accounting without bypassing required
+  policies, quota admission or reasoning/reservation controls. Keep live usage
+  refresh manual, last-good display separate from admission, and unavailable
+  history/weighted capacity explicit. Bound Pi usage retries and persist gaps;
+  already-open legacy clients retain a known accounting discontinuity.
+
+- Back off failed Route retention maintenance and suspend it on SQLite storage
+  damage, including optional startup retention. Required initialization still
+  fails closed; suspension does not repair storage or stop other database work.
+
+- Make Accounts the authenticated Route home with compact desktop rings, mobile
+  bars and expandable daily controls; retain legacy URLs and independent Settings
+  sections/drafts. Prepare reproducible native Pi parity with pinned detached
+  subagents, preserved disables, explicit MCP opt-in and separate runtime state.
+  Source checks do not establish visual/mobile or runtime adoption acceptance.
+
 - Run Codebase Memory as native current-repository stdio for Hermes and Pi,
   with full-root indexing, isolated caches and analysis-only tools; retire its
   duplicate hub exposure. Preserve shared API connectors and separate agent
@@ -58,6 +75,12 @@ All notable changes to Spartan Gate are documented here.
   inputs in checkout caches, not agent instructions. This workflow gate does not
   authorize cleanup, deployment or native operations. Keep task history and
   archive references with task owners, and backlog entries outstanding-only.
+
+- Show requested and provider-reported service tiers separately in Route's session
+  and turn summaries: one lightning icon for Fast and two for Ultrafast. Preserve
+  mixed, unknown and historical states without implying that a requested tier
+  was served. Capture Responses tiers only from terminal completion metadata;
+  routing, account eligibility and quota policy are unchanged.
 
 - Add optional per-account weekly and five-hour consumed-percent caps beside
   the Codex quota rings. Pause new routing at either configured limit and resume

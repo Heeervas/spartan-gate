@@ -71,9 +71,12 @@ class ContainerLauncherTests(unittest.TestCase):
                     self.assertEqual(actual['env'][key], value)
                 self.assertEqual(actual['env']['PI_CODING_AGENT_DIR'], str(self.home / 'pi/agent'))
                 self.assertEqual(actual['env']['PI_CODING_AGENT_SESSION_DIR'], str(self.home / 'pi/sessions'))
+                self.assertEqual(actual['env']['PI_SUBAGENTS_PACKAGE_ROOT'], '/opt/pi-subagents-nicobailon')
+                self.assertEqual(actual['env']['PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT'], '/opt/pi-package')
         self.config.write_text(json.dumps({'baseUrl': 'https://route.example.invalid/v1'}))
         (self.route / 'direct-https-origin').write_text('https://route.example.invalid:443')
-        overrides = {'PI_CODING_AGENT_DIR': str(self.home / 'custom-agent'), 'PI_CODING_AGENT_SESSION_DIR': str(self.home / 'custom-sessions')}
+        overrides = {'PI_CODING_AGENT_DIR': str(self.home / 'custom-agent'), 'PI_CODING_AGENT_SESSION_DIR': str(self.home / 'custom-sessions'),
+                     'PI_SUBAGENTS_PACKAGE_ROOT': '/selected/extension', 'PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT': '/selected/pi'}
         result = self.invoke(self.env | overrides)
         self.assertEqual(result.returncode, 0, result.stderr)
         actual = json.loads(result.stdout)['env']

@@ -7,7 +7,7 @@ afterEach(() => {
   if (inheritedOffline === undefined) delete process.env.PI_OFFLINE;
   else process.env.PI_OFFLINE = inheritedOffline;
 });
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nativeBaseline, presentation, dualBar } from './extensions/spartan-route-usage/core.mjs';
@@ -126,7 +126,8 @@ test('named subagent usage registers a stable UUID and attaches it across native
   resumed.stop();
 }));
 
-test('telemetry failure leaves inference headers uncorrelated; recovery persists gap; unrelated provider untouched', async () => clientTest(async (directory) => {
+test('telemetry failure leaves inference headers uncorrelated; recovery persists gap; unrelated provider untouched', async (t) => clientTest(async (directory) => {
+  t.mock.timers.enable({ apis: ['Date'] });
   let online = false;
   const bodies = [];
   const client = new UsageClient(directory, async (action, body) => {
@@ -145,6 +146,7 @@ test('telemetry failure leaves inference headers uncorrelated; recovery persists
   await client.headers(headers, ctx);
   assert.deepEqual(headers, { 'X-Spartan-Pi-Client': '1' });
   online = true;
+  t.mock.timers.tick(60000);
   await client.headers(headers, ctx);
   assert.equal(bodies[0].trackingIncomplete, true);
   assert.equal(headers['X-Spartan-Pi-Origin'], origin);
@@ -313,7 +315,7 @@ test('pending poll cannot rearm after selecting another provider', async (t) => 
 }));
 
 test('transient outage retries with capped backoff then restores exactly two online timers', async (t) => clientTest(async (directory) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   let online = false;
   const client = new UsageClient(directory, async () => {
     if (!online) throw new Error('temporary');
@@ -352,6 +354,76 @@ test('expired resets, stale compact bar, single window and global lease state re
   assert.match(presentation(snapshot, 'lease', {}, false, now).status, /lease global active/);
   assert.match(presentation(snapshot, 'accounts', {}, false, now).rows[0], /rate_limited/);
 });
+
+test('registered outage shares cooldown across inference/timer and persists incomplete coverage across resume', async (t) => clientTest(async (directory) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  let online = true;
+  const calls = [];
+  const committed = canonical();
+  committed.session.coverage.trackingIncomplete = false;
+  const request = async (action, body) => {
+    calls.push(action);
+    if (!online) throw new Error('unavailable');
+    if (action === 'register') {
+      assert.deepEqual(body.baseline, committed.session.baseline);
+      committed.session.coverage.trackingIncomplete = body.trackingIncomplete;
+    }
+    return structuredClone(committed);
+  };
+  const client = new UsageClient(directory, request);
+  const ctx = context();
+  await client.start(ctx);
+  online = false;
+  await client.update();
+  assert.equal(client.trackingIncomplete, true);
+  assert.equal(client.gapSaved, true);
+  await access(client.gapFile(id));
+  const before = calls.length;
+  const pathProbe = t.mock.method(client, 'gapFile', () => { throw new Error('saved gap must not touch disk again'); });
+  for (let i = 0; i < 5; i++) {
+    const headers = { 'X-Spartan-Pi-Client': '1' };
+    await client.headers(headers, ctx);
+    assert.equal(headers['X-Spartan-Pi-Origin'], origin);
+    await client.retry();
+  }
+  assert.equal(calls.length, before);
+  assert.equal(pathProbe.mock.callCount(), 0);
+  pathProbe.mock.restore();
+  client.stop();
+  online = true;
+  const resumed = new UsageClient(directory, request);
+  // Native totals may have advanced during the outage; do not add that overlapping history.
+  await resumed.start(context(id, [assistant, assistant]));
+  assert.deepEqual(calls.slice(-2), ['status', 'register']);
+  assert.equal(resumed.originId, origin);
+  assert.equal(resumed.snapshot.session.totals.totalTokens, 180);
+  assert.equal(resumed.snapshot.session.coverage.trackingIncomplete, true);
+  await assert.rejects(access(resumed.gapFile(id)), { code: 'ENOENT' });
+  resumed.stop();
+}));
+
+test('ambiguous gap read and failed save remain unsaved; retries wait for shared eligibility', async (t) => clientTest(async (directory) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const client = new UsageClient(directory, async () => { throw new Error('unavailable'); });
+  await writeFile(client.gapsDir, 'blocks directory');
+  let calls = 0;
+  client.request = async () => { calls++; throw new Error('unavailable'); };
+  const ctx = context();
+  await client.start(ctx);
+  assert.equal(client.gapSaved, false);
+  assert.equal(client.gapPending, true);
+  assert.equal(client.trackingIncomplete, true);
+  await rm(client.gapsDir);
+  for (let i = 0; i < 5; i++) await client.headers({ 'X-Spartan-Pi-Client': '1' }, ctx);
+  assert.equal(calls, 1);
+  await assert.rejects(access(client.gapFile(id)), { code: 'ENOENT' });
+  t.mock.timers.tick(60000);
+  await client.headers({ 'X-Spartan-Pi-Client': '1' }, ctx);
+  assert.equal(calls, 2);
+  assert.equal(client.gapSaved, true);
+  await access(client.gapFile(id));
+  client.stop();
+}));
 
 function partialSnapshot(now) {
   const observed = (remainingPercent) => ({ remainingPercent, ageSeconds: 10,

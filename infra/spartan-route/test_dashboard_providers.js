@@ -24,6 +24,7 @@ class Element {
   prepend(child) { this.children.unshift(child); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(key, value) { this.attributes[key] = value; }
+  removeAttribute(key) { delete this.attributes[key]; }
   addEventListener(type, handler) { this.listeners[type] = handler; }
   focus() { this.focused = true; }
   querySelectorAll(selector) {

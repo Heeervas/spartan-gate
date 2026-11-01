@@ -2,7 +2,9 @@
   "defaultProvider": "spartan-route",
   "defaultModel": "codex/gpt-6.1-sol-282kcontext",
   "defaultThinkingLevel": "medium",
-  "enabledModels": ["spartan-route/codex/gpt-6.1-sol-282kcontext"],
+  "enabledModels": [
+    "spartan-route/codex/gpt-6.1-sol-282kcontext"
+  ],
   "enableInstallTelemetry": false,
   "cacheWarming": "off",
   "packages": [],
@@ -14,7 +16,8 @@
     "/opt/pi-route-extensions/spartan-route.ts",
     "/opt/pi-route-extensions/spartan-route-cache.ts",
     "/opt/pi-route-extensions/spartan-route-usage.ts",
-    "/opt/pi-subagent-local/index.ts"
+    "/opt/pi-container/subagents.ts",
+    "/opt/pi-codex-fast/extensions/codex-fast.ts"
   ],
   "skills": [
     "/opt/shared-skills/shared-skills",
@@ -28,5 +31,27 @@
     "/opt/shared-skills/requesting-code-review"
   ],
   "prompts": [],
-  "themes": []
+  "themes": [],
+  "subagents": {
+    "disableBuiltins": true,
+    "defaultExtensions": [
+      "/opt/pi-route-extensions/spartan-route.ts",
+      "/opt/pi-route-extensions/spartan-route-cache.ts",
+      "/opt/pi-route-extensions/spartan-route-usage.ts",
+      "/opt/pi-codex-fast/extensions/codex-fast.ts"
+    ],
+    "agentExcludeDirs": [
+      "/root/.agents/skills"
+    ],
+    "modelScope": {
+      "enforce": true,
+      "strict": true,
+      "allow": [
+        "spartan-route/codex/gpt-6-luna*",
+        "spartan-route/codex/gpt-6.1-sol*",
+        "spartan-route/codex/gpt-6.1-terra*",
+        "spartan-route/codex/gpt-6-astra*"
+      ]
+    }
+  }
 }

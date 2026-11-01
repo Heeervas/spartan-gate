@@ -197,6 +197,8 @@ class PiUsage:
         session = headers.get("X-Spartan-Pi-Session")
         if session is None:
             return None
+        if self.telemetry.omit_optional():
+            return False
         try:
             return self.store.get(session_uuid(session))
         except Exception:
@@ -266,6 +268,7 @@ class PiUsage:
                 "nextDueAt": iso(self.next_due) if self.next_due else None}
 
     def refresh(self, router: Any) -> None:
+        self.telemetry.require_optional()
         now = time.time()
         state = self.refresh_state(router, now)
         cache = getattr(router, "_usage_cache", None) or {}
@@ -276,6 +279,7 @@ class PiUsage:
         router.trigger_usage_refresh()
 
     def status(self, router: Any, session_id: str | None, refresh: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.telemetry.require_optional()
         now = time.time()
         accounts, keys, overrides, unresolved = self.accounts(router, now)
         estimate = self.telemetry.codex_usage_estimate(keys)

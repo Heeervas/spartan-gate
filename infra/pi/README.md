@@ -1,5 +1,48 @@
 # Pi integrations
 
+## Prepared host/Hermes parity and subagent migration
+
+[`common-baseline.json`](common-baseline.json) owns approved nonsecret shared
+behavior. [`prepare_parity.py`](prepare_parity.py) materializes/checks native
+settings and the **separate** `extensions/subagent/config.json`, preserving foreign
+fields and native disables. It writes candidates only, outside discovery; no auth,
+trust, models or sessions are copied. Container JSON files are generated examples.
+See [`docs/hermes-pi-jobs.md`](../../docs/hermes-pi-jobs.md) for full preparation,
+private-path binding, cutover/rollback and live acceptance gates.
+
+Prepared dependency: nicobailon/pi-subagents v0.84.0, commit
+`0398b9e8d6f03dc6054dbf13dfe851c7a20bff3a`, complete production dependencies,
+actual Pi 1.4 SDK and Node >=22.19. A small native entry binds temp state to each
+owner's agent directory; the shared program checkout remains read-only in Hermes.
+Only async local native children with explicit coherent Route provider/cache/usage
+and reviewed fast-extension paths are certified. The fast extension snapshots
+parent effective CLI/live Fast, Ultrafast or off into a nonsecret inherited scalar;
+children apply it within unchanged model/tier eligibility, never upstream `fast:true`.
+Hermes uses the same narrow program-file mount, never host mode/settings/state. Old pi-subagent-local code/sessions and disabled
+pi-subagents-lite remain for rollback. Fresh-process adoption is separately
+reviewed: do not hot-reload a running parent across tool schemas.
+
+New calls use `agent`/`task`, `model:"provider/id:high"` (reasoning chosen separately
+then encoded as a suffix), `async:true`, `options.context:"fresh"`, and returned
+run IDs for `action:"resume"`. Dispatch `thinking` is ignored; old `calls`,
+`prompt`, `initialContext` and logical `session` handles do not apply. With workflow
+scripts disabled, parallel work uses one `tasks` array. Automatic resumption,
+schedules, missions and unselected upstream agents are off. Host-only resources
+stay host-only; parity never means copying the host home into Hermes.
+
+```sh
+python3 -m unittest discover -s infra/pi -p test_prepare_parity.py -v
+PI_CODING_AGENT_DIR=/selected/complete/pi-package \
+PI_CODEX_FAST_SOURCE=/selected/pi-codex-fast/extensions/codex-fast.ts \
+node --test infra/pi/test_parity_runtime.mjs
+```
+
+The native fixture uses synthetic HTTPS, credentials and catalog only. It verifies
+actual loading, separate replay ownership, detached continuation, parent replay
+preservation and missing-child-provider refusal, not live model quality, TUI or
+container deployment. The older install recipes below describe individual Route
+extensions, not permission to activate the migration.
+
 For native Responses and the standard-client subset, see
 [`docs/pi-native-responses.md`](../../docs/pi-native-responses.md). New native
 sessions use server-owned opaque replay receipts without a binding RPC. The

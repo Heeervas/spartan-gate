@@ -3,23 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spartan Route Config</title>
+  <title>Settings · Spartan Route Config</title>
   <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
+  <link rel="stylesheet" href="/dashboard-assets/shell.css">
 </head>
 <body class="config-page">
   <a class="skip-link" href="#main">Skip to content</a>
   <header>
     <div class="wrap top">
-      <a class="brand" href="/dashboard" aria-label="Spartan Route home"><svg class="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M5 22V6h18v16M5 14h18M10 6v8m8 0v8" stroke="currentColor" stroke-width="2"/><path d="M10 10h8" stroke="currentColor" stroke-width="2"/></svg><span>Spartan Route</span></a>
-      <nav aria-label="Dashboard">
-        <a href="/dashboard">Routing</a>
-        <a href="/dashboard-codex">Codex</a>
-        <a href="/dashboard-config" aria-current="page">Config</a>
+      <a class="brand" href="/" aria-label="Spartan Route home"><svg class="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M5 22V6h18v16M5 14h18M10 6v8m8 0v8" stroke="currentColor" stroke-width="2"/><path d="M10 10h8" stroke="currentColor" stroke-width="2"/></svg><span>Spartan Route</span></a>
+      <nav aria-label="Primary">
+        <a href="/">Accounts</a>
+        <a href="/activity">Activity</a>
+        <a href="/settings" aria-current="page">Settings</a>
       </nav>
     </div>
   </header>
   <main class="wrap" id="main">
-    <div class="page-heading"><div><h1>Routing configuration</h1><p>Model assignments and context windows for your clients.</p></div><span class="scope-label">Operator console</span></div>
+    <div class="page-heading"><div><h1>Settings</h1><p>Routing policy, provider access and model metadata. Each section saves independently.</p></div><span class="scope-label">Operator console</span></div>
     <div class="toolbar" aria-label="Dashboard access and refresh">
       <label class="token-field" for="token">
         <span class="label">Dashboard access · Bearer token</span>
@@ -31,7 +32,18 @@
       </div>
     </div>
 
-    <section class="panel settings-panel" aria-labelledby="routing-title">
+    <aside class="settings-ownership" aria-label="Settings ownership">
+      <p><a href="/accounts">Account controls →</a> Manage slot routing, capacity and quota limits in Accounts.</p>
+      <p class="muted">Credentials and file defaults are deployment-managed, not editable here. Reload replaces unsaved drafts with server values; it does not merge them.</p>
+    </aside>
+    <p id="access-status" class="muted" role="status" aria-live="polite"></p>
+    <div id="access-error" class="panel banner bad hidden" role="alert"></div>
+    <nav class="settings-nav" aria-label="Settings sections">
+      <a id="settings-link-routing" href="#routing" aria-current="location">Routing <span id="settings-dirty-routing" class="dirty"></span></a>
+      <a id="settings-link-providers" href="#providers">Providers <span id="settings-dirty-providers" class="dirty"></span></a>
+      <a id="settings-link-model-variants" href="#model-variants">Model variants <span id="settings-dirty-model-variants" class="dirty"></span></a>
+    </nav>
+    <section id="settings-routing" class="panel settings-panel" aria-labelledby="routing-title">
       <div class="section-head">
         <div>
           <h2 id="routing-title">Auto routing models</h2>
@@ -50,10 +62,10 @@
       </div>
       <ul id="limitations" class="limitations"></ul>
     </section>
-    <section class="panel settings-panel" aria-labelledby="providers-title">
+    <section id="settings-providers" class="panel settings-panel" aria-labelledby="providers-title" hidden>
       <div class="section-head">
         <div>
-          <h2 id="providers-title">Providers</h2>
+          <h2 id="providers-title">Provider policy</h2>
           <div class="muted">Disable providers, endpoints, or exact model IDs. Empty reject lists add no restrictions.</div>
         </div>
         <span id="provider-status" class="muted" role="status" aria-live="polite"></span>
@@ -66,7 +78,7 @@
         <button id="provider-save" class="primary" disabled>Save provider settings</button>
       </div>
     </section>
-    <section class="panel settings-panel" aria-labelledby="variants-title">
+    <section id="settings-model-variants" class="panel settings-panel" aria-labelledby="variants-title" hidden>
       <div class="section-head">
         <div>
           <h2 id="variants-title">Context window variants</h2>

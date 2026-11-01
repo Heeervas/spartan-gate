@@ -131,6 +131,22 @@
       const value = units < 0.1 ? units.toFixed(3) : (units < 10 ? units.toFixed(2) : units.toFixed(1));
       return `~${value}u · pool est.`;
     }
+    function speedBreakdown(counts = {}) {
+      const tiers = [
+        ['priority', 'Fast', 1], ['ultrafast', 'Ultrafast', 2], ['default', 'Normal', 0],
+        ['auto', 'Auto', 0], ['flex', 'Flex', 0], ['scale', 'Scale', 0],
+        ['unspecified', 'Unspecified', 0], ['unknown', 'Unknown', 0],
+      ];
+      const parts = tiers.filter(([tier]) => Number(counts[tier]) > 0).map(([tier, label, bolts]) => {
+        const path = '<path d="M9 1 2 9h5l-1 6 8-9H9z"/>';
+        const icon = bolts ? `<svg class="speed-icon" viewBox="0 0 ${bolts * 16} 16" aria-hidden="true" focusable="false">${path}${bolts === 2 ? '<path d="m25 1-7 8h5l-1 6 8-9h-5z"/>' : ''}</svg>` : '';
+        return `<span class="speed-tier">${icon}${label} · ${num(counts[tier])}</span>`;
+      });
+      return `${parts.length > 1 ? 'mixed · ' : ''}${parts.join(', ') || 'Unknown'}`;
+    }
+    function speedFact(speed = {}) {
+      return `<span class="fact speed" title="Requested is client intent, not confirmation. Served is provider-reported, not measured latency. Counts cover only requests in this view."><span class="fact-label">Speed</span><strong><span class="speed-line">Requested: ${speedBreakdown(speed.requested)}</span><span class="speed-line">Served: ${speedBreakdown(speed.served)}</span></strong></span>`;
+    }
     function metricLine(metrics = {}, models = []) {
       const cache = Number(metrics.usageSeenRequests || 0) ? cacheUsagePercent(metrics.inputTokens, metrics.cachedInputTokens, metrics.nativeCache) : 'unknown';
       const errors = Number(metrics.errors || 0);
@@ -139,6 +155,7 @@
         fact('Cache', cache),
         fact('Cache observations', metrics.nativeCache?.requests ? `${num(metrics.nativeCache.requests)} requests` : 'none yet', '', nativeCacheSummary(metrics.nativeCache)),
         fact('Est. usage', usageUnitSummary(metrics)),
+        speedFact(metrics.speed),
         fact('Reasoning', reasoningSummary(metrics)),
         fact('Tools', toolSummary(metrics)),
         fact('Status', errors ? `${errors} errors` : 'OK', errors ? 'bad' : ''),

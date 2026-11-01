@@ -3,43 +3,39 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spartan Route Codex</title>
+  <title>Accounts · Spartan Route</title>
   <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
+  <link rel="stylesheet" href="/dashboard-assets/shell.css">
+  <link rel="stylesheet" href="/dashboard-assets/accounts.css">
 </head>
 <body class="codex-page">
   <a class="skip-link" href="#main">Skip to content</a>
   <header>
     <div class="wrap top">
-      <a class="brand" href="/dashboard" aria-label="Spartan Route home"><svg class="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M5 22V6h18v16M5 14h18M10 6v8m8 0v8" stroke="currentColor" stroke-width="2"/><path d="M10 10h8" stroke="currentColor" stroke-width="2"/></svg><span>Spartan Route</span></a>
-      <nav aria-label="Dashboard">
-        <a href="/dashboard">Routing</a>
-        <a class="current" href="/dashboard-codex" aria-current="page">Codex</a>
-        <a href="/dashboard-config">Config</a>
+      <a class="brand" href="/" aria-label="Spartan Route home"><svg class="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M5 22V6h18v16M5 14h18M10 6v8m8 0v8" stroke="currentColor" stroke-width="2"/><path d="M10 10h8" stroke="currentColor" stroke-width="2"/></svg><span>Spartan Route</span></a>
+      <nav aria-label="Primary">
+        <a href="/" aria-current="page">Accounts</a>
+        <a href="/activity">Activity</a>
+        <a href="/settings">Settings</a>
       </nav>
     </div>
   </header>
   <main class="wrap" id="main">
-    <div class="page-heading"><div><h1>Codex capacity</h1><p>Account limits, reset windows and the slots serving your requests.</p></div><span class="scope-label">Operator console</span></div>
-    <div class="toolbar" aria-label="Dashboard access and refresh">
-      <label class="token-field" for="token">
-        <span class="label">Dashboard access · Bearer token</span>
-        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Enter bearer token">
-      </label>
-      <div class="actions">
-        <button id="save">Use token</button>
-        <button id="force">Refresh Live</button>
-        <button id="refresh" class="primary">Refresh</button>
-      </div>
+    <div class="page-heading accounts-heading">
+      <div><p class="workspace-label">Capacity &amp; routing</p><h1>Accounts</h1><p>Your balances. Your limits. Your routing controls.</p></div>
+      <div class="actions"><button id="refresh">Refresh</button><button id="force" class="primary">Refresh Live</button></div>
     </div>
-
-    <section class="data-section">
-      <div class="section-head">
-        <h2>Accounts &amp; quota</h2>
+    <section class="data-section account-workspace" aria-labelledby="accounts-title">
+      <div class="section-head workspace-status">
+        <h2 id="accounts-title">Account controls</h2>
         <span class="muted" id="usage-status" role="status" aria-live="polite"></span>
       </div>
       <div class="grid" id="accounts"></div>
     </section>
 
+    <section id="errors" aria-label="Telemetry errors"></section>
+    <details class="account-analytics">
+    <summary>Usage analytics &amp; leases <span class="muted">Model estimates, cache and active affinity</span></summary>
     <div class="analytics-grid">
     <section class="data-section">
       <div class="section-head">
@@ -93,7 +89,15 @@
     </section>
 
     </div>
-    <section id="errors" aria-label="Telemetry errors"></section>
+    </details>
+    <details id="dashboard-access" class="dashboard-access">
+      <summary>Dashboard access <span class="muted">Bearer token &amp; refresh behavior</span></summary>
+      <div class="toolbar" aria-label="Dashboard access">
+        <label class="token-field" for="token"><span class="label">Bearer token</span><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Enter bearer token"></label>
+        <button id="save">Use token</button>
+      </div>
+      <p class="muted">Refresh reads the current snapshot and may start or join a background refresh. Refresh Live explicitly requests upstream usage. Tokens stay in this browser session; no account controls edit credentials.</p>
+    </details>
   </main>
   <script defer src="/dashboard-assets/dashboard-codex.js"></script>
 </body>

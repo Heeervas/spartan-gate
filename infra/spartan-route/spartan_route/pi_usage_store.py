@@ -41,7 +41,8 @@ def normalize_baseline(value: Any) -> dict[str, int]:
 class PiUsageStore:
     """Shares the telemetry connection/lock, but never its retention tables."""
 
-    def __init__(self, connection: Any, lock: Any):
+    def __init__(self, connection: Any, lock: Any, telemetry: Any = None):
+        self.telemetry = telemetry
         self.connection = connection
         self.lock = lock
         with lock, connection:
@@ -55,6 +56,8 @@ class PiUsageStore:
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
 
     def register(self, session_id: str, baseline: dict[str, int], tracking_incomplete: bool = False) -> tuple[dict[str, Any], bool]:
+        if self.telemetry is not None:
+            self.telemetry.require_optional()
         timestamp = now_iso()
         with self.lock, self.connection:
             cursor = self.connection.execute(
@@ -71,11 +74,15 @@ class PiUsageStore:
         return self._public(row), created
 
     def get(self, session_id: str) -> dict[str, Any] | None:
+        if self.telemetry is not None:
+            self.telemetry.require_optional()
         with self.lock:
             row = self.connection.execute("SELECT * FROM pi_usage_sessions WHERE session_id=?", (session_id,)).fetchone()
         return self._public(row) if row is not None else None
 
     def record(self, session_id: str, origin_id: str, counters: dict[str, int], seen: bool, incomplete: bool) -> None:
+        if self.telemetry is not None and self.telemetry.omit_optional():
+            return
         with self.lock, self.connection:
             row = self.connection.execute(
                 "SELECT observed FROM pi_usage_sessions WHERE session_id=? AND origin_id=?", (session_id, origin_id),

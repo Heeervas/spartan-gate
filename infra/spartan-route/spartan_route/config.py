@@ -52,6 +52,7 @@ class SpartanRouteConfig:
     telemetry_retention_batch_size: int = 256
     telemetry_shutdown_timeout_ms: int = 5000
     codex_transport: str = "http"
+    optional_telemetry_enabled: bool = True
 
     def api_key(self, provider: str) -> str | None:
         keys = {
@@ -205,6 +206,7 @@ def load_config(env: dict[str, str] | None = None) -> SpartanRouteConfig:
         tier_models=tier_models,
         models=_build_model_catalog(tier_models, baseline_model),
         codex_transport=transport,
+        optional_telemetry_enabled=parse_bool(env.get("SPARTAN_ROUTE_OPTIONAL_TELEMETRY_ENABLED"), True),
         telemetry_queue_capacity=parse_int(
             env.get("SPARTAN_ROUTE_TELEMETRY_QUEUE_CAPACITY"),
             1024,

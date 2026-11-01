@@ -105,7 +105,7 @@ class Fixture:
             async def load_auth(self, slot):
                 return slot.auth
 
-            async def open_inference(self, body, headers, auth, scope=None):
+            async def open_inference(self, body, headers, auth, scope=None, *, slot=None):
                 fixture.dispatches.append({"body": body, "headers": dict(headers)})
                 return await session.post(fixture.upstream_url, json=body,
                                           headers={"X-Fixture-Account": auth.account_id})

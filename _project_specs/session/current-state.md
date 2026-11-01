@@ -18,8 +18,12 @@ owning task evidence, including failures and explicit limits.
   defaults. Exact source/asset readback, healthy service and unchanged neighbors
   were verified without billable inference. Receipt and retained rollback:
   `../../../tasks/archive/2026/route-decisions-api/task.md`.
-- Foreign Route speed implementation and Hermes notes remain preserved, not task-owned.
-  Do not stage them as part of lifecycle commits.
+- Route storage source integration now explicitly includes the inherited speed,
+  UI r5, retention/backoff and Pi parity/MCP foundations under exclusive canonical
+  source/index ownership acknowledged by the operator. Final integrated review,
+  commits and authorized remote readback remain pending; no deployment is implied.
+  `../../../tasks/route-degraded-storage/task.md` owns the frozen candidate/checks.
+  Unrelated Hermes notes remain preserved and excluded from this integration.
 - Reconciled family locations are indexed in `../../../tasks/README.md`. Each
   current record owns its specific proposal, acceptance or native/resource gate;
   historical evidence is not a claim of current deployment. Archive only through
@@ -34,8 +38,9 @@ owning task evidence, including failures and explicit limits.
   after source/root changes; container filesystem visibility is unchanged.
   Account/application blockers remain explicit in the private operator guide;
   no new Google consent, token bridging or network-policy expansion occurred.
-  The independent Pi parity foundation ownership issue still blocks source-control
-  closeout, not runtime use; its reviewed MCP opt-in deltas remain preserved.
+  Pi parity foundation integration and its reviewed MCP opt-in deltas are now
+  explicitly authorized in the storage integration batch; final review/commit
+  remains pending, not a runtime-use blocker or completed lifecycle closeout.
   Acceptance, recovery and operator prerequisites are owned by
   `../../../tasks/mcphub-integration/task.md`.
 
@@ -45,9 +50,12 @@ owning task evidence, including failures and explicit limits.
   Static-only extraction and cross-process gateway capacity limits remain.
   Acceptance, recovery and closeout: `../../../tasks/archive/2026/reader-markdown-research/task.md`.
 
-- Dashboard speed: `../../../tasks/route-dashboard-speed/task.md` owns adoption/readback.
-  Earlier receipt: BUILT_NOT_ACTIVATED; later parent receipt: RECREATED_PENDING_READBACK, quiet_window_observed:false.
-  Final deployed-asset/browser acceptance remains unproved; this record grants no service action.
+- Dashboard speed: `../../../tasks/route-dashboard-speed/task.md` retains the
+  historical BUILT_NOT_ACTIVATED and later RECREATED_PENDING_READBACK receipts
+  (quiet_window_observed:false). The later storage deployment verified all 46
+  module/asset identities, including the inherited speed implementation; browser
+  acceptance remains open. Source integration is awaiting final review, not a
+  new service action.
 - `../../../tasks/hermes-log-remediation/task.md`: remaining refresh/runtime
   remediation; rebaseline before any separate authorized execution.
 - `../../../tasks/shared-tool-access/task.md`: source/fixture acceptance does not

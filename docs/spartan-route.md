@@ -9,6 +9,46 @@ lower-tier addon are retired; the shared configuration is not.
 For Pi's compact quota display and persistent session consumption, see
 [Pi session usage through Spartan Route](pi-route-usage.md).
 
+## Explicit degraded-storage contingency
+
+`SPARTAN_ROUTE_OPTIONAL_TELEMETRY_ENABLED` defaults to `true`. Setting it to
+`false` disables optional routing logs/rollups/retention, persisted usage/reset
+projections and historical analytics, persisted model-context metadata and Pi
+accounting **before their database locks/SQL**. There is no recovery queue,
+replacement database, automatic recovery loop or later replay of omitted usage.
+Schema bootstrap remains required and can still perform I/O or fail. Required
+provider/routing/model policies, slot disables, quota limits, reasoning bindings
+and spend reservations are not disabled; their failures never grant permission.
+This mode reduces optional storage work; it does not repair or certify a disk.
+
+In this mode, Accounts opens with a passive RAM-only GET (also for the legacy
+`?force=true` GET), or unknown readings after restart. Opening/focusing the page,
+completing a poll and Pi cosmetic refreshes do not contact the usage provider.
+Use the existing **Refresh Live** button to POST `/api/codex/usage/refresh`, or
+**Check usage** for one slot. These reuse the bounded, shielded single-flight
+controller. Polling runs only for the explicit live action and stops at completion,
+45 seconds or page hiding. Required quota admission can independently request
+fresh live readings, even with the dashboard closed.
+
+Rings show real raw weekly/five-hour percentages and their own original source
+and timestamp. A partial failure retains last-good windows for DISPLAY, marked
+stale; these merged values never feed admission. Missing/invalid/stale capped
+windows still pause routing. Weighted capacity and historical analytics are
+explicitly unavailable while their optional storage is off, not silently x1 or
+zero activity. Saved x5 overrides remain on disk, untouched. Slot/limit controls
+remain available. `/health` remains degraded, with the explicit mode/reason and a
+bounded omission counter in `telemetry`, separate from physical database failures.
+Telemetry-only APIs return sanitized 503 responses; live readings can return 200
+with partial metadata. The normal-mode behavior below is unchanged.
+
+Pi inference stays compatible with older clients, but this contingency interval is
+a **known accounting discontinuity**. Do not re-enable accounting and claim full
+recovered totals without an explicit recovery decision; see the
+[client gap/adoption contract](pi-route-usage.md#degraded-storage-and-client-adoption).
+Activation still requires independently reviewed source, the exact final image
+and assets passing an isolated synthetic canary, a coordinated quiet window and
+separate installed/live verification. A source test is not deployment evidence.
+
 ## Implementation Choice
 
 Options considered:
@@ -40,6 +80,8 @@ Relevant files:
 - `infra/spartan-route/spartan_route/app.py`: HTTP server, auth, routing,
   OpenAI-compatible endpoints, provider passthrough, image endpoints, and
   dashboard APIs.
+- `infra/spartan-route/spartan_route/dashboard_registry.py`: canonical/legacy
+  operator document paths and the explicit authenticated static asset allowlist.
 - `infra/spartan-route/spartan_route/codex.py`: Codex OAuth slots, retry and
   cooldown handling, prompt-cache key/affinity, SSE conversion, usage checks,
   and reset-credit fetch/normalization.
@@ -63,11 +105,50 @@ Relevant files:
 
 ### Dashboard performance and refresh behavior
 
-The Routing, Codex and Config screens share a responsive operator layout and
-local stylesheet. Codex rings show the raw percentage used; capacity-weighted
-units remain beside each ring. Reset and expiry countdowns update locally.
+The authenticated `/` opens the Accounts workspace. `/accounts` and the legacy
+`/dashboard-codex` serve this same document directly, without redirects. Accounts
+is the daily control surface: per-account capacity x1/x5, paired weekly/five-hour
+consumed-percentage rings, independent per-window limit drafts with explicit
+**Save limits**, and slot-labelled **Enable/Disable** and **Check usage** actions.
+Activation is per slot, not a whole-account toggle. Blank limits remove that
+window's admission cap; invalid or failed saves preserve drafts for correction.
+Limits are admission guards, not exact spending guarantees.
+
+The desktop workspace uses a navigation rail and a compact two-column account
+summary grid with small paired rings. Small screens use top navigation and two
+labelled consumption bars per card, not rings. **Edit limits & controls** expands
+one native disclosure for limit edits, capacity and all linked slot actions;
+weighted units and full observation details also remain available there. All
+accounts and slot-only identities remain reachable. Open disclosures, unsaved
+limit drafts and focused controls follow account identity through polling and
+reordering. Slot authentication/reset-credit details and usage analytics remain
+secondary disclosures, without dropping data.
+`/activity` owns routing investigation and `/settings` exposes the three independent
+routing, provider-policy and model-variant editors. Legacy `/dashboard` and
+`/dashboard-config` directly serve Activity and Settings. These three destinations
+share navigation and the session-scoped `spartanRouteToken` access setting. Settings
+does not edit deployment credentials; account controls remain in Accounts.
+The Settings section links **Routing**, **Providers** and **Model variants** show
+one editor at a time. Fragment-only navigation (`#routing`, `#providers`,
+`#model-variants`) also preserves the legacy URL. Direct links and browser history
+select the section; empty or unknown hashes default to Routing without rewriting
+`#main` or its skip-link target. Switching sections neither rebuilds forms nor
+loads or saves resources: each editor retains its own draft, ETag and feedback.
+Navigation marks unsaved sections. Access recovery and common loading feedback
+stay outside the panels. **Reload** replaces drafts with server values, not a merge.
+
+Accounts are never pooled or averaged. Each ring shows raw consumption, supplied
+capacity-weighted units and its own observation timestamp/source; fleet observedAt
+is not an individual window's age. Missing readings are unavailable, never zero;
+unknown slot health is not labelled healthy. Failed reads retain last-good readings
+marked stale; access denial or a token change clears them. Reset and expiry
+countdowns update locally, not observation timestamps.
 Tables retain all columns on small screens in keyboard-accessible scroll regions.
 No external fonts, image downloads or third-party scripts are required.
+The shared shell uses electric-lime navigation/action blocks, ink account headers
+and static technical keylines in both system themes. These decorative accents
+are separate from labelled quota/health colors; no animation or extra data scores
+are introduced. The compact grid, ring sizes and mobile disclosures are unchanged.
 
 Dashboard JavaScript is served separately from the HTML. Routing request-detail
 rendering (about 7.7 KB uncompressed) loads only when a turn is expanded. Total
@@ -85,8 +166,9 @@ and Codex account/table contents. Request-detail loads are coalesced, and
 credential changes or superseded responses cannot publish into a newer view.
 Config keeps its explicit save model, unsaved drafts and ETag conflict checks.
 
-Use **Refresh** to read the current snapshot and **Refresh Live** on Codex to
-start or join an upstream usage refresh. The page reports progress and preserves
+Use **Refresh** in Accounts to read the current snapshot/status. This GET can also start or join a background upstream
+refresh when cache state requires it; it is not an upstream-free operation.
+**Refresh Live** in Accounts explicitly starts or joins an upstream usage refresh. The page reports progress and preserves
 last-good data on a temporary failure. A countdown changing does not mean a new
 provider quota observation has arrived; check the snapshot/progress status.
 Mutations are not automatically replayed after a network error.
@@ -339,8 +421,17 @@ Kept in v1:
 - Bounded asynchronous routing telemetry: 1,024 pending rows by default,
   saturation drops telemetry rather than model requests, database failures do
   not stop the worker, and normal shutdown drains accepted entries for a
-  bounded interval. Public health exposes counters and sanitized database
-  read/write/maintenance state only, never request data or database paths.
+  bounded interval. Failed retention backs off for 60, 120, 240, then at most
+  300 seconds between attempts; successful maintenance resets the backoff.
+  SQLite corruption, not-a-database, and I/O errors suspend retention until
+  storage/database repair and process restart. Those same storage errors during
+  optional startup retention enter the shared suspended/degraded state rather
+  than aborting startup; schema, slot-policy, quota and Pi initialization errors
+  still abort startup. Other startup-retention errors still propagate.
+  This suspension does not stop routing writes or repair storage; retained history may exceed its normal
+  limits while maintenance is degraded. Public queue status exposes
+  `retentionSuspended` and `retentionRetryAfterSeconds`, alongside counters and
+  sanitized database read/write/maintenance state, never request data or paths.
 - Codex usage endpoints keep a successfully fetched live payload at HTTP 200
   when snapshot/reset persistence or the daily cache read fails. Such payloads
   set `partial: true`, include sanitized `telemetryErrors`, and use an empty
@@ -400,8 +491,9 @@ Kept in v1:
   provider percentage: 90-100% used is red, 70-89.9% is amber, and lower usage
   is green.
 - Per-account consumed-percent limits are optional and independent of plan capacity
-  and manual Enable/Disable. Beside the Weekly and Five-hour rings, enter a number
-  greater than 0 and at most 100, then **Save limits** to save both fields atomically.
+  and manual Enable/Disable. Expand **Edit limits & controls**, enter a Weekly
+  or Five-hour limit greater than 0 and at most 100, then **Save limits** to save
+  both fields atomically.
   Blank clears that window's limit; existing accounts have no default caps. For
   example, weekly 70 and five-hour 50 pause the account when **either** provider
   percentage is greater than or equal to its cap. The raw rings and x1/x5 units

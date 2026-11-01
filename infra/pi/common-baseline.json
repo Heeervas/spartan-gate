@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "upstreamCommit": "0398b9e8d6f03dc6054dbf13dfe851c7a20bff3a",
+  "settings": {
+    "defaultProvider": "spartan-route",
+    "defaultModel": "codex/gpt-6.1-sol-282kcontext",
+    "defaultThinkingLevel": "medium",
+    "enableInstallTelemetry": false,
+    "cacheWarming": "off"
+  },
+  "extensions": [
+    "{routeRoot}/spartan-route.ts",
+    "{routeRoot}/spartan-route-cache.ts",
+    "{routeRoot}/spartan-route-usage.ts",
+    "{containerRoot}/subagents.ts",
+    "{fastRoot}/extensions/codex-fast.ts"
+  ],
+  "skills": [
+    "shared-skills", "agent-managed-projects", "agent-team-orchestration",
+    "builder-assurance", "builder-engineering-rules", "builder-behavioral-verification",
+    "systematic-debugging", "test-audit", "requesting-code-review"
+  ],
+  "subagents": {
+    "disableBuiltins": true,
+    "defaultExtensions": [
+      "{routeRoot}/spartan-route.ts",
+      "{routeRoot}/spartan-route-cache.ts",
+      "{routeRoot}/spartan-route-usage.ts",
+      "{fastRoot}/extensions/codex-fast.ts"
+    ],
+    "agentExcludeDirs": ["{home}/.agents/skills"],
+    "modelScope": {
+      "enforce": true,
+      "strict": true,
+      "allow": [
+        "spartan-route/codex/gpt-6-luna*",
+        "spartan-route/codex/gpt-6.1-sol*",
+        "spartan-route/codex/gpt-6.1-terra*",
+        "spartan-route/codex/gpt-6-astra*"
+      ]
+    }
+  },
+  "config": {
+    "autoResume": false,
+    "asyncByDefault": true,
+    "forceTopLevelAsync": true,
+    "defaultSubagentContext": "fresh",
+    "maxSubagentDepth": 1,
+    "artifactDir": "session",
+    "defaultSessionDir": "{agentDir}/subagents/sessions",
+    "singleRunOutputBaseDir": "{agentDir}/subagents/outputs",
+    "scheduledRuns": {"enabled": false, "storeRoot": "{agentDir}/subagents/schedules"},
+    "missions": {"enabled": false, "globalIndex": false},
+    "disabledFeatures": ["workflow-scripts", "agent-management", "missions", "external-machines", "panes", "lane-management", "watchdog"],
+    "orcaProgressTabs": {"enabled": false}
+  }
+}

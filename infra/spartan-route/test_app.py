@@ -2530,11 +2530,11 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("Weekly usage", html)
         self.assertIn("Five-hour usage", html)
         self.assertIn("account.fiveHour", html)
-        self.assertIn("row.usedPercent ?? (100 - Number(row.remainingPercent || 0))", html)
+        self.assertIn("function windowPercent", html)
         self.assertIn("used * 3.6", html)
         self.assertIn("row.usedUnits", html)
         self.assertIn("row.capacityUnits", html)
-        self.assertIn("% raw · x", html)
+        self.assertIn("raw consumed", html)
         self.assertIn("slotPaths", html)
         self.assertIn("likelyUsageCacheText", html)
         self.assertIn("refreshing in background", html)
@@ -2599,7 +2599,7 @@ class DashboardStaticTests(unittest.TestCase):
         config = self.source("dashboard-config")
 
         for html in (routing, codex, config):
-            self.assertIn('href="/dashboard-config"', html)
+            self.assertIn('href="/settings"', html)
             self.assertIn("Bearer token", html)
             self.assertIn("Use token", html)
             self.assertIn('aria-current="page"', html)

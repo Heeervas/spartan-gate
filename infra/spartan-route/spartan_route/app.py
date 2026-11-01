@@ -25,12 +25,15 @@ from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_con
 from .model_variants import VariantPolicy, VariantCatalog, VARIANT_LIKE_PATTERN, base_eligible
 from .provider_policy import ProviderPolicy, require_admission, register as register_provider_policy, model_payload as policy_model_payload, auto_capabilities, realtime_payload
 from .decisions import register as register_decisions
+from .dashboard_registry import DASHBOARD_DOCUMENTS, DASHBOARD_ASSETS
 from .native_responses import annotate_realm, capture_telemetry, execute_codex_responses, response_event_name, usage_values
 from .native_cache import NativeCacheDiagnostics, Observation, request_diagnostics
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected, PROBE_HEADER
 from .realtime import RealtimeConfig, RT_KEY, VOICE_PATHS, register as register_realtime, voice_dispatch
-from .telemetry import RoutingLogEntry, TelemetryQueue, TelemetryStore
+from .telemetry import OptionalTelemetryUnavailable, RoutingLogEntry, TelemetryQueue, TelemetryStore
+from .usage_display import attach_capacity, attach_optional_metadata
 from .pi_usage import CorrelationError, PiUsage, observe_chat, register_routes as register_pi_routes
+from .speed import capture_service_tier, speed_context
 from .pi_responses import register_routes as register_pi_responses
 from .reasoning_replay import ReplayError, legacy_binding, policy as replay_policy, replay_request
 from .transport import create_client_session
@@ -88,6 +91,7 @@ class ExecutionResult:
     usage_seen: bool = False
     stream_completed: bool = False
     usage_event_type: str | None = None
+    served_service_tier: str | None = None
     upstream_response_time_ms: int | None = None
     total_response_time_ms: int | None = None
     transport_details: dict[str, Any] | None = None
@@ -393,6 +397,7 @@ def reported_token_value(source: Any, *keys: str) -> int | None:
 
 
 def apply_usage(result: ExecutionResult, payload: Any) -> None:
+    capture_service_tier(result, payload)
     source = payload.get("response") if isinstance(payload, dict) and isinstance(payload.get("response"), dict) else payload
     if isinstance(source, dict) and isinstance(source.get("usage"), dict):
         usage = source["usage"]
@@ -410,6 +415,17 @@ def apply_usage(result: ExecutionResult, payload: Any) -> None:
         _prompt, _cached, _output, reasoning = usage_values(source.get("usage"))
         if reasoning is not None:
             result.reasoning_tokens = reasoning
+
+
+def execution_observations(body: dict[str, Any], result: ExecutionResult) -> dict[str, Any]:
+    """Snapshot passive provider observations separately from cache heuristics."""
+    return {
+        "tool_telemetry_version": 2 if result.tool_telemetry_complete is not None else None,
+        "tool_telemetry_complete": result.tool_telemetry_complete,
+        "usage_seen": result.usage_seen,
+        "usage_event_type": result.usage_event_type,
+        "speed": speed_context(body, result.served_service_tier),
+    }
 
 
 def apply_tool_call_telemetry(result: ExecutionResult, payload: Any) -> None:
@@ -542,6 +558,7 @@ def apply_responses_telemetry(result: ExecutionResult, payload: dict[str, Any], 
     result.tool_telemetry_complete = observed.tool_telemetry_complete
     result.usage_seen = observed.usage_seen
     result.usage_event_type = observed.usage_event_type
+    result.served_service_tier = observed.served_service_tier
     if observed.usage_seen:
         result.cached_input_tokens = observed.cached_input_tokens
 
@@ -848,6 +865,7 @@ async def execute_chat(
             native_cache=codex_result.native_cache,
             usage_seen=codex_result.usage_seen,
             usage_event_type=codex_result.usage_event_type,
+            served_service_tier=codex_result.served_service_tier,
             upstream_response_time_ms=codex_result.upstream_response_time_ms,
             total_response_time_ms=codex_result.total_response_time_ms,
             transport_details=codex_result.transport_details,
@@ -903,6 +921,7 @@ async def execute_responses(
             cached_input_tokens=codex_result.cached_input_tokens,
             output_tokens=codex_result.output_tokens,
             reasoning_tokens=codex_result.reasoning_tokens,
+            served_service_tier=codex_result.served_service_tier,
             error=codex_result.error,
             actual_tool_call_count=codex_result.actual_tool_call_count,
             actual_tool_names=codex_result.actual_tool_names,
@@ -933,7 +952,7 @@ def copy_codex_telemetry(source_result: CodexCallResult, target: ExecutionResult
         "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "error",
         "actual_tool_call_count", "actual_tool_names", "tool_telemetry_complete", "native_cache",
         "usage_seen", "usage_event_type", "upstream_response_time_ms", "total_response_time_ms",
-        "transport_details", "selection_diagnostics",
+        "transport_details", "selection_diagnostics", "served_service_tier",
     ):
         setattr(target, name, getattr(source_result, name))
 
@@ -1489,10 +1508,7 @@ def log_request(
         "cache_lineage_reason": body.get(SPARTAN_CACHE_LINEAGE_REASON_FIELD)
         if isinstance(body.get(SPARTAN_CACHE_LINEAGE_REASON_FIELD), str)
         else None,
-        "tool_telemetry_version": 2 if result.tool_telemetry_complete is not None else None,
-        "tool_telemetry_complete": result.tool_telemetry_complete,
-        "usage_seen": result.usage_seen,
-        "usage_event_type": result.usage_event_type,
+        **execution_observations(body, result),
         "expected_cache_hit": expected_cache_hit,
         "cache_prefix_candidate": cache_expectation["cache_prefix_candidate"],
         "cache_likely": cache_likely,
@@ -2504,6 +2520,8 @@ def record_telemetry_failure(
     operation: str,
     exc: Exception,
 ) -> None:
+    if isinstance(exc, OptionalTelemetryUnavailable):
+        return
     state.telemetry.record_health_failure(category, operation)
     print(
         f"[spartan-route] telemetry {operation} {category} failed ({type(exc).__name__})",
@@ -2511,7 +2529,9 @@ def record_telemetry_failure(
     )
 
 
-def telemetry_error(operation: str, code: str = "telemetry_read_failed") -> dict[str, str]:
+def telemetry_error(operation: str, code: str = "telemetry_read_failed", *, exc: Exception | None = None) -> dict[str, str]:
+    if isinstance(exc, OptionalTelemetryUnavailable):
+        code = "optional_telemetry_disabled"
     return {"code": code, "operation": operation}
 
 
@@ -2540,7 +2560,7 @@ def read_daily_cache_rows(
         rows = state.telemetry.daily_cache_rows()
     except Exception as exc:
         record_telemetry_failure(state, "read", "daily_cache", exc)
-        return None, telemetry_error("daily_cache")
+        return None, telemetry_error("daily_cache", exc=exc)
     state.telemetry.record_health_success("read", "daily_cache")
     return rows, None
 
@@ -2928,8 +2948,8 @@ async def attach_codex_telemetry(
         estimate = await asyncio.to_thread(state.telemetry.codex_usage_estimate, account_keys)
     except Exception as exc:
         record_telemetry_failure(state, "read", "codex_usage_estimate", exc)
-        add_telemetry_error(payload, telemetry_error("codex_usage_estimate"))
-        multipliers = {account_key: 1 for account_key in account_keys}
+        add_telemetry_error(payload, telemetry_error("codex_usage_estimate", exc=exc))
+        multipliers = {}
         estimate = {
             "available": False,
             "source": "calibrated_total_tokens",
@@ -2942,31 +2962,22 @@ async def attach_codex_telemetry(
         if not isinstance(account, dict):
             continue
         account_key = str(account.get("accountKey") or "")
-        multiplier = multipliers.get(account_key, 1)
-        account["capacityMultiplier"] = multiplier
-        for window_name in ("weekly", "fiveHour"):
-            window = account.get(window_name)
-            if not isinstance(window, dict):
-                continue
-            used_percent = max(0.0, min(100.0, parse_float(window.get("usedPercent"), 0.0)))
-            window["capacityMultiplier"] = multiplier
-            window["capacityUnits"] = 100 * multiplier
-            window["usedUnits"] = used_percent * multiplier
-            window["remainingUnits"] = max(0.0, 100.0 - used_percent) * multiplier
+        attach_capacity(account, multipliers.get(account_key))
     for slot in slots:
         account_key = str(slot.get("accountKey") or "")
-        slot["capacityMultiplier"] = multipliers.get(account_key, 1)
+        slot["capacityMultiplier"] = multipliers.get(account_key)
     balancer["slots"] = slots
     payload["slots"] = slots
     payload["balancer"] = balancer
     payload["weeklyModelUsage"] = estimate
+    attach_optional_metadata(state.telemetry, payload)
 
 
 async def api_codex_usage(request: web.Request) -> web.Response:
     state = get_state(request)
     if state.codex is None:
         return response_json_error("Codex router is not ready", 503, "codex_unavailable")
-    payload = await state.codex.usage_snapshot(force=request.query.get("force") == "true")
+    payload = await state.codex.usage_snapshot(force=state.telemetry.optional_telemetry_enabled and request.query.get("force") == "true")
     await attach_codex_telemetry(state, payload)
     return web.json_response(payload)
 
@@ -3097,23 +3108,13 @@ async def api_codex_account_capacity(request: web.Request) -> web.Response:
 
 async def dashboard_file(request: web.Request) -> web.StreamResponse:
     state = get_state(request)
-    name = {
-        "/dashboard": "dashboard.html",
-        "/dashboard-codex": "dashboard-codex.html",
-        "/dashboard-config": "dashboard-config.html",
-    }.get(request.path)
+    name = DASHBOARD_DOCUMENTS.get(request.path)
     if name is None:
         return response_json_error("Dashboard not found", 404, "dashboard_not_found")
     path = (state.config.web_dir / name).resolve()
     if not path.exists() or not path.is_file():
         return response_json_error(f"Dashboard file not found: {name}", 404, "dashboard_not_found")
     return web.FileResponse(path, headers={"Cache-Control": "private, no-cache"})
-
-
-DASHBOARD_ASSETS = frozenset({
-    "dashboard.css", "dashboard.js", "dashboard-codex.js",
-    "dashboard-config.js", "dashboard-details.js",
-})
 
 
 async def dashboard_asset(request: web.Request) -> web.StreamResponse:
@@ -3242,9 +3243,10 @@ async def cleanup(app: web.Application) -> None:
 
 def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetryStore | None = None) -> web.Application:
     config = config or load_config()
-    telemetry = telemetry or TelemetryStore(config.db_path)
+    telemetry = telemetry or TelemetryStore(config.db_path, optional_telemetry_enabled=config.optional_telemetry_enabled)
     app = web.Application(middlewares=[dashboard_cache_middleware, auth_middleware], client_max_size=64 * 1024 * 1024)
-    app.router.add_get("/dashboard-config", dashboard_file)
+    for path in DASHBOARD_DOCUMENTS:
+        app.router.add_get(path, dashboard_file)
     app.router.add_get("/dashboard-assets/{name}", dashboard_asset)
     app.router.add_get("/api/config/model-variants", api_config_model_variants_get)
     app.router.add_put("/api/config/model-variants", api_config_model_variants_put)
@@ -3274,8 +3276,6 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     app.on_cleanup.append(cleanup)
     app.router.add_get("/health", health)
     app.router.add_get("/stats", stats)
-    app.router.add_get("/dashboard", dashboard_file)
-    app.router.add_get("/dashboard-codex", dashboard_file)
     app.router.add_get("/api/models", api_models)
     app.router.add_get("/api/routing/live", api_routing_live)
     app.router.add_get("/api/routing/turns/{turn_id}", api_routing_turn)

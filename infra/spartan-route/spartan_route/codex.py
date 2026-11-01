@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .reasoning_replay import prefers_auth
 from .quota_limits import QuotaAdmission, operational_admission, dispatch_admission, observe_usage, open_image_inference
+from .usage_display import memory_usage_snapshot, memory_usage_projection, display_usage_row, replace_display_account, usage_active_slots
 from .usage_windows import valid_live_usage_window, live_usage_allows_recovery, normalize_usage_windows, usage_account_row
 
 from .attempt import CodexAttempt, outcome_slot, valid_tool_arguments
@@ -28,6 +29,7 @@ from .pi_usage import CURRENT_REQUEST
 
 from .telemetry import TelemetryStore
 from .transport import CodexTransport, TransportError, observe_event
+from .speed import capture_service_tier
 from .sse import frames as sse_frames
 from .util import (
     epoch_millis,
@@ -162,6 +164,7 @@ class CodexCallResult:
     completed: bool = False
     usage_seen: bool = False
     usage_event_type: str | None = None
+    served_service_tier: str | None = None
     upstream_response_time_ms: int | None = None
     total_response_time_ms: int | None = None
     transport_details: dict[str, Any] | None = None
@@ -214,6 +217,7 @@ class CodexEventState:
     usage: dict[str, Any] = field(default_factory=dict)
     usage_seen: bool = False
     usage_event_type: str | None = None
+    served_service_tier: str | None = None
     terminal_error: dict[str, Any] | None = None
     finish_reason: str = "stop"
     saw_output_item: bool = False
@@ -2094,6 +2098,7 @@ class CodexRouter:
         result.input_tokens, result.cached_input_tokens, result.output_tokens = self._usage_values(state)
         result.usage_seen = state.usage_seen
         result.usage_event_type = state.usage_event_type
+        result.served_service_tier = state.served_service_tier
         result.actual_tool_call_count = len(state.calls())
         result.actual_tool_names = self._actual_tool_names(state)
 
@@ -2126,6 +2131,7 @@ class CodexRouter:
             state.usage_event_type = event
 
     def _capture_usage(self, event: str | None, parsed: dict[str, Any], state: CodexEventState) -> None:
+        capture_service_tier(state, parsed, event or parsed.get("type") or "unknown")
         self._record_usage(state, parsed.get("usage"), event)
         response = parsed.get("response") if isinstance(parsed.get("response"), dict) else None
         if response is not None:
@@ -2305,6 +2311,7 @@ class CodexRouter:
             actual_tool_call_count=len(calls),
             actual_tool_names=self._actual_tool_names(state),
             completed=True,
+            served_service_tier=state.served_service_tier,
             usage_seen=state.usage_seen,
             usage_event_type=state.usage_event_type,
         )
@@ -2854,6 +2861,8 @@ class CodexRouter:
         )
 
     async def usage_snapshot(self, force: bool = False, slot_indexes: set[int] | None = None) -> dict[str, Any]:
+        if not force and not self.telemetry.optional_telemetry_enabled:
+            return memory_usage_snapshot(self)
         if slot_indexes is not None:
             # Finish any older controller before fetching a newer targeted reading.
             # Shield its shared task from cancellation of this request.
@@ -2863,18 +2872,9 @@ class CodexRouter:
             async with self._usage_operation_guard():
                 return await self._targeted_usage_snapshot(slot_indexes)
 
-        task = getattr(self, "_usage_refresh_task", None)
-        if task is not None and not task.done():
-            if force:
-                return copy.deepcopy(await asyncio.shield(task))
-            snapshot = getattr(self, "_usage_progress_snapshot", None)
-            if snapshot is not None:
-                return copy.deepcopy(snapshot)
-        if task is not None and task.done() and not force:
-            snapshot = getattr(self, "_usage_progress_snapshot", None)
-            progress = snapshot.get("refreshProgress") if isinstance(snapshot, dict) else None
-            if isinstance(progress, dict) and progress.get("status") == "failed":
-                return copy.deepcopy(snapshot)
+        snapshot = await self._usage_controller_snapshot(force)
+        if snapshot is not None:
+            return snapshot
 
         signature = self._usage_cache_signature()
         if not force and getattr(self, "_usage_cache", None):
@@ -2924,7 +2924,7 @@ class CodexRouter:
             if not account_key:
                 continue
             previous = accounts_by_key.get(account_key, {})
-            merged = {**previous, **copy.deepcopy(live)}
+            merged = display_usage_row(self, previous, live)
             merged["slotIndexes"] = sorted({
                 int(index)
                 for index in [
@@ -3150,13 +3150,7 @@ class CodexRouter:
                     else:
                         self.telemetry.record_health_success("write", operation)
 
-                accounts = [
-                    account for account in payload.get("accounts", [])
-                    if account.get("accountKey") != account_key
-                ]
-                accounts.append(item["row"])
-                accounts.sort(key=lambda row: min(row.get("slotIndexes") or [9999]))
-                payload["accounts"] = accounts
+                payload["accounts"] = replace_display_account(self, payload.get("accounts", []), item["row"])
                 if item.get("usageError"):
                     payload.setdefault("slotErrors", []).append(item["usageError"])
                 if item.get("resetError"):
@@ -3245,10 +3239,25 @@ class CodexRouter:
                 self._publish_usage_snapshot(generation, payload)
         return copy.deepcopy(payload)
 
+    async def _usage_controller_snapshot(self, force: bool) -> dict[str, Any] | None:
+        task = getattr(self, "_usage_refresh_task", None)
+        if task is not None and not task.done():
+            if force:
+                return copy.deepcopy(await asyncio.shield(task))
+            return copy.deepcopy(getattr(self, "_usage_progress_snapshot", None))
+        if task is not None and not force:
+            snapshot = getattr(self, "_usage_progress_snapshot", None)
+            progress = snapshot.get("refreshProgress") if isinstance(snapshot, dict) else None
+            if isinstance(progress, dict) and progress.get("status") == "failed":
+                return copy.deepcopy(snapshot)
+        return None
+
     def _persisted_usage_snapshot(
         self,
         active_slots: dict[str, list[CodexSlot]] | None = None,
     ) -> dict[str, Any]:
+        if not self.telemetry.optional_telemetry_enabled:
+            return memory_usage_projection(self, active_slots)
         telemetry_errors: list[dict[str, str]] = []
         try:
             usage_rows = self.telemetry.usage_snapshots()
@@ -3269,12 +3278,7 @@ class CodexRouter:
         else:
             self.telemetry.record_health_success("read", "reset_credit_snapshots")
 
-        if active_slots is None:
-            active_slots = {}
-            for slot in self.slots:
-                account_key = slot.account_key()
-                if account_key:
-                    active_slots.setdefault(account_key, []).append(slot)
+        active_slots = usage_active_slots(self) if active_slots is None else active_slots
 
         accounts: dict[str, dict[str, Any]] = {}
         observed_at: str | None = None

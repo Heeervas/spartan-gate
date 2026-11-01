@@ -7,11 +7,10 @@ import asyncio
 import contextlib
 import copy
 import json
-import os
 import sqlite3
 import sys
 import threading
-from dataclasses import dataclass
+from .telemetry_types import OptionalTelemetryUnavailable, RoutingLogEntry
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,8 @@ from .util import now_iso
 from .correlation import add_group_correlation
 from .pi_usage_store import PiUsageStore
 from .cache_metrics import empty_metrics as empty_native_metrics, add_request as add_native_request, merge_metrics as merge_native_metrics, public_metrics as public_native_metrics
+from .speed import add_speed
+from .retention_maintenance import RetentionMaintenance
 
 DEFAULT_RETENTION_DAYS = 30
 ROUTING_DAILY_ROLLUP_COLUMNS = {
@@ -51,44 +52,6 @@ ROUTING_RETENTION_DELETE_BATCH_SIZE = 256
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
-@dataclass(frozen=True)
-class RoutingLogEntry:
-    timestamp: str
-    original_model: str
-    routed_model: str
-    actual_model: str
-    tier: str
-    classification_reason: str = ""
-    confidence: float = 0.0
-    input_tokens: int = 0
-    cached_input_tokens: int = 0
-    output_tokens: int = 0
-    reasoning_tokens: int | None = None
-    original_cost_usd: float = 0.0
-    actual_cost_usd: float = 0.0
-    savings_usd: float = 0.0
-    escalated: bool = False
-    escalation_chain: str = "[]"
-    response_time_ms: int = 0
-    upstream_response_time_ms: int | None = None
-    total_response_time_ms: int | None = None
-    had_tool_calls: bool = False
-    actual_tool_call_count: int | None = None
-    actual_tool_names: list[str] | None = None
-    is_dry_run: bool = False
-    is_override: bool = False
-    session_id: str | None = None
-    error: str | None = None
-    prompt_preview: str | None = None
-    context_info: str | None = None
-    request_api_kind: str = "chat_completions"
-    requested_reasoning_effort: str | None = None
-    selected_codex_slot_index: int | None = None
-    selected_codex_account_key: str | None = None
-    request_id: str | None = None
-    turn_id: str | None = None
-
-
 class TelemetryStore:
     def __init__(
         self,
@@ -96,11 +59,14 @@ class TelemetryStore:
         *,
         retention_days: int = DEFAULT_RETENTION_DAYS,
         routing_row_cap: int = DEFAULT_ROUTING_ROW_CAP,
+        optional_telemetry_enabled: bool = True,
     ):
         if retention_days < 1:
             raise ValueError("retention_days must be positive")
         if routing_row_cap < 1:
             raise ValueError("routing_row_cap must be positive")
+        self.optional_telemetry_enabled = optional_telemetry_enabled
+        self.optional_omissions = 0
         self.db_path = db_path
         self.retention_days = int(retention_days)
         self.routing_row_cap = int(routing_row_cap)
@@ -129,11 +95,26 @@ class TelemetryStore:
         try:
             self._slot_policy = load_policy(self._conn, self._slot_override_from_row)
             self.quota_limits = QuotaLimitStore(self._conn, self._lock)
-            self.pi_usage = PiUsageStore(self._conn, self._lock)
-            self.enforce_routing_retention(force_rebuild=True)
+            self.pi_usage = PiUsageStore(self._conn, self._lock, self)
+            self.retention_maintenance = RetentionMaintenance(self, DEFAULT_RETENTION_BATCH_SIZE)
+            if self.optional_telemetry_enabled:
+                self.retention_maintenance.initialize()
+            else:
+                print("[spartan-route] optional telemetry disabled; required storage remains enabled", file=sys.stderr)
         except Exception:
             self._conn.close()
             raise
+
+    def omit_optional(self) -> bool:
+        if self.optional_telemetry_enabled:
+            return False
+        with self._health_lock:
+            self.optional_omissions = min(2**63 - 1, self.optional_omissions + 1)
+        return True
+
+    def require_optional(self) -> None:
+        if self.omit_optional():
+            raise OptionalTelemetryUnavailable("optional_telemetry_disabled")
 
     def reserve_cache_experiment(self, attempt_id: str, experiment: dict[str, Any], account: str, now: float) -> None:
         with self._lock, self._conn:
@@ -415,6 +396,7 @@ class TelemetryStore:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def log_routing(self, entry: RoutingLogEntry) -> None:
+        self.require_optional()
         context = self._row_context({"context_info": entry.context_info})
         usage_seen = self._sqlite_json_flag(context.get("usage_seen"))
         cache_likely = self._sqlite_json_flag(context.get("cache_likely"))
@@ -537,6 +519,7 @@ class TelemetryStore:
         )
 
     def native_cache_daily_rows(self) -> list[dict[str, Any]]:
+        self.require_optional()
         with self._lock:
             rows = self._conn.execute(
                 "SELECT day, actual_model, account_key, metrics_json FROM native_cache_daily_rollups WHERE diagnostic_version=2 ORDER BY day, actual_model, account_key"
@@ -612,6 +595,8 @@ class TelemetryStore:
         now: datetime | None = None,
         force_rebuild: bool = False,
     ) -> dict[str, Any]:
+        if self.omit_optional():
+            return {"available": False, "reason": "optional_telemetry_disabled"}
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
@@ -724,7 +709,7 @@ class TelemetryStore:
             write_healthy = not self._unhealthy_operations["write"]
             maintenance_healthy = not self._unhealthy_operations["maintenance"]
             return {
-                "healthy": read_healthy and write_healthy and maintenance_healthy,
+                "healthy": self.optional_telemetry_enabled and read_healthy and write_healthy and maintenance_healthy,
                 "readHealthy": read_healthy,
                 "writeHealthy": write_healthy,
                 "maintenanceHealthy": maintenance_healthy,
@@ -841,6 +826,7 @@ class TelemetryStore:
             )
 
     def daily_cache_rows(self) -> list[dict[str, Any]]:
+        self.require_optional()
         by_day: dict[str | None, dict[str, Any]] = {}
         with self._lock:
             cursor = self._conn.execute(
@@ -858,8 +844,7 @@ class TelemetryStore:
                 WHERE actual_model LIKE 'codex/%'
                 """
             )
-            for raw_row in cursor:
-                row = dict(raw_row)
+            for row in cursor:
                 day = row["day"]
                 aggregate = by_day.get(day)
                 if aggregate is None:
@@ -963,6 +948,7 @@ class TelemetryStore:
         return rows
 
     def today_summary(self, day: str | None = None) -> dict[str, Any]:
+        self.require_optional()
         with self._today_summary_lock:
             return self._today_summary_locked(day)
 
@@ -1084,6 +1070,7 @@ class TelemetryStore:
         return result
 
     def routing_filter_options(self) -> dict[str, list[str]]:
+        self.require_optional()
         with self._lock:
             model_rows = self._conn.execute(
                 """
@@ -1120,6 +1107,7 @@ class TelemetryStore:
         reasoning: str | None = None,
         prompt: str | None = None,
     ) -> dict[str, Any]:
+        self.require_optional()
         safe_limit = max(1, min(100, int(session_limit if session_limit is not None else limit)))
         safe_turn_limit = max(1, min(100, int(turn_limit)))
         filters = {
@@ -1305,6 +1293,7 @@ class TelemetryStore:
         add_group_correlation(group, self._row_context(item).get("correlation"))
 
     def turn_requests(self, turn_id: str, limit: int = 200, *, session_id: str | None = None) -> dict[str, Any]:
+        self.require_optional()
         safe_limit = max(1, min(200, int(limit)))
         with self._lock:
             rows = self._conn.execute(
@@ -1359,6 +1348,8 @@ class TelemetryStore:
         return dict(row) if row is not None else None
 
     def codex_model_contexts(self) -> dict[str, int]:
+        if self.omit_optional():
+            return {}
         with self._lock:
             rows = self._conn.execute(
                 "SELECT model_id, max_context FROM codex_model_context_metadata"
@@ -1370,6 +1361,8 @@ class TelemetryStore:
         }
 
     def save_codex_model_contexts(self, contexts: dict[str, int]) -> None:
+        if self.omit_optional():
+            return
         if any(
             not isinstance(model_id, str) or not model_id.startswith("codex/")
             or type(context) is not int or not 1 <= context <= 2_000_000
@@ -1722,6 +1715,8 @@ class TelemetryStore:
         current_account_keys: set[str] | None = None,
         full_pool_refresh: bool = True,
     ) -> None:
+        if self.omit_optional():
+            return
         if not records and current_account_keys is None:
             return
         observed_at = now_iso()
@@ -1785,6 +1780,7 @@ class TelemetryStore:
                 raise
 
     def codex_capacity_multipliers(self, account_keys: set[str]) -> dict[str, int]:
+        self.require_optional()
         # Read the small override table once, including defaults for active accounts.
         with self._lock:
             rows = self._conn.execute(
@@ -1794,6 +1790,7 @@ class TelemetryStore:
         return {key: overrides.get(key, 1) for key in account_keys}
 
     def codex_capacity_multiplier(self, account_key: str) -> int:
+        self.require_optional()
         with self._lock:
             row = self._conn.execute(
                 "SELECT capacity_multiplier FROM codex_account_capacity_overrides WHERE account_key = ?",
@@ -1802,6 +1799,7 @@ class TelemetryStore:
         return int(row["capacity_multiplier"]) if row is not None else 1
 
     def set_codex_capacity_multiplier(self, account_key: str, multiplier: int) -> None:
+        self.require_optional()
         if multiplier not in {1, 5} or isinstance(multiplier, bool):
             raise ValueError("capacity multiplier must be 1 or 5")
         with self._lock:
@@ -1830,6 +1828,7 @@ class TelemetryStore:
                 raise
 
     def codex_usage_estimate(self, active_account_keys: set[str]) -> dict[str, Any]:
+        self.require_optional()
         keys = sorted({key for key in active_account_keys if key})
         unavailable = {
             "available": False,
@@ -2011,13 +2010,7 @@ class TelemetryStore:
             int(row["excluded_input_tokens"]) + int(row["excluded_output_tokens"])
             for row in current_coverage
         )
-        unavailable_reason = None
-        if not snapshots:
-            unavailable_reason = "no_current_weekly_snapshots"
-        elif not sample_tokens:
-            unavailable_reason = "no_attributed_usage_tokens"
-        elif actual_units <= 0:
-            unavailable_reason = "no_positive_weekly_usage"
+        unavailable_reason = self._usage_estimate_reason(snapshots, sample_tokens, actual_units)
         bounds = current_coverage or current_models
         return {
             "available": unavailable_reason is None,
@@ -2042,12 +2035,26 @@ class TelemetryStore:
             "efficiency": efficiency,
         }
 
+    @staticmethod
+    def _usage_estimate_reason(snapshots: list, sample_tokens: int, actual_units: float) -> str | None:
+        if not snapshots:
+            return "no_current_weekly_snapshots"
+        if not sample_tokens:
+            return "no_attributed_usage_tokens"
+        if actual_units <= 0:
+            return "no_positive_weekly_usage"
+        return None
+
     def usage_snapshots(self) -> list[dict[str, Any]]:
+        if self.omit_optional():
+            return []
         with self._lock:
             rows = self._conn.execute("SELECT * FROM codex_usage_snapshots ORDER BY slot_index, window").fetchall()
         return [dict(row) for row in rows]
 
     def upsert_reset_credits(self, summaries: list[dict[str, Any]]) -> None:
+        if self.omit_optional():
+            return
         updated_at = now_iso()
         with self._lock:
             for summary in summaries:
@@ -2098,6 +2105,8 @@ class TelemetryStore:
             self._conn.commit()
 
     def reset_credit_snapshots(self) -> dict[str, dict[str, Any]]:
+        if self.omit_optional():
+            return {}
         with self._lock:
             summaries = self._conn.execute("SELECT * FROM codex_reset_credit_summaries").fetchall()
             items = self._conn.execute("SELECT * FROM codex_reset_credit_items ORDER BY expires_at").fetchall()
@@ -2160,6 +2169,7 @@ class TelemetryStore:
             "usageMissingRequests": 0,
             "cacheLikelyRequests": 0,
             "nativeCache": empty_native_metrics(),
+            "speed": {"requested": {}, "served": {}},
             "legacyCacheHeuristics": True,
             "cacheLikelyInputTokens": 0,
             "cacheLikelyCachedInputTokens": 0,
@@ -2183,6 +2193,7 @@ class TelemetryStore:
     def _add_metrics(self, metrics: dict[str, Any], row: dict[str, Any]) -> None:
         metrics["requests"] += 1
         context = self._row_context(row)
+        add_speed(metrics, context)
         add_native_request(metrics["nativeCache"], context, int(row.get("input_tokens") or 0), int(row.get("cached_input_tokens") or 0))
         if row.get("had_tool_calls"):
             metrics["toolEnabledRequests"] += 1
@@ -2368,12 +2379,14 @@ class TelemetryQueue:
         self.task: asyncio.Task[None] | None = None
         self.drops = 0
         self.write_failures = 0
-        self.maintenance_failures = 0
         self.shutdown_timeouts = 0
-        self._successful_writes_since_retention = 0
+        self._retention = getattr(store, "retention_maintenance", None) or RetentionMaintenance(store, self.retention_batch_size)
+        self._retention.batch_size = self.retention_batch_size
         self._accepting = True
 
     def start(self) -> None:
+        if not getattr(self.store, "optional_telemetry_enabled", True):
+            return
         if self.task and not self.task.done():
             return
         self._accepting = True
@@ -2411,6 +2424,9 @@ class TelemetryQueue:
         return True
 
     def log(self, entry: RoutingLogEntry) -> bool:
+        if not getattr(self.store, "optional_telemetry_enabled", True):
+            self.store.omit_optional()
+            return False
         if not self._accepting:
             self.drops += 1
             return False
@@ -2437,11 +2453,14 @@ class TelemetryQueue:
             )
         }
         return {
+            "optionalTelemetryEnabled": getattr(self.store, "optional_telemetry_enabled", True),
+            "optionalOmissions": getattr(self.store, "optional_omissions", 0),
+            "degradedReason": None if getattr(self.store, "optional_telemetry_enabled", True) else "optional_telemetry_disabled",
             "depth": self.queue.qsize(),
             "capacity": self.capacity,
             "drops": self.drops,
             "writeFailures": self.write_failures,
-            "maintenanceFailures": self.maintenance_failures,
+            **self._retention.status(),
             "shutdownTimeouts": self.shutdown_timeouts,
             "accepting": self._accepting,
             "workerRunning": bool(self.task and not self.task.done()),
@@ -2480,21 +2499,6 @@ class TelemetryQueue:
                     continue
                 self.store.record_health_success("write", "routing_log")
 
-                self._successful_writes_since_retention += 1
-                if self._successful_writes_since_retention >= self.retention_batch_size:
-                    try:
-                        await loop.run_in_executor(None, self.store.enforce_routing_retention)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self.maintenance_failures += 1
-                        self.store.record_health_failure("maintenance", "retention")
-                        print(
-                            f"[spartan-route] telemetry retention failed ({type(exc).__name__})",
-                            file=sys.stderr,
-                        )
-                    else:
-                        self.store.record_health_success("maintenance", "retention")
-                        self._successful_writes_since_retention = 0
+                await self._retention.after_write()
             finally:
                 self.queue.task_done()

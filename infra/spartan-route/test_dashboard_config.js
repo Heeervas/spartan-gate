@@ -46,7 +46,8 @@ class Element {
   append(...children) { this.children.push(...children); }
   prepend(child) { this.children.unshift(child); }
   replaceChildren(...children) { this.children = children; }
-  setAttribute() {}
+  setAttribute(name, value) { (this.attributes ||= {})[name] = value; }
+  removeAttribute(name) { delete (this.attributes ||= {})[name]; }
   addEventListener(type, handler) { this.listeners[type] = handler; }
   focus() {}
   querySelectorAll(selector) {
@@ -55,7 +56,7 @@ class Element {
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 }
-function harness() {
+function harness(hash = '') {
   const elements = new Map();
   const requests = [];
   const providerRequests = [];
@@ -71,7 +72,7 @@ function harness() {
       createElement(tag) { return new Element(tag); },
       createTextNode(text) { const node = new Element('#text'); node.textContent = text; return node; },
     },
-    window: { addEventListener(type, handler) { events[type] = handler; } },
+    window: { location: {hash, pathname: '/dashboard-config'}, addEventListener(type, handler) { events[type] = handler; } },
     sessionStorage: { getItem() { return 'old-token'; }, setItem() {} },
     fetch(path, options) {
       if (path === '/api/config/providers') {
@@ -102,6 +103,69 @@ async function loaded() {
   await flush();
   return h;
 }
+
+test('Settings sections default, deep link, history and unknown hashes hide only panels', () => {
+  for (const [hash, selected] of [['', 'routing'], ['#providers', 'providers'], ['#model-variants', 'model-variants'], ['#unknown', 'routing'], ['#main', 'routing']]) {
+    const h = harness(hash);
+    for (const id of ['routing', 'providers', 'model-variants']) {
+      assert.equal(h.elements.get(`settings-${id}`).hidden, id !== selected);
+      assert.equal(h.elements.get(`settings-link-${id}`).attributes?.['aria-current'], id === selected ? 'location' : undefined);
+    }
+    const initialRequests = h.requests.length + h.providerRequests.length;
+    for (const id of ['providers', 'model-variants', 'routing', 'providers']) {
+      h.context.window.location.hash = `#${id}`;
+      h.events.hashchange(); // Same event as native link, back and forward navigation.
+      assert.equal(h.elements.get(`settings-${id}`).hidden, false);
+    }
+    assert.equal(h.requests.length + h.providerRequests.length, initialRequests);
+    assert.equal(h.context.window.location.pathname, '/dashboard-config');
+  }
+});
+
+test('section navigation retains DOM, all resource drafts and independent saves', async () => {
+  const h = await loaded();
+  const providerInput = h.elements.get('providers').querySelector('input');
+  providerInput.checked = false;
+  providerInput.listeners.change();
+  h.run("draft.simple = 'other'; markDirty(true); variantDraft[0].contextWindow = 300000; updateVariantControls();");
+  for (const id of ['providers', 'model-variants', 'routing']) {
+    h.context.window.location.hash = `#${id}`;
+    h.events.hashchange();
+    assert.match(h.elements.get(`settings-dirty-${id}`).textContent, /Unsaved/);
+  }
+  assert.equal(h.elements.get('providers').querySelector('input'), providerInput);
+  h.run('saveProviders()');
+  assert.equal(h.providerRequests.at(-1).options.headers['If-Match'], 'providers-etag');
+  assert.equal(JSON.parse(h.providerRequests.at(-1).options.body).providers.openai.enabled, false);
+  await flush();
+  assert.equal(h.run('dirty && variantDirty'), true);
+  assert.equal(h.run('draft.simple'), 'other');
+  assert.equal(h.run('variantDraft[0].contextWindow'), 300000);
+  assert.equal(h.run('etag'), 'etag');
+  assert.equal(h.run('variantEtag'), 'variants-etag');
+});
+
+test('access rejection remains reachable outside selected resource panel', async () => {
+  const h = harness('#providers');
+  h.respond(h.requests[0], {error: {message: 'Access denied'}}, 401);
+  h.respond(h.requests[1], variants);
+  await flush();
+  assert.match(h.elements.get('access-error').textContent, /Access denied/);
+  assert.equal(h.elements.get('settings-routing').hidden, true);
+});
+
+test('late access rejection cannot overwrite feedback after a newer credential load', async () => {
+  const h = harness('#providers');
+  h.run("tokenInput.value = 'new-token'; load();");
+  h.respond(h.requests[2], routing);
+  h.respond(h.requests[3], variants);
+  await flush();
+  h.respond(h.requests[0], {error: {message: 'Old token denied'}}, 401);
+  h.respond(h.requests[1], variants);
+  await flush();
+  assert.equal(h.elements.get('access-error').textContent, '');
+  assert.equal(h.elements.get('access-status').textContent, 'Settings loaded. Each section saves independently.');
+});
 
 test('variant and routing saves preserve the other panel draft and ETag', async () => {
   const h = await loaded();

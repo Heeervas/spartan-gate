@@ -87,6 +87,26 @@ inference checks. Request detail separately reports the number of native attempt
 recorded when that metadata exists. Request-shape compatibility is not proof of
 provider cache residency; cached-token figures remain provider observations.
 
+### Speed summary
+
+Session and turn summaries show **Speed** with separate **Requested** and
+**Served** tier counts. Fast (wire tier `priority`) has one lightning SVG;
+Ultrafast (`ultrafast`) has two. These are labels from telemetry, never guesses
+from the model or latency. Requested lightning confirms only client intent,
+not delivery. Served lightning represents the provider-reported tier, not a
+measured speed improvement. A Fast request served as `default` therefore shows
+Requested Fast and Served Normal without served lightning.
+
+Mixed groups list each observed tier and its count, including unknown data;
+counts cover only the selected requests, not the session's lifetime. An absent
+request tier is **Unspecified**, not proof of normal service. Historical rows
+without speed observations and missing or unrecognized provider tiers are
+**Unknown**. Responses API served tiers are captured only from
+`response.completed`, not creation echoes; incomplete/failed responses remain
+unknown. Chat Completions uses provider-reported response/chunk metadata.
+Only known tier labels are stored, using existing bounded telemetry and
+selected-row aggregation, with no backfill or additional history queries.
+
 ## Native Pi source integration
 
 The canonical `infra/pi/extensions/spartan-route-usage.ts` extension adds the

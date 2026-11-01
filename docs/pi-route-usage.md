@@ -93,6 +93,36 @@ labeled separately and is never added to overlapping Route totals.
 V1 covers the existing Chat Completions integration. Native Responses and calls
 outside the instrumented Route provider are not included in new Route accounting.
 
+## Degraded storage and client adoption
+
+With Route's explicit `SPARTAN_ROUTE_OPTIONAL_TELEMETRY_ENABLED=false`, Pi usage
+registration/status/refresh are unavailable; cosmetic requests cannot launch a
+provider refresh or touch the accounting tables. Inference still works with
+marker-only headers or a syntactically valid legacy session/origin pair. These
+correlation identifiers never replace durable reasoning bindings or SessionFence.
+Malformed pairs remain rejected. No origin or replacement accounting ledger is
+invented in RAM.
+
+The revised client shares retry eligibility between timers and inference header
+hooks. An outage starts a 60-second cooldown, increasing to at most five minutes;
+turns during it do not probe usage again. A failed status read also marks a gap
+when an origin is already registered. The local incomplete marker is saved once;
+failed saves retry at most once per minute and are not reported as saved.
+Ambiguous marker reads remain incomplete/unsaved rather than false success.
+A crash before a successful marker save can still lose that local indication.
+After recovery/resume, the same immutable origin/baseline is recovered and the gap
+is re-registered before its local marker is removed. Overlapping native history
+is never added to existing Route totals; omitted usage is not reconstructed.
+
+An already-open **old** client may neither mark its registered-origin gap nor
+respect the new shared cooldown. Inference compatibility does not promise
+complete accounting recovery. Treat the entire contingency interval as a known
+accounting discontinuity and obtain an explicit recovery decision before
+re-enabling accounting or claiming complete totals. No outage ledger is added to
+hide that limitation. Installing revised source is not adoption: cached `.mjs`
+helpers may survive `/reload`; adopt at coordinated new-process boundaries,
+without a restart-all or `PI_OFFLINE` workaround.
+
 ## Interfaces and security
 
 - `POST /api/pi/sessions` registers or recovers an immutable session origin.
