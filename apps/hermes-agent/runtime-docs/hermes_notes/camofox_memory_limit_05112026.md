@@ -49,3 +49,10 @@ Rollback, only if separately requested, is the same two local values restored to
 Keep existing browser data and watchdog state. No new task workspace/package or
 reusable policy was needed for this two-value operation. This operator archive is
 not mounted into Hermes and its source commit does not publish the private override.
+
+Operational acceptance is complete; formal closeout is pending. The required inline
+verifier returned `REFUSED: owned scope has ignored untracked data` because the owned
+private Compose override must remain ignored. Do not publish it, misclassify it as
+foreign or remove it from scope to manufacture closure. The project verifier owner
+must resolve the private-runtime configuration closeout contract separately. This
+administrative limitation does not undo the verified running limits.
