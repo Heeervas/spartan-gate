@@ -33,12 +33,14 @@ owning task evidence, including failures and explicit limits.
 
 ## Active-task pointers and constraints
 
-- Shared development source collection is active at `/projects/shared`, with a
-  native-workspace navigation symlink. Node Search, Profile Delegate and Hermes
-  LCM sources are available; installed plugins remain unchanged. Zenith, Ultimate
-  and the two Pi extension moves are pending writer/native-consumer reconciliation.
-  Do not move live/native-managed inputs or overwrite dirty source. Sole owner:
-  `../../../tasks/shared-development-workspace/task.md`.
+- Shared source collection is active at `/projects/shared`, with native-workspace
+  navigation. Node Search, Profile Delegate and LCM sources are available. General
+  Discord-title, governor and Shared Master v2 plugins now have independent source
+  repos there and native mounts from shared; Gate no longer vendors them. V1 is
+  retired. Runtime implementation bytes were preserved. Zenith, Ultimate and both
+  Pi extension moves still need writer/native-consumer reconciliation; do not move
+  live/native-managed inputs or overwrite dirty source. Architecture research is
+  parked. Sole owner: `../../../tasks/shared-development-workspace/task.md`.
 
 - MCPHub is active for selected native Hermes and host/container Pi clients:
   seven shared backends/101 exact tools. Codebase Memory now runs native local

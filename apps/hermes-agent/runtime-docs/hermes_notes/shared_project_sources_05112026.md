@@ -1,7 +1,9 @@
 # Shared project source access — 05/11/2026
 
-Status: partially applied operator-authorized collection migration. This does not
-claim the remaining live/native-managed repository moves are complete.
+Status: historical collection-placement checkpoint. The later direct-source
+extraction of three general plugins is recorded in
+`shared_plugins_extraction_05112026.md`; no Gate snapshots remain for them.
+This does not claim the remaining live/native-managed moves are complete.
 
 ## Current access and safeguards
 

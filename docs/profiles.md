@@ -166,16 +166,22 @@ hook. A symlink or list entry alone is insufficient. This new-profile
 completion requirement does not retroactively override existing intentional
 exceptions or change the [explicit runtime activation policy](spartan-route.md). Do not bulk-enable domain plugins to satisfy it.
 
-### Common instructions: shared-masterv2 (prepared source, activation pending)
+### Common instructions: external shared-masterv2
 
 `shared-masterv2` registers one native SYSTEM section for every profile where
 it is enabled, without name exclusions: `empty`, `workstation`, `ssr`, `ssr-*`
 and `ssr_*` names receive the same common instructions as other profiles.
 This does not enable memory, history or any capability disabled in a profile.
-The public Compose source mounts only this plugin read-only at
-`/opt/data/plugins/shared-masterv2`; use individual named-profile links and
-`plugins.enabled: [shared-masterv2, ...]`, replacing v1 enablement rather than
-running both. Do not link the whole plugins directory.
+This is an independent shared-source plugin, not code shipped in Gate. Provision
+its reviewed repository in the approved shared collection and opt into
+`infra/compose/hermes-shared-plugins.example.yml`, or the equivalent private
+individual mount, at `/opt/data/plugins/shared-masterv2`. The base Compose no
+longer mounts it. Use individual named-profile links and
+`plugins.enabled: [shared-masterv2, ...]`. V1 is retired; do not enable both or
+link the whole plugins directory. The installed alias is read-only, but shared
+source access is writable: source edits can affect later reads/loads and need
+explicit coordination. No automatic snapshot or separate vendored copy is kept
+in Gate.
 
 The callback reads `get_default_hermes_root()/MASTER.md`, independent of cwd.
 In the standard container this is `/opt/data/MASTER.md`; a custom

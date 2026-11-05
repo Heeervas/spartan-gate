@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Extract general Discord-title, Self Improvement Governor and Shared Master v2
+  source/tests into independent shared repositories; consume them through
+  explicit external-source plugin mounts, not Gate snapshots or base-stack
+  source ownership. Retire Shared Master v1 and retain Gate's own prompt-capacity
+  patch proof and service-specific adapters. Provide an optional Compose recipe.
+
 - Document the approved shared source collection and workspace navigation alias,
   preserving startup ownership guards, independent repository authority and
   separate container development environments; live/native project moves remain

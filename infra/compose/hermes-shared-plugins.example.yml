@@ -1,0 +1,28 @@
+# Optional operator overlay; standalone plugin source is NOT shipped by Gate.
+# Provision each independent repository under the explicitly approved source root.
+# No image, network, profile enablement, writable runtime state or credentials change.
+# Add only after reviewing source and authorizing Hermes recreation.
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: ${SHARED_PROJECTS_DIR:?Select the approved shared source collection}/discord-deferred-thread-title
+        target: /opt/data/plugins/discord-deferred-thread-title
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z
+      - type: bind
+        source: ${SHARED_PROJECTS_DIR:?Select the approved shared source collection}/self-improvement-governor
+        target: /opt/data/plugins/self-improvement-governor
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z
+      - type: bind
+        source: ${SHARED_PROJECTS_DIR:?Select the approved shared source collection}/shared-masterv2
+        target: /opt/data/plugins/shared-masterv2
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z

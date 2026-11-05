@@ -104,6 +104,24 @@ npm run test:hermes:native
 npm run test:camofox:native
 ```
 
+The Hermes native runner retains Gate's own prompt-capacity patch preflight and
+idempotence check at `infra/hermes-plugins/test_prompt_capacity_patch.py`.
+General Discord-title, governor and Shared Master v2 compatibility suites moved
+to their independent shared-source repositories; follow each repository's native
+validation contract. Gate no longer ships those plugin packages or a v1 source.
+For the source relocation, unchanged runtime package hashes and all 13 moved
+native/legacy cases were checked against explicit pristine Hermes program input
+using the existing image dependency interpreter in disposable homes. No suite
+was converted to a skip or a mock substitute for its native boundary.
+
+```sh
+HERMES_UPSTREAM_SOURCE="$PWD/.cache/test-inputs/native/hermes" \
+  .venv/quality/bin/python infra/hermes-plugins/test_prompt_capacity_patch.py -v
+SHARED_PROJECTS_DIR=/srv/projects/shared docker compose \
+  -f infra/compose/compose.yml -f infra/compose/hermes-shared-plugins.example.yml \
+  --env-file .env.example config --quiet
+```
+
 Native edge acceptance additionally requires `CADDY_BIN` pointing at a real
 compatible Caddy binary and `python3 -m unittest discover -s infra/caddy -p
  'test_*.py'`; missing Caddy intentionally fails its native test. Session unit

@@ -1,4 +1,0 @@
-name: shared-master
-version: "0.2.0"
-description: Transports default-root common MASTER.md through bounded native context and complete request middleware.
-kind: standalone

@@ -136,6 +136,15 @@ the Gate checkout's private tree, host home or Git credential stores. Preserve
 write access, and reconcile jobs before a separately authorized Hermes recreation.
 Do not copy private runtime data into Git or auto-deploy a fetched revision.
 
+General-purpose Discord deferred titles, Self Improvement Governor and Shared
+Master v2 are standalone repositories in that collection, not Gate-vendored
+packages. Their native plugin mounts come directly from the selected shared
+sources through `infra/compose/hermes-shared-plugins.example.yml` (or equivalent
+private binds). Gate's base stack neither ships nor mounts them. Their own repos
+hold tests/instructions; v1 is retired. A read-only native plugin alias does not
+make code immutable when the shared source root is writable elsewhere: coordinate
+edits and runtime reloads. Gate-specific adapters remain owned by Gate.
+
 An explicitly approved shared project collection can be mounted read/write at
 `/projects/shared`, with each independent repository directly below it. Keep
 Gate's private checkout and host credential/session stores outside this collection.
