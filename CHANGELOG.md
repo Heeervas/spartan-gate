@@ -12,8 +12,9 @@ All notable changes to Spartan Gate are documented here.
 
 - Document the approved shared source collection and workspace navigation alias,
   preserving startup ownership guards, independent repository authority and
-  separate container development environments; live/native project moves remain
-  gated on writer and consumer reconciliation.
+  separate container development environments. Document canonical-path Git
+  worktree access without exposing native session homes, preserving dirty state
+  and path-derived harness homes during explicitly authorized source moves.
 
 - Document source-repository access for Hermes/Pi plugin work, distinct from
   installed writable plugins, with isolated container development environments

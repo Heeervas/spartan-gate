@@ -37,10 +37,13 @@ owning task evidence, including failures and explicit limits.
   navigation. Node Search, Profile Delegate and LCM sources are available. General
   Discord-title, governor and Shared Master v2 plugins now have independent source
   repos there and native mounts from shared; Gate no longer vendors them. V1 is
-  retired. Runtime implementation bytes were preserved. Zenith, Ultimate and both
-  Pi extension moves still need writer/native-consumer reconciliation; do not move
-  live/native-managed inputs or overwrite dirty source. Architecture research is
-  parked. Sole owner: `../../../tasks/shared-development-workspace/task.md`.
+  retired. Runtime implementation bytes were preserved. Zenith and Ultimate now
+  live directly in shared; both Pi sources retain the requested pi-extensions/
+  group. Original dirty bytes and all worktrees are preserved; native homes stay
+  host-only, with supported launcher home selection and old-path compatibility
+  aliases. Ultimate remains stopped; current Pi needs user reload for fresh source
+  selection. Architecture research stays parked; migration/recovery record:
+  `../../../tasks/archive/2026/shared-development-workspace/task.md`.
 
 - MCPHub is active for selected native Hermes and host/container Pi clients:
   seven shared backends/101 exact tools. Codebase Memory now runs native local

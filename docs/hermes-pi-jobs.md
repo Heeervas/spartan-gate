@@ -146,7 +146,8 @@ make code immutable when the shared source root is writable elsewhere: coordinat
 edits and runtime reloads. Gate-specific adapters remain owned by Gate.
 
 An explicitly approved shared project collection can be mounted read/write at
-`/projects/shared`, with each independent repository directly below it. Keep
+`/projects/shared`, with independent repositories and explicitly approved groups
+such as `pi-extensions/`. Each repository retains its own Git and authority. Keep
 Gate's private checkout and host credential/session stores outside this collection.
 The whole collection is writable by the Hermes workload; it is not per-project
 or per-profile isolation. Do not relocate live repositories or native-managed
@@ -161,6 +162,23 @@ The ownership guard uses physical traversal and does not follow descendant
 symlinks; keep that guard enabled. Refuse an occupied alias path, and verify
 actual startup, workload-user Git/write access and unchanged neighboring services.
 Do not confuse the navigation alias with an additional mount.
+
+When host Git worktrees contain absolute common-directory links, an operator may
+also bind the **same approved collection only** at its matching host absolute
+path inside Hermes. Keep missing-source refusal and SELinux labeling on both
+views; do not mount native session homes just to satisfy external registrations.
+Point workspace navigation to that canonical view and use it for worktree
+operations so newly recorded paths also resolve on the host. The short view and
+canonical view contain the same files, not copies. Existing external native
+worktrees can remain host-only; never prune them based on a container's missing
+paths. Source relocation must preserve HEADs, branches, indexes, dirty/ignored
+bytes and registrations, using supported Git repair after writers stop.
+Path-derived harness homes need their documented override when restarting;
+source relocation does not authorize a fresh home or automatic agent resumption.
+Newly moved entries can retain host-only SELinux labels even when the collection
+root is already labeled for containers. Verify real workload-user file access;
+correct labels only on approved source entries without following dependency
+symlinks, changing permissions or disabling SELinux.
 
 For Node Search, the source path is `/projects/shared/node-search`. A prepared
 container dev environment can live outside shared host source at
