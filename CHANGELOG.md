@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Clarify proxy-aware HTTPS diagnostics for Hermes: a denied direct socket does
+  not demonstrate a proxy outage, and proxy environment variables do not provide
+  transparent routing for clients that ignore them.
+
 - Extract general Discord-title, Self Improvement Governor and Shared Master v2
   source/tests into independent shared repositories; consume them through
   explicit external-source plugin mounts, not Gate snapshots or base-stack

@@ -1017,6 +1017,15 @@ Validate with `sg config --quiet`; at the planned activation, recreate only
 Hermes with the command above and verify proxy inheritance in a secondary
 profile's terminal. Re-render and update the proxy entries when deployment proxy
 settings change. Configuration preparation alone does not change running sessions.
+
+When diagnosing GitHub or another allowlisted HTTPS destination, test through
+an HTTP client that honors these proxy variables, from the affected Hermes
+terminal/profile. DNS resolution followed by a direct TCP/socket connection can
+return `Network is unreachable` even when the proxy works: Hermes has no direct
+external route by design. Proxy variables are client conventions, not transparent
+socket routing. Compare an anonymous proxy-aware request with the failing
+command before changing credentials, deployment settings, or network policy.
+
 The same native residue filter can remove other launch-dotenv settings, such
 as `SEARXNG_URL`, `OPENAI_BASE_URL` and `PLAYWRIGHT_BROWSERS_PATH`. Decide their
 scope individually; proxy sharing alone covers only the six network keys.
