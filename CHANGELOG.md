@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Record an operator-authorized local Camofox memory increase and isolated
+  recreation, preserving the existing image, controls and neighboring services.
+  Public resource defaults remain unchanged; private configuration is not published.
+
 - Add an explicit default-on optional-telemetry switch for degraded storage.
   Turning it off omits optional history/accounting without bypassing required
   policies, quota admission or reasoning/reservation controls. Keep live usage
