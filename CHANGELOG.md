@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add opt-in managed dependency admission for Hermes: validate existing native
+  environments before automatic recovery without installing, collecting or
+  replacing them. Respect protected core security overrides and mutable plugin
+  declarations while retaining strict image-only mode, read-only core code and
+  image-pinned overlay migration. Keep Hermes-owned plugins in writable native
+  persistent storage rather than individual read-only mounts.
+
 - Record an operator-authorized local Camofox memory increase and isolated
   recreation, preserving the existing image, controls and neighboring services.
   Public resource defaults remain unchanged; private configuration is not published.

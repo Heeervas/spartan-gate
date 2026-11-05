@@ -808,6 +808,77 @@ the original generation warning may return. Do not restore session databases or
 browser profiles. Each startup admission is bounded to 90 seconds and its cost
 must be included in readiness checks.
 
+### Managed dependency validation (no automatic provisioning)
+
+`SPARTAN_HERMES_MANAGED_DEPENDENCIES_VALIDATE_ONLY=1` retains the native
+recorded dependency generation rather than using the baked-image fallback.
+Set `SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY=0` at the same time. Both settings
+accept only `0` or `1`; conflicting or malformed modes refuse startup. Both
+unset (or `0`) preserve upstream behavior; image-only admission remains strict.
+
+Managed admission requires strict native facts, an existing install-owned venv
+and its recorded generation-local `workspace/uv.lock`. Missing selections never
+fall back to baked dependencies. Pending repair, source completion or publication
+must be resolved explicitly before ordinary startup. The guard runs in native
+`prepare_launch` before automatic recovery/activation and also protects direct
+gateway diagnosis. Failure escapes best-effort handlers as `SystemExit`.
+
+The selected interpreter must match the baked launcher's implementation,
+major/minor and SOABI, satisfy current core `requires-python`, startup imports,
+current core dependencies, recorded extras and enabled in-process plugin
+requirements, including marker/version/transitive-extra closure. Native strict
+profile discovery and disabled/external-plugin semantics remain authoritative.
+Managed closure also honors the protected current core's
+`[tool.uv].override-dependencies`: replacement constraints (including native
+security floors) supersede matching raw distribution constraints. Original edge
+markers/extra activation are checked first, requested dependency extras remain
+active, and replacement markers use the selected interpreter. A false replacement
+marker removes that edge, including native `sys_platform == 'never'` exclusions;
+it does not restore the original constraint. Overrides alone add no dependency.
+Only the protected core `pyproject.toml` is authority—not writable plugin
+projects, generation snapshots or global uv configuration. The bounded supported
+subset is unique canonical package names with index version constraints and
+interpreter/platform markers. Duplicate names, URLs, extra-qualified or
+extra-context overrides, self-overrides, malformed declarations and active
+unbounded replacements fail closed instead of invoking a resolver. Image-only
+admission remains override-free and retains its existing strict behavior.
+Direct URLs are refused; validation never fetches. Facts, lock and dependency
+selection/declarations must remain unchanged during admission. Ordinary plugin
+implementation edits do not invalidate admission; a new unsatisfied dependency
+does. A stale PM generation fingerprint is diagnostic, not fatal after admission;
+tool diagnostics remain visible. This is not full lock replay/reproducibility.
+
+Ordinary startup performs no install, sync, fallback publication, facts writes
+or generation collection. Explicit native `hermes pm` management/repair remains
+reachable and subject to its existing controls; this mode grants no new network,
+protected-core write or management permission.
+
+For an existing image, after source acceptance and an isolated read-only canary:
+
+```sh
+python3 scripts/hermes-image-dependencies-overlay.py prepare --mode managed
+sg config --quiet
+# Only with separate activation authority:
+sg up -d --no-deps --no-build --pull never --force-recreate hermes
+```
+
+Preparation does not restart services. The existing helper now protects stage2,
+runtime admission and validator together, checks shell/Python syntax and effective
+Compose before publication, and recognizes only pristine, prior image-only,
+current or exact bounded emergency-recovery blocks. Unknown/partial code refuses.
+It preserves mounted beforeimages, prior overlay and Compose inputs in the private
+bundle; a mounted recovery hook is a recovery beforeimage, **not** pristine image
+code. Exactly one effective read-only stage2 mount must remain, executable by the
+native runner. Existing image/build/tier guards still apply. Legacy two-file
+image overlays remain checkable but cannot admit managed mode until migrated.
+
+Rollback uses the retained previous overlay/Compose inputs and emergency hook
+when those preceded migration. Removing only the new overlay restores whatever
+the underlying Compose selected, not necessarily pristine image behavior. Retain
+all referenced recovery artifacts until a separately authorized healthy startup
+and byte/state readback; never restore dependency facts, profiles or databases
+merely to roll back protected code.
+
 ## Hermes fast-mode overlay
 
 For a Hermes image without `patch_spartan_fast_mode.py`, prepare the temporary

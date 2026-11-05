@@ -145,6 +145,25 @@ See `.github/workflows/ci.yml` for the executable clean-clone provisioning lane.
 An upstream archive byte change fails the checksum gate rather than silently
 accepting new inputs. Portable CI alone cannot make full acceptance green.
 
+### Managed dependency admission regression
+
+With the pinned Hermes program input above and the existing isolated Python
+runtime (no service starts or package installation):
+
+```sh
+python3 -m unittest discover -s apps/hermes-agent -p test_stage2_image_dependencies.py -v
+python3 -m unittest discover -s apps/hermes-agent -p test_image_only_startup.py -v
+python3 -m unittest scripts.test_hermes_image_dependencies_overlay -v
+```
+
+The managed fixture uses actual native bootstrap, selection, profile/declaration
+readers and activation over synthetic venvs, and executes the direct gateway PM
+boundary without starting gateway transports. It emulates only protected-code
+ownership on a non-root host; actual root/RO mount authority and image launcher
+readback require the separate operator canary. The existing root-only fixture's
+skip is not OS-authority acceptance. Retain patch-chain/native gates and TOP
+measurement separately.
+
 ## Native edge security gate
 
 The edge session implementation additionally requires a real compatible Caddy

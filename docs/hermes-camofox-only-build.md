@@ -144,6 +144,12 @@ changing a build argument alone does not replace an already running container.
 
 ## Boot Using The Validated Image Environment
 
+If preserving an existing PM generation is required, use the separate managed
+validate-only mode documented in [Operations](operations.md#managed-dependency-validation-no-automatic-provisioning),
+with image-only mode disabled. It validates current core/extras/plugin closure
+and launcher ABI without automatic provisioning. Do not clear facts or select
+image-only mode as a workaround for a valid managed selection.
+
 `SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY=1` explicitly disables the native
 startup dependency refresh and generation collection. The default remains the
 upstream refresh behavior. This flag is useful when the image already carries

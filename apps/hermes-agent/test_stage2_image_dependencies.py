@@ -27,7 +27,7 @@ class ImageDependencyTests(unittest.TestCase):
         result = patcher.patch_text(original)
         self.assertEqual(result, patcher.patch_text(result))
         self.assertEqual(result.count(patcher.OLD), 1)
-        self.assertIn('SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY:-0', result)
+        self.assertIn('SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY-0', result)
         self.assertIn('validate_init_runner(parent)', result)
         self.assertIn('exec /command/s6-pause', result)
         self.assertEqual(subprocess.run(['sh', '-n'], input=result, text=True, capture_output=True).returncode, 0)
@@ -48,6 +48,14 @@ class ImageDependencyTests(unittest.TestCase):
                 result = subprocess.run(['sh', '-c', source], env={'SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY': flag}, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), expected)
+            managed = subprocess.run(['sh', '-c', source], env={'SPARTAN_HERMES_MANAGED_DEPENDENCIES_VALIDATE_ONLY': '1'}, capture_output=True, text=True)
+            self.assertEqual(managed.returncode, 0, managed.stderr)
+            self.assertEqual(managed.stdout.strip(), 'validation-only')
+            python.write_text('#!/bin/sh\nexit 1\n')
+            refused = subprocess.run(['sh', '-c', source], env={'SPARTAN_HERMES_MANAGED_DEPENDENCIES_VALIDATE_ONLY': '1'}, capture_output=True, text=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn('FATAL', refused.stderr)
+            self.assertNotIn('refresh-and-collection', refused.stdout)
 
     def test_selected_or_malformed_facts_are_refused(self):
         good = {'schema': 1, 'packages': {'venv': {'stamp': 'original-old-stamp', 'extras': ['web']}}}
@@ -150,6 +158,57 @@ class ImageDependencyTests(unittest.TestCase):
         del packages['child']
         with self.assertRaises(RuntimeError):
             validator.require_installed(['parent[feature]'], distribution=distribution)
+
+    def test_core_overrides_keep_edge_extras_without_relaxing_image_only(self):
+        packages = {'discord-py': SimpleNamespace(version='2.7.1', requires=['PyNaCl<1.6,>=1.5.0; extra == "voice"']),
+                    'pynacl': SimpleNamespace(version='1.6.2', requires=[])}
+        def distribution(name):
+            from packaging.utils import canonicalize_name
+            try:
+                return packages[canonicalize_name(name)]
+            except KeyError:
+                raise importlib.metadata.PackageNotFoundError(name) from None
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'pyproject.toml').write_text('[tool.uv]\noverride-dependencies=["pynacl>=1.6,<1.7", "discord.py==2.7.1"]\n')
+            with patch.object(validator, '_protected_validator'):
+                overrides = validator.core_overrides(root)
+            # The original image-only call remains override-free and rejects the raw upper-bound conflict.
+            with self.assertRaisesRegex(RuntimeError, 'version'):
+                validator.require_installed(['discord.py[voice]==2.7.1'], distribution=distribution)
+            validator.require_installed(['discord.py[voice]==2.7.1'], distribution=distribution, overrides=overrides)
+            del packages['pynacl']
+            validator.require_installed(['discord.py==2.7.1'], distribution=distribution, overrides=overrides)
+            with self.assertRaisesRegex(RuntimeError, 'absent'):
+                validator.require_installed(['discord.py[voice]==2.7.1'], distribution=distribution, overrides=overrides)
+
+    def test_core_override_declarations_fail_closed_outside_supported_subset(self):
+        cases = ['pynacl>=1.6', 42, [42], ['not a valid requirement!'],
+                 ['pynacl>=1.6', 'PyNaCl<1.7'], ['pynacl @ https://example.invalid/fixture.whl'],
+                 ['pynacl[voice]>=1.6'], ['hermes-agent>=0'], ['pynacl'],
+                 ['pynacl>=1.6; extra == "voice"'], ['pynacl>=1.6; unknown_target == "linux"']]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / 'pyproject.toml'
+            project.write_text('[tool.uv]\noverride-dependencies=["pynacl>=1.6,<1.7"]\n')
+            with patch.object(validator, '_protected_validator'):
+                self.assertEqual(set(validator.core_overrides(root)), {'pynacl'})
+                for declaration in cases:
+                    with self.subTest(declaration=declaration):
+                        project.write_text('[tool.uv]\noverride-dependencies=' + json.dumps(declaration) + '\n')
+                        with self.assertRaises((RuntimeError, ValueError)):
+                            validator.core_overrides(root)
+
+    def test_modes_are_explicit_exclusive_and_native_by_default(self):
+        for image, managed, expected in [('0', '0', 'native'), ('1', '0', 'image'), ('0', '1', 'managed')]:
+            with patch.dict('os.environ', {'SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY': image,
+                                          'SPARTAN_HERMES_MANAGED_DEPENDENCIES_VALIDATE_ONLY': managed}):
+                self.assertEqual(validator.startup_mode(), expected)
+        for image, managed in [('1', '1'), ('yes', '0'), ('0', '')]:
+            with patch.dict('os.environ', {'SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY': image,
+                                          'SPARTAN_HERMES_MANAGED_DEPENDENCIES_VALIDATE_ONLY': managed}):
+                with self.assertRaises(RuntimeError):
+                    validator.startup_mode()
 
     def test_dockerfile_applies_startup_patch(self):
         source = (HERE / 'Dockerfile').read_text()

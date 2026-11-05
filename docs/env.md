@@ -188,7 +188,13 @@ Camofox supports Meet caption transcription, not realtime/audio. See
 image's baked interpreter and installed feature/plugin dependency closure.
 Failed admission rejects CLI/gateway startup. It does not install dependencies,
 rewrite PM facts or certify the native generation stamp against `uv.lock`.
-The default `0` preserves native PM behavior. See
+`SPARTAN_HERMES_MANAGED_DEPENDENCIES_VALIDATE_ONLY=1` instead validates a real
+recorded native generation, its lock and current core/extra/plugin dependency
+closure without automatic sync, repair, fallback or collection. The baked
+launcher and selected Python must be ABI-compatible. Explicit native PM
+management remains available under existing controls. Both flags accept only
+`0`/`1` and are mutually exclusive; defaults of `0` preserve native PM behavior.
+No mode grants protected-core writes or wider network access. See
 [image-only dependency admission](operations.md#hermes-image-only-dependency-admission)
 for the temporary read-only overlay, image-change guard and rollback.
 
