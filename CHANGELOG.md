@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document source-repository access for Hermes/Pi plugin work, distinct from
+  installed writable plugins, with isolated container development environments
+  and separate source-update/deployment acceptance.
+
 - Document dedicated versioned Pi program snapshots for Hermes, isolating its
   read-only package mount from host npm directory replacement. Explain the
   SELinux access caveat and explicit upgrade, startup-check and rollback gates.

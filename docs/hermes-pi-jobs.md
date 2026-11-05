@@ -124,6 +124,31 @@ actual workload UID. Launcher defaults `PI_CODING_AGENT_DIR`,
 `HERMES_HOME`; deliberate nonempty overrides remain supported. Settings and links
 are provisioning, not launcher side effects. No host auth or session mount.
 
+### Coding source is separate from the installed plugin
+
+Give coding jobs the owning project's actual Git checkout, including `.git`,
+`AGENTS.md` and native validation instructions. A writable plugin installation
+is not a substitute for its source repository. For example, `node-search` is
+owned by `Heeervas/node-search-plugin`, not by Spartan Gate's integration scripts.
+Only expose that explicitly approved program checkout read/write; do not mount
+the Gate checkout's private tree, host home or Git credential stores. Preserve
+`create_host_path: false`, verify SELinux labels and actual workload-UID Git and
+write access, and reconcile jobs before a separately authorized Hermes recreation.
+Do not copy private runtime data into Git or auto-deploy a fetched revision.
+
+A prepared operator instance can use `/opt/data/code/node-search-plugin` for the
+source and `/opt/data/code/.environments/node-search-plugin` for its independent
+container development environment. Activate that environment before launching
+Pi from the repository; retain the invoking owner's actual `HERMES_HOME`.
+Read the repository instructions and follow its pinned tools/immutable quality
+baseline. Keep caches, synthetic fixtures and reports outside tracked outputs.
+Never install development tools into the managed Hermes environment or share a
+container venv as a host/worktree environment. Reprepare it when its base
+image/interpreter changes. Updating source and deploying a validated fix are
+separate operations; installed code at `/opt/data/plugins/node-search` remains
+untouched by source access preparation. Latest upstream means a verified commit
+at preparation, not permission for unattended pulls over local work.
+
 ### Reuse an already activated Pi state
 
 When explicitly authorized to share Pi configuration, credentials and sessions,
