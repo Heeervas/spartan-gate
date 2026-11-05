@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document the approved shared source collection and workspace navigation alias,
+  preserving startup ownership guards, independent repository authority and
+  separate container development environments; live/native project moves remain
+  gated on writer and consumer reconciliation.
+
 - Document source-repository access for Hermes/Pi plugin work, distinct from
   installed writable plugins, with isolated container development environments
   and separate source-update/deployment acceptance.

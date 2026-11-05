@@ -136,18 +136,35 @@ the Gate checkout's private tree, host home or Git credential stores. Preserve
 write access, and reconcile jobs before a separately authorized Hermes recreation.
 Do not copy private runtime data into Git or auto-deploy a fetched revision.
 
-A prepared operator instance can use `/opt/data/code/node-search-plugin` for the
-source and `/opt/data/code/.environments/node-search-plugin` for its independent
-container development environment. Activate that environment before launching
-Pi from the repository; retain the invoking owner's actual `HERMES_HOME`.
-Read the repository instructions and follow its pinned tools/immutable quality
-baseline. Keep caches, synthetic fixtures and reports outside tracked outputs.
-Never install development tools into the managed Hermes environment or share a
-container venv as a host/worktree environment. Reprepare it when its base
-image/interpreter changes. Updating source and deploying a validated fix are
-separate operations; installed code at `/opt/data/plugins/node-search` remains
-untouched by source access preparation. Latest upstream means a verified commit
-at preparation, not permission for unattended pulls over local work.
+An explicitly approved shared project collection can be mounted read/write at
+`/projects/shared`, with each independent repository directly below it. Keep
+Gate's private checkout and host credential/session stores outside this collection.
+The whole collection is writable by the Hermes workload; it is not per-project
+or per-profile isolation. Do not relocate live repositories or native-managed
+worktrees behind their owning runtime; reconcile writers, registration and
+path-dependent consumers first. Preserve dirty and ignored state rather than
+replacing it with a fresh clone.
+
+Do **not** bind this collection below `/opt/data/workspace`: startup deliberately
+rejects nested mounts in recursive ownership targets. Instead, an approved
+`/opt/data/workspace/projects/shared` symlink may point to `/projects/shared`.
+The ownership guard uses physical traversal and does not follow descendant
+symlinks; keep that guard enabled. Refuse an occupied alias path, and verify
+actual startup, workload-user Git/write access and unchanged neighboring services.
+Do not confuse the navigation alias with an additional mount.
+
+For Node Search, the source path is `/projects/shared/node-search`. A prepared
+container dev environment can live outside shared host source at
+`/opt/data/.cache/dev-venvs/node-search`. Select it before launching Pi, preserving
+the invoking owner's actual `HERMES_HOME`. Read the repository instructions and
+follow its pinned tools/immutable quality baseline. Keep caches, synthetic
+fixtures and reports outside tracked outputs. Never install development tools
+into managed Hermes or share a container venv as a host/worktree environment.
+Reprepare it when its base image/interpreter changes. Source updates and validated
+fix deployment remain separate; installed `/opt/data/plugins/node-search` stays
+untouched by access preparation. Latest upstream means a verified preparation
+commit, not permission for unattended pulls or overwriting locally changed
+installations. Other plugins retain their own tooling and validation prerequisites.
 
 ### Reuse an already activated Pi state
 

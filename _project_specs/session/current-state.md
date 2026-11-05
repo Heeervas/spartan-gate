@@ -33,6 +33,13 @@ owning task evidence, including failures and explicit limits.
 
 ## Active-task pointers and constraints
 
+- Shared development source collection is active at `/projects/shared`, with a
+  native-workspace navigation symlink. Node Search, Profile Delegate and Hermes
+  LCM sources are available; installed plugins remain unchanged. Zenith, Ultimate
+  and the two Pi extension moves are pending writer/native-consumer reconciliation.
+  Do not move live/native-managed inputs or overwrite dirty source. Sole owner:
+  `../../../tasks/shared-development-workspace/task.md`.
+
 - MCPHub is active for selected native Hermes and host/container Pi clients:
   seven shared backends/101 exact tools. Codebase Memory now runs native local
   stdio per selected Git repository (13 analysis tools), with real index/search/

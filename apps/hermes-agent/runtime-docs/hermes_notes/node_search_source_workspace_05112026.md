@@ -1,7 +1,9 @@
 # Node Search source workspace — 05/11/2026
 
-Status: applied operator-authorized development preparation. No plugin fix or
-production plugin update is included.
+Status: historical applied development preparation. Its `/opt/data/code` and
+original host-envelope placement were superseded by the approved shared-project
+collection; see `shared_project_sources_05112026.md` for current access. No plugin
+fix or production plugin update is included.
 
 ## Source, not installation
 
