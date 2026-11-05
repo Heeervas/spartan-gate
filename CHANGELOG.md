@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document dedicated versioned Pi program snapshots for Hermes, isolating its
+  read-only package mount from host npm directory replacement. Explain the
+  SELinux access caveat and explicit upgrade, startup-check and rollback gates.
+
 - Add opt-in managed dependency admission for Hermes: validate existing native
   environments before automatic recovery without installing, collecting or
   replacing them. Respect protected core security overrides and mutable plugin

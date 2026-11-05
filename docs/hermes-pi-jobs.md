@@ -33,6 +33,49 @@ The launcher sets the explicit container Pi package root for child discovery.
 Preserve the old pi-subagent-local checkout, named conversations and sessions for
 rollback; no conversion of its session handles is supported.
 
+### Keep the container program independent of host npm upgrades
+
+For an activated deployment, set `PI_PACKAGE_SOURCE` (or the equivalent private
+bind source) to a **dedicated, complete, versioned program snapshot**, not the
+live global npm directory. Keep it in the deployment's durable data area, outside
+agent/profile state, temporary task checkouts and package-manager ownership.
+Only copy the installed Pi package tree and its dependencies/assets; do not copy
+host credentials, settings, sessions or other global packages. Check that symlinks
+resolve within that tree and verify source/copy file contents and modes before
+activation. Use a new destination; never overwrite an active snapshot in place.
+
+Npm can replace an installed package directory during an update. Docker retains
+the old bind-mounted directory inode even though the host pathname now points
+at a new installation; `/opt/pi-package` can then look empty. This is not fixed
+by changing the launcher's CLI path. A dedicated snapshot isolates the container
+from those replacements: host and Hermes Pi upgrades become separate operations.
+
+On SELinux hosts, verify the snapshot has the shared `container_file_t` label.
+Unix read bits alone are insufficient; even container root can receive
+`Permission denied`, which Node may report as `MODULE_NOT_FOUND`. Some Compose
+versions do not apply `bind.selinux: z` with `create_host_path: false` (see
+[the mount caveat](operations.md)). Do not remove missing-source
+protection, enable privileged mode, disable SELinux or widen permissions to work
+around this. A scoped preparation for the **exact dedicated package snapshot**
+is `chcon -R -t container_file_t "$PI_PACKAGE_SOURCE"`; do not relabel its parent,
+the whole global npm tree or a home directory. This label is temporary host
+metadata, not persistent `semanage fcontext` policy: after `restorecon` or host
+relabeling, verify/reapply it before use. Persistent host policy needs its own
+privileged authorization.
+
+For a deliberate container Pi upgrade, prepare and verify a new versioned
+snapshot, label it, back up the private bind-source setting, and change only
+that setting. Render the selected Compose configuration before activation.
+After reconciling active jobs and authorizing the interruption, use
+`sg up -d --no-deps --no-build --force-recreate hermes`. Read back the exact
+mount source and read-only flag; as the actual Hermes workload UID with its
+existing `HERMES_HOME`, verify package/CLI readability, `pi --version` and
+`pi --help`. Check Hermes health and unchanged neighboring container identities.
+These are startup checks, not model/provider, extension or coding-job acceptance.
+Retain the prior snapshot until rollback is no longer required. Rolling back
+means restoring the reviewed prior bind source and recreating only Hermes under
+the same quiet-window and verification gates; do not delete active snapshots.
+
 Mount the entire selected installed Route extension root read-only at
 `/opt/pi-route-extensions`. This candidate selects the coherent installed bundle,
 not an implicit upgrade: provider entry SHA-256
