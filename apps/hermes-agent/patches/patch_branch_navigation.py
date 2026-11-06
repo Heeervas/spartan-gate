@@ -82,13 +82,15 @@ EDITS = {
         ('"title", "resume", "sessions", "branch", "rollback", "diff", "goal",',
          '"title", "resume", "sessions", "branch", "start-fresh", "return", "cancel", "rollback", "diff", "goal",'),
     ],
-    'gateway/run_turn.py': [
+    'gateway/run_turn_prepare.py': [
         ('        event_metadata = getattr(event, "metadata", None) or {}\n        expected_session_key',
          '        event_metadata = getattr(event, "metadata", None) or {}\n'
          '        if event.internal and event_metadata.get("spartan_branch_return"):\n'
          '            from spartan_branch_gateway import resolve_return_event\n'
          '            return await resolve_return_event(self, event)\n'
          '        expected_session_key'),
+    ],
+    'gateway/run_turn.py': [
         ('                    "gateway_input_owner": prepared.persistence_owner,',
          '                    **({"spartan_branch_return": event.metadata["spartan_branch_return"]}\n'
          '                       if event.internal and event.metadata.get("spartan_branch_return") else {}),\n'

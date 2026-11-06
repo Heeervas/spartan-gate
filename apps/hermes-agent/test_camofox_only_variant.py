@@ -145,16 +145,14 @@ class VariantTests(unittest.TestCase):
                     if function == '_browser_install_hint':
                         self.assertNotIn('install chromium', result)
 
-    def test_screenshot_install_hint_is_variant_only(self):
-        source = '''def _capture_vision_screenshot():
-    return f"a missing Chromium install ('agent-browser install'), "
-'''
-        result = patcher.patch_source('tools/browser_tool.py', source)
+    def test_browser_cli_discovery_is_variant_only(self):
+        source = 'def _find_cli():\n    return ["upstream-browser-harness"]\n'
+        result = patcher.patch_source('tools/browser_use_cli.py', source)
         namespace = {}
         exec(result, namespace)
-        self.assertIn('agent-browser install', namespace['_capture_vision_screenshot']())
+        self.assertEqual(namespace['_find_cli'](), ['upstream-browser-harness'])
         self.enable()
-        self.assertNotIn('agent-browser install', namespace['_capture_vision_screenshot']())
+        self.assertIsNone(namespace['_find_cli']())
 
     def test_source_overlay_and_helper_shadow_fail_closed(self):
         import hashlib

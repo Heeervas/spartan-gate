@@ -9,6 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class HermesRestartAliasTests(unittest.TestCase):
     def test_waits_through_negative_and_zero_pids_until_replacement(self):
+        for service_root in ("service", "hermes-service"):
+            with self.subTest(service_root=service_root):
+                self._assert_restart(service_root)
+
+    def _assert_restart(self, service_root):
         result = subprocess.run(
             ["bash", "-c", 'source scripts/aliases.sh; sg_compose() { printf "%s" "${8}"; }; sg-hermes-restart'],
             cwd=ROOT, capture_output=True, text=True, check=True,
@@ -16,9 +21,13 @@ class HermesRestartAliasTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "service" / "gateway-default").mkdir(parents=True)
+            if service_root == "hermes-service":
+                (root / service_root / "gateway-default").mkdir(parents=True)
             mocks = {
                 "svstat": '\n'.join([
                     '#!/bin/sh',
+                    'for last do :; done',
+                    '[ "$last" = "$MOCK_ROOT/$MOCK_SERVICE_ROOT/gateway-default" ] || exit 23',
                     'if [ "$2" = up ]; then echo true; exit; fi',
                     'n=$(cat "$MOCK_ROOT/count" 2>/dev/null || echo 0)',
                     'echo $((n + 1)) > "$MOCK_ROOT/count"',
@@ -35,6 +44,7 @@ class HermesRestartAliasTests(unittest.TestCase):
             script = result.stdout
             for old, new in [
                 ("/run/service", str(root / "service")),
+                ("/run/hermes-service", str(root / "hermes-service")),
                 ("/command/s6-svstat", str(root / "svstat")),
                 ("/command/s6-applyuidgid", str(root / "signal")),
                 ("stat -c", str(root / "stat") + " -c"),
@@ -43,7 +53,7 @@ class HermesRestartAliasTests(unittest.TestCase):
                 script = script.replace(old, new)
             result = subprocess.run(
                 ["sh", "-c", script, "sg-hermes-restart", "default"],
-                env={**os.environ, "MOCK_ROOT": tmp},
+                env={**os.environ, "MOCK_ROOT": tmp, "MOCK_SERVICE_ROOT": service_root},
                 capture_output=True, text=True, timeout=5,
             )
             self.assertEqual(result.returncode, 0, result.stderr)

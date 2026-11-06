@@ -9,6 +9,8 @@ from pathlib import Path
 
 MAIN_WRAPPER_TARGET = Path("/opt/hermes/docker/main-wrapper.sh")
 DASHBOARD_TARGET = Path("/etc/s6-overlay/s6-rc.d/dashboard/run")
+RECONCILE_TARGET = Path("/etc/cont-init.d/02-reconcile-profiles")
+PROFILE_SCANNER_TARGET = Path("/etc/s6-overlay/s6-rc.d/profile-gateways/run")
 MAIN_MARKER = "# Spartan Gate patch: main runtime identity"
 DASHBOARD_MARKER = "# Spartan Gate patch: dashboard runtime identity"
 
@@ -80,21 +82,52 @@ def patch_dashboard_source(source: str) -> str:
         raise ValueError("dashboard privilege-drop anchor not found")
 
 
-def patch_file(path: Path, patcher, label: str) -> str:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    source = path.read_text(encoding="utf-8")
-    patched = patcher(source)
-    if patched == source:
-        return f"SKIP: {label} already patched"
-    path.write_text(patched, encoding="utf-8")
-    return f"Patched: {label}"
+def _patch_profile_drop(source: str, command: str) -> str:
+    """The new upstream scanner and reconciler must use the same numeric owner."""
+    old = f'exec s6-setuidgid hermes {command}\n'
+    new = f'''# Spartan Gate: unprivileged profile supervision uses the runtime data owner.
+_spartan_run_uid="${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}"
+_spartan_run_gid="${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}"
+exec /command/s6-applyuidgid -u "$_spartan_run_uid" -g "$_spartan_run_gid" {command}
+'''
+    if new in source:
+        return source
+    if source.count(old) != 1:
+        raise ValueError("profile supervision privilege-drop anchor changed")
+    return source.replace(old, new, 1)
+
+
+def patch_reconcile_source(source: str) -> str:
+    old = 'chown hermes:hermes "$GATEWAY_SCANDIR"\n'
+    new = ('# Each cont-init hook is a fresh process; stage2 shell locals are not inherited.\n'
+           'SPARTAN_HERMES_RUNTIME_OWNER="${SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}:${SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}"\n'
+           'chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$GATEWAY_SCANDIR"\n')
+    if new not in source:
+        if source.count(old) != 1:
+            raise ValueError("unprivileged gateway scandir ownership anchor changed")
+        source = source.replace(old, new, 1)
+    return _patch_profile_drop(source, '/opt/hermes/.venv/bin/python -m hermes_cli.container_boot')
+
+
+def patch_profile_scanner_source(source: str) -> str:
+    return _patch_profile_drop(source, 's6-svscan "$scandir"')
 
 
 def main() -> None:
     try:
-        print(patch_file(MAIN_WRAPPER_TARGET, patch_main_wrapper_source, str(MAIN_WRAPPER_TARGET)))
-        print(patch_file(DASHBOARD_TARGET, patch_dashboard_source, str(DASHBOARD_TARGET)))
+        targets = (
+            (MAIN_WRAPPER_TARGET, patch_main_wrapper_source),
+            (DASHBOARD_TARGET, patch_dashboard_source),
+            (RECONCILE_TARGET, patch_reconcile_source),
+            (PROFILE_SCANNER_TARGET, patch_profile_scanner_source),
+        )
+        # No partial multi-file adaptation when upstream changes a later target.
+        prepared = [(path, path.read_text(encoding="utf-8"), patcher) for path, patcher in targets]
+        updates = [(path, original, patcher(original)) for path, original, patcher in prepared]
+        for path, original, updated in updates:
+            if updated != original:
+                path.write_text(updated, encoding="utf-8")
+            print(f"Verified runtime identity: {path}")
     except (FileNotFoundError, ValueError) as exc:
         print(f"FATAL: {exc}", file=sys.stderr)
         sys.exit(1)

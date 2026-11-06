@@ -1,8 +1,9 @@
 # Optional Camofox-only Hermes image
 
-The default Hermes image remains the pinned full upstream image. This optional
-variant rebuilds upstream revision
-`e8c97320ac8691d4de92af49f98459f9ef9ddb08` and omits only PM's bundled Chromium
+The default Hermes image requires a separately built full base at the exact
+pinned source, `spartan-hermes-upstream:90d6b98f-full`. This optional
+variant rebuilds the same upstream revision
+`90d6b98fd86d20981ee06ddd5b7d93e4320f26a4` and omits only PM's bundled Chromium
 installation, browser version probe and executable-path stamp from their
 original creation layer. It preserves the Python/Node/FFmpeg toolchains,
 Playwright client, GTK/browser libraries, compilers, toolbox and document tools.
@@ -18,11 +19,11 @@ Desktop builds are rejected because that option installs another Chromium.
 
 ## Prepare and review
 
-Use a separate clean upstream Git checkout at the exact revision above. Obtain
-that checkout separately; the helper neither downloads nor builds. It rejects a
-wrong revision, dirty checkout or any change to the SHA256-pinned upstream
-Dockerfile. It exports tracked source into a new context and never changes the
-checkout. Repeating preparation is accepted only when the existing output
+Use an existing clean upstream Git repository containing the exact revision
+above. The helper neither downloads nor builds and does not move its checkout
+or HEAD. It rejects a missing/wrong commit, dirty checkout or any change to the
+SHA256-pinned Dockerfile. It exports the **pinned Git object**, not ambient HEAD,
+into a new context. Repeating preparation is accepted only when the existing output
 matches the complete expected file inventory. A modified output fails closed.
 
 Run these commands from the approved Spartan Gate checkout after the runtime
@@ -35,11 +36,37 @@ python3 apps/hermes-agent/build/prepare_camofox_only.py \
 ```
 
 Review `spartan-variant-build.json`, the context's Dockerfile diff and its
-`install-stamp.json`. The manifest records upstream revision, original image
-digest, Dockerfile hashes, transformer hash and injected guard hashes. Preserve
+`install-stamp.json`. The manifest records upstream revision, corresponding full-base build coordinate,
+Dockerfile hashes, transformer hash and injected guard hashes. Preserve
 this manifest alongside final image IDs and the approved downstream checkout
 revision. Context preparation records source provenance; it does not guarantee
 byte-identical dependencies from APT or other unlocked repositories.
+
+For a **full** base instead, export the same immutable commit from the clean
+source repository into a separate vacant context (without applying the variant
+transform), then stamp it using upstream's writer before building:
+
+```sh
+mkdir /path/to/new-hermes-full-context
+git -C /path/to/pinned-clean-hermes-checkout archive \
+  90d6b98fd86d20981ee06ddd5b7d93e4320f26a4 | \
+  tar -x -C /path/to/new-hermes-full-context
+cd /path/to/new-hermes-full-context
+python3 scripts/write_install_stamp.py --output install-stamp.json \
+  --commit 90d6b98fd86d20981ee06ddd5b7d93e4320f26a4 \
+  --distribution docker --source spartan-full --update-mechanism external
+# After the same capacity/review gate below:
+docker build --progress=plain --tag spartan-hermes-upstream:90d6b98f-full .
+```
+
+Do not build this full comparator when only the existing Camofox-only deployment
+is being refreshed. The downstream build rejects either base if its install
+stamp or external provenance marker names a different commit. The core venv
+uses upstream PM's offline lock-aware dependency check: only mismatches explained
+by the pinned lock's explicit overrides are accepted (notably Pillow 13's security
+floor over browser-harness's older metadata pin). Malformed reports or unrelated
+incompatibilities still fail; no downgrade or blanket ignore is used. The separate
+analyzer environment retains its raw strict dependency check.
 
 ## Capacity gate and build
 
@@ -59,26 +86,27 @@ separate operator decisions, never performed by the preparation helper.
 Build only the reviewed candidate after that gate. Do not build two complete
 comparators blindly. A controlled comparator needs the same approved downstream
 source, dependency artifacts and inventories; otherwise report drift separately
-from the Chromium delta. The pinned previous full upstream base is
-`docker.io/nousresearch/hermes-agent:main@sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde`.
-It remains a rebuild coordinate when the operator explicitly elects to remove
-the current image to make space; such removal does not preserve an immediate
-image rollback.
+from the Chromium delta. Do not substitute the registry's moving `main` image: its inspected revision is
+not this source pin. The full base must also be built from this commit if it is
+selected; there is no requirement to build a second full comparator for an
+existing Camofox-only deployment. Retain the old final image as a rollback
+coordinate. Do not copy or back up session databases: native automatic migration
+owns schema changes, and an image rollback does not promise to undo them.
 
 The following are build commands, not activation commands:
 
 ```sh
 docker build --progress=plain \
-  --tag spartan-hermes-upstream:e8c97320-camofox-only \
+  --tag spartan-hermes-upstream:90d6b98f-camofox-only \
   /path/to/new-hermes-camofox-context
 # Capture and review the resulting immutable local image ID.
 # Keep the local tag pointing to that reviewed ID for the downstream build.
-docker image inspect --format '{{.Id}}' spartan-hermes-upstream:e8c97320-camofox-only
+docker image inspect --format '{{.Id}}' spartan-hermes-upstream:90d6b98f-camofox-only
 
-test "$(docker image inspect --format '{{.Id}}' spartan-hermes-upstream:e8c97320-camofox-only)" \
+test "$(docker image inspect --format '{{.Id}}' spartan-hermes-upstream:90d6b98f-camofox-only)" \
   = sha256:REVIEWED_UPSTREAM_VARIANT_ID
 docker build --progress=plain \
-  --build-arg HERMES_BASE_IMAGE=spartan-hermes-upstream:e8c97320-camofox-only \
+  --build-arg HERMES_BASE_IMAGE=spartan-hermes-upstream:90d6b98f-camofox-only \
   --tag spartan-hermes:camofox-only apps/hermes-agent
 docker image inspect --format '{{.Id}}' spartan-hermes:camofox-only
 ```
@@ -127,7 +155,7 @@ base Compose file and before private overrides; inspect the final render because
 overrides can change selection. For configuration validation only:
 
 ```sh
-HERMES_CAMOFOX_ONLY_BASE_IMAGE=spartan-hermes-upstream:e8c97320-camofox-only \
+HERMES_CAMOFOX_ONLY_BASE_IMAGE=spartan-hermes-upstream:90d6b98f-camofox-only \
 HERMES_CAMOFOX_ONLY_IMAGE=spartan-hermes:camofox-only \
 docker compose -f infra/compose/compose.yml \
   -f infra/compose/compose.hermes-camofox-only.yml config --quiet

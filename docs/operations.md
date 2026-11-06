@@ -202,7 +202,9 @@ owner because the root supervisor lacks CAP_KILL. It skips container initializat
 and waits up to 180 seconds for a replacement PID, returning an error if none
 appears. Platform/API readiness can still take longer. Missing or
 stopped profile gateways produce an error; the helper never starts them. Profiles
-served by the default multiplexer use the default restart command.
+served by the default multiplexer use the default restart command. Current
+images keep dynamic gateway slots under `/run/hermes-service`; the helper uses
+the legacy `/run/service` location only when the dynamic scanner is absent.
 `sg restart hermes` / `sg-restart-hermes` still restart the whole container.
 Changed Compose environment or mounts require recreation instead.
 

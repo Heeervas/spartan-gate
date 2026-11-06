@@ -25,7 +25,9 @@ class DockerS6AlignmentTests(unittest.TestCase):
         source = (APP_DIR / 'Dockerfile').read_text(encoding='utf-8')
 
         self.assertNotIn('patch_api_server_port_autoincrement.py', source)
-        self.assertIn('patch_s6_service_permissions.py', source)
+        self.assertNotIn('patch_s6_service_permissions.py', source)
+        self.assertIn('patch_runtime_identity_drop.py', source)
+        self.assertIn('patch_gateway_service_cdp_env.py', source)
 
 
 if __name__ == '__main__':

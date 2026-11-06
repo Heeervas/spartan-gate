@@ -12,21 +12,25 @@ import tempfile
 
 MARKER = 'SPARTAN_CAMOFOX_MANAGED_POLICY_V1'
 TARGETS = {
-    'browser_camofox.py': ('is_camofox_mode', '    if _spartan_camofox_policy():\n        return True\n'),
-    'browser_use_cli.py': ('is_browser_use_cli_mode', '    if _spartan_camofox_policy():\n        return False\n'),
-    'browser_tool_cdp.py': ('_get_cdp_override_raw', '    if _spartan_camofox_policy():\n        return ""\n'),
+    'browser_use_cli.py': ('browser_exec_available', '    if _spartan_camofox_policy():\n        return False\n'),
+    'browser_session_cdp.py': ('get_cdp_override_raw', '    if _spartan_camofox_policy():\n        return ""\n'),
     'tool_backend_helpers.py': ('read_selection', '    if section == "browser" and _spartan_camofox_policy():\n        return "camofox"\n'),
-    'browser_tool_cloud.py': ('_resolve_cloud_provider_uncached',
-        '    if _spartan_camofox_policy():\n'
-        '        _bt = _origin()\n'
-        '        _bt._cached_cloud_provider = None\n'
-        '        _bt._cloud_provider_resolved = True\n'
-        '        return None\n'),
+    'browser_session_cloud.py': ('get_cloud_provider',
+        '    if _spartan_camofox_policy():\n        return None\n'),
 }
+EXEC_GUARD = ('    if _spartan_camofox_policy():\n'
+              '        return \'{"success":false,"error":"Managed Camofox is required; browser_exec is disabled."}\'\n')
 
 
 def patch_source(filename: str, source: str) -> str:
     name, guard = TARGETS[filename]
+    source = patch_function(filename, source, name, guard)
+    if filename == 'browser_use_cli.py':
+        source = patch_function(filename, source, 'browser_exec', EXEC_GUARD)
+    return source
+
+
+def patch_function(filename, source, name, guard):
     tree = ast.parse(source)
     matches = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
     if len(matches) != 1:
@@ -35,11 +39,13 @@ def patch_source(filename: str, source: str) -> str:
     first = fn.body[0]
     has_doc = isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str)
     line = first.end_lineno if has_doc else first.lineno - 1
-    block = (f'    # {MARKER}\n'
+    block = (f'    # {MARKER}: {name}\n'
              '    from spartan_browser_policy import camofox_policy_enabled as _spartan_camofox_policy\n' + guard)
     lines = source.splitlines(keepends=True)
+    if not has_doc and line and lines[line - 1].strip() == f'# {MARKER}: {name}':
+        line -= 1
     offset = sum(len(s) for s in lines[:line])
-    if MARKER in source:
+    if f'{MARKER}: {name}\n' in source:
         if source[offset:offset + len(block)] != block:
             raise ValueError(f'{filename}: policy marker has incompatible content')
         return source
@@ -83,7 +89,7 @@ def main() -> None:
     parser.add_argument('--root', type=Path, default=Path('/opt/hermes'))
     args = parser.parse_args()
     patch_tree(args.root)
-    print('Spartan Camofox managed policy: five selectors validated')
+    print('Spartan Camofox managed policy: selectors and browser_exec validated')
 
 
 if __name__ == '__main__':

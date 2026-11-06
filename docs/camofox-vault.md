@@ -1,7 +1,9 @@
 # Hermes credential vault with Camofox
 
-Spartan Gate adapts Hermes's native `browser_vault` tools to the selected
-Camofox browser. Credentials stay in the Hermes vault or its configured
+Spartan Gate adapts Hermes's native `browser_vault` tool to the selected
+catalog-pinned official Camofox plugin using `register_browser_page_backend`.
+The plugin is image-owned; existing user plugins remain writable and native
+explicit Camofox disables still win. Credentials stay in the Hermes vault or its configured
 password-manager backend. Camofox receives only the native fill expression
 for the current operation; it does not mount or manage the vault.
 
@@ -9,7 +11,8 @@ for the current operation; it does not mount or manage the vault.
 
 Add credentials with Hermes's native `hermes vault add` command in the intended
 Hermes profile. The agent navigates to the matching site, obtains an opaque
-handle through `browser_vault_list`, and calls `browser_vault_fill`. Hermes
+handle through `browser_vault(action="list")`, and calls
+`browser_vault(action="fill", handle=...)`. Hermes
 fills the password; the agent can type the identifier and submit the form using
 the normal browser tools. The adapter does not submit forms itself, although
 sites can react to input events, including automatic OTP submission.

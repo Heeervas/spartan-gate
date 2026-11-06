@@ -88,10 +88,16 @@ that package directory. Here this variable is a test loader input, not the agent
 configuration home. No global install is required.
 
 Mandatory source gate inputs: pristine Hermes commit
-`e8c97320ac8691d4de92af49f98459f9ef9ddb08`, matching Dockerfile digest; pristine
+`90d6b98fd86d20981ee06ddd5b7d93e4320f26a4`, matching Dockerfile digest; official
+Camofox plugin at catalog-pinned `1138f25c8b7b5a8fb882b3161e248f29abbd1a46/camofox`; pristine
 Camofox v1.15.0 commit `771b610a7b5994759c138b912741de58b0edd588`; actual upstream
-Hermes native dependencies and installed matching Camofox Express module. Set
+Hermes native dependencies and installed matching Camofox Express module.
+For container probes bind synthetic HOME/HERMES_HOME, a non-install working
+directory and Python `-P`; assert imports resolve to the explicitly selected
+native tree, not the old image's `/opt/hermes` via cwd or editable-install hooks.
+Never mount production session databases into source compatibility fixtures. Set
 `HERMES_UPSTREAM_SOURCE`, `HERMES_SYNC_SOURCE` to its `tools/skills_sync.py`,
+`HERMES_CAMOFOX_PLUGIN_SOURCE` to that official plugin directory,
 `PYTHONPATH` to the native checkout, `CAMOFOX_UPSTREAM_SOURCE` and
 `CAMOFOX_EXPRESS_MODULE` to explicitly provisioned program inputs. Never discover
 these by traversing private profiles or parent directories. CI fetches the pinned public program archives and validates exact SHA-256
@@ -127,7 +133,7 @@ compatible Caddy binary and `python3 -m unittest discover -s infra/caddy -p
  'test_*.py'`; missing Caddy intentionally fails its native test. Session unit
 tests alone are not HTTP/WebSocket/expiry integration evidence.
 
-The Hermes native command fails on missing inputs or any skip in the seven
+The Hermes native command fails on missing inputs or any skip in the
 source-consuming suites. Camofox requires real source/Express inputs before the
 full suite; zero cancellations and zero source/Express skips are required.
 Portable results may contain documented skips but never satisfy native

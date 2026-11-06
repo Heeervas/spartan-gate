@@ -1031,7 +1031,10 @@ sg_hermes_restart() {
     # Root reads supervisor state but lacks CAP_KILL for the unprivileged gateway.
     # Signal as the process owner, then verify s6 actually replaces the PID.
     sg_compose exec -T -u root hermes sh -c '
-        service="/run/service/gateway-$1"
+        # Current upstream separates unprivileged dynamic slots from the root scanner.
+        scandir=/run/hermes-service
+        [ -d "$scandir" ] || scandir=/run/service
+        service="$scandir/gateway-$1"
         if [ ! -d "$service" ]; then
             printf "No gateway service exists for profile %s.\n" "$1" >&2
             exit 1

@@ -10,9 +10,9 @@ import subprocess
 import tarfile
 import tempfile
 
-REVISION = 'e8c97320ac8691d4de92af49f98459f9ef9ddb08'
-UPSTREAM_IMAGE = 'docker.io/nousresearch/hermes-agent:main@sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde'
-DOCKERFILE_SHA256 = '1aa1d2ab18688b340ec1290b684982e4e6eddf0b8686fa317bbc072f2ac23068'
+REVISION = '90d6b98fd86d20981ee06ddd5b7d93e4320f26a4'
+UPSTREAM_IMAGE = 'spartan-hermes-upstream:90d6b98f-full'
+DOCKERFILE_SHA256 = '8c912f87db2dba3243c5a467d8882bd8fbd4d21bec12a6b1e17d9be81b1385c0'
 APP = Path(__file__).resolve().parents[1]
 EARLY_ANCHOR = 'COPY scripts/bundles/payload.py scripts/bundles/payload.py\n'
 EARLY = '''COPY --chmod=0644 _spartan_browser_variant.py /opt/hermes/spartan_browser_variant.py
@@ -27,7 +27,7 @@ PROBE = '''    node --version; npm --version; \\
     test -n "$browser_bin"; \\
     "$browser_bin" --version; \\
     mkdir -p /etc/hermes; \\
-    printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path'''
+    printf '%s' "$browser_bin" > /etc/hermes/chromium-executable-path'''
 COPY_SOURCE = 'COPY --link --chmod=a+rX,go-w . .\n'
 LATE = 'RUN python3 /opt/hermes/patch_camofox_only_variant.py /opt/hermes --helper /opt/hermes/spartan_browser_variant.py\n'
 
@@ -68,11 +68,11 @@ def prepare(source, output):
     output = output.resolve()
     if output == source or source in output.parents:
         raise ValueError('output must be outside the upstream source checkout')
-    if git(source, 'rev-parse', 'HEAD').decode().strip() != REVISION:
-        raise ValueError('source checkout is not the pinned upstream revision')
+    if git(source, 'rev-parse', REVISION + '^{commit}').decode().strip() != REVISION:
+        raise ValueError('source repository does not contain the pinned upstream revision')
     if git(source, 'status', '--porcelain', '--untracked-files=normal').strip():
         raise ValueError('source checkout must be clean')
-    original = git(source, 'show', 'HEAD:Dockerfile').decode()
+    original = git(source, 'show', REVISION + ':Dockerfile').decode()
     dockerfile = transformed(original).encode()
     injected = {
         '_spartan_browser_variant.py': (APP / 'spartan_browser_variant.py').read_bytes(),

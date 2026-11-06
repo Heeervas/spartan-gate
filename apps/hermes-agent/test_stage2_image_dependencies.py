@@ -43,7 +43,10 @@ class ImageDependencyTests(unittest.TestCase):
             python = root / '.venv/bin/python'
             python.write_text('#!/bin/sh\ncase "$1" in -c) echo refresh-and-collection;; -B) echo validation-only;; *) exit 3;; esac\n')
             python.chmod(0o755)
-            source = 'set -eu\nas_hermes() { "$@"; }\nINSTALL_DIR=' + str(root) + '\n' + patcher.patch_text(patcher.OLD)
+            # A fake cont-init parent cannot be signalled. Replace only the
+            # final indefinite s6 hold in this shell fixture, not admission logic.
+            block = patcher.patch_text(patcher.OLD).replace('exec /command/s6-pause', 'exit 78')
+            source = 'set -eu\nas_hermes() { "$@"; }\nINSTALL_DIR=' + str(root) + '\n' + block
             for flag, expected in [('0', 'refresh-and-collection'), ('1', 'validation-only')]:
                 result = subprocess.run(['sh', '-c', source], env={'SPARTAN_HERMES_IMAGE_DEPENDENCIES_ONLY': flag}, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)

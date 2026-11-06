@@ -609,7 +609,9 @@ def patch_process_manager_source(source: str) -> str:
     if 'def _kill(' in source:
         if PROCESS_MANAGER_MARKER in source:
             return source
-        source = _replace_once(source, 'def stop(*, reason: str = "requested") -> Dict[str, Any]:', 'def _spartan_stop(*, reason: str = "requested") -> Dict[str, Any]:', 'native stop')
+        annotation = 'dict' if 'def stop(*, reason: str = "requested") -> dict[str, Any]:' in source else 'Dict'
+        signature = f'def stop(*, reason: str = "requested") -> {annotation}[str, Any]:'
+        source = _replace_once(source, signature, signature.replace('def stop(', 'def _spartan_stop('), 'native stop')
         return source + "\n" + PROCESS_MANAGER_MARKER + '\ndef stop(*, reason: str = "requested") -> Dict[str, Any]:\n    try:\n        return _spartan_stop(reason=reason)\n    except PermissionError as exc:\n        active = _read_active() or {}\n        return {"ok": False, "reason": "permission denied", "error": str(exc),\n            "pid": active.get("pid"), "meetingId": active.get("meeting_id"),\n            "hint": "Run sg-hermes-meet stop from the host to clean up a legacy root-owned bot."}\n'
     if PROCESS_MANAGER_MARKER in source:
         return source

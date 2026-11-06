@@ -78,7 +78,16 @@ def patch_source(source: str) -> str:
         old = OLD_ENV_UPDATE.removesuffix("    return env")
         new = NEW_ENV_UPDATE.removesuffix("    return env")
         if old not in patched:
-            raise ValueError("explicit stdio environment anchor not found")
+            old = ('        for key, value in user_env.items():\n'
+                   '            if not getattr(value, "unset_ref", False):\n'
+                   '                env[key] = value\n')
+            body = new.split('        for key, value in user_env.items():\n', 1)[1]
+            new = ('        ' + ENV_VALUE_MARKER + '\n'
+                   '        for key, value in user_env.items():\n'
+                   '            if getattr(value, "unset_ref", False):\n'
+                   '                continue\n' + body)
+            if patched.count(old) != 1:
+                raise ValueError("explicit stdio environment anchor not found")
         patched = patched.replace(old, new, 1)
     return patched
 

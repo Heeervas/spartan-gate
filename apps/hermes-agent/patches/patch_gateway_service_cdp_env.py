@@ -1,120 +1,86 @@
 #!/usr/bin/env python3
-"""Build-time patcher: make supervised gateway services import CDP env."""
+"""Adapt native unprivileged s6 profile gateways to Gate's numeric data owner.
 
-from __future__ import annotations
-
-import sys
+Upstream owns the separate dynamic scanner, atomic slot publication and runtime
+registration. Do not restore the retired root-scandir workaround.
+"""
 from pathlib import Path
 
+TARGET = Path('/opt/hermes/hermes_cli/service_manager.py')
+MARKER = '# Spartan Gate: numeric owner for native profile supervision'
 
-TARGET = Path("/opt/hermes/hermes_cli/service_manager.py")
-MARKER = "# Spartan Gate patch: import Browser/CDP env for gateway services"
-RUNTIME_IDENTITY_MARKER = "# Spartan Gate patch: gateway runtime identity"
-RUNTIME_OWNER_MARKER = "# Spartan Gate patch: service manager runtime owner"
-ANCHOR = '            ". /opt/hermes/.venv/bin/activate",'
+OWNER_OLD = '''    import pwd
 
-IMPORT_LINES = '''            "# Spartan Gate patch: import Browser/CDP env for gateway services",
-            "_hermes_browser_env_keys=\\"CAMOFOX_URL CAMOFOX_API_KEY CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID CAMOFOX_SESSION_KEY HERMES_MEET_CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB\\"",
-            "for _hermes_browser_key in $_hermes_browser_env_keys; do",
-            "    _hermes_browser_file=/run/s6/container_environment/$_hermes_browser_key",
-            "    if [ -f \\"$_hermes_browser_file\\" ]; then",
-            "        export \\"$_hermes_browser_key=$(cat \\"$_hermes_browser_file\\")\\"",
-            "    fi",
-            "done",
-            "unset _hermes_browser_env_keys _hermes_browser_key _hermes_browser_file",
+    try:
+        return pwd.getpwnam("hermes")
 '''
+OWNER_NEW = '''    # Spartan Gate: numeric owner for native profile supervision
+    uid = os.environ.get("SPARTAN_HERMES_RUN_UID")
+    gid = os.environ.get("SPARTAN_HERMES_RUN_GID")
+    if uid is not None or gid is not None:
+        if not uid or not gid or not uid.isdecimal() or not gid.isdecimal():
+            raise ValueError("Hermes runtime UID/GID must be a numeric pair")
+        from types import SimpleNamespace
+        return SimpleNamespace(pw_uid=int(uid), pw_gid=int(gid))
+    import pwd
+
+    try:
+        return pwd.getpwnam("hermes")
+'''
+CONTROL_OLD = '''        if _root_hermes_account() is not None:
+            return _s6_run("s6-setuidgid", "hermes", f"{_S6_BIN_DIR}/{cmd}", *args,
+                           timeout=timeout, check=check)
+'''
+CONTROL_NEW = '''        account = _root_hermes_account()
+        if account is not None:
+            return _s6_run("s6-applyuidgid", "-u", str(account.pw_uid), "-g", str(account.pw_gid),
+                           f"{_S6_BIN_DIR}/{cmd}", *args, timeout=timeout, check=check)
+'''
+ENV_OLD = '            "cd /opt/data",\n'
+ENV_NEW = ENV_OLD + '''            "for key in CAMOFOX_URL CAMOFOX_API_KEY CAMOFOX_ACCESS_KEY CAMOFOX_USER_ID CAMOFOX_SESSION_KEY HERMES_MEET_CAMOFOX_SESSION_KEY CAMOFOX_ADOPT_EXISTING_TAB; do",
+            '    file="/run/s6/container_environment/$key"',
+            '    if [ -f "$file" ]; then export "$key=$(cat "$file")"; fi',
+            "done",
+            "unset key file",
+'''
+DROP_OLD = '        lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")\n'
+DROP_NEW = '''        lines.append('exec /command/s6-applyuidgid -u "${SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}" '
+                     f'-g "${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}" {gateway_cmd}')
+'''
+LOG_OLD = "s6-setuidgid hermes "
+LOG_NEW = '/command/s6-applyuidgid -u "${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}" -g "${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}" '
 
 
 def patch_source(source: str) -> str:
-    patched = source
-
-    if MARKER not in patched:
-        index = patched.find(ANCHOR)
-        if index == -1:
-            index = patched.find('            "cd /opt/data",')
-        if index == -1:
-            raise ValueError("service manager run-script anchor not found")
-
-        insert_at = patched.find("\n", index)
-        if insert_at == -1:
-            raise ValueError("service manager run-script anchor line is incomplete")
-
-        patched = patched[: insert_at + 1] + IMPORT_LINES + patched[insert_at + 1 :]
-
-    if RUNTIME_OWNER_MARKER not in patched:
-        runtime_owner_anchor = "_HERMES_UID = 10000\n_HERMES_GID = 10000\n"
-        runtime_owner_replacement = f'''{RUNTIME_OWNER_MARKER}
-# Supervision metadata and control FIFOs are root-owned. Application run
-# scripts perform the numeric privilege drop separately.
-_HERMES_UID = 0
-_HERMES_GID = 0
-'''
-        if runtime_owner_anchor not in patched:
-            raise ValueError("service manager runtime owner anchor not found")
-        patched = patched.replace(runtime_owner_anchor, runtime_owner_replacement, 1)
-
-    if RUNTIME_IDENTITY_MARKER not in patched:
-        gateway_anchor = '        lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")'
-        gateway_replacement = '''        lines.append("# Spartan Gate patch: gateway runtime identity")
-        lines.append('if [ -n "${SPARTAN_HERMES_RUN_UID:-}${SPARTAN_HERMES_RUN_GID:-}" ]; then')
-        lines.append('    _spartan_run_uid="${SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}"')
-        lines.append('    _spartan_run_gid="${SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}"')
-        lines.append(f'    exec /command/s6-applyuidgid -u "$_spartan_run_uid" -g "$_spartan_run_gid" {gateway_cmd}')
-        lines.append("fi")
-        lines.append(f"exec /command/s6-setuidgid hermes {gateway_cmd}")'''
-        if gateway_anchor not in patched:
-            raise ValueError("service manager gateway privilege-drop anchor not found")
-        patched = patched.replace(gateway_anchor, gateway_replacement, 1)
-
-        log_mkdir_anchor = "            f'  s6-setuidgid hermes mkdir -p \"$log_dir\"\\n'"
-        log_mkdir_replacement = (
-            "            f'  /command/s6-applyuidgid -u \"${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}\" -g \"${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}\" mkdir -p \"$log_dir\"\\n'"
-        )
-        if log_mkdir_anchor not in patched:
-            raise ValueError("service manager log mkdir identity anchor not found")
-        patched = patched.replace(log_mkdir_anchor, log_mkdir_replacement, 1)
-
-        log_lock_anchor = "            f'  s6-setuidgid hermes rm -f \"$log_dir/lock\"\\n'"
-        log_lock_replacement = (
-            "            f'  /command/s6-applyuidgid -u \"${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}\" -g \"${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}\" rm -f \"$log_dir/lock\"\\n'"
-        )
-        if log_lock_anchor not in patched:
-            raise ValueError("service manager log lock identity anchor not found")
-        patched = patched.replace(log_lock_anchor, log_lock_replacement, 1)
-
-        log_drop_anchor = "            f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T \"$log_dir\"\\n'"
-        log_drop_replacement = (
-            "            f'if [ -n \"${{SPARTAN_HERMES_RUN_UID:-}}${{SPARTAN_HERMES_RUN_GID:-}}\" ]; then\\n'\n"
-            "            f'    exec /command/s6-applyuidgid -u \"${{SPARTAN_HERMES_RUN_UID:-$(id -u hermes)}}\" -g \"${{SPARTAN_HERMES_RUN_GID:-$(id -g hermes)}}\" s6-log 1 n10 s1000000 T \"$log_dir\"\\n'\n"
-            "            f'fi\\n'\n"
-            "            f'exec /command/s6-setuidgid hermes s6-log 1 n10 s1000000 T \"$log_dir\"\\n'"
-        )
-        if log_drop_anchor not in patched:
-            raise ValueError("service manager log privilege-drop anchor not found")
-        patched = patched.replace(log_drop_anchor, log_drop_replacement, 1)
-
-    return patched
+    """Preflight the complete pinned shape, including already-patched input."""
+    replacements = ((OWNER_OLD, OWNER_NEW), (CONTROL_OLD, CONTROL_NEW),
+                    (ENV_OLD, ENV_NEW), (DROP_OLD, DROP_NEW))
+    updated = source
+    patched = MARKER in source
+    for old, new in replacements:
+        expected = new if patched else old
+        if updated.count(expected) != 1:
+            raise ValueError('native unprivileged service-manager anchor changed')
+        if not patched:
+            updated = updated.replace(old, new, 1)
+    # Only the three f-string log commands remain after control/run adaptation.
+    if not patched:
+        if updated.count(LOG_OLD) != 3:
+            raise ValueError('native gateway logger identity anchors changed')
+        updated = updated.replace(LOG_OLD, LOG_NEW)
+    elif updated.count(LOG_NEW) != 3 or LOG_OLD in updated:
+        raise ValueError('incomplete native gateway logger identity patch')
+    compile(updated, str(TARGET), 'exec')
+    return updated
 
 
 def main() -> None:
-    if not TARGET.exists():
-        print(f"FATAL: {TARGET} not found", file=sys.stderr)
-        sys.exit(1)
-
-    source = TARGET.read_text(encoding="utf-8")
-    try:
-        patched = patch_source(source)
-    except ValueError as exc:
-        print(f"FATAL: {exc} in {TARGET}", file=sys.stderr)
-        sys.exit(1)
-
-    if patched == source:
-        print(f"SKIP: {TARGET} already imports Browser/CDP env")
-        return
-
-    TARGET.write_text(patched, encoding="utf-8")
-    print(f"Patched: {TARGET} - gateway services import Browser/CDP env")
+    original = TARGET.read_text(encoding='utf-8')
+    updated = patch_source(original)
+    if updated != original:
+        TARGET.write_text(updated, encoding='utf-8')
+    print('Verified native unprivileged profile gateways and numeric runtime identity')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

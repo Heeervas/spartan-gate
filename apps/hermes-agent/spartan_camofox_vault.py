@@ -13,6 +13,7 @@ import requests
 _PIN = ContextVar('spartan_camofox_vault_pin', default=None)
 _MAX_BODY = 100 * 1024
 _MAX_RESULT = 256 * 1024
+_CLIENTS = {}
 
 
 class VaultTransportError(Exception):
@@ -22,8 +23,55 @@ class VaultTransportError(Exception):
 
 
 def active():
-    from tools.browser_camofox import is_camofox_mode
-    return is_camofox_mode()
+    from spartan_browser_policy import camofox_policy_enabled
+    return camofox_policy_enabled()
+
+
+def _home_key():
+    from hermes_constants import hermes_home_key
+    return hermes_home_key()
+
+
+def _client():
+    return _CLIENTS.get(_home_key())
+
+
+def _tracked_session(task_id):
+    client = _client()
+    if client is None:
+        return None
+    with client._sessions_lock:
+        return client._sessions.get(client._session_key(task_id))
+
+
+def _require_tab(task_id, action):
+    # Existing tracked tab only: vault must not adopt or create one, even after restart.
+    session = _tracked_session(task_id)
+    if not session or not session.get('tab_id'):
+        return session, 'browser_navigate is required'
+    return session, None
+
+
+def make_page_backend(client):
+    """Bind the official profile-aware client through the public native API."""
+    from agent.browser_page_backend import BrowserPageBackend
+    _CLIENTS[_home_key()] = client
+
+    class ManagedCamofoxPageBackend(BrowserPageBackend):
+        name = 'camofox'
+        display_name = 'Camofox'
+
+        def has_page(self, task_id):
+            session = _tracked_session(task_id)
+            return bool(client.get_camofox_url() and session and session.get('tab_id'))
+
+        def evaluate(self, task_id, expression, *, secret):
+            result = evaluate(task_id, expression, secret=secret)
+            if not result.get('success'):
+                raise VaultTransportError(result['error_type'])
+            return result['result']
+
+    return ManagedCamofoxPageBackend()
 
 
 def failure(code):
@@ -31,17 +79,19 @@ def failure(code):
 
 
 def _request(method, path, body=None):
-    from tools.browser_camofox import _auth_headers, get_camofox_url
+    transport_client = _client()
+    if transport_client is None:
+        raise VaultTransportError('vault_unavailable')
     encoded = None if body is None else json.dumps(body).encode('utf-8')
     if encoded is not None and len(encoded) > _MAX_BODY:
         raise VaultTransportError('vault_request_too_large')
     try:
         with requests.Session() as client:
             client.trust_env = False
-            headers = _auth_headers()
+            headers = transport_client._auth_headers()
             if encoded is not None:
                 headers = {**headers, 'Content-Type': 'application/json'}
-            with client.request(method, get_camofox_url() + path, headers=headers,
+            with client.request(method, transport_client.get_camofox_url() + path, headers=headers,
                                 data=encoded, timeout=(5, 145), allow_redirects=False,
                                 stream=True) as response:
                 if response.status_code in (404, 410):
@@ -81,8 +131,7 @@ def _check_pin(task_id):
         raise VaultTransportError('vault_session_required')
     if pin.get('failure'):
         raise VaultTransportError(pin['failure'])
-    from tools.browser_camofox import _sessions
-    if _sessions.get(pin['task_id']) is not pin['source']:
+    if _tracked_session(pin['task_id']) is not pin['source']:
         raise VaultTransportError('vault_session_changed')
     if _identity(pin['source']) != pin['identity']:
         raise VaultTransportError('vault_session_changed')
@@ -111,7 +160,6 @@ def page_operation(fn):
                 return json.dumps(failure(exc.code))
         token = None
         try:
-            from tools.browser_camofox import _require_tab
             session, blocked = _require_tab(task_id, 'fill vault fields')
             if blocked:
                 return json.dumps(failure('vault_session_required'))
@@ -174,19 +222,3 @@ def evaluate(task_id, expression, *, secret=False):
 def validate_pin(task_id):
     if active():
         _check_pin(task_id)
-
-
-def focus_current(task_id, origin):
-    from tools.browser_vault_tool import _current_page_origin
-    current = _current_page_origin(task_id)
-    return current if current and (not origin or origin == current) else None
-
-
-def otp_origin_allowed(backend, handle, origin):
-    # Never resolve a manager's OTP before validating its exact saved origins.
-    try:
-        meta = backend.get_meta(handle)
-        allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-        return meta.kind == 'login' and origin in allowed
-    except Exception:
-        return False

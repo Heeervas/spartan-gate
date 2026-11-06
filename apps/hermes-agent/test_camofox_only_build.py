@@ -25,7 +25,7 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
         result = module.transformed(original)
         self.assertNotIn(module.ENSURE, result)
         self.assertNotIn('browser_bin=', result)
-        self.assertNotIn('> /etc/hermes/agent-browser-executable-path', result)
+        self.assertNotIn('> /etc/hermes/chromium-executable-path', result)
         self.assertIn('("uv", "npm", "ffmpeg", "ripgrep")', result)
         self.assertIn('RUN test "$HERMES_BOT_DESKTOP" = "0"', result)
         for preserved in ('libatk-bridge2.0-0t64', 'gcc g++ make cmake', 'FROM runtime_base AS python_deps', '--extra all --extra messaging', 'ffmpeg -version', 'node --version; npm --version'):
@@ -118,7 +118,7 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
                 if name == 'pm/client.py':
                     source += 'def sync_tools():\n    for name in tool_roots(Lockfile(paths.lockfile_path()).names()):\n        ensure(name, explicit=True)\n'
                 if name == 'pm/install.py':
-                    source += 'def drift():\n    for name in lockfile.names():\n        pass\ndef activate():\n    for name in lockfile.names():\n        pass\n'
+                    source += 'def drift():\n    for name in lockfile.names():\n        pass\ndef activate():\n    for name in _dependents_first(lockfile.names()):\n        pass\n'
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(source)
@@ -131,7 +131,7 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, *args], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((root / 'pm/spartan_browser_variant.py').read_bytes(), helper.read_bytes())
-            self.assertIn('tools/browser_tool_install.py', (root / 'pm/spartan-browser-variant.json').read_text())
+            self.assertIn('tools/browser_use_cli.py', (root / 'pm/spartan-browser-variant.json').read_text())
 
     def test_existing_variant_base_patcher_mode_is_repaired_before_audit(self):
         source = (APP / 'Dockerfile').read_text()
@@ -142,6 +142,18 @@ class CamofoxOnlyBuildTests(unittest.TestCase):
         self.assertIn(repair, branch)
         self.assertLess(source.index(repair), source.index('--meet-only'))
         self.assertLess(source.index(repair), source.index('python3 /opt/hermes/patches/audit-install-tree.py /opt/hermes'))
+
+    def test_core_dependency_check_uses_native_lock_without_downgrading_security_pins(self):
+        source = (APP / 'Dockerfile').read_text()
+        self.assertIn('from pm.environment import managed_environment', source)
+        self.assertIn('realize=False, offline=True).check(Path("/opt/hermes/uv.lock"))', source)
+        self.assertNotIn('uv pip check --python /opt/hermes/.venv/bin/python', source)
+        self.assertNotIn('Pillow==12.3.0', source)
+        self.assertIn('for lock in /opt/hermes/.venv/.lock /opt/hermes/uv-cache/.lock;', source)
+        seal = 'chmod -R go-w /opt/hermes/uv-cache'
+        self.assertLess(source.index(seal), source.index('python3 /opt/hermes/patches/audit-install-tree.py'))
+        # The independently resolved analyzer environment retains its strict check.
+        self.assertIn('uv pip check --python /opt/quality-tools/desloppify/bin/python', source)
 
     def test_default_base_remains_immutable_and_variant_is_optional(self):
         source = (APP / 'Dockerfile').read_text()

@@ -5,27 +5,27 @@ import sys
 TARGET = Path("/opt/hermes/tools/skills_sync.py")
 REPLACEMENTS = (
     (
-        '''def _build_external_skill_index() -> Set[str]:
+        '''def _build_external_skill_index() -> set[str]:
     """Names (directory and frontmatter) of every skill provided by external_dirs,
     so sync_skills never shadows an externally-delegated skill."""
     from agent.skill_utils import get_external_skills_dirs, _external_dirs_cache_clear
     _external_dirs_cache_clear()  # so a config edit (or a test patch) is seen
-    external_names: Set[str] = set()
+    external_names: set[str] = set()
     for ext_dir in get_external_skills_dirs():
         for skill_md in _iter_skill_mds(ext_dir):
-            external_names.update({skill_md.parent.name, _read_skill_name(skill_md, "")})
+            external_names.update({skill_md.parent.name, read_skill_name(skill_md, "")})
     external_names.discard("")
     return external_names
 ''',
-        '''def _build_external_skill_index() -> Dict[str, Set[Path]]:
+        '''def _build_external_skill_index() -> dict[str, set[Path]]:
     """Package paths by name (directory and frontmatter) from external_dirs,
     so sync_skills never shadows an externally-delegated skill."""
     from agent.skill_utils import get_external_skills_dirs, _external_dirs_cache_clear
     _external_dirs_cache_clear()  # so a config edit (or a test patch) is seen
-    external_names: Dict[str, Set[Path]] = {}
+    external_names: dict[str, set[Path]] = {}
     for ext_dir in get_external_skills_dirs():
         for skill_md in _iter_skill_mds(ext_dir):
-            for name in {skill_md.parent.name, _read_skill_name(skill_md, "")} - {""}:
+            for name in {skill_md.parent.name, read_skill_name(skill_md, "")} - {""}:
                 external_names.setdefault(name, set()).add(skill_md.parent.resolve())
     return external_names
 ''',
@@ -33,15 +33,15 @@ REPLACEMENTS = (
     (
         '''def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash: str) -> None:''',
         '''def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash: str,
-                       external_paths: Set[Path]) -> None:''',
+                       external_paths: set[Path]) -> None:''',
     ),
     (
-        '''    if dest.exists() and _dir_hash(dest) == bundled_hash:
+        '''    if dest.exists() and dir_hash(dest) == bundled_hash:
         _rmtree_writable(dest)''',
         '''    # Spartan Gate: preserve only the discovered external package for this name.
     if dest.is_symlink() and dest.resolve() in external_paths:
         return
-    if dest.exists() and _dir_hash(dest) == bundled_hash:
+    if dest.exists() and dir_hash(dest) == bundled_hash:
         _rmtree_writable(dest)''',
     ),
     (

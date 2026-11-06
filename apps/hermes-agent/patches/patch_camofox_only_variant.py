@@ -31,14 +31,8 @@ GUARDS = {
         'stage_tools': 'require_tools(names)',
         'verified_tools': 'require_tools(names)',
     },
-    'tools/browser_tool.py': {
-        '_capture_vision_screenshot': '_spartan_native_hint = "a missing Chromium install (\'agent-browser install\'), "',
-    },
-    'tools/browser_tool_install.py': {
-        '_find_agent_browser': "if camofox_only():\n    raise FileNotFoundError(ERROR)",
-        '_browser_install_hint': 'if camofox_only():\n    return ERROR',
-        '_chromium_installed': 'if camofox_only():\n    return False',
-        '_maybe_autoinstall_chromium': 'if camofox_only():\n    return False',
+    'tools/browser_use_cli.py': {
+        '_find_cli': 'if camofox_only():\n    return None',
     },
     'hermes_cli/browser_runtime.py': {
         'chromium_executable': 'if camofox_only():\n    return None',
@@ -80,13 +74,6 @@ def patch_source(name: str, source: str, *, meet: bool = False) -> str:
     guards = (MEET_GUARDS if meet else GUARDS)[name]
     for function, guard in guards.items():
         source = insert_guard(source, function, guard)
-    if name == 'tools/browser_tool.py':
-        old = '''f"a missing Chromium install ('agent-browser install'), "'''
-        new = '''f"{ERROR if camofox_only() else _spartan_native_hint}"'''
-        if source.count(old) == 1:
-            source = source.replace(old, new)
-        elif source.count(new) != 1:
-            raise ValueError('Missing browser screenshot diagnostic hint')
     if name == 'pm/client.py':
         old = '    for name in tool_roots(Lockfile(paths.lockfile_path()).names()):\n        ensure(name, explicit=True)'
         new = '    for name in tool_roots(Lockfile(paths.lockfile_path()).names()):\n        from pm.spartan_browser_variant import supported\n        if not supported([name]):\n            continue\n        ensure(name, explicit=True)'
@@ -95,15 +82,15 @@ def patch_source(name: str, source: str, *, meet: bool = False) -> str:
         elif new not in source:
             raise ValueError('Missing tool sync loop')
     if name == 'pm/install.py':
-        old = '    for name in lockfile.names():\n'
-        new = '    for name in lockfile.names():\n        from pm.spartan_browser_variant import supported\n        if not supported([name]):\n            continue\n'
-        # Both drift and PATH activation must ignore absent native browser pins.
-        if source.count(new) == 0:
-            if source.count(old) != 2:
-                raise ValueError('Missing drift/activation loops')
-            source = source.replace(old, new)
-        elif source.count(new) != 2:
-            raise ValueError('Partial variant drift/activation guards')
+        # Drift and dependency-ordered PATH activation have separate native loops.
+        for iterator in ('lockfile.names()', '_dependents_first(lockfile.names())'):
+            old = f'    for name in {iterator}:\n'
+            new = old + '        from pm.spartan_browser_variant import supported\n        if not supported([name]):\n            continue\n'
+            if source.count(new) == 1:
+                continue
+            if source.count(old) != 1:
+                raise ValueError('Missing drift/activation loop')
+            source = source.replace(old, new, 1)
     compile(source, name, 'exec')
     return source
 

@@ -35,8 +35,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         instructions = [line.strip() for line in dockerfile.splitlines()
                         if line.strip() and not line.lstrip().startswith('#')]
         pinned_default = (
-            'ARG HERMES_BASE_IMAGE=docker.io/nousresearch/hermes-agent:main@'
-            'sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde'
+            'ARG HERMES_BASE_IMAGE=spartan-hermes-upstream:90d6b98f-full'
         )
         self.assertEqual(
             [line for line in instructions if line.startswith('ARG HERMES_BASE_IMAGE')],
@@ -49,7 +48,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertLess(instructions.index(pinned_default),
                         instructions.index('FROM ${HERMES_BASE_IMAGE}'))
         self.assertIn(
-            'Upstream main revision: e8c97320ac8691d4de92af49f98459f9ef9ddb08',
+            'Upstream main revision: 90d6b98fd86d20981ee06ddd5b7d93e4320f26a4',
             dockerfile,
         )
 
@@ -67,16 +66,12 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
 
         self.assertIn('python3 /opt/hermes/patches/patch_stage2_cdp_env.py', dockerfile)
         self.assertIn('python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py', dockerfile)
-        self.assertIn('python3 /opt/hermes/patches/patch_s6_service_permissions.py', dockerfile)
+        self.assertNotIn('python3 /opt/hermes/patches/patch_s6_service_permissions.py', dockerfile)
         self.assertIn('python3 /opt/hermes/patches/patch_runtime_identity_drop.py', dockerfile)
         self.assertIn('python3 /opt/hermes/patches/patch_route_env_placeholders.py', dockerfile)
         self.assertNotIn('python3 /opt/hermes/patches/patch_startup_overlay_precedence.py', dockerfile)
         self.assertLess(
             dockerfile.index('patch_stage2_runtime_owner.py'),
-            dockerfile.index('patch_s6_service_permissions.py'),
-        )
-        self.assertLess(
-            dockerfile.index('patch_s6_service_permissions.py'),
             dockerfile.index('patch_runtime_identity_drop.py'),
         )
         self.assertLess(

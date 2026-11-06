@@ -15,6 +15,7 @@ TARGET = Path("/opt/hermes/docker/stage2-hook.sh")
 MARKER = "# Spartan Gate patch: gateway state for supervised services"
 ANCHOR = "# --- Discover agent-browser's Chromium binary ---"
 ALTERNATE_ANCHOR = "# --- Point agent-browser at the pinned Chromium binary ---"
+PINNED_ANCHOR = "# --- Check the pinned Chromium binary ---"
 END_MARKER = "# End Spartan Gate supervised gateway state"
 
 NEW_BLOCK = '''# Spartan Gate patch: gateway state for supervised services
@@ -84,7 +85,7 @@ seed_legacy_autostart_profile_state
 
 
 def _insertion_index(source: str) -> int:
-    anchors = [anchor for anchor in (ANCHOR, ALTERNATE_ANCHOR) if anchor in source]
+    anchors = [anchor for anchor in (ANCHOR, ALTERNATE_ANCHOR, PINNED_ANCHOR) if anchor in source]
     if len(anchors) != 1 or source.count(anchors[0]) != 1:
         raise ValueError("expected exactly one supported agent-browser discovery anchor")
     return source.index(anchors[0])

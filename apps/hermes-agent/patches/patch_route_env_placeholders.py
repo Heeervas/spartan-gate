@@ -51,7 +51,13 @@ def patch_config_source(source: str) -> str:
     return val or _scoped_environ_get(key)
 '''
         if old not in patched:
-            raise ValueError("dotenv lookup block not found")
+            old = '    raw = load_env().get(key) or ""\n'
+            new = old + '''    reference = _spartan_route_env_reference(raw, key)
+    if reference:
+        raw = os.environ.get(reference) or ""
+'''
+            if patched.count(old) != 1:
+                raise ValueError("dotenv lookup block not found")
     return patched.replace(old, new, 1)
 
 

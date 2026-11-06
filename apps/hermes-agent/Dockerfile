@@ -1,8 +1,12 @@
-# Upstream main revision: e8c97320ac8691d4de92af49f98459f9ef9ddb08
-ARG HERMES_BASE_IMAGE=docker.io/nousresearch/hermes-agent:main@sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde
+# Upstream main revision: 90d6b98fd86d20981ee06ddd5b7d93e4320f26a4
+# Prepare this exact source-built base first; registry main is not this revision.
+ARG HERMES_BASE_IMAGE=spartan-hermes-upstream:90d6b98f-full
 FROM ${HERMES_BASE_IMAGE}
 
 USER root
+
+# A mutable local build tag is not provenance: reject mismatched sealed runtimes.
+RUN python3 -c 'import json; from pathlib import Path; expected = "90d6b98fd86d20981ee06ddd5b7d93e4320f26a4"; assert json.loads(Path("/opt/hermes/install-stamp.json").read_text())["commit"] == expected; assert json.loads(Path("/etc/hermes/image-provenance.json").read_text())["revision"] == expected'
 
 # Keep the Hermes venv first; upstream provides Node under /usr/local/bin.
 ENV PATH="/opt/hermes/.venv/bin:$PATH"
@@ -117,7 +121,7 @@ RUN uv pip install --no-cache-dir --no-deps --python /opt/hermes/.venv/bin/pytho
     "pluggy==1.6.0" \
     && /opt/hermes/.venv/bin/python -m pytest --version \
     && /opt/hermes/.venv/bin/python -c 'import sys, yaml; assert sys.version_info[:2] == (3, 14); assert sys.prefix == "/opt/hermes/.venv"; assert yaml.__version__ == "6.0.3"' \
-    && uv pip check --python /opt/hermes/.venv/bin/python
+    && python3 -c 'from pathlib import Path; from pm.environment import managed_environment; managed_environment(Path("/opt/hermes/.venv"), cache=Path("/tmp/hermes-build-check"), realize=False, offline=True).check(Path("/opt/hermes/uv.lock"))'
 
 # Proxy bootstrap Python (audit + Brave→SearXNG interception)
 # Loaded via PYTHONPATH=/opt/hermes/bootstrap → sitecustomize.py
@@ -181,19 +185,28 @@ ENV SPARTAN_BROWSER_POLICY_ENABLED=1 \
     HERMES_MANAGED_DIR=/run/spartan-hermes-managed \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2
 
+# Camofox left core at this Hermes pin. Preserve its catalog-pinned official
+# plugin as a protected bundled dependency; user plugin paths remain writable.
+RUN set -eux; \
+    curl -fsSL --retry 3 --max-time 120 https://codeload.github.com/NousResearch/hermes-official-plugins/tar.gz/1138f25c8b7b5a8fb882b3161e248f29abbd1a46 -o /tmp/camofox-plugin.tar.gz; \
+    echo 'f8c83f080834ee0097b526c0db9951a8dcd256bc7c7098e4b9b8b897df7b3cd2  /tmp/camofox-plugin.tar.gz' | sha256sum -c -; \
+    tar xzf /tmp/camofox-plugin.tar.gz -C /tmp hermes-official-plugins-1138f25c8b7b5a8fb882b3161e248f29abbd1a46/camofox; \
+    test ! -e /opt/hermes/plugins/camofox; \
+    mv /tmp/hermes-official-plugins-1138f25c8b7b5a8fb882b3161e248f29abbd1a46/camofox /opt/hermes/plugins/camofox; \
+    printf '%s\n' 'hermes-official-plugins 1138f25c8b7b5a8fb882b3161e248f29abbd1a46/camofox; catalog from Hermes 90d6b98fd86d20981ee06ddd5b7d93e4320f26a4; Gate adaptations in patches/patch_camofox_plugin.py' > /opt/hermes/plugins/camofox/SPARTAN_PROVENANCE; \
+    chmod -R a+rX,go-w /opt/hermes/plugins/camofox; \
+    rm -rf /tmp/camofox-plugin.tar.gz /tmp/hermes-official-plugins-1138f25c8b7b5a8fb882b3161e248f29abbd1a46
+
 # Build-time patches for upstream Hermes files (survive base image updates)
 COPY --chown=0:0 patches/ /opt/hermes/patches/
 COPY --chown=0:0 audit-install-tree.py /opt/hermes/patches/audit-install-tree.py
 # Apply patches and verify permissions atomically; avoid one snapshot per patch.
 RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
-    && python3 /opt/hermes/patches/patch_s6_service_permissions.py \
     && python3 /opt/hermes/patches/patch_runtime_identity_drop.py \
     && python3 /opt/hermes/patches/patch_stage2_cdp_env.py \
     && python3 /opt/hermes/patches/patch_gateway_service_cdp_env.py \
-    && python3 /opt/hermes/patches/patch_camofox_tab_isolation.py \
+    && python3 /opt/hermes/patches/patch_camofox_plugin.py \
     && python3 /opt/hermes/patches/patch_camofox_managed_policy.py \
-    && python3 /opt/hermes/patches/patch_camofox_vault.py \
-    && python3 /opt/hermes/patches/patch_camofox_viewport.py \
     && python3 /opt/hermes/patches/patch_prompt_load_callback.py \
     && python3 /opt/hermes/patches/patch_checkpoint_rollback_scan.py \
     && python3 /opt/hermes/patches/patch_mcp_proxy_env.py \
@@ -227,13 +240,16 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && chmod 0644 /opt/hermes/spartan_browser_policy.py \
     && find /opt/hermes/bootstrap -maxdepth 1 -type f -exec chmod 0644 {} + \
     && chmod -R a+rX,go-w /opt/hermes/patches \
-    && if [ -f /opt/hermes/.venv/.lock ]; then chmod 0644 /opt/hermes/.venv/.lock; fi \
+    && for lock in /opt/hermes/.venv/.lock /opt/hermes/uv-cache/.lock; do \
+        if [ -f "$lock" ]; then chmod 0644 "$lock"; fi; \
+    done \
+    && chmod -R go-w /opt/hermes/uv-cache \
     && python3 /opt/hermes/patches/audit-install-tree.py /opt/hermes \
     && test "$(stat -c '%a' /opt/hermes/bootstrap)" = "755" \
-    && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_camofox.py)" = "0:0" \
+    && test "$(stat -c '%u:%g' /opt/hermes/plugins/camofox/camofox_tools.py)" = "0:0" \
     && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_tool.py)" = "0:0" \
     && setpriv --reuid=65534 --regid=65534 --clear-groups \
-        python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/tools/browser_camofox.py", "/opt/hermes/tools/browser_tool.py")]'
+        python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/plugins/camofox/camofox_tools.py", "/opt/hermes/tools/browser_tool.py")]'
 
 # Optional local analysis CLIs. Keep this late layer independent of Hermes' venv.
 # Archive digests are from the official v0.659.0 GitHub release asset API.

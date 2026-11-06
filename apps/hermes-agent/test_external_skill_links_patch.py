@@ -141,7 +141,7 @@ class ExternalLinksTests(unittest.TestCase):
         original_guard = self.source[self.source.index("def _rmtree_writable("):]
         self.assertEqual(patched[patched.index("def _rmtree_writable("):], original_guard)
         for broken in (self.source.replace("external_names.discard", "changed.discard"),
-                       patched.replace("external_paths: Set[Path]", "bad: Set[Path]")):
+                       patched.replace("external_paths: set[Path]", "bad: set[Path]")):
             with self.assertRaises(ValueError):
                 repair.patch_text(broken)
 

@@ -103,8 +103,10 @@ These are expected paths, not a claim that the inputs exist in every checkout. S
 
 Provide **unmodified program source**, not installed patched source or a profile:
 
-- Hermes commit `e8c97320ac8691d4de92af49f98459f9ef9ddb08`, corresponding to
-  base OCI digest `sha256:5edbc9c277d22f1b74f2707b23b77ebdd7f412d34511363a20df880004a42fde`
+- Hermes commit `90d6b98fd86d20981ee06ddd5b7d93e4320f26a4` (source build required;
+  registry `main` is not evidence of this revision).
+- Official Camofox plugin `1138f25c8b7b5a8fb882b3161e248f29abbd1a46/camofox`,
+  selected with `HERMES_CAMOFOX_PLUGIN_SOURCE` alongside `HERMES_UPSTREAM_SOURCE`
   in `apps/hermes-agent/Dockerfile` (see `docs/patches.md`). Set
   `HERMES_UPSTREAM_SOURCE` to the extracted pristine root and
   `HERMES_SYNC_SOURCE` to its `tools/skills_sync.py`. Add that root to
@@ -130,7 +132,7 @@ npm run test:hermes:native
 npm run test:camofox:native
 ```
 
-The Hermes native command discovers the seven source-consuming suites and fails
+The Hermes native command discovers the required source-consuming suites and fails
 if any test skips, independently of portable/root-only authority fixtures. The
 Camofox command requires both real inputs before executing its full suite; review
 the raw TAP result for zero source/Express skips and cancellations.
@@ -139,8 +141,10 @@ cancellations are **INCOMPLETE/FAIL**, never accepted skips. CI's
 `native-source-required` job fetches the exact public commit archives, checks
 SHA-256 before extraction and installs Camofox dependencies from its lockfile
 with install scripts disabled. The tested archive SHA-256 values are
-`64f49146525ad21e63e4a9b0cf3418a35ead2173989a94c7b5e1304078625cf9` for Hermes
-and `8fe0ae67988f29ee9da75c55aa277a8c2744c3cedbc53cdc53f2f1a04b0ee0a8` for Camofox.
+`efb97f9f6d7a4fd7b0aa8c8ff33ed34d1edca7142bb46ac1888e3bc37b6d0a0d` for Hermes,
+`f8c83f080834ee0097b526c0db9951a8dcd256bc7c7098e4b9b8b897df7b3cd2` for the
+official plugins archive, and
+`8fe0ae67988f29ee9da75c55aa277a8c2744c3cedbc53cdc53f2f1a04b0ee0a8` for Camofox.
 See `.github/workflows/ci.yml` for the executable clean-clone provisioning lane.
 An upstream archive byte change fails the checksum gate rather than silently
 accepting new inputs. Portable CI alone cannot make full acceptance green.

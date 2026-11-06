@@ -49,7 +49,10 @@ class BrowserOverlayTests(unittest.TestCase):
             if filename in self.patcher.TARGETS:
                 name = self.patcher.TARGETS[filename][0]
                 signature = 'section' if name == 'read_selection' else ''
-                return f'def {name}({signature}):\n    """Selector."""\n    return None\n'.encode()
+                source = f'def {name}({signature}):\n    """Selector."""\n    return None\n'
+                if filename == 'browser_use_cli.py':
+                    source += 'def browser_exec(code):\n    return None\n'
+                return source.encode()
             return b'compatibility-anchor\n'
         if args[1] == 'compose':
             return b''

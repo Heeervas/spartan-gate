@@ -41,6 +41,11 @@ def image_patch_names():
 
 
 def apply_patch_chain(root, names):
+    if not (root / 'plugins/camofox').exists():
+        plugin = os.environ.get('HERMES_CAMOFOX_PLUGIN_SOURCE')
+        if not plugin:
+            raise AssertionError('HERMES_CAMOFOX_PLUGIN_SOURCE must select the catalog-pinned dependency')
+        shutil.copytree(plugin, root / 'plugins/camofox')
     def redirect(p):
         for old, target in (('/opt/hermes', root), ('/etc/cont-init.d', root / 'docker/cont-init.d'), ('/etc/s6-overlay/s6-rc.d', root / 'docker/s6-rc.d')):
             if str(p) == old or str(p).startswith(old + '/'):
@@ -119,23 +124,6 @@ class UpstreamRefreshTests(unittest.TestCase):
             direct = {'base_url': 'https://api.openai.com/v1', 'session_id': 'x'}
             self.assertEqual(fn({}, direct), {})
 
-    def test_stale_browser_action_cannot_reopen_or_adopt(self):
-        ns = definitions(self.root / 'tools/browser_camofox.py', {'_spartan_stale_tab'}, {'json': json, '_sessions_lock': threading.Lock()})
-        session = {'tab_id': 'old', 'adopt_existing_tab': True}
-        error = SimpleNamespace(response=SimpleNamespace(status_code=410))
-        result = json.loads(ns['_spartan_stale_tab'](error, session, 'click'))
-        self.assertTrue(result['requires_navigation'])
-        self.assertIsNone(session['tab_id'])
-        self.assertFalse(session['adopt_existing_tab'])
-
-    def test_managed_browser_close_preserves_profile(self):
-        calls = []
-        ns = definitions(self.root / 'tools/browser_camofox.py', {'camofox_close'}, {
-            'json': json, '_drop_session': lambda task: {'managed': True, 'tab_id': 'tab', 'user_id': 'profile'},
-            '_delete': lambda *a: calls.append(a)})
-        self.assertTrue(json.loads(ns['camofox_close']('session'))['success'])
-        self.assertEqual(calls, [('/tabs/tab', {'userId': 'profile'})])
-
     def test_meet_transcription_does_not_unmute(self):
         source = (self.root / 'plugins/google_meet/meet_bot.py').read_text()
         self.assertIn('mic_state=_ensure_mic_on(page) if rt["enabled"] else "muted"', source)
@@ -166,8 +154,8 @@ class CamofoxOnlyRefreshChainTests(unittest.TestCase):
             manifest = json.loads((root / 'pm/spartan-browser-variant.json').read_text())
             self.assertEqual(manifest['schema'], 1)
             required = {'pm/install.py', 'pm/client.py', 'pm/build_operations.py',
-                        'pm/spartan_browser_variant.py', 'tools/browser_tool.py',
-                        'tools/browser_tool_install.py', 'hermes_cli/browser_runtime.py',
+                        'pm/spartan_browser_variant.py', 'tools/browser_use_cli.py',
+                        'hermes_cli/browser_runtime.py',
                         'plugins/google_meet/meet_bot.py', 'plugins/google_meet/cli.py',
                         'spartan_browser_policy.py', 'bootstrap/spartan_browser_policy.py',
                         'spartan_browser_variant.py', 'bootstrap/spartan_browser_variant.py'}

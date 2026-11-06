@@ -34,8 +34,8 @@ REPLACEMENT = '''    from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUI
         )
     if is_single_query_session():
 '''
-CACHE = '        _oneshot_prompt_variant(),\n'
-CACHE_REPLACEMENT = '        _oneshot_prompt_variant(), _spartan_required_skill_selection(),\n'
+CACHE = '        _oneshot_prompt_variant(), tuple(plugin_rows),\n'
+CACHE_REPLACEMENT = '        _oneshot_prompt_variant(), _spartan_required_skill_selection(), tuple(plugin_rows),\n'
 
 
 def patch_text(source: str) -> str:

@@ -206,9 +206,11 @@ class BrowserPolicyTests(unittest.TestCase):
         for filename, (name, _) in patcher.TARGETS.items():
             signature = 'section' if name == 'read_selection' else ''
             source = f'def {name}({signature}):\n    """Selector."""\n    return None\n'
+            if filename == 'browser_use_cli.py':
+                source += 'def browser_exec(code):\n    return None\n'
             (root / 'tools' / filename).write_text(patcher.patch_source(filename, source))
         self.module.validate_code(root, None)
-        path = root / 'tools/browser_camofox.py'
+        path = root / 'tools/browser_session_cdp.py'
         path.write_text(path.read_text().replace('if _spartan_camofox_policy():', 'if not _spartan_camofox_policy():'))
         with self.assertRaises(ValueError):
             self.module.validate_code(root, None)
@@ -252,9 +254,9 @@ class LauncherPolicyImportTests(unittest.TestCase):
             (root / 'selector.py').write_text(
                 'def selected():\n'
                 ' from spartan_browser_policy import camofox_policy_enabled\n'
-                ' return camofox_policy_enabled()\n')
+                ' return camofox_policy_enabled\n')
             env = {'PATH': os.environ.get('PATH', ''), 'PYTHONPATH': str(root)}
-            command = [sys.executable, '-P', '-B', '-c', 'from selector import selected; assert selected() is False']
+            command = [sys.executable, '-P', '-S', '-B', '-c', 'from selector import selected; assert callable(selected())']
             before = subprocess.run(command, cwd=raw, env=env, capture_output=True)
             self.assertNotEqual(before.returncode, 0)
             self.assertIn(b"No module named 'spartan_browser_policy'", before.stderr)

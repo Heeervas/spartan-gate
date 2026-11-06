@@ -34,7 +34,10 @@ class SkillSelectionTests(unittest.TestCase):
         one.is_single_query_session = lambda: oneshot
         one.ONESHOT_SKILLS_LOAD_GUIDANCE = '## Skills\nNative one-shot guidance\n'
         with patch.dict(sys.modules, {'agent': types.ModuleType('agent'), 'agent.oneshot_footprint': one}):
-            return ns['_render_skills_index']({'coding':[('example',description)]}, {}, frozenset({'coding'}) if description == 'description' else None, {'terminal'})
+            return ns['_render_skills_index'](
+                {'coding': [('example', description)]},
+                compact_categories=frozenset({'coding'}) if description == 'description' else None,
+                available_tools={'terminal'})
 
     def test_config_opt_in_and_noop_consumers(self):
         for oneshot in [False, True]:

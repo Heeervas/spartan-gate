@@ -21,7 +21,7 @@ def load(name, path):
 
 
 transport = load('spartan_camofox_vault', HERE / 'spartan_camofox_vault.py')
-patcher = load('vault_patcher', HERE / 'patches/patch_camofox_vault.py')
+patcher = load('vault_patcher', HERE / 'patches/patch_camofox_plugin.py')
 
 
 def functions(source, names, namespace):
@@ -32,16 +32,31 @@ def functions(source, names, namespace):
     return namespace
 
 
+class ClientScopeTests(unittest.TestCase):
+    def test_profile_switch_selects_only_its_registered_client_and_unknown_refuses(self):
+        one, two = object(), object()
+        with patch.object(transport, '_CLIENTS', {'one': one, 'two': two}):
+            for home, expected in (('one', one), ('two', two), ('missing', None)):
+                with patch.object(transport, '_home_key', return_value=home):
+                    self.assertIs(transport._client(), expected)
+                    if expected is None:
+                        with self.assertRaises(transport.VaultTransportError):
+                            transport._request('POST', '/protected', {'expression': 'secret'})
+
+
 class TransportTests(unittest.TestCase):
     def setUp(self):
         self.session = {'user_id': 'profile', 'session_key': 'durable-task', 'tab_id': 'tab1'}
-        self.camofox = types.ModuleType('tools.browser_camofox')
-        self.camofox.is_camofox_mode = lambda: True
-        self.camofox._require_tab = Mock(return_value=(self.session, None))
-        self.camofox._sessions = types.SimpleNamespace(get=lambda tid: self.session)
-        self.camofox._auth_headers = lambda: {'Authorization': 'Bearer auth'}
-        self.camofox.get_camofox_url = lambda: 'http://camofox:9377'
-        self.modules = patch.dict(sys.modules, {'tools.browser_camofox': self.camofox})
+        self.camofox = types.SimpleNamespace(
+            _sessions_lock=__import__('threading').Lock(),
+            _sessions={('home', 'durable-task'): self.session, ('home', 't'): self.session},
+            _session_key=lambda task: ('home', task),
+            _auth_headers=lambda: {'Authorization': 'Bearer auth'},
+            get_camofox_url=lambda: 'http://camofox:9377')
+        self.client_patch = patch.object(transport, '_client', return_value=self.camofox)
+        self.client_patch.start()
+        self.addCleanup(self.client_patch.stop)
+        self.modules = patch.dict(sys.modules, {'spartan_browser_policy': types.SimpleNamespace(camofox_policy_enabled=lambda: True)})
         self.modules.start()
         self.addCleanup(self.modules.stop)
 
@@ -58,7 +73,7 @@ class TransportTests(unittest.TestCase):
             return fill('handle', task_id=task_id)
         with patch.object(transport, '_request', side_effect=request):
             self.assertTrue(json.loads(save(task_id='durable-task'))['success'])
-        self.camofox._require_tab.assert_called_once_with('durable-task', 'fill vault fields')
+        self.assertEqual(calls[0], ('GET', '/spartan/capabilities', None))
         self.assertEqual(calls[1][1], '/tabs/tab1/spartan/vault-evaluate')
         self.assertEqual(calls[1][2]['sessionKey'], 'durable-task')
 
@@ -73,8 +88,8 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(json.loads(operation(task_id='t'))['error_type'], 'vault_scope_denied')
         request.assert_not_called()
 
-    def test_private_page_guard_denies_before_capability_or_prompt(self):
-        self.camofox._require_tab.return_value = (self.session, '{"success":false,"error":"private page"}')
+    def test_missing_tracked_page_denies_before_capability_or_prompt(self):
+        self.session['tab_id'] = None
         native = Mock()
         with patch.object(transport, '_request') as request:
             result = json.loads(transport.page_operation(native)(task_id='t'))
@@ -143,32 +158,41 @@ class NativeSourceTests(unittest.TestCase):
         TransportTests.setUp(self)
         root = Path(SOURCE)
         self.vault = (root / 'tools/browser_vault_tool.py').read_text()
-        self.browser = (root / 'tools/browser_camofox.py').read_text()
-        self.patched = patcher.patch_vault(self.vault)
-        self.ns = {'_spartan_vault': transport, 'json': json, 'secrets': types.SimpleNamespace(token_hex=lambda n: 'nonce')}
+        plugin = os.environ.get('HERMES_CAMOFOX_PLUGIN_SOURCE')
+        if not plugin:
+            self.fail('HERMES_CAMOFOX_PLUGIN_SOURCE is required with native vault input')
+        self.browser = (Path(plugin) / 'camofox_tools.py').read_text()
+        self.patched = patcher.patch_native_vault(self.vault)
+        self.ns = {'_spartan_vault': transport, 'json': json, 'secrets': types.SimpleNamespace(token_hex=lambda n: 'nonce'),
+                   'plugin_errors_as_refusal': lambda fn: fn, 'snapshot_refusal': lambda *a: None,
+                   'saved_origins': lambda meta: list(meta.allowed_origins) or [meta.origin]}
 
     def test_transform_is_idempotent_and_handlers_reuse_navigation_session(self):
-        self.assertEqual(patcher.patch_vault(self.patched), self.patched)
-        browser = patcher.patch_camofox(self.browser)
-        self.assertEqual(patcher.patch_camofox(browser), browser)
+        self.assertEqual(patcher.patch_native_vault(self.patched), self.patched)
         callback = Mock(return_value='ok')
         self.ns.update({'_fenced_page_op': lambda tid, fn: fn(), 'browser_vault_fill': callback})
-        functions(self.patched, ['_handle_vault_fill'], self.ns)
-        self.ns['_handle_vault_fill']({'handle': 'h'}, session_id='durable-task', task_id='transient-task')
+        functions(self.patched, ['_handle_vault'], self.ns)
+        self.ns['_handle_vault']({'action': 'fill', 'handle': 'h'}, session_id='durable-task', task_id='transient-task')
         callback.assert_called_once_with(handle='h', task_id='durable-task')
 
     def test_native_evaluators_never_reach_supervisor_or_cli_in_camofox(self):
-        functions(self.patched, ['_eval_js', '_eval_js_secret', '_fenced_page_op'], self.ns)
-        with patch.object(transport, 'evaluate', return_value={'success': True}) as evaluate:
-            self.ns['_eval_js']('t', 'origin')
-            self.ns['_eval_js_secret']('t', 'secret')
-        self.assertEqual(evaluate.call_args_list[0].args, ('t', 'origin'))
-        self.assertTrue(evaluate.call_args_list[1].kwargs['secret'])
+        backend = types.SimpleNamespace(name='camofox', evaluate=Mock(return_value={'filled': 1}))
+        self.ns.update({'_page_backend': lambda task: backend, '_bot_desktop_browser_session': lambda task: False,
+                        '_parse_json_result': lambda value: value, '_PAGE_FILL_FAILED': {'hermes_vault_eval_failed': True}})
+        functions(self.patched, ['_eval_js', '_eval_js_secret', '_page_eval', '_fenced_page_op'], self.ns)
+        self.assertTrue(self.ns['_eval_js']('t', 'origin')['success'])
+        self.assertTrue(self.ns['_eval_js_secret']('t', 'native-secret-expression')['success'])
+        self.assertFalse(backend.evaluate.call_args_list[0].kwargs['secret'])
+        secret_call = backend.evaluate.call_args_list[1]
+        self.assertTrue(secret_call.kwargs['secret'])
+        self.assertIn('catch (_)', secret_call.args[1])
+        backend.evaluate.side_effect = RuntimeError('PRIVATE secret response')
+        self.assertNotIn('PRIVATE', str(self.ns['_eval_js_secret']('t', 'secret')))
         self.assertEqual(self.ns['_fenced_page_op']('t', lambda: 'native'), 'native')
 
     def test_native_otp_origin_deny_precedes_resolution(self):
         backend = Mock()
-        backend.get_meta.return_value = types.SimpleNamespace(kind='login', allowed_origins=['https://saved.example'], origin='https://saved.example')
+        backend.get_meta.return_value = types.SimpleNamespace(id='h', kind='login', allowed_origins=['https://saved.example'], origin='https://saved.example')
         mods = {
             'agent.redact': types.SimpleNamespace(register_vault_redaction_value=Mock()),
             'agent.vault_backends': types.SimpleNamespace(backend_for_handle=lambda h: backend),
@@ -176,7 +200,8 @@ class NativeSourceTests(unittest.TestCase):
             'agent.vault_login_classifier': types.SimpleNamespace(LoginControl=types.SimpleNamespace(from_dict=lambda d: d), build_fill_js=Mock(), build_inspection_js=lambda n: 'inspection', build_otp_fills=Mock(), classify_otp_controls=lambda c: c),
         }
         self.ns.update({'_focus_bound_origin': lambda *a: None, '_current_page_origin': lambda t: 'https://other.example', '_eval_js': lambda *a: {'success': True, 'result': [{}]}, '_parse_json_result': lambda r: r})
-        functions(self.patched, ['browser_vault_enter_code'], self.ns)
+        self.ns['_saved_login'] = lambda handle: (backend, backend.get_meta.return_value)
+        functions(self.patched, ['browser_vault_enter_code', '_bound_page_origin'], self.ns)
         with patch.dict(sys.modules, mods), patch.object(transport, '_request', return_value={'vaultEvaluateVersion': 1}):
             result = json.loads(self.ns['browser_vault_enter_code']('h', task_id='t'))
         self.assertEqual(result['error_type'], 'origin_mismatch')
@@ -190,7 +215,8 @@ class NativeSourceTests(unittest.TestCase):
                 backend = Mock(name='backend')
                 backend.name = 'native'
                 backend.needs_unlock = False
-                backend.get_meta.return_value = types.SimpleNamespace(kind=kind, origin='https://saved.example', allowed_origins=['https://saved.example'], label='saved', has_otp=False)
+                backend.fill_context.side_effect = __import__('contextlib').nullcontext
+                backend.get_meta.return_value = types.SimpleNamespace(id='h', kind=kind, origin='https://saved.example', allowed_origins=['https://saved.example'], label='saved', has_otp=False)
                 backend.resolve_password.return_value = 'SECRET'
                 backend.resolve_secret.return_value = {'card_number': 'SECRET'}
                 fill = [{'token': 'field', 'value': 'SECRET'}]
@@ -199,7 +225,7 @@ class NativeSourceTests(unittest.TestCase):
                 classifier = types.SimpleNamespace(ClassifiedLoginControl=object, LoginControl=types.SimpleNamespace(from_dict=lambda d: d), build_fill_js=build, build_inspection_js=lambda n: 'native-inspect', classify_checkout_control=lambda c: c, classify_login_control=lambda c: c, select_checkout_fills=lambda *a: fill, select_password_fill=lambda *a: fill)
                 mods = {'agent.redact': types.SimpleNamespace(register_vault_redaction_value=redactions), 'agent.vault_login_classifier': classifier, 'agent.vault_backends': types.SimpleNamespace(UnlockRequired=UnlockRequired, backend_for_handle=lambda h: backend), 'agent.vault_store': types.SimpleNamespace(ADDRESS_FIELDS=[], PAYMENT_FIELDS=[], scrub_secret_from_text=lambda s, secret: s)}
                 self.ns.update({'_focus_bound_origin': lambda *a: 'https://saved.example', '_current_page_origin': lambda t: 'https://saved.example', '_eval_js': lambda *a: {'success': True, 'result': [{'token': 'field'}]}, '_parse_json_result': lambda r: r, '_confirm_payment_fill': Mock(return_value=True), '_eval_js_secret': lambda t, expression: transport.evaluate(t, expression, secret=True)})
-                functions(self.patched, ['browser_vault_fill'], self.ns)
+                functions(self.patched, ['browser_vault_fill', '_fill_bound_page', '_bound_page_origin'], self.ns)
                 with patch.dict(sys.modules, mods), patch.object(transport, '_request', side_effect=[{'vaultEvaluateVersion': 1}, {'ok': True, 'result': {'filled': 1}}]) as request:
                     result = json.loads(self.ns['browser_vault_fill']('h', task_id='t'))
                 self.assertTrue(result['success'])
@@ -215,12 +241,11 @@ class NativeSourceTests(unittest.TestCase):
                     redactions.assert_called_with('SECRET')
 
     def test_short_snapshot_uses_native_vault_redactor_before_truncation(self):
-        source = patcher.patch_camofox(self.browser)
-        ns = {'_snapshot_data': lambda s: {'snapshot': 'password: SECRET', 'refsCount': 1}}
-        modules = {'tools.browser_tool_snapshot': types.SimpleNamespace(_redact_browser_output=lambda d: {**d, 'snapshot': d['snapshot'].replace('SECRET', '[REDACTED]')}, _truncate_snapshot=lambda s, **kw: s), 'tools.browser_tool': types.SimpleNamespace(get_browser_snapshot_threshold=lambda: 1000)}
-        functions(source, ['_fetch_snapshot'], ns)
-        with patch.dict(sys.modules, modules):
-            snapshot, _ = ns['_fetch_snapshot'](self.session)
+        ns = {'_snapshot_data': lambda s: {'snapshot': 'password: SECRET', 'refsCount': 1},
+              'policy': types.SimpleNamespace(redact_text=lambda text: text.replace('SECRET', '[REDACTED]'),
+                                              snapshot_threshold=lambda: 1000)}
+        functions(self.browser, ['_fetch_snapshot'], ns)
+        snapshot, _ = ns['_fetch_snapshot'](self.session)
         self.assertNotIn('SECRET', snapshot)
 
 

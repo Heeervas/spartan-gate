@@ -4,6 +4,16 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Pin Hermes to main snapshot `90d6b98fd86d20981ee06ddd5b7d93e4320f26a4`
+  with exact-source base admission. Retire the obsolete s6 permission workaround
+  in favor of upstream's separated dynamic scanner while preserving numeric
+  runtime ownership. Replace deleted core-Camofox patching with the catalog-pinned
+  official plugin, retaining durable/stale-tab, viewport and protected vault
+  behavior; preserve native disables and writable user plugins. Adapt only
+  demonstrated patch drift and the independently owned governor prompt shape.
+  Keep native database migrations, with no session-database copies or promise
+  that an image rollback reverses a schema change.
+
 - Clarify proxy-aware HTTPS diagnostics for Hermes: a denied direct socket does
   not demonstrate a proxy outage, and proxy environment variables do not provide
   transparent routing for clients that ignore them.

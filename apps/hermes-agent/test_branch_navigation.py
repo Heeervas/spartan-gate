@@ -473,16 +473,19 @@ if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--native':
             wanted = {"_handle_branch_command", "_handle_resume_command", "_handle_start_fresh_command",
                       "_handle_return_command", "_handle_cancel_command"}
             methods = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in wanted]
-            functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in {
-                "_end_current_session", "_sync_agent_to_session", "_without_session_meta"}]
+            switch_tree = ast.parse((root / 'hermes_cli/cli_session_switch.py').read_text())
+            functions = [node for owner in (tree, switch_tree) for node in owner.body
+                         if isinstance(node, ast.FunctionDef) and node.name in {
+                             "_end_current_session", "_sync_agent_to_session", "_without_session_meta"}]
             shell = ModuleType("cli")
             shell._sync_process_session_id = lambda sid: None
             mixin = ModuleType("hermes_cli.cli_commands_mixin")
             output = []
             ns = {"__name__": mixin.__name__, "datetime": datetime, "os": os, "suppress": contextlib.suppress,
                 "mint_session_id": lambda now: "child-" + str(len(output)), "_cp": lambda *args: output.extend(args),
-                "_t": lambda key, **kwargs: key, "_gt": lambda key, **kwargs: key,
+                "_t": lambda key, **kwargs: key, "_gt": lambda key, **kwargs: key + str(kwargs.get('error', '')),
                 "_tn": lambda key, count, **kwargs: key, "_command_arg": lambda cmd: cmd.partition(" ")[2],
+                "_gateway_open": lambda db, sid: (sid, None),
                 "extract_api_content_sidecar": lambda msg: msg.get("api_content"),
                 "_BRANCH_COPY_KEYS": ("content", "tool_calls", "tool_call_id"), "message_identity": message_identity}
             exec(compile(ast.fix_missing_locations(ast.Module(body=functions + methods, type_ignores=[])), str(path), 'exec'), ns)
@@ -494,6 +497,7 @@ if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--native':
                 cli = SimpleNamespace(_agent_running=False, _session_db=db, session_id="parent",
                     conversation_history=db.get_messages_as_conversation("parent"), agent=Agent(db),
                     model="synthetic", max_turns=5, reasoning_config={})
+                cli._new_session_id = lambda now, **kwargs: ns['mint_session_id'](now)
                 for name in wanted:
                     setattr(cli, name, ns[name].__get__(cli))
                 cli._resolve_resume_target = lambda sid: (db.get_compression_tip(sid), db.get_session(sid))
@@ -506,7 +510,7 @@ if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--native':
                 db.append_message(child, "user", "Terminal branch result")
                 cli.conversation_history = db.get_messages_as_conversation(child)
                 cli._handle_return_command("/return")
-                self.assertEqual(cli.session_id, "parent")
+                self.assertEqual(cli.session_id, "parent", output)
                 self.assertIn("Received the branch findings.", output)
                 self.assertEqual(nav.navigation_owner(db, child)[1]["status"], "completed")
                 self.assertEqual(cli.agent.calls[0][1:], ([], set()))

@@ -20,11 +20,10 @@ from urllib.parse import urlsplit
 
 MANAGED_DIR = Path('/run/spartan-hermes-managed')
 SELECTORS = {
-    'tools/browser_camofox.py': 'is_camofox_mode',
-    'tools/browser_use_cli.py': 'is_browser_use_cli_mode',
-    'tools/browser_tool_cloud.py': '_resolve_cloud_provider_uncached',
-    'tools/browser_tool_cdp.py': '_get_cdp_override_raw',
-    'tools/tool_backend_helpers.py': 'read_selection',
+    'tools/browser_use_cli.py': ('browser_exec_available', 'browser_exec'),
+    'tools/browser_session_cloud.py': ('get_cloud_provider',),
+    'tools/browser_session_cdp.py': ('get_cdp_override_raw',),
+    'tools/tool_backend_helpers.py': ('read_selection',),
 }
 MARKER = 'SPARTAN_CAMOFOX_MANAGED_POLICY_V1'
 _cache = None
@@ -209,37 +208,35 @@ def publish_policy(files: dict[str, bytes], directory: Path, owner_uid: int, gid
             shutil.rmtree(staged)
 
 
-def validate_code(root: Path, manifest_path: Path | None) -> None:
+def _validate_selector(text, function, guard):
     import ast
+    matches = [n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == function]
+    if len(matches) != 1:
+        raise ValueError('Browser policy selector is incompatible with installed Hermes')
+    body = matches[0].body
+    offset = 1 if (isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
+                   and isinstance(body[0].value.value, str)) else 0
+    expected = ast.parse(
+        'from spartan_browser_policy import camofox_policy_enabled as _spartan_camofox_policy\n' + guard).body
+    if (len(body) <= offset + 1 or MARKER not in text
+            or [ast.dump(node) for node in body[offset:offset + 2]] != [ast.dump(node) for node in expected]):
+        raise ValueError('Installed Hermes lacks the mandatory browser policy guards')
+
+
+def validate_code(root: Path, manifest_path: Path | None) -> None:
 
     guards = {
-        'is_camofox_mode': 'if _spartan_camofox_policy():\n return True',
-        'is_browser_use_cli_mode': 'if _spartan_camofox_policy():\n return False',
-        '_get_cdp_override_raw': 'if _spartan_camofox_policy():\n return ""',
+        'browser_exec_available': 'if _spartan_camofox_policy():\n return False',
+        'browser_exec': ('if _spartan_camofox_policy():\n'
+                         ' return \'{"success":false,"error":"Managed Camofox is required; browser_exec is disabled."}\''),
+        'get_cdp_override_raw': 'if _spartan_camofox_policy():\n return ""',
         'read_selection': 'if section == "browser" and _spartan_camofox_policy():\n return "camofox"',
-        '_resolve_cloud_provider_uncached': (
-            'if _spartan_camofox_policy():\n'
-            ' _bt = _origin()\n'
-            ' _bt._cached_cloud_provider = None\n'
-            ' _bt._cloud_provider_resolved = True\n'
-            ' return None'),
+        'get_cloud_provider': 'if _spartan_camofox_policy():\n return None',
     }
-    for name, function in SELECTORS.items():
+    for name, functions in SELECTORS.items():
         text = (root / name).read_text()
-        tree = ast.parse(text)
-        matches = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == function]
-        if len(matches) != 1:
-            raise ValueError('Browser policy selector is incompatible with installed Hermes')
-        body = matches[0].body
-        offset = 1 if (isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
-                       and isinstance(body[0].value.value, str)) else 0
-        expected = ast.parse(
-            'from spartan_browser_policy import camofox_policy_enabled as _spartan_camofox_policy\n'
-            + guards[function]).body
-        if (len(body) <= offset + 1 or MARKER not in text
-                or [ast.dump(node) for node in body[offset:offset + 2]]
-                   != [ast.dump(node) for node in expected]):
-            raise ValueError('Installed Hermes lacks the mandatory browser policy guards')
+        for function in functions:
+            _validate_selector(text, function, guards[function])
         compile(text, name, 'exec')
     if manifest_path is None:
         return  # Built-in adaptation; the image owns the installation tree.
@@ -282,10 +279,9 @@ def cold_import_preflight(uid: int, gid: int) -> None:
             'SPARTAN_HERMES_RUN_UID': str(uid), 'SPARTAN_HERMES_RUN_GID': str(gid),
         }
         code = ('from spartan_browser_policy import camofox_policy_enabled\n'
-                'from tools.browser_camofox import is_camofox_mode\n'
-                'from tools.browser_use_cli import is_browser_use_cli_mode\n'
-                'from tools.browser_tool_cdp import _get_cdp_override_raw\n'
-                'from tools.browser_tool_cloud import _resolve_cloud_provider_uncached\n'
+                'from tools.browser_use_cli import browser_exec_available\n'
+                'from tools.browser_session_cdp import get_cdp_override_raw\n'
+                'from tools.browser_session_cloud import get_cloud_provider\n'
                 'from tools.tool_backend_helpers import read_selection\n'
                 'import tools.browser_tool\n'
                 'import os, pathlib\n'
@@ -296,11 +292,10 @@ def cold_import_preflight(uid: int, gid: int) -> None:
                 ' spartan_browser_variant.validate_runtime(pathlib.Path("/opt/hermes"))\n'
                 ' assert camofox_policy_enabled()\n'
                 'if camofox_policy_enabled():\n'
-                ' assert is_camofox_mode()\n'
-                ' assert not is_browser_use_cli_mode()\n'
-                ' assert not _get_cdp_override_raw()\n'
+                ' assert not browser_exec_available()\n'
+                ' assert not get_cdp_override_raw()\n'
                 ' assert read_selection("browser") == "camofox"\n'
-                ' assert _resolve_cloud_provider_uncached() is None\n')
+                ' assert get_cloud_provider() is None\n')
         result = subprocess.run(['/command/s6-applyuidgid', '-u', str(uid), '-g', str(gid),
                                  sys.executable, '-P', '-B', '-c', code], cwd='/opt/hermes', env=environment,
                                 capture_output=True, timeout=30, check=False)
