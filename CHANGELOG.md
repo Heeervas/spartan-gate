@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Record operator-local native Hermes Webapp activation through the existing
+  private HTTPS edge, retaining both sign-in layers and exact-proxy trust for
+  secure native cookies. Public exposure defaults remain unchanged.
+
 - Pin Hermes to main snapshot `90d6b98fd86d20981ee06ddd5b7d93e4320f26a4`
   with exact-source base admission. Retire the obsolete s6 permission workaround
   in favor of upstream's separated dynamic scanner while preserving numeric
