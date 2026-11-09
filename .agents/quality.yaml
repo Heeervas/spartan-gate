@@ -15,6 +15,7 @@ scope:
   - apps/hermes-agent/test_*.py
   - apps/hermes-agent/spartan_branch_navigation.py
   - apps/hermes-agent/spartan_branch_gateway.py
+  - apps/hermes-agent/spartan_branch_desktop.py
   - apps/hermes-agent/proxy-bootstrap.py
   - apps/hermes-agent/Dockerfile
   - infra/pi/**

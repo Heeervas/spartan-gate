@@ -1,6 +1,18 @@
 # Upstream main revision: 90d6b98fd86d20981ee06ddd5b7d93e4320f26a4
 # Prepare this exact source-built base first; registry main is not this revision.
 ARG HERMES_BASE_IMAGE=spartan-hermes-upstream:90d6b98f-full
+
+# Browser-hosted Desktop is baked into this image. Rebuild the patched renderer
+# through upstream's frozen headless recipe, not Electron or browser downloads.
+FROM ${HERMES_BASE_IMAGE} AS branch_renderer
+USER root
+ENV PATH="/opt/hermes/.venv/bin:$PATH"
+WORKDIR /opt/hermes
+COPY --chown=0:0 patches/patch_branch_navigation.py /tmp/patch_branch_navigation.py
+RUN python3 /tmp/patch_branch_navigation.py --frontend-only /opt/hermes \
+    && python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); p = Path("/usr/local/bin/pnpm"); p.exists() or p.symlink_to(installed_package("pnpm").binary)' \
+    && node apps/desktop/scripts/build-webapp.mjs
+
 FROM ${HERMES_BASE_IMAGE}
 
 USER root
@@ -177,7 +189,8 @@ COPY --chown=0:0 entrypoint-wrapper.sh /opt/hermes/entrypoint-wrapper.sh
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/bootstrap/spartan_browser_policy.py
 COPY --chown=0:0 spartan_browser_policy.py /opt/hermes/spartan_browser_policy.py
 COPY --chown=0:0 --chmod=0644 spartan_camofox_vault.py /opt/hermes/spartan_camofox_vault.py
-COPY --chown=0:0 --chmod=0644 spartan_branch_navigation.py spartan_branch_gateway.py /opt/hermes/
+COPY --chown=0:0 --chmod=0644 spartan_branch_navigation.py spartan_branch_gateway.py spartan_branch_desktop.py /opt/hermes/
+COPY --from=branch_renderer --chown=0:0 /opt/hermes/apps/desktop/dist-webapp /opt/hermes/apps/desktop/dist-webapp
 COPY --chown=0:0 spartan_browser_variant.py /opt/hermes/patches/spartan_browser_variant.py
 COPY --chown=0:0 spartan-browser-variant-init.sh /opt/hermes/patches/spartan-browser-variant-init.sh
 COPY --chown=0:0 spartan-browser-policy-init.sh /etc/cont-init.d/0195-spartan-browser-policy

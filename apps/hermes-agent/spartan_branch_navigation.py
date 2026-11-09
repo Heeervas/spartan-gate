@@ -20,6 +20,15 @@ def acknowledgment_only():
     return _ACK_ONLY.get()
 
 
+@contextmanager
+def acknowledgment_scope(enabled):
+    token = _ACK_ONLY.set(enabled)
+    try:
+        yield
+    finally:
+        _ACK_ONLY.reset(token)
+
+
 def clear_ack_tools(agent):
     agent.tools = []
     agent.valid_tool_names = set()
@@ -52,11 +61,26 @@ def navigation_owner(db, session_id):
 
 def record_navigation(db, child, parent, parent_source=None):
     """Capture the actual copied rows, not the parent's later advancing history length."""
+    if db.get_session_model_config_value(child, NAV_KEY) is not None:
+        return  # native branch retries must not reopen completed/ambiguous returns
     inherited = [row["message_uid"] for row in db.get_messages(child)]
     db.patch_session_model_config(child, {NAV_KEY: {
         "parent": parent, "parent_source": parent_source,
         "inherited": inherited, "status": "open",
     }})
+
+
+def record_committed_branch(conn, child, parent):
+    """Canonical branch: seed and navigation share the native receipt transaction."""
+    import json
+    row = conn.execute('SELECT model_config FROM sessions WHERE id=?', (child,)).fetchone()
+    config = json.loads(row[0] or '{}')
+    if NAV_KEY in config:
+        return
+    inherited = [r[0] for r in conn.execute(
+        'SELECT message_uid FROM messages WHERE session_id=? ORDER BY id', (child,))]
+    config[NAV_KEY] = dict(parent=parent, parent_source=None, inherited=inherited, status='open')
+    conn.execute('UPDATE sessions SET model_config=? WHERE id=?', (json.dumps(config), child))
 
 
 def set_status(db, owner, nav, status, **fields):

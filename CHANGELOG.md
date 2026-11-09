@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add Desktop `/return` and `/cancel` using the owning session authority, with
+  separate legacy compatibility. Return summarizes only added branch work into
+  one parent turn with tools disabled for its acknowledgment; cancel imports
+  nothing. Preserve child history, filesystem changes, profile and connection
+  ownership, and rebuild the web renderer with its native command routing.
+  Older branches without navigation metadata refuse rather than guess.
+
 - Record native large-Spanish Pocket TTS download and subsequently authorized
   local activation after resource/latency tests. A private 4-GiB Pocket limit
   supports the bilingual 24-layer candidate; public defaults and offline/security

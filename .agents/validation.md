@@ -599,8 +599,56 @@ For the focused dispatch-denial RED control only, set
 it reaches validation/dispatch instead of the branch acknowledgment guard.
 Re-run without that fixture-only selector for GREEN. No runtime flag is added.
 
+### Desktop source slice
+
+The accepted Desktop plan adds exactly `apps/hermes-agent/spartan_branch_desktop.py`
+to existing inventory/Python coverage. No baseline, floor, threshold, adapter or
+exception change. Keep root Gate checks on Node 22. The exact upstream Desktop
+recipe instead requires its pinned Node 26.12.1 and pnpm 12.15.0 (native
+`pm/lock.json` and root `devEngines`); use explicit existing tools or an authorized
+task-local preparation, never a global install. Native Python checks need actual
+pydantic 2.14.1/psutil 7.2.2 and their locked dependencies when absent from the
+selected interpreter. `HERMES_NATIVE_TEST_DEPS` optionally names an explicitly
+provisioned isolated dependency target, never an active profile or guessed path.
+`HERMES_DESKTOP_NODE` can select the exact existing Node 26 binary for the renderer
+fixture while the root Gate test runner retains Node 22. Prefer focused native
+Python checks in the existing image interpreter when explicitly authorized: use
+runtime UID, task-only `/tmp` source copies, scrub the environment before startup,
+bind temporary HOME/HERMES_HOME/XDG/cache, and retain outer timeouts. Never patch
+the installed tree or start a gateway. The focused fixtures block network and
+subprocess execution and assert native imports come from their patched disposable
+copy, not an editable installation's live source. These process-local guards are
+not an OS sandbox. Full patch-chain checks remain host-isolated gates.
+
+```sh
+: "${HERMES_UPSTREAM_SOURCE:?Select pristine pinned Hermes source}"
+PYTHONDONTWRITEBYTECODE=1 .venv/quality/bin/python -m unittest discover -s apps/hermes-agent -p test_branch_desktop.py -v
+# HERMES_DESKTOP_SOURCE is a DISPOSABLE copy of that exact source, not the pristine input.
+: "${HERMES_DESKTOP_SOURCE:?Select disposable native renderer source}"
+.venv/quality/bin/python apps/hermes-agent/patches/patch_branch_navigation.py --frontend-only "$HERMES_DESKTOP_SOURCE"
+node "$HERMES_DESKTOP_SOURCE/apps/desktop/scripts/build-webapp.mjs" --deps-only
+export HERMES_DESKTOP_WORKSPACE="$HERMES_DESKTOP_SOURCE/.build/webapp-workspace"
+.venv/quality/bin/python -m unittest discover -s apps/hermes-agent -p test_branch_desktop_renderer.py -v
+# The native headless mirror omits this fixture imported by an upstream TS test.
+mkdir -p "$HERMES_DESKTOP_WORKSPACE/tests/fixtures"
+cp "$HERMES_UPSTREAM_SOURCE/tests/fixtures/session-resume-active-turn.json" "$HERMES_DESKTOP_WORKSPACE/tests/fixtures/"
+node "$HERMES_DESKTOP_WORKSPACE/node_modules/typescript/bin/tsc" -p "$HERMES_DESKTOP_WORKSPACE/apps/desktop" --noEmit
+node "$HERMES_DESKTOP_SOURCE/apps/desktop/scripts/build-webapp.mjs"
+# Renew focused CLI/Discord, full Hermes/native patch-chain and TOP gates above.
+```
+
+The Desktop Python fixture executes native canonical branch persistence, durable
+admission/settlement, real TurnRunner invocation, authorization/busy/duplicate and
+summary-failure paths. The legacy fixture uses real branch/seed and prompt
+admission/invocation with synthetic application/worker assembly. The native
+managed-worker bootstrap and execution scope are exercised without a subprocess.
+The renderer gate executes the actual slash hook and actual owner router over a
+synthetic transport, plus upstream branch-owner/canonical protocol tests. It does
+not install or run a browser/Electron, and is not live Desktop E2E. Neither source
+input skips nor missing workspace skips satisfy Desktop source acceptance.
+
 Parent-owned deployment acceptance remains separate: integrated candidate review,
-installed helper/patch identities, existing image/runtime canary, native terminal
-and Discord return/notice readback. Interrupted/pending returns require history
+installed helper/patch and rebuilt/served renderer identities, existing image/runtime
+canary, native terminal, Desktop and Discord return/cancel/notice readback. Interrupted/pending returns require history
 inspection rather than automatic replay; completion does not certify final-bubble
 Discord delivery. No new release/operational authority follows from these checks.

@@ -43,7 +43,7 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         )
         self.assertEqual(
             [line for line in instructions if line.startswith('FROM ')],
-            ['FROM ${HERMES_BASE_IMAGE}'],
+            ['FROM ${HERMES_BASE_IMAGE} AS branch_renderer', 'FROM ${HERMES_BASE_IMAGE}'],
         )
         self.assertLess(instructions.index(pinned_default),
                         instructions.index('FROM ${HERMES_BASE_IMAGE}'))
@@ -52,6 +52,12 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
             dockerfile,
         )
 
+        renderer, final = dockerfile.split('FROM ${HERMES_BASE_IMAGE}\n', 1)
+        self.assertIn('python3 /tmp/patch_branch_navigation.py --frontend-only /opt/hermes', renderer)
+        self.assertIn('node apps/desktop/scripts/build-webapp.mjs', renderer)
+        self.assertNotIn('electron-builder', renderer)
+        self.assertIn('COPY --from=branch_renderer --chown=0:0 /opt/hermes/apps/desktop/dist-webapp /opt/hermes/apps/desktop/dist-webapp', final)
+        self.assertIn('COPY --chown=0:0 --chmod=0644 spartan_branch_navigation.py spartan_branch_gateway.py spartan_branch_desktop.py /opt/hermes/', final)
         self.assertNotIn('FROM node:22-bookworm-slim AS node22', dockerfile)
         self.assertNotIn('apt-get upgrade', dockerfile)
 
@@ -89,7 +95,12 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertNotIn('runtime-docs/ /opt/hermes/runtime-docs/', dockerfile)
         self.assertNotIn('RUN chown -R root:root /opt/hermes', dockerfile)
         self.assertIn('chmod 0755 /opt/hermes/bootstrap', dockerfile)
-        self.assertIn('chmod 0644 /opt/hermes/.venv/.lock', dockerfile)
+        lock_seal = ('for lock in /opt/hermes/.venv/.lock /opt/hermes/uv-cache/.lock; do \\\n'
+                     '        if [ -f "$lock" ]; then chmod 0644 "$lock"; fi; \\\n'
+                     '    done')
+        self.assertIn(lock_seal, dockerfile)
+        self.assertLess(dockerfile.index(lock_seal),
+                        dockerfile.index('python3 /opt/hermes/patches/audit-install-tree.py /opt/hermes'))
         self.assertIn('audit-install-tree.py /opt/hermes', dockerfile)
         self.assertNotIn('"/opt/hermes/bootstrap/cdp-patch.js"', dockerfile)
         self.assertNotIn('/opt/hermes-plugins', dockerfile)

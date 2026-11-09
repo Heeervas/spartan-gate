@@ -54,9 +54,11 @@ class PatchTests(unittest.TestCase):
     def test_native_journeys(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            env = {**os.environ, "HOME": str(home), "HERMES_HOME": str(home / "hermes"),
-                   "XDG_CONFIG_HOME": str(home / "config"), "XDG_DATA_HOME": str(home / "data"),
-                   "PYTHONDONTWRITEBYTECODE": "1"}
+            env = {k: v for k, v in os.environ.items() if k in (
+                'PATH', 'LANG', 'TZ', 'HERMES_UPSTREAM_SOURCE', 'BRANCH_TEST_TOOL_GUARD_RED', 'PYTHONPATH')}
+            env.update(HOME=str(home), HERMES_HOME=str(home / 'hermes'),
+                       XDG_CONFIG_HOME=str(home / 'config'), XDG_DATA_HOME=str(home / 'data'),
+                       XDG_CACHE_HOME=str(home / 'cache'), TMPDIR=str(home), PYTHONDONTWRITEBYTECODE='1')
             # The native providers are never initialized; reject network even if a fixture regresses.
             result = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()), "--native", str(home)],
                                     env=env, capture_output=True, text=True, timeout=90)
@@ -82,12 +84,15 @@ if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--native':
     load_patch().apply(root)
     if os.environ.get("BRANCH_TEST_TOOL_GUARD_RED") == "1":
         shutil.copyfile(Path(SOURCE) / "agent/turn_tool_round.py", root / "agent/turn_tool_round.py")
-    for name in ("spartan_branch_navigation.py", "spartan_branch_gateway.py"):
+    for name in ("spartan_branch_navigation.py", "spartan_branch_gateway.py", "spartan_branch_desktop.py"):
         shutil.copyfile(HERE / name, root / name)
     sys.path.insert(0, str(root))
     # No host credentials/provider transport or accidental public traffic in these synthetic tests.
     socket.socket.connect = lambda *args: (_ for _ in ()).throw(AssertionError("network forbidden"))
+    subprocess.Popen = lambda *a, **k: (_ for _ in ()).throw(OSError('fixture forbids subprocess'))
     from hermes_state import SessionDB, AsyncSessionDB
+    import hermes_state
+    assert Path(hermes_state.__file__).resolve().is_relative_to(root), hermes_state.__file__
     from gateway.config import Platform, GatewayConfig
     from gateway.session import SessionStore, AsyncSessionStore, SessionSource, build_session_key
     from gateway.platforms.base import MessageEvent, MessageType
