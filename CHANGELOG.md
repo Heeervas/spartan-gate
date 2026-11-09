@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Record native large-Spanish Pocket TTS download/smoke acceptance separately
+  from activation; keep the working standard provider selected until the larger
+  candidate passes memory-headroom and latency checks.
+
 - Prepare optional Pocket TTS Spanish 6-/24-layer and predefined Eponine/Lola
   comparison with selection-bound caches and an offline WAV/timing report CLI.
   Preserve default caches, internal-only runtime, non-cloning weights and explicit
