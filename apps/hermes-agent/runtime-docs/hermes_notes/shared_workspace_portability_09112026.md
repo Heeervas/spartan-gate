@@ -35,12 +35,27 @@ neighboring containers and native create/read/patch behavior were verified;
 outside-root writes and credential guards still refuse access. The existing
 shared-skill aliases are allowed through the write-safe-root boundary.
 
-Nine external registrations remain outside the mounted collection, including
-seven native Ultimate worktrees and two separately owned temporary worktrees.
-They were not relocated or exposed. Existing native relocation and supported
-future placement still require their own reconciled transition; this activation
-does not complete those outcomes. Never prune registrations merely because the
-container cannot see their host-only paths. Do not restore an old Git image
-against the new repository format without a verified compatible recovery.
+At initial activation, nine external registrations remained outside the mounted
+collection. In the subsequent Ultimate-owned migration, the seven native
+checkouts moved inside their projects' worktree areas and per-project future
+placement was configured. The prior integration HEAD was retained separately,
+not discarded. Two separately owned temporary worktrees remain external.
+
+Applied follow-up: the seven moved trees retained `user_home_t` and failed Git
+reads from Hermes. After scoped preflight and label recovery capture, their
+SELinux type was changed to `container_file_t`, without following symlinks or
+changing owners/modes. All 129,578 captured entries retained inode, Unix metadata,
+size and modification time; Git pointers, indexes and HEADs were unchanged.
+All 18 currently shared checkouts now resolve matching HEADs from host/Hermes.
+Disposable host-created relative-worktree fixtures under both project worktree
+areas inherited the correct label and passed workload-user Git/read/write checks
+without relabeling. Fixtures were removed; real project registrations and Ultimate
+private state were not changed by these checks. SELinux remains Enforcing;
+no persistent policy, mounts or services were changed or restarted.
+
+This verifies Git/container access, not every native Ultimate session or queue.
+Never prune registrations merely because the container cannot see their host-only
+paths. Do not restore an old Git image against the new repository format without
+a verified compatible recovery.
 
 Runtime publication is not implied by this archive note; it is not a mounted guide.

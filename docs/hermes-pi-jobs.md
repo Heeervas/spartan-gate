@@ -160,6 +160,18 @@ repair remain enabled for internal state, including rejection of unexpected
 mounts there. Keep `create_host_path: false`, scoped SELinux labeling and actual
 workload-user access checks on the approved collection.
 
+On SELinux hosts, relocating an existing checkout into the collection can retain
+its former label (for example `user_home_t`); `bind.selinux: z` is not a continuous
+relabeling service. Some Compose Mount API paths also omit the requested relabel,
+so verify actual labels and workload-user access rather than the setting alone.
+New files normally inherit the destination directory's label; verify this with a
+disposable checkout before relying on it. For authorized imports, preflight the
+exact trees, symlinks, nested mounts and externally shared hardlinks, then apply
+only the needed shared-container label without following symlink targets. Do not
+change Unix permissions/ownership, disable SELinux or add startup-wide recursive
+repair. A host `restorecon` can reset temporary labels; persistent host policy is
+a separate decision, not an automatic solution for later renames.
+
 Collaborative worktrees must physically live within that collection and use
 relative Git links, so different host/container roots preserve their layout.
 Every consumer needs Git >=2.48; the image pins Git 2.56.0. Enable
