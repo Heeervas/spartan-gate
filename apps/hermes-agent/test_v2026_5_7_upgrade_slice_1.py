@@ -61,6 +61,17 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         self.assertNotIn('FROM node:22-bookworm-slim AS node22', dockerfile)
         self.assertNotIn('apt-get upgrade', dockerfile)
 
+    def test_renderer_publish_starts_with_vacant_stage_destination(self):
+        dockerfile = read_text(DOCKERFILE_PATH)
+        renderer, final = dockerfile.split('FROM ${HERMES_BASE_IMAGE}\n', 1)
+        # Native publishDirectory renames an existing product aside. A base-image
+        # lower-layer directory cannot be renamed that way on Docker overlayfs.
+        clear = 'rm -rf /opt/hermes/apps/desktop/dist-webapp'
+        build = 'node apps/desktop/scripts/build-webapp.mjs'
+        self.assertIn(clear + ' \\\n    && ' + build, renderer)
+        self.assertEqual(renderer.count(clear), 1)
+        self.assertNotIn(clear, final)
+
     def test_dockerfile_keeps_upstream_init_as_pid_1(self):
         dockerfile = read_text(DOCKERFILE_PATH)
 

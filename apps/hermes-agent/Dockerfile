@@ -9,8 +9,11 @@ USER root
 ENV PATH="/opt/hermes/.venv/bin:$PATH"
 WORKDIR /opt/hermes
 COPY --chown=0:0 patches/patch_branch_navigation.py /tmp/patch_branch_navigation.py
+# Discard only this disposable stage's inherited product: overlayfs cannot rename
+# a lower-layer directory aside for the native publisher's previous-build backup.
 RUN python3 /tmp/patch_branch_navigation.py --frontend-only /opt/hermes \
     && python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); p = Path("/usr/local/bin/pnpm"); p.exists() or p.symlink_to(installed_package("pnpm").binary)' \
+    && rm -rf /opt/hermes/apps/desktop/dist-webapp \
     && node apps/desktop/scripts/build-webapp.mjs
 
 FROM ${HERMES_BASE_IMAGE}
