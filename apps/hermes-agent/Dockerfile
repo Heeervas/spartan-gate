@@ -2,6 +2,23 @@
 # Prepare this exact source-built base first; registry main is not this revision.
 ARG HERMES_BASE_IMAGE=spartan-hermes-upstream:90d6b98f-full
 
+# Relative linked worktrees require Git >=2.48 in every consumer. Build the
+# pinned upstream release on the same distro; do not add a rolling APT source.
+FROM ${HERMES_BASE_IMAGE} AS git_builder
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential libcurl4-openssl-dev libexpat1-dev libssl-dev \
+        zlib1g-dev libpcre2-dev gettext \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    curl -fsSL --max-time 180 https://www.kernel.org/pub/software/scm/git/git-2.56.0.tar.xz -o /tmp/git.tar.xz; \
+    echo '26c56c296b38c0695b26fa95f475f1d01704d2d38e73465ca30b0b2f5dc789d3  /tmp/git.tar.xz' | sha256sum -c -; \
+    tar -xJf /tmp/git.tar.xz -C /tmp; \
+    make -C /tmp/git-2.56.0 -j4 prefix=/usr/local NO_RUST=YesPlease NO_TCLTK=YesPlease USE_LIBPCRE2=YesPlease; \
+    make -C /tmp/git-2.56.0 prefix=/usr/local NO_RUST=YesPlease NO_TCLTK=YesPlease USE_LIBPCRE2=YesPlease DESTDIR=/tmp/git-root install; \
+    test "$(/tmp/git-2.56.0/git --version)" = 'git version 2.56.0'
+
 # Browser-hosted Desktop is baked into this image. Rebuild the patched renderer
 # through upstream's frozen headless recipe, not Electron or browser downloads.
 FROM ${HERMES_BASE_IMAGE} AS branch_renderer
@@ -266,6 +283,12 @@ RUN python3 /opt/hermes/patches/patch_stage2_runtime_owner.py \
     && test "$(stat -c '%u:%g' /opt/hermes/tools/browser_tool.py)" = "0:0" \
     && setpriv --reuid=65534 --regid=65534 --clear-groups \
         python3 -c 'from pathlib import Path; [Path(path).read_bytes() for path in ("/opt/hermes/plugins/camofox/camofox_tools.py", "/opt/hermes/tools/browser_tool.py")]'
+
+# Only Git's install tree crosses stages; compiler/build dependencies stay out.
+COPY --from=git_builder /tmp/git-root/ /
+RUN test "$(git --version)" = 'git version 2.56.0' \
+    && test "$(command -v git)" = /usr/local/bin/git \
+    && test -x "$(git --exec-path)/git-remote-https"
 
 # Optional local analysis CLIs. Keep this late layer independent of Hermes' venv.
 # Archive digests are from the official v0.659.0 GitHub release asset API.

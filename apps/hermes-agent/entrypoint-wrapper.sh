@@ -101,12 +101,11 @@ fi
 # Installed-code patches are build-time-only. Runtime hooks below may update
 # only data/config under HERMES_HOME.
 
-# Keep the Meet workspace private and writable by the Hermes runtime user.
+# Create new Meet storage privately as the workload user. Workspace may contain
+# shared user code: never normalize existing ownership/modes or follow links
+# with a privileged recursive repair (including an existing meetings alias).
 meet_workspace="$HERMES_HOME/workspace/meetings"
-run_as_hermes mkdir -p "$meet_workspace"
-chown "$SPARTAN_HERMES_RUNTIME_OWNER" "$HERMES_HOME/workspace" "$meet_workspace" 2>/dev/null || true
-chown -R "$SPARTAN_HERMES_RUNTIME_OWNER" "$meet_workspace" 2>/dev/null || true
-chmod -R u+rwX,go-rwx "$meet_workspace" 2>/dev/null || true
+run_as_hermes sh -c 'umask 077; mkdir -p -- "$1"' sh "$meet_workspace"
 
 # Preserve the venv path in login shells used by agent terminals.
 _venv_marker="# hermes-runtime-user-path"

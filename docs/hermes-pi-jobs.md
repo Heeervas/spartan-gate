@@ -145,42 +145,41 @@ hold tests/instructions; v1 is retired. A read-only native plugin alias does not
 make code immutable when the shared source root is writable elsewhere: coordinate
 edits and runtime reloads. Gate-specific adapters remain owned by Gate.
 
-An explicitly approved shared project collection can be mounted read/write at
-`/projects/shared`, with independent repositories and explicitly approved groups
-such as `pi-extensions/`. Each repository retains its own Git and authority. Keep
-Gate's private checkout and host credential/session stores outside this collection.
-The whole collection is writable by the Hermes workload; it is not per-project
-or per-profile isolation. Do not relocate live repositories or native-managed
-worktrees behind their owning runtime; reconcile writers, registration and
-path-dependent consumers first. Preserve dirty and ignored state rather than
-replacing it with a fresh clone.
+Mount an explicitly approved shared project collection read/write **once** at
+`/opt/data/workspace/projects/shared`. Keep independent repositories and approved
+groups such as `pi-extensions/`; do not mirror the host home path or add a second
+navigation alias. Keep Gate private configuration and host credential/session
+stores outside this collection. The whole collection is writable by Hermes;
+this is not per-project or per-profile isolation.
 
-Do **not** bind this collection below `/opt/data/workspace`: startup deliberately
-rejects nested mounts in recursive ownership targets. Instead, an approved
-`/opt/data/workspace/projects/shared` symlink may point to `/projects/shared`.
-The ownership guard uses physical traversal and does not follow descendant
-symlinks; keep that guard enabled. Refuse an occupied alias path, and verify
-actual startup, workload-user Git/write access and unchanged neighboring services.
-Do not confuse the navigation alias with an additional mount.
+Workspace contains user code, not internal Hermes state. Startup does not scan
+or recursively repair its ownership. Prepare its permissions on the host and
+run Hermes with the compatible workload UID/GID. Incorrect workspace permissions
+need an operator diagnosis, not recursive privileged repair. Ownership checks and
+repair remain enabled for internal state, including rejection of unexpected
+mounts there. Keep `create_host_path: false`, scoped SELinux labeling and actual
+workload-user access checks on the approved collection.
 
-When host Git worktrees contain absolute common-directory links, an operator may
-also bind the **same approved collection only** at its matching host absolute
-path inside Hermes. Keep missing-source refusal and SELinux labeling on both
-views; do not mount native session homes just to satisfy external registrations.
-Point workspace navigation to that canonical view and use it for worktree
-operations so newly recorded paths also resolve on the host. The short view and
-canonical view contain the same files, not copies. Existing external native
-worktrees can remain host-only; never prune them based on a container's missing
-paths. Source relocation must preserve HEADs, branches, indexes, dirty/ignored
-bytes and registrations, using supported Git repair after writers stop.
-Path-derived harness homes need their documented override when restarting;
-source relocation does not authorize a fresh home or automatic agent resumption.
-Newly moved entries can retain host-only SELinux labels even when the collection
-root is already labeled for containers. Verify real workload-user file access;
-correct labels only on approved source entries without following dependency
-symlinks, changing permissions or disabling SELinux.
+Collaborative worktrees must physically live within that collection and use
+relative Git links, so different host/container roots preserve their layout.
+Every consumer needs Git >=2.48; the image pins Git 2.56.0. Enable
+`worktree.useRelativePaths` repo-locally and use supported
+`git worktree repair --relative-paths` after coordinating consumers. This format
+is incompatible with older Git: build/validate the compatible image first and
+exclude old readers as well as writers during cutover. Merely setting the option
+back to false is not a verified downgrade or permission to start an old image.
 
-For Node Search, the source path is `/projects/shared/node-search`. A prepared
+Native managers retain lifecycle ownership. Ultimate supports
+`isolates.worktree.path` for future checkouts/landers, but changing it does not
+relocate existing registered worktrees. A supported native transition must also
+preserve its workspace records and working directories. Do not move native
+checkouts or edit runtime databases externally to manufacture collaboration.
+An unresolved transition is an explicit incomplete migration, not an accepted
+host-only substitute. Never prune worktrees because a container cannot see them.
+Preserve HEADs, branches, indexes and dirty/ignored bytes throughout migration;
+keep conversations, credentials and trust in their native private stores.
+
+For Node Search, the source path is `/opt/data/workspace/projects/shared/node-search`. A prepared
 container dev environment can live outside shared host source at
 `/opt/data/.cache/dev-venvs/node-search`. Select it before launching Pi, preserving
 the invoking owner's actual `HERMES_HOME`. Read the repository instructions and

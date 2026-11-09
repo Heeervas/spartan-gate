@@ -32,7 +32,7 @@ UPSTREAM_MANAGED_DIR_ENTRIES = (
     "platforms/pairing",
     "lazy-packages",
 )
-MANAGED_DIR_ENTRIES = (
+PREVIOUS_MANAGED_DIR_ENTRIES = (
     "cron",
     "sessions",
     "logs",
@@ -50,6 +50,9 @@ MANAGED_DIR_ENTRIES = (
     "kanban",
     ".local/state/hermes",
 )
+# Workspace is user code, potentially bind-mounted from the host. Boot must not
+# scan or repair its descendants as privileged Hermes application state.
+MANAGED_DIR_ENTRIES = tuple(entry for entry in PREVIOUS_MANAGED_DIR_ENTRIES if entry != "workspace")
 MANAGED_FILE_ENTRIES = (
     "auth.json",
     "auth.lock",
@@ -88,6 +91,7 @@ PRUNED_TREE_OWNER_REPLACEMENT = TREE_OWNER_REPLACEMENT.replace(
 )
 # Exact guard emitted before canonical-bind support. Never trust a marker alone.
 LEGACY_PREFLIGHT_SHA256 = "b21d2390bce1d5f0c4df2644c4dfa2b7cb03303c523da2984bc2f6a1aef2c8ee"
+PREVIOUS_PREFLIGHT_SHA256 = "5ac97d369568e0f19d8c1dd825ea6fffe6f4d6494642bf16efff7e2770604f11"
 RUNTIME_CHOWN_ANCHORS = (
     'chown hermes:hermes "$HERMES_HOME"',
     'chown hermes:hermes "$HERMES_HOME/logs/gateways"',
@@ -332,7 +336,7 @@ PY
 
 
 def patch_managed_dir_allowlist(source: str) -> str:
-    """Add only Spartan-owned runtime directories to the ownership allowlist."""
+    """Repair only internal runtime state; workspace remains user-owned code."""
 
     found_managed_loop = False
 
@@ -342,7 +346,7 @@ def patch_managed_dir_allowlist(source: str) -> str:
         if found_managed_loop:
             return original
         entries = match.group("entries").replace("\\", " ").split()
-        if tuple(entries) not in {UPSTREAM_MANAGED_DIR_ENTRIES, UPSTREAM_MANAGED_DIR_ENTRIES[:-1], MANAGED_DIR_ENTRIES}:
+        if tuple(entries) not in {UPSTREAM_MANAGED_DIR_ENTRIES, UPSTREAM_MANAGED_DIR_ENTRIES[:-1], PREVIOUS_MANAGED_DIR_ENTRIES, MANAGED_DIR_ENTRIES}:
             return original
         found_managed_loop = True
         return f"for sub in {' '.join(MANAGED_DIR_ENTRIES)}; do"
@@ -376,7 +380,7 @@ def patch_ownership_boundary(source: str, *, require_existing: bool) -> str:
         start = source.index(OWNERSHIP_PREFLIGHT_MARKER)
         end = source.index(anchor)
         existing = source[start:end]
-        if existing != OWNERSHIP_PREFLIGHT_BLOCK and hashlib.sha256(existing.encode()).hexdigest() != LEGACY_PREFLIGHT_SHA256:
+        if existing != OWNERSHIP_PREFLIGHT_BLOCK and hashlib.sha256(existing.encode()).hexdigest() not in {LEGACY_PREFLIGHT_SHA256, PREVIOUS_PREFLIGHT_SHA256}:
             raise ValueError("unknown runtime ownership preflight guard")
         source = source[:start] + OWNERSHIP_PREFLIGHT_BLOCK + source[end:]
     else:

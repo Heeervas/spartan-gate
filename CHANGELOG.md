@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Treat workspace as user-owned code rather than recursively repaired Hermes
+  state, supporting a single direct shared-project bind. Pin Git 2.56.0 for
+  relative linked-worktree interoperability across host/container paths. Preserve
+  internal-state mount guards and document native-manager migration boundaries.
+
 - Record private native Discord Opus provisioning independently of Talk, with
   same-image encode/decode and actual gateway startup checks. Clarify which
   generic Hermes voice controls the current Pocket command integration does

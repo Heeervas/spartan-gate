@@ -43,7 +43,8 @@ class HermesMainPinUpgradeTests(unittest.TestCase):
         )
         self.assertEqual(
             [line for line in instructions if line.startswith('FROM ')],
-            ['FROM ${HERMES_BASE_IMAGE} AS branch_renderer', 'FROM ${HERMES_BASE_IMAGE}'],
+            ['FROM ${HERMES_BASE_IMAGE} AS git_builder',
+             'FROM ${HERMES_BASE_IMAGE} AS branch_renderer', 'FROM ${HERMES_BASE_IMAGE}'],
         )
         self.assertLess(instructions.index(pinned_default),
                         instructions.index('FROM ${HERMES_BASE_IMAGE}'))

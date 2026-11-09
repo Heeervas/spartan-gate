@@ -97,6 +97,10 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   runtime. Spartan Gate patches that modify installed code must apply during
   image build; boot hooks may only migrate runtime data/config under
   `/opt/data`.
+- `/opt/data/workspace` is user code, not recursively ownership-managed runtime
+  state. Privileged startup neither scans nor repairs its contents; approved
+  project binds may live below it. Host permissions/SELinux and the workload
+  UID/GID govern access. Internal-state ownership guards remain enabled.
 - Dynamic s6 service definitions under `/run/service` are root-owned. Service
   run scripts drop to `hermes` before application code starts, and runtime
   profile registration is deferred to container recreation rather than making

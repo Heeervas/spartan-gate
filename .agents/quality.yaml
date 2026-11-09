@@ -18,6 +18,7 @@ scope:
   - apps/hermes-agent/spartan_branch_desktop.py
   - apps/hermes-agent/proxy-bootstrap.py
   - apps/hermes-agent/Dockerfile
+  - apps/hermes-agent/entrypoint-wrapper.sh
   - infra/pi/**
   - infra/tool-access/**
   - infra/spartan-route/**

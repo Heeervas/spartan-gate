@@ -286,6 +286,32 @@ class Stage2RuntimeOwnerPatchTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_workspace_is_not_scanned_or_an_ownership_target(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "data"
+            (root / "workspace" / "project").mkdir(parents=True)
+            script = _preflight_script(module).replace(
+                "import os\n",
+                "import os\n"
+                "original_walk = os.walk\n"
+                "def checked_walk(path, **kwargs):\n"
+                "    if Path(path) == Path(sys.argv[1]) / 'workspace':\n"
+                "        raise AssertionError('workspace must not be scanned')\n"
+                "    return original_walk(path, **kwargs)\n"
+                "os.walk = checked_walk\n",
+                1,
+            )
+            result = subprocess.run(
+                ["sh", "-c", script], env={**os.environ, "HERMES_HOME": str(root)},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            patched = module.patch_source(upstream_shape())
+            loop = patched.split("for sub in ", 1)[1].split("; do", 1)[0].split()
+            self.assertNotIn("workspace", loop)
+            self.assertIn("profiles", loop)
+
     def test_recursive_preflight_rejects_symlinked_managed_root(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
@@ -406,6 +432,52 @@ if tree_has_non_hermes_owner "$HERMES_HOME/skills"; then exit 42; fi
             )
             for path in (root, *root.rglob("*"))
         }
+
+    def test_effective_repair_loop_preserves_user_workspace(self):
+        source_path = os.environ.get("HERMES_STAGE2_TEST_SOURCE")
+        if not source_path:
+            self.skipTest("actual stage2 source required for effective-loop acceptance")
+        module = load_module()
+        source = module.patch_source(pathlib.Path(source_path).read_text())
+        start = source.index("path_has_symlink_component() {")
+        ownership = source[start:source.index("needs_chown=false\n", start)]
+        start = source.index("    for sub in ")
+        loop = source[start:source.index("\n    done", start) + len("\n    done")]
+        header = '''set -eu
+INSTALL_DIR=/opt/hermes
+HERMES_HOME=/opt/data
+SPARTAN_HERMES_RUN_UID=12345
+SPARTAN_HERMES_RUN_GID=12346
+SPARTAN_HERMES_RUNTIME_OWNER=12345:12346
+'''
+        for mounted in (False, True):
+            with self.subTest(mounted=mounted), tempfile.TemporaryDirectory(
+                dir=os.environ.get("HERMES_STAGE2_TEST_TMPDIR")
+            ) as directory:
+                base = pathlib.Path(directory).resolve()
+                home, project = base / "data", base / "project"
+                workspace = home / "workspace"
+                for path in (workspace / "projects" / "shared", home / "skills", project):
+                    path.mkdir(parents=True)
+                (home / "skills").chmod(0o777)
+                (home / "skills" / "ordinary").write_bytes(b"internal state")
+                (workspace / "ordinary").write_bytes(b"user code")
+                (workspace / "link").symlink_to("/opt/data/workspace/projects/shared/payload")
+                (workspace / "broken").symlink_to("missing")
+                (project / "payload").write_bytes(b"shared code")
+                before = self.snapshot(workspace), self.snapshot(project)
+                command = ["docker", "run", "--rm", "-i", "--network", "none",
+                           "--user", "0:0", "--entrypoint", "/bin/sh",
+                           "--volume", f"{home}:/opt/data:Z"]
+                if mounted:
+                    command += ["--volume", f"{project}:/opt/data/workspace/projects/shared:Z"]
+                command += [os.environ["HERMES_STAGE2_TEST_IMAGE"], "-s"]
+                result = subprocess.run(command, input=header + ownership + loop,
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.snapshot(workspace), self.snapshot(project)), before)
+                metadata = (home / "skills" / "ordinary").stat()
+                self.assertEqual((metadata.st_uid, metadata.st_gid), (12345, 12346))
 
     def test_actual_same_source_bind_is_pruned_during_forced_repair(self):
         self.run_fixture()

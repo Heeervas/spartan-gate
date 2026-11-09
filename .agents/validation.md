@@ -352,6 +352,34 @@ bounded local check in the live container and verify ordinary/login-shell
 availability and native controls before accepting deployment. The 2026-10-21
 canary used `--skip-slow` for explicitly omitted optional duplication coverage.
 
+## Shared workspace and relative Git worktrees
+
+Portable ownership checks run with the normal Hermes suite. Native acceptance
+requires an explicit existing program image and a program-only stage2 source;
+fixtures never bootstrap a live home or contact the network. The effective repair
+loop must leave workspace content, modes and UID/GID unchanged, while internal
+unexpected mounts still refuse. The no-scan regression instruments only the
+isolated emitted preflight, not production code.
+
+```sh
+python3 -m unittest discover -s apps/hermes-agent -p test_stage2_runtime_owner_patch.py
+python3 -m unittest discover -s apps/hermes-agent -p test_workspace_entrypoint.py
+bash -n apps/hermes-agent/entrypoint-wrapper.sh
+HERMES_STAGE2_TEST_IMAGE="$HERMES_TEST_IMAGE" \
+HERMES_STAGE2_TEST_SOURCE="$HERMES_TEST_STAGE2_SOURCE" \
+  python3 -m unittest discover -s apps/hermes-agent -p test_stage2_runtime_owner_patch.py
+HERMES_GIT_TEST_IMAGE="$HERMES_TEST_IMAGE" \
+  python3 -m unittest discover -s apps/hermes-agent -p test_git_worktree_portability.py
+npm run pi:quality
+git diff --check
+```
+
+The Git fixture requires a host Git supporting relative worktrees, creates only
+synthetic repositories, and proves creation/readback from both mapped roots.
+Missing native inputs produce explicit skips, never native acceptance. Coordinate
+old Git readers/writers before converting live repositories; preserve native
+worktree registration/lifecycle and do not prune externally unavailable trees.
+
 ## Native external skill links checks
 
 Scope: the external-skill sync build-time patch, its focused regression tests, and Dockerfile integration. TOP quality floor; immutable baseline `75651cc0c5baa1db5a6523b790564988698f2a43`. This scoped policy does not claim repository-wide enforcement.
