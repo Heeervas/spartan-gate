@@ -356,6 +356,14 @@ sg up -d
 sg ps pocket-tts hermes
 ```
 
+Optional operator-only `POCKET_TTS_SPANISH_MODEL=spanish_24l` selects the larger
+Spanish model; `POCKET_TTS_SPANISH_VOICE=lola` selects another predefined voice.
+Defaults stay standard/Eponine. Each alternative requires its own matching cache;
+unknown selections or mismatches fail closed. Follow the offline WAV/timing
+comparison in `infra/pocket-tts/README.md` before selecting a candidate. This does
+not enable automatic audio or change Hermes: occasional replies use its native
+`text_to_speech` tool after separately authorized provider activation.
+
 The configuration helper is idempotent, keeps the first pre-Pocket config
 backup, and restores the previous provider with `--disable`. A stopped or
 unhealthy sidecar returns an explicit `pocket-tts` error; Hermes does not fall

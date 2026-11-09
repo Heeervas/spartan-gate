@@ -110,6 +110,41 @@ class PocketTTSConfigurationError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class PocketTTSProfile:
+    """Operator-only, finite model/voice selection; never accepted from requests."""
+
+    spanish_model: str = "spanish"
+    spanish_voice: str = "eponine"
+
+    def __post_init__(self):
+        if self.spanish_model not in ("spanish", "spanish_24l"):
+            raise PocketTTSConfigurationError("unsupported POCKET_TTS_SPANISH_MODEL")
+        if self.spanish_voice not in ("eponine", "lola"):
+            raise PocketTTSConfigurationError("unsupported POCKET_TTS_SPANISH_VOICE")
+
+    @property
+    def models(self) -> dict[str, str]:
+        return {"english": "english", "spanish": self.spanish_model}
+
+    @property
+    def voices(self) -> dict[str, str]:
+        return {"english": "anna", "spanish": self.spanish_voice}
+
+    @property
+    def cache_version(self) -> str:
+        if self.spanish_model == "spanish" and self.spanish_voice == "eponine":
+            return CACHE_VERSION
+        return f"v{POCKET_TTS_VERSION}-en-anna-es-{self.spanish_model}-{self.spanish_voice}-int8"
+
+
+def selected_profile() -> PocketTTSProfile:
+    return PocketTTSProfile(
+        os.environ.get("POCKET_TTS_SPANISH_MODEL", "spanish"),
+        os.environ.get("POCKET_TTS_SPANISH_VOICE", "eponine"),
+    )
+
+
 def normalize_language(value: str | None) -> str:
     normalized = str(value or "auto").strip().lower()
     try:
@@ -149,18 +184,25 @@ def cache_manifest_path(cache_root: Path) -> Path:
     return cache_root / "active" / "manifest.json"
 
 
-def expected_manifest() -> dict[str, Any]:
-    return {
-        "cache_version": CACHE_VERSION,
+def expected_manifest(profile: PocketTTSProfile | None = None) -> dict[str, Any]:
+    profile = profile if profile is not None else selected_profile()
+    manifest = {
+        "cache_version": profile.cache_version,
         "pocket_tts_version": POCKET_TTS_VERSION,
         "source_revision": POCKET_TTS_SOURCE_REVISION,
         "quantized": True,
         "languages": list(LANGUAGES),
-        "voices": DEFAULT_VOICES,
+        "voices": profile.voices,
     }
+    # Preserve existing standard/Eponine caches without inventing a migration.
+    if profile.cache_version != CACHE_VERSION:
+        manifest["models"] = profile.models
+    return manifest
 
 
-def validate_active_cache(cache_root: Path) -> dict[str, Any]:
+def validate_active_cache(
+    cache_root: Path, profile: PocketTTSProfile | None = None
+) -> dict[str, Any]:
     manifest_path = cache_manifest_path(cache_root)
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -173,7 +215,7 @@ def validate_active_cache(cache_root: Path) -> dict[str, Any]:
             f"Pocket TTS cache manifest is invalid at {manifest_path}: {exc}"
         ) from exc
 
-    expected = expected_manifest()
+    expected = expected_manifest(profile)
     for key, value in expected.items():
         if manifest.get(key) != value:
             raise PocketTTSConfigurationError(
@@ -211,13 +253,17 @@ def _public_model_config(language: str) -> Path:
     return target
 
 
-def load_language_model(language: str, voice: str):
+def load_language_model(
+    language: str, voice: str, *, profile: PocketTTSProfile | None = None
+):
     from pocket_tts import TTSModel
     from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 
-    model = TTSModel.load_model(config=_public_model_config(language), quantize=True)
+    profile = profile if profile is not None else selected_profile()
+    model_name = profile.models[language]
+    model = TTSModel.load_model(config=_public_model_config(model_name), quantize=True)
     voice_path = download_if_necessary(
-        get_predefined_voice(language=language, name=voice)
+        get_predefined_voice(language=model_name, name=voice)
     )
     voice_state = model.get_state_for_audio_prompt(voice_path)
     return model, voice_state
@@ -230,8 +276,9 @@ class LoadedLanguage:
 
 
 class BilingualSynthesizer:
-    def __init__(self):
-        self.voices = dict(DEFAULT_VOICES)
+    def __init__(self, profile: PocketTTSProfile | None = None):
+        self.profile = profile if profile is not None else selected_profile()
+        self.voices = self.profile.voices
         self._loaded: dict[str, LoadedLanguage] = {}
         self._synthesis_lock = threading.Lock()
 
@@ -242,7 +289,9 @@ class BilingualSynthesizer:
     def load_all(self) -> None:
         for language in LANGUAGES:
             if language not in self._loaded:
-                model, voice_state = load_language_model(language, self.voices[language])
+                model, voice_state = load_language_model(
+                    language, self.voices[language], profile=self.profile
+                )
                 self._loaded[language] = LoadedLanguage(model=model, voice_state=voice_state)
 
     def close(self) -> None:

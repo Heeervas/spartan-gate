@@ -10,12 +10,12 @@ import time
 from pathlib import Path
 
 from runtime import (
-    CACHE_VERSION,
-    DEFAULT_VOICES,
     LANGUAGES,
+    PocketTTSProfile,
     configure_huggingface_cache,
     expected_manifest,
     load_language_model,
+    selected_profile,
 )
 
 
@@ -50,7 +50,7 @@ def cache_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def valid_manifest(version_dir: Path) -> dict | None:
+def valid_manifest(version_dir: Path, profile: PocketTTSProfile | None = None) -> dict | None:
     if not version_dir.is_dir():
         return None
     try:
@@ -59,7 +59,7 @@ def valid_manifest(version_dir: Path) -> dict | None:
         )
     except (OSError, json.JSONDecodeError):
         return None
-    if all(manifest.get(key) == value for key, value in expected_manifest().items()):
+    if all(manifest.get(key) == value for key, value in expected_manifest(profile).items()):
         return manifest
     return None
 
@@ -102,22 +102,24 @@ def seed_huggingface_cache(cache_root: Path, staging: Path) -> bool:
 
 
 def run_prefetch(cache_root: Path, min_before: int, min_after: int) -> dict:
+    profile = selected_profile()
+    cache_version = profile.cache_version
     cache_root.mkdir(parents=True, exist_ok=True)
     versions = cache_root / "versions"
     versions.mkdir(exist_ok=True)
-    target = versions / CACHE_VERSION
+    target = versions / cache_version
 
-    active_manifest = valid_manifest(cache_root / "active")
+    active_manifest = valid_manifest(cache_root / "active", profile)
     if active_manifest is not None:
         return active_manifest
 
-    target_manifest = valid_manifest(target)
+    target_manifest = valid_manifest(target, profile)
     if target_manifest is not None:
         activate_version(cache_root, target)
         return target_manifest
 
     require_free_space(cache_root, min_before, "prefetch")
-    staging = versions / f".{CACHE_VERSION}.staging-{os.getpid()}"
+    staging = versions / f".{cache_version}.staging-{os.getpid()}"
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir()
@@ -131,7 +133,9 @@ def run_prefetch(cache_root: Path, min_before: int, min_after: int) -> dict:
             "spanish": "Pocket TTS está listo.",
         }
         for language in LANGUAGES:
-            model, voice_state = load_language_model(language, DEFAULT_VOICES[language])
+            model, voice_state = load_language_model(
+                language, profile.voices[language], profile=profile
+            )
             audio = model.generate_audio(voice_state, smoke_text[language])
             if audio.numel() <= 0:
                 raise RuntimeError(f"Pocket TTS {language} smoke synthesis was empty")
@@ -139,7 +143,7 @@ def run_prefetch(cache_root: Path, min_before: int, min_after: int) -> dict:
             gc.collect()
             require_free_space(cache_root, min_after, f"{language} download")
 
-        manifest = expected_manifest()
+        manifest = expected_manifest(profile)
         manifest.update(
             {
                 "created_at_unix": int(time.time()),
@@ -154,7 +158,7 @@ def run_prefetch(cache_root: Path, min_before: int, min_after: int) -> dict:
 
         stale_target = target if target.exists() or target.is_symlink() else None
         final_target = (
-            versions / f"{CACHE_VERSION}-{time.time_ns()}-{os.getpid()}"
+            versions / f"{cache_version}-{time.time_ns()}-{os.getpid()}"
             if stale_target is not None
             else target
         )

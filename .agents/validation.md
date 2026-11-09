@@ -1,5 +1,26 @@
 # Validation authority
 
+## Pocket TTS Spanish comparison — source preparation
+
+Independent reviewer (GPT-6.1 Sol high, 2026-11-09) approved additive
+`infra/pocket-tts/**` inventory and existing Python AST coverage. Preserve the
+immutable baseline, TOP floor, adapters, thresholds and exceptions. Dockerfile,
+Compose and documentation inventory is not semantic or native-audio proof.
+
+```sh
+.venv/quality/bin/python -m unittest discover -s infra/pocket-tts -p 'test_*.py' -v
+.venv/quality/bin/python -m unittest scripts.test_configure_pocket_tts scripts.test_pocket_tts_compose_contract scripts.test_compose_hardening_contract -v
+docker compose -f infra/compose/compose.yml --env-file .env.example --profile pocket-tts --profile pocket-tts-bootstrap config --quiet
+npm run pi:quality
+git diff --check
+```
+
+Run `npm run pi:quality` with the extended inventory before production edits and
+again after final edits. Isolated comparison, downloads/builds and live Hermes
+activation are separate operator actions documented in `infra/pocket-tts/README.md`.
+Mock synthesis does not establish asset compatibility, Spanish accent/quality,
+CPU latency/RSS or channel delivery. Keep those native gates open until exercised.
+
 ## MCPHub opt-in source acceptance
 
 Independent plan review (2026-10-30, READY / PASS_WITH_NOTES) approved additive

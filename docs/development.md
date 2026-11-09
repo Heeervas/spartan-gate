@@ -63,6 +63,7 @@ npm run test:hermes   # surviving Python patches and host fixtures
 npm run test:pi       # gateway and actual Pi extension loader
 npm run test:camofox  # Python and JavaScript browser-boundary fixtures
 npm run test:scripts  # operator helpers and full public Compose matrix
+python3 -m unittest discover -s infra/pocket-tts -p 'test_*.py' -v  # offline source fixtures, not real voice quality
 npm run test:reader  # SSRF, total fetch deadline and bounded DNS/worker lifecycle
 npm run test:tools   # scoped auth/transport/browser policy and synthetic installer
 python3 -m unittest discover -s infra/caddy -p 'test_edge_sessions.py'

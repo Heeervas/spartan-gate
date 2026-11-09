@@ -165,12 +165,19 @@ public L4 installs keep it disabled until its cache and provider are configured.
   `spartan-gate-pocket-tts:2.1.0`.
 - `POCKET_TTS_DATA_PATH`: private host path for the versioned model cache.
 - `POCKET_TTS_MAX_TEXT_LENGTH`: sidecar request limit, default `5000`.
+- `POCKET_TTS_SPANISH_MODEL`: operator-only `spanish` (default, 6 layers) or
+  `spanish_24l` (24 layers); requires a matching prefetched cache.
+- `POCKET_TTS_SPANISH_VOICE`: predefined `eponine` (default) or `lola`, not an
+  arbitrary URL/file. Alternative asset compatibility and accent require listening.
 - `POCKET_TTS_MIN_FREE_BEFORE_BYTES`: prefetch start guard, default 8 GiB.
 - `POCKET_TTS_MIN_FREE_AFTER_BYTES`: download/activation guard, default 5 GiB.
 
 The normal `pocket-tts` profile is offline and requires an already active
 cache. `pocket-tts-bootstrap` is a one-shot download profile used only by
 `sg run --rm pocket-tts-prefetch`; do not keep it in `COMPOSE_PROFILES`.
+Nondefault model/voice selections have separate cache identities. Unknown values
+and mismatched caches fail closed. Use the isolated comparison procedure in
+`infra/pocket-tts/README.md` before changing the production cache/provider.
 
 ## Retired Browserless/CDP configuration
 

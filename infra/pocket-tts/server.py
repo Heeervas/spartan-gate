@@ -11,6 +11,7 @@ from runtime import (
     BilingualSynthesizer,
     PocketTTSConfigurationError,
     configure_huggingface_cache,
+    selected_profile,
     validate_active_cache,
 )
 
@@ -66,6 +67,7 @@ class PocketTTSHandler(BaseHTTPRequestHandler):
                 "status": "healthy",
                 "languages": synthesizer.loaded_languages,
                 "voices": synthesizer.voices,
+                "models": synthesizer.profile.models,
                 "offline": True,
             },
         )
@@ -141,9 +143,10 @@ class PocketTTSHandler(BaseHTTPRequestHandler):
 def initialize() -> None:
     global synthesizer, startup_error
     try:
-        validate_active_cache(CACHE_ROOT)
+        profile = selected_profile()
+        validate_active_cache(CACHE_ROOT, profile)
         configure_huggingface_cache(CACHE_ROOT / "active", offline=True)
-        candidate = BilingualSynthesizer()
+        candidate = BilingualSynthesizer(profile)
         candidate.load_all()
         synthesizer = candidate
         logger.info(

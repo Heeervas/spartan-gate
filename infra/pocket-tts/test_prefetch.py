@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import prefetch
-from runtime import CACHE_VERSION, expected_manifest
+from runtime import CACHE_VERSION, PocketTTSConfigurationError, PocketTTSProfile, expected_manifest
 
 
 class PrefetchAtomicityTests(unittest.TestCase):
@@ -111,6 +112,36 @@ class PrefetchAtomicityTests(unittest.TestCase):
             self.assertNotEqual((root / "active").resolve(), stale.resolve())
             self.assertFalse(stale.exists())
             self.assertEqual(prefetch.valid_manifest(root / "active"), manifest)
+
+    def test_alternative_prefetch_uses_matching_profile_and_retains_legacy_version(self):
+        model = mock.Mock()
+        model.generate_audio.return_value.numel.return_value = 1
+        profile = PocketTTSProfile("spanish_24l", "lola")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / "versions" / CACHE_VERSION
+            legacy.mkdir(parents=True)
+            (legacy / "manifest.json").write_text(json.dumps(expected_manifest(PocketTTSProfile())))
+            (root / "active").symlink_to(Path("versions") / CACHE_VERSION)
+            with (mock.patch.dict(os.environ, {"POCKET_TTS_SPANISH_MODEL": "spanish_24l",
+                                              "POCKET_TTS_SPANISH_VOICE": "lola"}),
+                  mock.patch.object(prefetch, "require_free_space"),
+                  mock.patch.object(prefetch, "configure_huggingface_cache"),
+                  mock.patch.object(prefetch, "load_language_model", return_value=(model, {})) as load):
+                manifest = prefetch.run_prefetch(root, 1, 1)
+            self.assertEqual(load.call_args_list, [mock.call("english", "anna", profile=profile),
+                                                  mock.call("spanish", "lola", profile=profile)])
+            self.assertEqual(manifest["models"]["spanish"], "spanish_24l")
+            self.assertEqual((root / "active").resolve(), root / "versions" / profile.cache_version)
+            self.assertTrue((legacy / "manifest.json").is_file())
+
+    def test_invalid_selection_fails_before_creating_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "cache"
+            with mock.patch.dict(os.environ, {"POCKET_TTS_SPANISH_MODEL": "unapproved"}):
+                with self.assertRaisesRegex(PocketTTSConfigurationError, "unsupported"):
+                    prefetch.run_prefetch(root, 1, 1)
+            self.assertFalse(root.exists())
 
     def test_valid_active_cache_is_reused_without_prefetch(self):
         with tempfile.TemporaryDirectory() as directory:

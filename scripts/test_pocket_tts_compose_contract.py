@@ -25,7 +25,10 @@ class PocketTTSComposeContractTests(unittest.TestCase):
         self.assertNotIn("HTTP_PROXY", service.get("environment", {}))
         self.assertNotIn("HTTPS_PROXY", service.get("environment", {}))
         self.assertNotIn("POCKET_TTS_ENGLISH_VOICE", service["environment"])
-        self.assertNotIn("POCKET_TTS_SPANISH_VOICE", service["environment"])
+        self.assertEqual(service["environment"]["POCKET_TTS_SPANISH_MODEL"],
+                         "${POCKET_TTS_SPANISH_MODEL:-spanish}")
+        self.assertEqual(service["environment"]["POCKET_TTS_SPANISH_VOICE"],
+                         "${POCKET_TTS_SPANISH_VOICE:-eponine}")
 
     def test_prefetch_uses_gate_network_but_runtime_does_not(self):
         runtime = self.compose["services"]["pocket-tts"]
@@ -34,6 +37,8 @@ class PocketTTSComposeContractTests(unittest.TestCase):
         self.assertEqual(prefetch["networks"], ["spartan_internal"])
         self.assertEqual(prefetch["environment"]["HTTP_PROXY"], "http://proxy:8888")
         self.assertNotIn("HF_TOKEN", prefetch.get("environment", {}))
+        for key in ("POCKET_TTS_SPANISH_MODEL", "POCKET_TTS_SPANISH_VOICE"):
+            self.assertEqual(runtime["environment"][key], prefetch["environment"][key])
 
     def test_hermes_gets_baked_client_and_private_tts_network(self):
         hermes = self.compose["services"]["hermes"]

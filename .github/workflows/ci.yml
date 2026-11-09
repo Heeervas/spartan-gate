@@ -42,6 +42,8 @@ jobs:
           npm run test:pi
       - name: Hermes fixtures (native source lane is separately required)
         run: npm run test:hermes
+      - name: Pocket TTS source fixtures (no model downloads or audio acceptance)
+        run: python3 -m unittest discover -s infra/pocket-tts -p 'test_*.py' -v
       - name: Provision pinned native Caddy for operator fixtures
         run: &provision-caddy |
           mkdir -p .cache/test-inputs/native

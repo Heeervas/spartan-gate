@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Prepare optional Pocket TTS Spanish 6-/24-layer and predefined Eponine/Lola
+  comparison with selection-bound caches and an offline WAV/timing report CLI.
+  Preserve default caches, internal-only runtime, non-cloning weights and explicit
+  provider errors. Source preparation does not build/download or activate Hermes audio.
+
 - Record operator-local native Hermes Webapp activation through the existing
   private HTTPS edge, retaining both sign-in layers and exact-proxy trust for
   secure native cookies. Public exposure defaults remain unchanged.
