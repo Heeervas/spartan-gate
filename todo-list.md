@@ -16,6 +16,12 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
 
 ## Blocked / monitoring
 
+- **WORKSPACE-001** — Finish shared-worktree collaboration: supported Ultimate
+  relocation/future placement and owner reconciliation for external temporary
+  checkouts. Hermes's single mount/Git upgrade is deployed, not full migration.
+  [Task](../tasks/shared-workspace-portability/task.md). Preserve native lifecycle
+  controls; no runtime DB edits, blind moves or container-side pruning of hidden
+  host registrations.
 - **HOST-001** — Tailscale hostname/certificate cutover: interactive sudo required.
   Preserve current hostname/certificate until validated replacement and rollback.
 - **CACHE-001** — Establish a fresh deployed cache-baseline epoch using ordinary

@@ -33,16 +33,21 @@ owning task evidence, including failures and explicit limits.
 
 ## Active-task pointers and constraints
 
-- Shared source collection is active at `/projects/shared`, with native-workspace
-  navigation. Node Search, Profile Delegate and LCM sources are available. General
-  Discord-title, governor and Shared Master v2 plugins now have independent source
-  repos there and native mounts from shared; Gate no longer vendors them. V1 is
-  retired. Runtime implementation bytes were preserved. Zenith and Ultimate now
-  live directly in shared; both Pi sources retain the requested pi-extensions/
-  group. Original dirty bytes and all worktrees are preserved; native homes stay
-  host-only, with supported launcher home selection and old-path compatibility
-  aliases. Ultimate remains stopped; current Pi needs user reload for fresh source
-  selection. Architecture research stays parked; migration/recovery record:
+- Shared source collection is active through one RW bind at
+  `/opt/data/workspace/projects/shared`; the two old container views and navigation
+  symlink are gone. Hermes runs Git 2.56.0 and no longer performs privileged
+  workspace ownership normalization. Ten repositories opt into relative worktrees;
+  all 17 physically shared checkouts were verified from both host/container views.
+  Nine external registrations remain outside the bind (seven native Ultimate trees
+  and two separately owned temporary trees). Supported native relocation and future
+  placement remain blocked/pending; no native directory or runtime DB was moved.
+  Source, indexes, HEADs, private native homes and foreign work are preserved.
+  Current acceptance/recovery and outstanding scope:
+  `../../../tasks/shared-workspace-portability/task.md`.
+  Node Search, Profile Delegate, LCM, Discord-title, governor and Shared Master v2
+  retain independent shared sources/native mounts; Gate does not vendor them.
+  Zenith/Ultimate and the requested pi-extensions/ grouping retain their locations.
+  Historical source-migration evidence:
   `../../../tasks/archive/2026/shared-development-workspace/task.md`.
 
 - MCPHub is active for selected native Hermes and host/container Pi clients:
