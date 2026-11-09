@@ -52,7 +52,8 @@ Choose a private stable comparison location, **not the existing production
 cache**. In this subshell, replace the example path. Proxy/DNS must already be
 healthy; `--no-deps` prevents starting neighboring services. Prefetch uses the
 gated download network; comparison uses only the offline TTS network and a
-read-only model mount.
+read-only model mount. `compose run` does not accept `--no-build`: omit `--build`
+and use the already-built local image with `--pull never`.
 
 ```sh
 (
@@ -62,9 +63,11 @@ read-only model mount.
   export POCKET_TTS_SPANISH_VOICE=eponine
   export POCKET_TTS_DATA_PATH="$TTS_COMPARE_ROOT/cache-standard-eponine"
   mkdir -p "$POCKET_TTS_DATA_PATH"
-  sg run --rm --no-deps --no-build --pull never pocket-tts-prefetch
-  sg run --rm --no-deps --no-build --pull never \
-    --user "$(id -u):$(id -g)" \
+  sg run --rm --no-deps --pull never \
+    --user "$(id -u):$(id -g)" --env USER=operator --env LOGNAME=operator \
+    pocket-tts-prefetch
+  sg run --rm --no-deps --pull never \
+    --user "$(id -u):$(id -g)" --env USER=operator --env LOGNAME=operator \
     --volume "$TTS_COMPARE_ROOT/output:/comparison:rw,z" \
     --entrypoint python pocket-tts /app/benchmark.py \
     --output-dir /comparison/standard-eponine
