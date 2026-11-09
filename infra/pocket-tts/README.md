@@ -31,6 +31,18 @@ quality improvement on a particular CPU. The selected model-specific predefined
 embedding must exist upstream; constructing its pinned path is not proof of asset
 availability. No Spanish-from-Spain accent is guaranteed by the voice name.
 
+## Hermes controls versus Pocket controls
+
+The current command client sends only text and language. Voice/model selection
+belongs to the operator-side service profile and its matching prefetched cache,
+not to an individual Hermes generation request. The current command does not
+forward Hermes' generic `{speed}` or `{voice}` placeholders; setting `tts.speed`,
+passing `voice_id`, or supplying speaking-style `instructions` does not implement
+those controls for this Pocket integration. Pitch, gain, emotion, SSML and custom
+voice cloning are not exposed either. Text and punctuation may affect phrasing;
+`[es]`/`[en]` explicitly choose language, not a different voice. Adding a validated
+speed/audio-processing bridge would be a separate feature, not an existing knob.
+
 ## Compare without enabling Hermes audio
 
 The source supports comparison; builds/downloads, listening and activation are

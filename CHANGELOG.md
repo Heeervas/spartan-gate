@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Record private native Discord Opus provisioning independently of Talk, with
+  same-image encode/decode and actual gateway startup checks. Clarify which
+  generic Hermes voice controls the current Pocket command integration does
+  not forward; no Pocket settings or public network defaults are changed.
+
 - Document native chained Discord voice relay activation independently of the
   optional Talk lifecycle, including actual gateway loading checks. Record the
   operator-local main gateway wiring without changing public network defaults;

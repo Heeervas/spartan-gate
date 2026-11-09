@@ -83,6 +83,17 @@ plugin. Environment or mount changes require a gateway recreation using the
 current image and existing overlays, after the native live-work guard reports
 idle. Preserve concurrently changed settings and avoid image/dependency rebuilds.
 
+Native Discord audio also needs a compatible, discoverable `libopus`; the relay
+does not supply a codec. Provision that library independently of Talk, through
+the image or a deliberately managed read-only private library mount. Validate
+architecture/ABI compatibility with the exact image and preserve provenance and
+license notices; a donor notice is not a redistribution-compliance certificate.
+The native adapter probes once per process, so revalidate after provisioning and
+recreation. Verify real encoder/decoder operation separately from a positive
+fresh gateway Discord-ready event after the awaited codec loader, with neither
+missing-codec nor load-failure warnings. A successful helper-process load or
+absence of warnings alone does not prove codec availability in the gateway.
+
 Before a live call, confirm endpoint filtering, authentication rejection,
 health, internal-only Hermes networking, and plugin loading in the actual
 running gateway, not merely a separate discovery CLI process. Then join

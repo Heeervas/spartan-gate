@@ -40,3 +40,25 @@ No channel join, participant audio capture or actual playback was performed by
 these checks. The existing prototype remains limited to one simultaneous
 session, a ten-minute session lifetime and a fresh join after disconnect.
 The separate webapp no-speech reporting issue is not fixed by this transport.
+
+## Opus follow-up — applied
+
+The operator's retry exposed a separate missing native Opus library. Promoted
+an existing compatible codec into stable private relay-owned assets and added
+two read-only system-library file mounts. Talk remains disabled. No image build,
+package installation, library-search environment override or core patch was used.
+The donor notice is preserved byte-for-byte; its apparently truncated BSD-3
+paragraph is a provenance caveat, not certified complete redistribution licensing.
+
+A same-image, network-disabled disposable fixture passed actual native codec
+discovery and a generated 20-ms stereo encoder/decoder round trip. After a fresh
+native idle/zero-relay-session check, recreated only Hermes again, with the same
+image. Main configuration and neighboring container identities are unchanged.
+Pocket's model, voice and private memory limit are unchanged.
+
+Readback: Hermes healthy; the fresh gateway operational log contains a positive
+Discord-ready event after the native awaited codec loader, without either the
+missing-codec or load-failure warning. A separate process using the actual
+mounted files also passed encode/decode; this is not presented as inspection of
+gateway memory. The gateway-native relay activation, internal health and 401
+unauthenticated rejection still pass. Actual channel audio/DAVE remains untested.
