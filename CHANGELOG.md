@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document native chained Discord voice relay activation independently of the
+  optional Talk lifecycle, including actual gateway loading checks. Record the
+  operator-local main gateway wiring without changing public network defaults;
+  live channel negotiation and bidirectional audio remain separate acceptance.
+
 - Add Desktop `/return` and `/cancel` using the owning session authority, with
   separate legacy compatibility. Return summarizes only added branch work into
   one parent turn with tools disabled for its acknowledgment; cancel imports

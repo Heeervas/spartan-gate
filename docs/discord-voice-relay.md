@@ -1,8 +1,9 @@
 # Discord voice relay proof of concept
 
-Status: local protocol and bidirectional UDP tests pass. The local relay and
-all-profile adapter are now enabled for an operator-run test, with one
-simultaneous session. The real upstream voice WebSocket returned Discord Hello;
+Status: local protocol and bidirectional UDP tests pass. Runtime activation is
+private and profile-specific: a healthy relay alone does not establish that the
+Hermes adapter is mounted, enabled or loaded. The prototype supports one
+simultaneous session. A prior upstream signaling probe returned Discord Hello;
 a real channel join, DAVE negotiation and listening/speaking are still unverified.
 This is not completed Discord acceptance.
 
@@ -74,8 +75,17 @@ It must load before the tested voice join. No new bot token or OpenAI credential
 is required. Existing voice session credentials pass through the relay in memory;
 never enable frame/debug logging or record those messages.
 
+For native chained voice (local STT → the normal Hermes agent → local TTS),
+enable only `spartan-discord-voice-relay`; neither Talk nor the optional
+`spartan-talk-voice-command` lifecycle wrapper below is required. Preserve the
+active STT/TTS providers. An environment enable flag alone does not load a
+plugin. Environment or mount changes require a gateway recreation using the
+current image and existing overlays, after the native live-work guard reports
+idle. Preserve concurrently changed settings and avoid image/dependency rebuilds.
+
 Before a live call, confirm endpoint filtering, authentication rejection,
-health, internal-only Hermes networking, and profile plugin loading. Then join
+health, internal-only Hermes networking, and plugin loading in the actual
+running gateway, not merely a separate discovery CLI process. Then join
 the operator-selected channel, confirm real DAVE negotiation and both audio
 directions, interrupt playback, leave the channel and confirm zero relay sessions.
 Other channel participants must know a bot test is taking place. A failed join
