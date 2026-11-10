@@ -21,6 +21,24 @@ activation are separate operator actions documented in `infra/pocket-tts/README.
 Mock synthesis does not establish asset compatibility, Spanish accent/quality,
 CPU latency/RSS or channel delivery. Keep those native gates open until exercised.
 
+## Search/Reader MCPHub bridge
+
+Existing `infra/mcphub/**` inventory and JS/TS Oxlint coverage apply; retain TOP,
+immutable baseline, adapters, thresholds and exceptions. Native SDK/stdio testing
+uses the exact already-present pinned MCPHub image, disposable synthetic state,
+network disabled and no production bindings. No image pull/build or service restart.
+
+```sh
+docker run --rm --pull never --network none --read-only --memory 192m --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --user 1000:1000 --tmpfs /tmp:rw,nosuid,nodev,size=16m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab --test /fixture/test_web_tools.mjs
+.venv/quality/bin/python -m unittest discover -s infra/tool-access -p 'test_*.py'
+npm run pi:quality
+git diff --check
+```
+
+Public instructions: `docs/mcphub.md`. Real native-client discovery, actual
+search/Reader calls, browser denial with the new token, preserved grants and
+unchanged services remain separate authorized parent activation checks.
+
 ## MCPHub opt-in source acceptance
 
 Independent plan review (2026-10-30, READY / PASS_WITH_NOTES) approved additive

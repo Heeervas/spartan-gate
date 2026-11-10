@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add an optional search/Reader-only MCPHub backend using the bundled official
+  MCP SDK and existing authenticated tool-access REST boundary. Preserve bounded
+  untrusted results, exact grants and browser/native clients without new containers,
+  dependencies, network changes or tool-access recreation.
+
 - Treat workspace as user-owned code rather than recursively repaired Hermes
   state, supporting a single direct shared-project bind. Pin Git 2.56.0 for
   relative linked-worktree interoperability across host/container paths. Preserve

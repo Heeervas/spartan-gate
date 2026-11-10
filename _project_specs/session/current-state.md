@@ -51,7 +51,11 @@ owning task evidence, including failures and explicit limits.
   `../../../tasks/archive/2026/shared-development-workspace/task.md`.
 
 - MCPHub is active for selected native Hermes and host/container Pi clients:
-  seven shared backends/101 exact tools. Codebase Memory now runs native local
+  eight shared backends/103 exact tools, including search/Reader-only Spartan web
+  tools via the existing REST boundary; browser remains on its native path.
+  No containers/networks or existing grants changed for this addition. Acceptance
+  and scoped recovery: `../../../tasks/archive/2026/web-tools-mcp/task.md`.
+  Codebase Memory now runs native local
   stdio per selected Git repository (13 analysis tools), with real index/search/
   snippet acceptance; the duplicate shared backend/grants were retired. Reconnect
   after source/root changes; container filesystem visibility is unchanged.

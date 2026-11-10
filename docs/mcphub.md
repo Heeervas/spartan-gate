@@ -192,6 +192,86 @@ grant and each backend's native credential format. Do not copy a broad Workspace
 refresh token or label its GTM write scopes read-only. No automatic consent or
 credential bridging is provided by the hub/client provisioning helper.
 
+## Managed search and Reader (optional shared backend)
+
+`infra/mcphub/web-tools.mjs` exposes exactly **`web_search`** and **`read_page`**
+through MCPHub. It is a thin stdio adapter using the pinned hub image's official
+`@modelcontextprotocol/sdk-v1` (1.29.0), resolved from `/app/package.json`. It does
+not install dependencies, create another container or implement another browser
+server. Browser tools remain on their existing native/REST path.
+
+The operator installs reviewed bridge bytes under protected
+`/state/runtimes/spartan-web-tools/web-tools.mjs` and creates an owner-only,
+regular, non-symlink binding `/state/bindings/spartan-web-tools.json` (0600,
+owned by the hub runtime UID). Its three fields are `baseUrl`, `host` and `token`:
+production uses `http://tool-access:9081`, `tool-edge:18792` (or the explicitly
+configured tool-edge port), and a fresh private random 256-bit token. The bridge
+also accepts a loopback origin with an explicit port for isolated fixtures; no
+arbitrary external origin is supported. Never put the real token in this guide,
+argv or MCP arguments. Add its SHA-256 digest to tool-access policy with a unique
+principal/browserUser and **only `search` and `reader` capabilities**. Preserve
+all existing entries byte-equivalently so their browser fingerprints do not change.
+
+Add an admin-owned MCPHub stdio backend using this configuration shape (paths are
+container paths, not host runtime locations):
+
+```json
+{
+  "command": "node",
+  "args": ["/state/runtimes/spartan-web-tools/web-tools.mjs"],
+  "env": {"SPARTAN_WEB_TOOLS_BINDING": "/state/bindings/spartan-web-tools.json"},
+  "enabled": true
+}
+```
+
+Use the native backend-management API/UI, select just those two tools in the
+`agents` group and add two exact execution grants, retaining the closed sentinel.
+Do not forward caller headers. The adapter contacts only fixed REST paths with
+its server-owned Host and bearer, ignoring ambient proxy variables for that
+internal connection; existing REST policy, admission and downstream egress checks
+still apply. No Compose/network/proxy changes or service recreation are required.
+All consumers intentionally share this backend principal's two concurrent calls;
+this is **not** per-agent identity or session isolation.
+
+Search accepts a nonblank `query` (up to 4096 UTF-16 units) and optional integer
+`num_results` (1–10, default 5, requested upstream count). Reader accepts `url`
+(up to 8192 UTF-16 units); the existing REST/Reader public-address checks remain
+authoritative. Unknown fields, browser calls and authority overrides are denied.
+Responses are bounded to 128 KiB for search and 512 KiB for Reader before decoding,
+with two immediate slots and a 30-second total HTTP/body deadline. There are no
+redirects, retries, alternate providers or browser fallback. Search is wrapped as
+untrusted text; Reader's complete trust frame and separate truncation notice are
+preserved. Errors use MCP `isError` with fixed codes, never raw remote bodies.
+Queries and fetched content can still enter native client/model histories.
+
+After enrollment, reconnect selected native clients; discovery alone is not
+usability. Check real search/Reader calls, invalid/private-URL denial, browser
+permission denial, unchanged existing grants and unchanged service identities.
+Retain the existing native tools during migration. Rollback removes only this
+backend's exact group selection/grants through native management, disables its
+backend and revokes its dedicated policy principal. Do not restore whole hub
+settings over intervening changes or restart tool-access to apply token changes.
+
+### Bridge validation
+
+With the exact pinned hub image **already available locally**, run the real SDK
+and stdio tests in a disposable network-disabled container (no pulls/builds or
+production binding). The suite includes a real 30-second stalled-body deadline:
+
+```sh
+docker run --rm --pull never --network none --read-only --memory 192m \
+  --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges \
+  --security-opt label=disable --user 1000:1000 \
+  --tmpfs /tmp:rw,nosuid,nodev,size=16m \
+  -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node \
+  samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab \
+  --test /fixture/test_web_tools.mjs
+```
+
+Also run the existing tool-access regressions and TOP quality command in the
+repository's validation contract. Synthetic HTTP fixtures prove adapter behavior,
+not live search engines, production policy or selected-client activation.
+
 ## Native local Codebase Memory (current-repository workflow)
 
 Codebase Memory is different from shared account connectors: use native local

@@ -150,6 +150,17 @@ record gets an explicit stale error, not silent reattachment. Cleanup closes
 only known owned tabs and never deletes persisted browser storage. Cancellation
 bounds the client's wait, not proof that a remote mutation did not happen.
 
+## MCPHub search/Reader adapter
+
+An optional [MCPHub stdio backend](mcphub.md#managed-search-and-reader-optional-shared-backend)
+reuses these exact authenticated REST operations for `web_search` and `read_page`.
+Its dedicated policy token has only `search`/`reader` capabilities; no browser MCP
+migration or shared browser-workflow authority is introduced. Existing REST/native
+clients and the dedicated tool-edge remain available. Install/reload only the new
+backend: recreating tool-access would invalidate existing in-memory browser workflows
+and is unnecessary for this adapter. MCPHub callers share the adapter principal's
+existing two-request admission limit rather than acquiring per-native-client identity.
+
 ## Native Pi and privacy
 
 Reuse installed pi-web-access SearXNG, not a duplicate search tool. Strict setup
