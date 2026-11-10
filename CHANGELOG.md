@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Verify managed MCP attachment of a synthetic TXT in a real browser and its
+  scoped cleanup. Distinguish a selected file from published hosting: the tested
+  site requires authentication before creating a share link; no account action
+  or remote-receipt claim is implied.
+
 - Record selected-installation browser MCP activation with 23 exact new grants,
   preserved prior catalogs and narrow transfer mounts. Keep client reload and
   functional browser/upload verification explicitly user-owned; no real document

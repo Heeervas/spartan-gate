@@ -42,3 +42,14 @@ El click hacia IANA se despachó, pero el destino mostró una página de rechazo
 proxy: no se declara carga exitosa ni se deduce causa exacta/outage global. No
 hubo reintento ni ampliación de política. Uploads/recepción y capacidades no
 recorridas siguen sin validar; no se usaron formularios ni documentos reales.
+
+## Prueba posterior de adjunto TXT
+
+Con permiso explícito temporal del usuario se probó Linkyhost con Lorem ipsum
+sintético de192 bytes. Stage devolvió tamaño/SHA idénticos al origen y una única
+llamada upload adjuntó el archivo: nombre seleccionado confirmado en snapshot y
+PNG reales. La web exige crear cuenta/iniciar sesión antes de comprobar el
+archivo y crear su enlace. Attachment PASA; hosting/recepción remota NO probados.
+No hubo autenticación, alta, reintento ni cambio de red. Se cerraron tab/sesión y
+se eliminaron solo staging y origen sintético propios comprobados. No se borró
+storage/cookies globales; no se afirma purga del draft local anunciado por la web.
