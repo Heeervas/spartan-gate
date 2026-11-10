@@ -233,6 +233,43 @@ analytics/addons-disabled mode, **not default-UBO runtime proof**. No active Pi,
 production credentials or deployment is used. Candidate hashes, eight phase
 receipts and cleanup remain separate from later operational acceptance.
 
+## Explicit-session browser MCP source gate
+
+Contract: [browser-mcp.md](browser-mcp.md). Use Node 22, the existing isolated
+Python requirements and the already-local pinned MCPHub SDK image; no installs,
+pulls, source activation or production bindings. Native Camofox program inputs
+are the pinned pristine source and matching Express declared above.
+
+```sh
+node --test infra/mcphub/test_browser_state.mjs infra/mcphub/test_browser_http.mjs
+python3 -m unittest discover -s infra/tool-access -p 'test_*.py'
+docker run --rm --pull never --network none --read-only --memory 192m --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --user 1000:1000 --tmpfs /tmp:rw,nosuid,nodev,size=32m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab --test --test-concurrency=1 /fixture/test_browser_state.mjs /fixture/test_browser_http.mjs /fixture/test_browser_tools.mjs /fixture/test_web_tools.mjs
+npm run test:camofox
+npm run test:camofox:native
+SPARTAN_BROWSER_TRANSFER_PATH=/synthetic/browser-transfer SPARTAN_BROWSER_TOOL_ACCESS_IMAGE=synthetic-tool:reviewed SPARTAN_BROWSER_CAMOFOX_IMAGE=synthetic-browser:reviewed docker compose -f infra/compose/compose.yml -f infra/compose/compose.browser-tools.yml -f infra/compose/compose.browser-transfer-hermes.yml --env-file .env.example --profile tool-access --profile camofox config --quiet
+npm run pi:quality
+git diff --check
+```
+
+The real-REST/staged-file joint fixture uses two bounded disposable containers,
+one internal-only network, synthetic keys/files and Docker RO enforcement. It
+uses an **inert browser peer**, not actual Firefox or native clients. The supplied
+Python image must already contain aiohttp; image IDs are resolved before resource
+creation and images are never pulled/built. Preflight starts nothing:
+
+```sh
+python3 infra/mcphub/browser_acceptance.py --tool-image "$TOOL_TEST_PYTHON_IMAGE"
+# Only after explicit isolated-operation/resource authority:
+python3 infra/mcphub/browser_acceptance.py --tool-image "$TOOL_TEST_PYTHON_IMAGE" --execute --resource-approved
+```
+
+The upload handler tests execute actual patched Camofox program text with inert
+Playwright resources and count target/attachment attempts, plus the full ordered
+patch/idempotency gate. Missing required program inputs are incomplete, not native
+acceptance. SDK/stdio, actual Firefox/rendering/site receipt, native discovery and
+operator registration/deployment are distinct boundaries; do not substitute one
+for another. Compose rendering never creates directories or starts the stack.
+
 ## Deterministic quality and review
 
 `npm run pi:quality` requires the explicitly provisioned canonical

@@ -12,17 +12,21 @@ import zlib
 from aiohttp import web
 
 from policy import AccessError, authenticate, strict_json
+from browser_extra import (FIELDS as EXTRA_FIELDS, READ_ACTIONS, arguments as extra_arguments,
+                           integer, result as extra_result)
+from browser_files import FileStore
 
 JSON_LIMIT = 128 * 1024
 PNG_LIMIT = 2 * 1024 * 1024
 TOKEN = re.compile(r"[0-9a-f]{64}\Z")
 TAB_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 FIELDS = {
-    "create": {"url"}, "tabs": set(), "snapshot": {"tabId"},
+    "create": {"url"}, "tabs": set(), "snapshot": {"tabId", "offset"},
     "navigate": {"tabId", "url"}, "click": {"tabId", "ref", "selector"},
     "type": {"tabId", "ref", "selector", "text"},
     "scroll": {"tabId", "direction", "amount"},
     "screenshot": {"tabId"}, "close": {"tabId"}, "cleanup": set(),
+    **EXTRA_FIELDS,
 }
 
 
@@ -79,7 +83,11 @@ def navigation_url(value):
 
 
 def operation_arguments(data, action):
+    if action in EXTRA_FIELDS:
+        return extra_arguments(data, action)
     outgoing = {}
+    if action == 'snapshot':
+        outgoing['offset'] = integer(data, 'offset', 0, 0, 1000000)
     if action in {"create", "navigate"}:
         url = text_argument(data, "url", required=action == "navigate")
         if url is not None:
@@ -160,6 +168,10 @@ class Browser:
         settings = app["settings"]
         self.key = settings.get("CAMOFOX_ACCESS_KEY", "")
         self.configured = bool(settings.get("CAMOFOX_URL") and self.key)
+        self.files = None
+        if settings.get('TRANSFER_INCOMING_DIR'):
+            self.files = FileStore(settings['TRANSFER_INCOMING_DIR'],
+                                   settings['TRANSFER_UPLOAD_DIR'], settings['CAMOFOX_UPLOAD_ROOT'])
 
     async def upstream(self, method, path, *, params=None, body=None, image=False):
         return await self.app["transport"].request(
@@ -261,6 +273,16 @@ class Browser:
         data = body_arguments(request, action)
         outgoing = operation_arguments(data, action)
         async with self.admission(request) as (_, workflow):
+            if action in {'file_stage', 'file_remove', 'upload'}:
+                authenticate(request, 'upload')
+                if self.files is None:
+                    raise AccessError('unavailable')
+            if action == 'file_stage':
+                request['browser_mutation_started'] = True
+                return web.json_response(await self.files.stage(workflow.group, outgoing['path']))
+            if action == 'file_remove':
+                self.files.remove(workflow.group, outgoing['file_id'])
+                return web.json_response({'ok': True})
             if action == "close":
                 tab_id, tab = self.owned_tab(workflow, data, cleanup=True)
                 request["browser_mutation_started"] = True
@@ -278,42 +300,58 @@ class Browser:
                 await self.check_generation(workflow)
                 return web.json_response({"tabs": [{"tabId": key} for key, value
                                                    in workflow.tabs.items() if not value.retired]})
-            request["browser_mutation_started"] = action in {"create", "navigate", "click", "type", "scroll"}
+            if action == 'upload':
+                self.files.paths(workflow.group, outgoing['file_ids'])
+                caps = await self.upstream('GET', '/spartan/capabilities')
+                if caps.status != 200 or decode_json(caps).get('singleAttemptBrowserUpload') is not True:
+                    raise AccessError('unsupported_backend')
+            request["browser_mutation_started"] = action not in READ_ACTIONS
             return await self.execute(workflow, action, outgoing, tab_id, tab)
 
+    def response_error(self, response, action, tab):
+        if response.status in {404, 410}:
+            if tab:
+                tab.retired = True
+            raise AccessError('stale_tab')
+        if response.status == 429:
+            raise AccessError('capacity')
+        if action == 'viewport' and response.status in {400, 409, 501}:
+            code = decode_json(response).get('code')
+            if code == 'viewport_mismatch':
+                raise AccessError('viewport_mismatch')
+            if code in {'viewport_resize_unsupported', 'unsupported_viewport_options'}:
+                raise AccessError('viewport_unsupported')
+        if response.status == 403 and decode_json(response).get('code') == 'proxy_forbidden':
+            raise AccessError('egress_denied')
+        raise AccessError('upstream_error')
+
+    def mutation_failure(self, workflow, action, outgoing, tab, error):
+        if isinstance(error, AccessError) and error.code in {'capacity', 'viewport_mismatch', 'viewport_unsupported'}:
+            raise error
+        if action == 'upload':
+            self.files.uncertain(workflow.group, outgoing['file_ids'])
+        if tab:
+            tab.retired = True
+        else:
+            workflow.retired = True
+        if isinstance(error, AccessError) and error.code in {'stale_tab', 'stale_workflow', 'egress_denied'}:
+            raise error
+        if isinstance(error, asyncio.CancelledError):
+            raise error
+        raise AccessError('remote_outcome_unknown') from None
+
     async def execute(self, workflow, action, outgoing, tab_id, tab):
-        mutating = action in {"create", "navigate", "click", "type", "scroll"}
         try:
             response = await self.dispatch(workflow, action, outgoing, tab_id)
-            if response.status == 200:
-                result = self.result(workflow, action, response)
-                await self.check_generation(workflow)
-                return result
-            if response.status in {404, 410}:
-                if tab:
-                    tab.retired = True
-                raise AccessError("stale_tab")
-            if response.status == 429:
-                raise AccessError("capacity")
-            if response.status == 403 and decode_json(response).get("code") == "proxy_forbidden":
-                raise AccessError("egress_denied")
-            raise AccessError("upstream_error")
+            if response.status != 200:
+                self.response_error(response, action, tab)
+            result = self.result(workflow, action, response, outgoing)
+            await self.check_generation(workflow)
+            return result
         except BaseException as error:
-            if mutating:
-                if isinstance(error, AccessError) and error.code == "capacity":
-                    raise
-                if tab:
-                    tab.retired = True
-                else:
-                    workflow.retired = True
-                if isinstance(error, AccessError) and error.code in {
-                    "stale_tab", "stale_workflow", "egress_denied"
-                }:
-                    raise
-                if isinstance(error, asyncio.CancelledError):
-                    raise
-                raise AccessError("remote_outcome_unknown") from None
-            raise
+            if action in READ_ACTIONS:
+                raise
+            self.mutation_failure(workflow, action, outgoing, tab, error)
 
     async def dispatch(self, workflow, action, outgoing, tab_id):
         outgoing = {**outgoing, "userId": workflow.user}
@@ -321,14 +359,23 @@ class Browser:
             outgoing.update(sessionKey=workflow.group, nonDestructive=True)
             return await self.upstream("POST", "/tabs", body=outgoing)
         path = "/tabs/" + tab_id + "/" + action
-        if action in {"snapshot", "screenshot"}:
+        if action in {"snapshot", "screenshot", 'links', 'images'}:
             params = {"userId": workflow.user}
-            params.update({"fullPage": "false"} if action == "screenshot" else
-                          {"offset": "0", "includeScreenshot": "false"})
+            if action == 'screenshot':
+                params['fullPage'] = 'false'
+            elif action == 'snapshot':
+                params.update(offset=str(outgoing.get('offset', 0)), includeScreenshot='false')
+            else:
+                params.update({key: value for key, value in outgoing.items() if key != 'userId'})
             return await self.upstream("GET", path, params=params, image=action == "screenshot")
+        if action == 'viewport':
+            path = '/tabs/' + tab_id + '/spartan/viewport'
+        if action == 'upload':
+            file_ids = outgoing.pop('file_ids')
+            outgoing.update(path=self.files.paths(workflow.group, file_ids), singleAttempt=True)
         return await self.upstream("POST", path, body=outgoing)
 
-    def result(self, workflow, action, response):
+    def result(self, workflow, action, response, outgoing=None):
         if action == "screenshot":
             return png_response(response)
         data = decode_json(response)
@@ -342,6 +389,8 @@ class Browser:
             return web.json_response({"tabId": tab_id})
         if action == "snapshot":
             return web.json_response(snapshot_response(data))
+        if action in EXTRA_FIELDS:
+            return web.json_response(extra_result(data, action, outgoing))
         if data.get("ok") is not True:
             raise AccessError("upstream_error")
         output = {"ok": True}
@@ -367,9 +416,13 @@ class Browser:
         body_arguments(request, "cleanup")
         try:
             async with asyncio.timeout(29), self.admission(request) as (token, workflow):
+                if self.files:
+                    self.files.removable(workflow.group)
                 for tab_id, tab in list(workflow.tabs.items()):
                     request["browser_mutation_started"] = True
                     await self.close_tab(workflow, tab_id, tab)
+                if self.files:
+                    self.files.cleanup(workflow.group)
                 del self.workflows[token]
                 return web.json_response({"ok": True})
         except TimeoutError:
@@ -378,6 +431,10 @@ class Browser:
 
 def register_routes(app):
     browser = Browser(app)
+    if browser.files:
+        async def shutdown_files(_app):
+            await browser.files.shutdown()
+        app.on_cleanup.append(shutdown_files)
     app.router.add_post("/v1/workflows", browser.mint)
     app.router.add_delete("/v1/workflows", browser.cleanup)
     app.router.add_get("/v1/browser/tabs", browser.operation, allow_head=False)

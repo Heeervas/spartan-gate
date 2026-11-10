@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Prepare an optional 23-tool managed browser MCP backend with explicit shareable
+  sessions, durable at-most-once mutation dispatch, paginated snapshots, verified
+  non-relaunch viewport, PNG screenshots and bounded metadata/extraction. Add
+  general transfer-folder file staging and workflow-bound attachments gated by a
+  separate upload permission and exact-input single-attempt Camofox capability.
+  Preserve search/Reader, native clients, legacy uploads, profiles and network
+  policy; no Pi/Hermes/MCPHub core changes or implicit runtime activation.
+
 - Record operator-local Hermes Pi rename-thread enrollment from the existing
   shared source collection, with offline workload-user loader verification.
   Preserve separate native state and explicit opt-in for further package parity;

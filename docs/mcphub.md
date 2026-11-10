@@ -291,6 +291,25 @@ Also run the existing tool-access regressions and TOP quality command in the
 repository's validation contract. Synthetic HTTP fixtures prove adapter behavior,
 not live search engines, production policy or selected-client activation.
 
+## Managed browser (optional shared backend; not activated)
+
+The separate [browser MCP contract](browser-mcp.md) adds 23 explicit-session tools
+for tabs, navigation, interactions, paginated snapshots, PNG screenshots, verified
+viewport, metadata/extraction and general regular-file attachments. It uses our
+adapter and existing tool-access/Camofox; no Pi, Hermes or MCPHub core changes.
+Sessions are deliberately shareable resources, not native conversation IDs;
+cookies are shared within its fresh dedicated browser principal. Mutations have
+a durable bounded at-most-once-dispatch journal, not exactly-once execution.
+
+Files enter only through a dedicated transfer folder and workflow-owned opaque
+IDs. Upload requires a separate policy capability and an advertised strict
+single-attempt Camofox patch. Nothing mounts a whole home/Work/profile. Optional
+Compose overlays prepare the narrow RO/RW mounts; image changes, service
+recreation, registration/grants and real-file exposure remain separate operator
+gates. Existing search/Reader grants and native browser tools stay unchanged.
+See the contract for preparation, resource limits, failure/reconciliation and
+precisely separated source versus runtime verification.
+
 ## Native local Codebase Memory (current-repository workflow)
 
 Codebase Memory is different from shared account connectors: use native local

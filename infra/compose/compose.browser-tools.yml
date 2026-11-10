@@ -1,0 +1,33 @@
+# Optional source-reviewed browser MCP deployment. No new service or public port.
+# Render explicitly with the main stack; activation/recreation is a separate gate.
+services:
+  tool-access:
+    image: ${SPARTAN_BROWSER_TOOL_ACCESS_IMAGE:?Select the reviewed tool-access image}
+    environment:
+      TRANSFER_INCOMING_DIR: /run/browser-transfer/incoming
+      TRANSFER_UPLOAD_DIR: /run/browser-transfer/outgoing
+      CAMOFOX_UPLOAD_ROOT: ${SPARTAN_BROWSER_CAMOFOX_UPLOAD_ROOT:-/root/.camofox/uploads/spartan-managed}
+    volumes:
+      - type: bind
+        source: ${SPARTAN_BROWSER_TRANSFER_PATH:?Select an existing dedicated transfer directory}/incoming
+        target: /run/browser-transfer/incoming
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z
+      - type: bind
+        source: ${SPARTAN_BROWSER_TRANSFER_PATH:?Select an existing dedicated transfer directory}/outgoing
+        target: /run/browser-transfer/outgoing
+        bind:
+          create_host_path: false
+          selinux: z
+  camofox:
+    image: ${SPARTAN_BROWSER_CAMOFOX_IMAGE:?Select the reviewed strict-upload Camofox image}
+    volumes:
+      - type: bind
+        source: ${SPARTAN_BROWSER_TRANSFER_PATH:?Select an existing dedicated transfer directory}/outgoing
+        target: ${SPARTAN_BROWSER_CAMOFOX_UPLOAD_ROOT:-/root/.camofox/uploads/spartan-managed}
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z

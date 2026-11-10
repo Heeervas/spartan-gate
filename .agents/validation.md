@@ -39,6 +39,43 @@ Public instructions: `docs/mcphub.md`. Real native-client discovery, actual
 search/Reader calls, browser denial with the new token, preserved grants and
 unchanged services remain separate authorized parent activation checks.
 
+## Explicit-session browser MCP source acceptance
+
+R3 independent plan review approved existing `infra/mcphub/**`,
+`infra/tool-access/**`, `infra/camofox/**` and `infra/compose/**` coverage; no
+baseline, TOP floor, adapter, threshold or exception changes. Public contract:
+`docs/browser-mcp.md`; executable public mirror: `docs/development.md`.
+
+```sh
+node --test infra/mcphub/test_browser_state.mjs infra/mcphub/test_browser_http.mjs
+.venv/quality/bin/python -m unittest discover -s infra/tool-access -p 'test_*.py'
+docker run --rm --pull never --network none --read-only --memory 192m --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --user 1000:1000 --tmpfs /tmp:rw,nosuid,nodev,size=32m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab --test --test-concurrency=1 /fixture/test_browser_state.mjs /fixture/test_browser_http.mjs /fixture/test_browser_tools.mjs /fixture/test_web_tools.mjs
+# Existing pristine source/Express program inputs; no source-consuming skips:
+npm run test:camofox
+npm run test:camofox:native
+SPARTAN_BROWSER_TRANSFER_PATH=/synthetic/browser-transfer SPARTAN_BROWSER_TOOL_ACCESS_IMAGE=synthetic-tool:reviewed SPARTAN_BROWSER_CAMOFOX_IMAGE=synthetic-browser:reviewed docker compose -f infra/compose/compose.yml -f infra/compose/compose.browser-tools.yml -f infra/compose/compose.browser-transfer-hermes.yml --env-file .env.example --profile tool-access --profile camofox config --quiet
+npm run pi:quality
+git diff --check
+```
+
+`CAMOFOX_UPSTREAM_SOURCE`, `CAMOFOX_EXPRESS_MODULE` and optional explicit
+already-patched `CAMOFOX_PATCHED_SERVER` are program-only inputs governed below.
+SDK tests execute the actual SDK/stdio and a fault HTTP peer, not native clients.
+The optional real-REST/file joint gate uses two disposable bounded containers,
+an internal-only network, synthetic credentials/files and Docker RO enforcement,
+but an **inert browser peer**, not Firefox. It never pulls/builds or mounts
+production data. Preflight starts nothing:
+
+```sh
+python3 infra/mcphub/browser_acceptance.py --tool-image "$TOOL_TEST_PYTHON_IMAGE"
+# Only with existing isolated-fixture/resource authority:
+python3 infra/mcphub/browser_acceptance.py --tool-image "$TOOL_TEST_PYTHON_IMAGE" --execute --resource-approved
+```
+
+Actual Firefox uploads/viewport/rendering, native-client discovery, private
+registration/grants, image/mount deployment and real-site/document exposure are
+separate operator acceptance. No source PASS certifies activation or receipt.
+
 ## MCPHub opt-in source acceptance
 
 Independent plan review (2026-10-30, READY / PASS_WITH_NOTES) approved additive

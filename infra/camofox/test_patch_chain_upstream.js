@@ -11,6 +11,7 @@ const { pathToFileURL } = require('node:url');
 const upstreamSource = process.env.CAMOFOX_UPSTREAM_SOURCE;
 const patchers = [
   ['patch-server.js'],
+  ['patch-managed-upload.js'],
   ['patch-fonts.js'],
   ['patch-vnc-readiness.js'],
   ['patch-log-redaction.js'],

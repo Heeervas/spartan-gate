@@ -21,7 +21,7 @@ provided to consumers. A trusted desktop process is not an OS sandbox.
 
 Client requests carry `Authorization: Bearer <64-lowercase-hex client token>`.
 A mode-0600 policy file stores SHA-256 token digests and fixed client principal,
-allowed capabilities (`search`, `reader`, `browser`) and browser user identity.
+allowed capabilities (`search`, `reader`, `browser`, optional `upload`) and browser user identity.
 Every request reloads the complete policy fail closed. Revocation stops new
 admission immediately; admitted mutations are not undone. Origin-bearing
 requests, unexpected Host, URL credentials, cookie authentication and redirects
@@ -69,6 +69,10 @@ source tests use synthetic identities only.
 - Browser requests carry `X-Spartan-Workflow: <workflowToken>` as well as client
   authorization. `POST /v1/browser/create`, `GET /v1/browser/tabs`, and
   `POST /v1/browser/{snapshot,navigate,click,type,scroll,screenshot,close}`.
+  Additive managed routes are `back`, `forward`, `refresh`, `press`, `select`,
+  `viewport`, `links`, `images`, `extract`, `file_stage`, `file_remove`, `upload`.
+  File stage/remove/upload additionally require the separate `upload` capability;
+  existing browser-only tokens gain no spool access.
   `DELETE /v1/workflows` explicitly closes only registry-owned tabs and releases
   the workflow; no profile/session-storage deletion. Native `cleanup` is explicit,
   not an automatic shutdown action. Failed/uncertain cleanup remains an explicit
@@ -84,8 +88,13 @@ registry on every operation. List reads only that registry. All creates use
 `nonDestructive:true`; at capacity reject, never steal tabs. Every click requires
 an advertised single-attempt backend capability and uses `singleAttempt:true`;
 no adapter retries or backend click fallback. Type does not submit or press
-Enter. Generic evaluate, viewport/relaunch, profile deletion, session reset,
-cookie/vault/supervisor operations and arbitrary upload/download are excluded.
+Enter. Generic evaluate, browser relaunch, profile deletion, session reset,
+cookie/vault/supervisor operations and arbitrary-path upload/download are excluded.
+Managed viewport fixes `relaunch:false,reload:false` and verifies effective sizes.
+Snapshot accepts bounded offset pagination; metadata/extraction remain bounded
+untrusted projections, not generic code execution. Controlled upload accepts
+only previously staged own file IDs and an exact file input; see the
+[browser MCP/files contract](browser-mcp.md).
 Browser actions are not read-only; clicks/navigation/type can send information
 and cause high-impact actions. This contract does not pretend to classify safe
 clicks or substitute for human approval/downstream authorization.
@@ -160,6 +169,20 @@ clients and the dedicated tool-edge remain available. Install/reload only the ne
 backend: recreating tool-access would invalidate existing in-memory browser workflows
 and is unnecessary for this adapter. MCPHub callers share the adapter principal's
 existing two-request admission limit rather than acquiring per-native-client identity.
+
+## MCPHub explicit-session browser adapter
+
+The independent optional [browser backend](browser-mcp.md) translates explicit
+model-visible `session_id` resources to hidden REST workflows. Its scoped token
+is separate from search/Reader. A private single-writer journal prevents replay
+of retained mutation IDs, including across MCP reconnects; native conversation,
+resume and fork identities are intentionally not inferred or required.
+
+Optional transfer mounts expose only incoming RO to tool-access and outgoing
+RW to tool-access / RO to Camofox. Stage/upload require the `upload` capability;
+nonempty unindexed spools and uncertain uploads require explicit reconciliation.
+No file or browser master credential is discovered from a native client/profile.
+Source changes do not activate this backend or authorize service recreation.
 
 ## Native Pi and privacy
 

@@ -1,5 +1,21 @@
 # Decisions
 
+## 2026-11-10 — Explicit-session browser MCP (source only)
+
+- Add a Gate-owned shared MCP adapter over existing authenticated tool-access and
+  Camofox, without modifying Pi/Hermes/MCPHub core or replacing native tools.
+  Explicit shareable session handles intentionally replace native conversation/
+  fork identity requirements; sessions separate tabs, not cookies within a principal.
+- Journal mutation IDs durably before effects for bounded at-most-once dispatch,
+  never exactly-once execution or automatic replay of unknown outcomes.
+- General files enter through a dedicated transfer folder, immutable staged
+  copies and workflow-owned IDs, with separate upload permission and exact-input
+  single-attempt attachment. Unknown spool/copy/upload outcomes fail closed;
+  no arbitrary filesystem access, base64 payload engine or upload service.
+- This additive scope supersedes the older blanket MCP exclusion below, not the
+  existing REST/native identity or network/profile contracts. Deployment remains
+  separately authorized; `docs/browser-mcp.md` owns the public operational contract.
+
 ## SG-D-20261028 — Task lifecycle and knowledge ownership
 
 - Adopt one envelope task package for material work, a source checkout plus

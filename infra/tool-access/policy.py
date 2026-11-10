@@ -23,7 +23,10 @@ class AccessError(Exception):
               "workflow_busy": 429, "unsupported_backend": 503,
               "egress_denied": 403, "reader_overloaded": 503,
               "remote_http_error": 502, "response_too_large": 422,
-              "extraction_failed": 422, "needs_render": 422}
+              "extraction_failed": 422, "needs_render": 422,
+              "file_too_large": 413, "file_in_use": 409,
+              "reconciliation_required": 503, "viewport_mismatch": 409,
+              "viewport_unsupported": 503}
 
     def __init__(self, code, *, upstream_status=None):
         self.code = code if code in self.STATUS else "unavailable"
@@ -70,7 +73,7 @@ def validate_client(client):
     caps = client["capabilities"]
     if not isinstance(caps, list) or not all(isinstance(cap, str) for cap in caps):
         raise ValueError("invalid capabilities")
-    if len(caps) != len(set(caps)) or not set(caps) <= {"search", "reader", "browser"}:
+    if len(caps) != len(set(caps)) or not set(caps) <= {"search", "reader", "browser", "upload"}:
         raise ValueError("invalid capabilities")
 
 

@@ -1,0 +1,11 @@
+# Optional file transfer only: no Hermes tool/plugin/core changes.
+# Adding this mount recreates Hermes: apply only in an approved quiet window.
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: ${SPARTAN_BROWSER_TRANSFER_PATH:?Select an existing dedicated transfer directory}/incoming
+        target: /opt/data/browser-transfer/incoming
+        bind:
+          create_host_path: false
+          selinux: z

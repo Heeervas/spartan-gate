@@ -40,6 +40,12 @@ class BrowserHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.policy_path = Path(self.directory.name) / "policy.json"
+        self.incoming = Path(self.directory.name) / 'incoming'
+        self.spool = Path(self.directory.name) / 'spool'
+        self.incoming.mkdir(mode=0o700)
+        self.spool.mkdir(mode=0o700)
+        self.upload_capable = True
+        self.viewport_mismatch = False
         self.bindings = [client_binding("alpha", TOKEN_A, ["browser"]),
                          client_binding("beta", TOKEN_B, ["browser"]),
                          client_binding("search", TOKEN_SEARCH, ["search"])]
@@ -62,7 +68,11 @@ class BrowserHTTPTests(unittest.IsolatedAsyncioTestCase):
         url = str(self.backend_server.make_url("/")).rstrip("/")
         self.app = create_app({"ALLOWED_HOSTS": "fixture.test", "SEARCH_URL": url,
                                "READER_URL": url, "CAMOFOX_URL": url,
-                               "CAMOFOX_ACCESS_KEY": "synthetic-backend-master"},
+                               "CAMOFOX_ACCESS_KEY": "synthetic-backend-master",
+                               'TRANSFER_INCOMING_DIR': str(self.incoming),
+                               'TRANSFER_UPLOAD_DIR': str(self.spool),
+                               'CAMOFOX_UPLOAD_ROOT': '/browser/uploads'},
+
                               policy_path=self.policy_path, install_browser=register_routes)
         self.http = TestClient(TestServer(self.app))
         await self.http.start_server()
@@ -80,23 +90,11 @@ class BrowserHTTPTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"ok": True, "browserGeneration": self.generation})
         if request.path == "/spartan/capabilities":
             return web.json_response({"nonDestructiveTabCreate": True,
-                                      "singleAttemptBrowserClick": self.single_attempt})
-        fault, self.fault = self.fault, None
-        if fault == "disconnect":
-            request.transport.close()
-            return web.Response()
-        if fault == "pause":
-            self.entered.set()
-            await self.release.wait()
-        if fault == "missing":
-            return web.json_response({"error": "synthetic-backend-master"}, status=404)
-        if fault == "capacity":
-            return web.json_response({"error": "capacity"}, status=429)
-        denial_codes = {"proxy-denied": "proxy_forbidden", "unclassified-denial": "other"}
-        if fault in denial_codes:
-            return web.json_response({"code": denial_codes[fault], "error": "synthetic-backend-master"}, status=403)
-        if fault == "generation":
-            self.generation += 1
+                                      "singleAttemptBrowserClick": self.single_attempt,
+                                      'singleAttemptBrowserUpload': self.upload_capable})
+        failure = await self.fault_response(request)
+        if failure is not None:
+            return failure
         if request.method == "POST" and request.path == "/tabs":
             self.next_tab += 1
             tab_id = "tab-" + str(self.next_tab)
@@ -105,6 +103,9 @@ class BrowserHTTPTests(unittest.IsolatedAsyncioTestCase):
         if request.method == "DELETE":
             self.tabs.pop(request.path.split("/")[-1], None)
             return web.json_response({"ok": True})
+        extended = self.extended_response(request.path, body)
+        if extended is not None:
+            return extended
         if request.path.endswith("/snapshot"):
             return web.json_response({"url": "http://fixture.test/", "snapshot": self.snapshot_text,
                                       "refsCount": 1, "truncated": False,
@@ -113,6 +114,40 @@ class BrowserHTTPTests(unittest.IsolatedAsyncioTestCase):
             return web.Response(body=self.image, content_type="image/png")
         return web.json_response({"ok": True, "url": "http://fixture.test/",
                                   "secret": "synthetic-backend-master"})
+
+    def extended_response(self, path, body):
+        if path.endswith('/spartan/viewport'):
+            if self.viewport_mismatch:
+                return web.json_response({'code': 'viewport_mismatch', 'hint': 'relaunch=true secret'}, status=409)
+            return web.json_response({'ok': True, 'strategy': 'pageViewport',
+                                      'effective': {'innerWidth': body['width'], 'innerHeight': body['height']}})
+        if path.endswith('/links'):
+            return web.json_response({'links': [{'url': 'https://example.com/', 'text': 'fixture', 'private': 'omit'}],
+                                      'pagination': {'hasMore': False}})
+        if path.endswith('/images'):
+            return web.json_response({'images': [{'url': 'https://example.com/image.png', 'alt': 'image', 'data': 'omit'}]})
+        if path.endswith('/extract'):
+            return web.json_response({'ok': True, 'data': {name: 'fixture' for name in body['schema']['properties']}})
+        return None
+
+    async def fault_response(self, request):
+        fault, self.fault = self.fault, None
+        if fault == 'disconnect':
+            request.transport.close()
+            return web.Response()
+        if fault == 'pause':
+            self.entered.set()
+            await self.release.wait()
+        if fault == 'missing':
+            return web.json_response({'error': 'synthetic-backend-master'}, status=404)
+        if fault == 'capacity':
+            return web.json_response({'error': 'capacity'}, status=429)
+        denial_codes = {'proxy-denied': 'proxy_forbidden', 'unclassified-denial': 'other'}
+        if fault in denial_codes:
+            return web.json_response({'code': denial_codes[fault], 'error': 'synthetic-backend-master'}, status=403)
+        if fault == 'generation':
+            self.generation += 1
+        return None
 
     async def request(self, method, path, *, workflow=None, token=TOKEN_A, data=None):
         headers = {"Host": "fixture.test", "Authorization": "Bearer " + token}
@@ -386,6 +421,73 @@ class BrowserHTTPTests(unittest.IsolatedAsyncioTestCase):
         status, result = await self.request("DELETE", "/v1/workflows", workflow=workflow)
         self.assertEqual((status, result), (200, {"ok": True}))
         self.assertFalse(any("/sessions" in r[1] for r in self.records))
+
+
+    async def test_extended_actions_viewport_pagination_and_owned_metadata(self):
+        workflow = await self.mint()
+        tab = await self.create(workflow)
+        actions = [('viewport', {'width': 390, 'height': 844}), ('back', {}),
+                   ('forward', {}), ('refresh', {}), ('press', {'key': 'Enter'}),
+                   ('select', {'ref': 'e1', 'option': 'value'}),
+                   ('links', {'offset': 10, 'limit': 2}), ('images', {'limit': 2}),
+                   ('extract', {'fields': [{'name': 'title', 'ref': 'e1', 'type': 'string'}]}),
+                   ('snapshot', {'offset': 12})]
+        for action, data in actions:
+            status, result = await self.request('POST', '/v1/browser/' + action,
+                                               workflow=workflow, data={'tabId': tab, **data})
+            self.assertEqual(status, 200, (action, result))
+            self.assertNotIn('omit', json.dumps(result))
+        viewport = next(row for row in self.records if row[1].endswith('/spartan/viewport'))
+        self.assertEqual(viewport[3]['relaunch'], False)
+        self.assertEqual(viewport[3]['reload'], False)
+        snapshot = next(row for row in self.records if row[1].endswith('/snapshot'))
+        self.assertEqual(snapshot[2]['offset'], '12')
+        other = await self.mint()
+        before = len(self.records)
+        for action, data in actions:
+            await self.error('POST', '/v1/browser/' + action, 'forbidden', workflow=other,
+                             data={'tabId': tab, **data})
+        self.assertEqual(len(self.records), before)
+        self.viewport_mismatch = True
+        await self.error('POST', '/v1/browser/viewport', 'viewport_mismatch', workflow=workflow,
+                         data={'tabId': tab, 'width': 390, 'height': 844})
+        before = len(self.records)
+        await self.error('POST', '/v1/browser/viewport', 'invalid_request', workflow=workflow,
+                         data={'tabId': tab, 'width': 390, 'height': 844, 'relaunch': True})
+        self.assertEqual(len(self.records), before)
+
+    async def test_managed_upload_capability_file_ownership_and_unknown_outcome(self):
+        (self.incoming / 'ordinary.txt').write_bytes(b'fixture arbitrary bytes')
+        workflow = await self.mint()
+        await self.error('POST', '/v1/browser/file_stage', 'forbidden', workflow=workflow,
+                         data={'path': 'ordinary.txt'})
+        self.bindings[0]['capabilities'].append('upload')
+        self.write_policy()
+        workflow = await self.mint()
+        tab = await self.create(workflow)
+        status, file = await self.request('POST', '/v1/browser/file_stage', workflow=workflow,
+                                          data={'path': 'ordinary.txt'})
+        self.assertEqual(status, 200, file)
+        body = {'tabId': tab, 'file_ids': [file['file_id']], 'selector': '#cv'}
+        self.upload_capable = False
+        await self.error('POST', '/v1/browser/upload', 'unsupported_backend', workflow=workflow, data=body)
+        self.assertFalse(any(row[1].endswith('/upload') for row in self.records))
+        self.upload_capable = True
+        status, result = await self.request('POST', '/v1/browser/upload', workflow=workflow, data=body)
+        self.assertEqual((status, result), (200, {'ok': True}))
+        upload = next(row for row in self.records if row[1].endswith('/upload'))
+        self.assertTrue(upload[3]['singleAttempt'])
+        self.assertTrue(upload[3]['path'][0].endswith('/ordinary.txt'))
+        self.assertEqual(upload[3]['selector'], '#cv')
+        other = await self.mint()
+        await self.error('POST', '/v1/browser/file_remove', 'forbidden', workflow=other,
+                         data={'file_id': file['file_id']})
+        self.fault = 'disconnect'
+        await self.error('POST', '/v1/browser/upload', 'remote_outcome_unknown', workflow=workflow, data=body)
+        await self.error('POST', '/v1/browser/file_remove', 'file_in_use', workflow=workflow,
+                         data={'file_id': file['file_id']})
+        await self.error('DELETE', '/v1/workflows', 'file_in_use', workflow=workflow)
+        self.assertTrue((self.incoming / 'ordinary.txt').exists())
 
 
 class SnapshotProtocolTests(unittest.TestCase):

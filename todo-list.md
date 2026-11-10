@@ -16,6 +16,14 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
 
 ## Blocked / monitoring
 
+- **BROWSER-MCP-001** — Activate and verify the prepared explicit-session browser
+  MCP backend only after a separately approved quiet window and image/mount/grant
+  preparation. Source implementation and isolated checks do not prove Firefox,
+  native-client discovery or real-file receipt. Preserve existing tabs/profiles,
+  search/Reader and rollback; no implicit builds/restarts/document exposure.
+  [Source task](../tasks/archive/2026/browser-tools-mcp/task.md);
+  [operator contract](docs/browser-mcp.md).
+
 - **WORKSPACE-001** — Finish shared-worktree collaboration: supported Ultimate
   relocation/future placement and owner reconciliation for external temporary
   checkouts. Hermes's single mount/Git upgrade is deployed, not full migration.

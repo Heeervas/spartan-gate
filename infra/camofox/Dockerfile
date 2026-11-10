@@ -77,6 +77,8 @@ RUN python3 /tmp/spartan-camofox-patch-addon-readiness.py \
     && rm /tmp/spartan-camofox-patch-addon-readiness.py
 COPY patch-server.js /tmp/spartan-camofox-patch-server.js
 RUN node /tmp/spartan-camofox-patch-server.js && rm /tmp/spartan-camofox-patch-server.js
+COPY patch-managed-upload.js /tmp/spartan-camofox-patch-managed-upload.js
+RUN node /tmp/spartan-camofox-patch-managed-upload.js && rm /tmp/spartan-camofox-patch-managed-upload.js
 COPY patch-fonts.js /tmp/spartan-camofox-patch-fonts.js
 RUN node /tmp/spartan-camofox-patch-fonts.js && rm /tmp/spartan-camofox-patch-fonts.js
 COPY patch-vnc-readiness.js /tmp/spartan-camofox-patch-vnc-readiness.js

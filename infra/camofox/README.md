@@ -36,6 +36,23 @@ created, loaded, evaluated, and closed a raw Playwright context/page.
 Hermes receives the access key under upstream Hermes' `CAMOFOX_API_KEY` client
 variable so upstream Camofox auth headers work without a local Hermes patch.
 
+## Opt-in managed MCP uploads
+
+The build-time `patch-managed-upload.js` advertises `singleAttemptBrowserUpload`.
+For `/tabs/:tabId/upload` requests with `singleAttempt:true`, exactly one ref or
+selector must identify one actual file input; frame refs must match one exact
+frame URL. It calls `setInputFiles` once with validated uploads-directory paths,
+without choosing the first unrelated input, clicking a chooser or retrying after
+an ambiguous failure. Ref maps are cleared after attachment. Legacy calls without
+this flag keep upstream behavior; no native Hermes/plugin API is replaced.
+
+The [browser MCP contract](../../docs/browser-mcp.md) owns file staging, opaque
+workflow-bound IDs, limits and reconciliation. An optional Compose overlay mounts
+only its dedicated immutable outgoing spool RO beneath the existing uploads root;
+it never exposes profiles, changes that legacy root, mounts Work or deploys itself.
+Attachment may immediately transfer bytes; it is not proof of form submission or
+remote receipt. Real-file/site use and image recreation need separate authority.
+
 ## Fonts
 
 The image installs all seven static Onest 1.000 TTFs with checksum verification.
