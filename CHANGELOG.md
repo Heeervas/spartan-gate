@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Enforce MCP search result counts locally and return compact, bounded citations
+  instead of raw SearXNG metadata. Preserve partial-engine warnings and report
+  complete engine failure honestly; support operator-only engine selection without
+  changing shared search defaults, adding retries or bypassing upstream limits.
+
 - Add an optional search/Reader-only MCPHub backend using the bundled official
   MCP SDK and existing authenticated tool-access REST boundary. Preserve bounded
   untrusted results, exact grants and browser/native clients without new containers,

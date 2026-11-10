@@ -16,7 +16,7 @@ const FRAME = 'BEGIN_UNTRUSTED_WEB_CONTENT\nfixture\nEND_UNTRUSTED_WEB_CONTENT\n
 
 async function fixture(run) {
   const calls = [];
-  let handler = (_req, res) => res.end(JSON.stringify({ results: [{ title: 'fixture' }] }));
+  let handler = (_req, res) => res.end(JSON.stringify({ results: [{ title: 'fixture', url: 'https://example.com', content: 'fixture snippet' }] }));
   const http = httpServer((req, res) => { calls.push({ path: req.url, headers: req.headers }); handler(req, res); });
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve));
   const binding = { baseUrl: `http://127.0.0.1:${http.address().port}`, host: 'tool-edge:18792', token: TOKEN };
@@ -31,6 +31,7 @@ async function fixture(run) {
 
 const call = (f, name, args) => f.client.callTool({ name, arguments: args });
 const code = result => JSON.parse(result.content[0].text).error.code;
+const searchData = result => JSON.parse(result.content[0].text.slice('BEGIN_UNTRUSTED_WEB_CONTENT\n'.length, -'\nEND_UNTRUSTED_WEB_CONTENT\n'.length));
 
 test('actual MCP SDK discovers exactly two read-only tools and constructs fixed search requests', () => fixture(async f => {
   const tools = (await f.client.listTools()).tools;
@@ -41,10 +42,67 @@ test('actual MCP SDK discovers exactly two read-only tools and constructs fixed 
   assert.match(result.content[0].text, /^BEGIN_UNTRUSTED_WEB_CONTENT\n/);
   assert.match(result.content[0].text, /fixture/);
   assert.match(result.content[0].text, /\nEND_UNTRUSTED_WEB_CONTENT\n$/);
-  assert.equal(f.calls[0].path, '/search?q=a%2Bb%26c&format=json&num=3');
+  assert.equal(f.calls[0].path, '/search?q=a%2Bb%26c&format=json');
   assert.equal(f.calls[0].headers.host, 'tool-edge:18792');
   assert.equal(f.calls[0].headers.authorization, `Bearer ${TOKEN}`);
   assert.equal(f.calls[0].headers['accept-encoding'], 'identity');
+}));
+
+test('requested count is enforced locally and only compact citation fields reach MCP', () => fixture(async f => {
+  const rows = Array.from({ length: 30 }, (_, index) => ({ title: `Result ${index}`, url: `https://example.com/${index}`, content: 'useful snippet', thumbnail: 'unused image', parsed_url: ['internal'], score: 7 }));
+  f.setHandler((_req, res) => res.end(JSON.stringify({ results: rows, infoboxes: ['unused box'], suggestions: ['unused suggestion'] })));
+  for (const requested of [2, undefined, 10]) {
+    const args = { query: 'bounded output' }; if (requested !== undefined) args.num_results = requested;
+    const result = await call(f, 'web_search', args); const data = searchData(result);
+    assert.equal(data.results.length, requested ?? 5); assert.equal(data.returnedResults, requested ?? 5);
+    assert.equal(data.hasMore, true); assert.equal(data.partial, false);
+    assert.deepEqual(data.results[0], { title: 'Result 0', url: 'https://example.com/0', snippet: 'useful snippet' });
+    assert.ok(!result.content[0].text.includes('unused')); assert.ok(!result.content[0].text.includes('parsed_url'));
+  }
+}));
+
+test('engine failures stay visible, and complete upstream failure is not empty success', () => fixture(async f => {
+  let results = [{ title: 'available', url: 'https://example.com', content: 'one source' }];
+  let failures = [['brave', 'too many requests'], ['google', 'access denied'], ['other', 'private raw diagnostic']];
+  f.setHandler((_req, res) => res.end(JSON.stringify({ results, unresponsive_engines: failures })));
+  let reply = await call(f, 'web_search', { query: 'partial' }); let data = searchData(reply);
+  assert.equal(reply.isError, undefined); assert.equal(data.partial, true);
+  assert.deepEqual(data.warnings, [{ engine: 'brave', code: 'rate_limited' }, { engine: 'google', code: 'access_denied' }, { engine: 'other', code: 'unavailable' }]);
+  assert.ok(!reply.content[0].text.includes('private raw diagnostic'));
+  results = []; reply = await call(f, 'web_search', { query: 'failed' });
+  assert.equal(reply.isError, true); assert.equal(searchData(reply).error.code, 'search_unavailable');
+  failures = []; reply = await call(f, 'web_search', { query: 'genuinely empty' });
+  assert.equal(reply.isError, undefined); assert.equal(searchData(reply).partial, false); assert.equal(searchData(reply).returnedResults, 0);
+}));
+
+test('complete framed output stays within16KiB without cutting URLs or UTF8 text', () => fixture(async f => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({ title: '漢'.repeat(200), url: `https://example.com/${index}?q=${'x'.repeat(1800)}`, content: 'é'.repeat(1000) }));
+  rows.unshift({ title: 'invalid link', url: 'https://user:secret@example.com', content: 'not a citation' });
+  f.setHandler((_req, res) => res.end(JSON.stringify({ results: rows })));
+  const reply = await call(f, 'web_search', { query: 'large', num_results: 10 }); const data = searchData(reply);
+  assert.ok(Buffer.byteLength(reply.content[0].text) <= 16384); assert.equal(data.truncated, true); assert.equal(data.hasMore, true);
+  assert.ok(data.results.length > 0 && data.results.length < 10);
+  for (const result of data.results) {
+    assert.ok(Buffer.byteLength(result.title) <= 200); assert.ok(Buffer.byteLength(result.snippet) <= 600);
+    assert.ok(rows.some(row => row.url === result.url)); assert.ok(!JSON.stringify(result).includes('�'));
+  }
+  assert.ok(!reply.content[0].text.includes('user:secret'));
+}));
+
+test('operator-only engine selection is fixed in the binding, never model arguments', () => fixture(async f => {
+  const server = createWebToolsServer({ ...f.binding, searchEngines: ['bing', 'duckduckgo', 'google cse', 'wikipedia'] });
+  const client = new Client({ name: 'configured-fixture', version: '1' }); const [up, down] = InMemoryTransport.createLinkedPair();
+  await server.connect(up); await client.connect(down);
+  try {
+    await client.callTool({ name: 'web_search', arguments: { query: 'fixed engines', num_results: 2 } });
+    const query = new URL('http://fixture' + f.calls[0].path).searchParams;
+    assert.equal(query.get('engines'), 'bing,duckduckgo,google cse,wikipedia');
+    const denied = await client.callTool({ name: 'web_search', arguments: { query: 'override', engines: 'google' } });
+    assert.equal(code(denied), 'invalid_request'); assert.equal(f.calls.length, 1);
+  } finally { await client.close(); await server.close(); }
+  for (const engines of [[], ['bing', 'bing'], ['bing,google'], ['https://evil'], [null], Array(9).fill('bing')]) {
+    assert.throws(() => createWebToolsServer({ ...f.binding, searchEngines: engines }), /binding_unavailable/);
+  }
 }));
 
 test('invalid, oversized and authority-override arguments never reach REST', () => fixture(async f => {

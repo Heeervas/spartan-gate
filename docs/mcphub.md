@@ -203,8 +203,12 @@ server. Browser tools remain on their existing native/REST path.
 The operator installs reviewed bridge bytes under protected
 `/state/runtimes/spartan-web-tools/web-tools.mjs` and creates an owner-only,
 regular, non-symlink binding `/state/bindings/spartan-web-tools.json` (0600,
-owned by the hub runtime UID). Its three fields are `baseUrl`, `host` and `token`:
-production uses `http://tool-access:9081`, `tool-edge:18792` (or the explicitly
+owned by the hub runtime UID). Its three required fields are `baseUrl`, `host`
+and `token`; optional `searchEngines` is an operator-owned list of 1–8 distinct
+SearXNG engine names (up to 64 ASCII letters/digits/spaces/underscores/hyphens).
+Omission retains instance defaults. Select engines only after checking their actual
+availability; this does not solve upstream CAPTCHA/rate limits or authorize bypass.
+It affects only this MCP backend, not other SearXNG consumers. Production uses `http://tool-access:9081`, `tool-edge:18792` (or the explicitly
 configured tool-edge port), and a fresh private random 256-bit token. The bridge
 also accepts a loopback origin with an explicit port for isolated fixtures; no
 arbitrary external origin is supported. Never put the real token in this guide,
@@ -234,15 +238,30 @@ All consumers intentionally share this backend principal's two concurrent calls;
 this is **not** per-agent identity or session isolation.
 
 Search accepts a nonblank `query` (up to 4096 UTF-16 units) and optional integer
-`num_results` (1–10, default 5, requested upstream count). Reader accepts `url`
-(up to 8192 UTF-16 units); the existing REST/Reader public-address checks remain
-authoritative. Unknown fields, browser calls and authority overrides are denied.
-Responses are bounded to 128 KiB for search and 512 KiB for Reader before decoding,
-with two immediate slots and a 30-second total HTTP/body deadline. There are no
-redirects, retries, alternate providers or browser fallback. Search is wrapped as
-untrusted text; Reader's complete trust frame and separate truncation notice are
-preserved. Errors use MCP `isError` with fixed codes, never raw remote bodies.
-Queries and fetched content can still enter native client/model histories.
+`num_results` (1–10, default 5), enforced **locally as a maximum**, not delegated
+to SearXNG's query parameters. Search returns only `title`, `url` and `snippet`
+per result, in upstream order, plus `returnedResults`, `hasMore`, `partial`,
+`warnings` and `truncated`. Titles/snippets are clipped at 200/600 UTF-8 bytes;
+invalid, credential-bearing or over-2048-byte URLs are skipped, never cut into
+broken links. The complete JSON and untrusted frame stay within **16 KiB**;
+large records can yield fewer than requested results with explicit truncation.
+Images, scores, parsed URLs, infoboxes and other raw engine metadata are omitted.
+
+At most eight normalized engine warnings remain visible: rate limiting, access
+denial, CAPTCHA, timeout or unavailable. Partial results remain usable with
+`partial:true`; empty results with engine failures return MCP `isError` and
+`search_unavailable`, not apparent success. A genuinely empty search without
+engine failures remains a successful empty result. No engine override is accepted
+from model arguments, and no failed engine is automatically retried or replaced.
+
+Reader accepts `url` (up to 8192 UTF-16 units); existing REST/Reader public-address
+checks remain authoritative. Unknown fields, browser calls and authority overrides
+are denied. Upstream responses are bounded to 128 KiB for search and 512 KiB for
+Reader before decoding, with two immediate slots and a 30-second total HTTP/body
+deadline. There are no redirects, retries, alternate providers or browser fallback.
+Reader's complete trust frame and separate truncation notice are preserved.
+Errors use MCP `isError` with fixed codes, never raw remote bodies. Queries and
+fetched content can still enter native client/model histories.
 
 After enrollment, reconnect selected native clients; discovery alone is not
 usability. Check real search/Reader calls, invalid/private-URL denial, browser
