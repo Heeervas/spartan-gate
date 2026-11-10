@@ -31,3 +31,14 @@ del mismo filesystem/montaje de incoming. Los consumidores deben stagear solo
 nombres finales completos, nunca temporales. No borrar journals ni spools para
 recuperar fallos. El task de activación conserva rollback y pendientes del usuario;
 la aceptación de fuente archivada no se reescribe como prueba funcional live.
+
+## Smoke real posterior autorizado
+
+Tras la recarga, el usuario delegó una prueba pública. Desde las nuevas tools MCP
+se comprobó example.com: sesión/tab propios, snapshot, PNG visible, links,
+extracción por ref y viewport efectivo exacto390×844 /1280×900. Back restauró la
+página inicial y cleanup cerró la sesión propia. Sin cambios de Pi o perfiles.
+El click hacia IANA se despachó, pero el destino mostró una página de rechazo del
+proxy: no se declara carga exitosa ni se deduce causa exacta/outage global. No
+hubo reintento ni ampliación de política. Uploads/recepción y capacidades no
+recorridas siguen sin validar; no se usaron formularios ni documentos reales.
