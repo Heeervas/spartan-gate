@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Record operator-local Hermes Pi rename-thread enrollment from the existing
+  shared source collection, with offline workload-user loader verification.
+  Preserve separate native state and explicit opt-in for further package parity;
+  no public baseline enrollment, service restart or paid probe is implied.
+
 - Enforce MCP search result counts locally and return compact, bounded citations
   instead of raw SearXNG metadata. Preserve partial-engine warnings and report
   complete engine failure honestly; support operator-only engine selection without
