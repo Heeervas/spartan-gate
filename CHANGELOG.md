@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Record operator-approved MCPHub enrollment for six existing Hermes profiles,
+  preserving the principal and excluding the SSR synthetic consumer. Verify native
+  configuration and authenticated catalogs; archive private recovery beforeimages.
+  Already-open session reload remains user-owned; no core or hub-policy change.
+
 - Verify managed MCP attachment of a synthetic TXT in a real browser and its
   scoped cleanup. Distinguish a selected file from published hosting: the tested
   site requires authentication before creating a share link; no account action
