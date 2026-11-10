@@ -16,12 +16,14 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
 
 ## Blocked / monitoring
 
-- **BROWSER-MCP-001** — Activate and verify the prepared explicit-session browser
-  MCP backend only after a separately approved quiet window and image/mount/grant
-  preparation. Source implementation and isolated checks do not prove Firefox,
-  native-client discovery or real-file receipt. Preserve existing tabs/profiles,
-  search/Reader and rollback; no implicit builds/restarts/document exposure.
-  [Source task](../tasks/archive/2026/browser-tools-mcp/task.md);
+- **BROWSER-MCP-001** — Finish the user's MCP reload and functional browser/upload
+  checks after authorized activation. The backend is connected; selected clients'
+  authenticated hub catalogs preserve103 prior tools and add23. Only the three
+  required services were recreated; Hermes image and11 neighbors are unchanged.
+  Firefox interaction/real-file receipt remain user-owned tests, not catalog proof.
+  Preserve profiles, search/Reader and scoped rollback; no document exposure implied.
+  [Activation task](../tasks/browser-tools-mcp-activation/task.md);
+  [source task](../tasks/archive/2026/browser-tools-mcp/task.md);
   [operator contract](docs/browser-mcp.md).
 
 - **WORKSPACE-001** — Finish shared-worktree collaboration: supported Ultimate

@@ -291,7 +291,7 @@ Also run the existing tool-access regressions and TOP quality command in the
 repository's validation contract. Synthetic HTTP fixtures prove adapter behavior,
 not live search engines, production policy or selected-client activation.
 
-## Managed browser (optional shared backend; not activated)
+## Managed browser (optional shared backend; operator activation)
 
 The separate [browser MCP contract](browser-mcp.md) adds 23 explicit-session tools
 for tabs, navigation, interactions, paginated snapshots, PNG screenshots, verified

@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Record selected-installation browser MCP activation with 23 exact new grants,
+  preserved prior catalogs and narrow transfer mounts. Keep client reload and
+  functional browser/upload verification explicitly user-owned; no real document
+  or site action is implied. Clarify same-mount atomic file publication.
+
 - Prepare an optional 23-tool managed browser MCP backend with explicit shareable
   sessions, durable at-most-once mutation dispatch, paginated snapshots, verified
   non-relaunch viewport, PNG screenshots and bounded metadata/extraction. Add

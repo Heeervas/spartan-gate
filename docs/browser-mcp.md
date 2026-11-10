@@ -94,8 +94,10 @@ binary files—not just PDF or one workspace. Archives are not unpacked or execu
 The MCP cannot read an arbitrary path in a caller's filesystem.
 
 1. An authorized caller copies the selected file into the dedicated `incoming/`
-   folder. Prepare outside that folder and atomically rename the complete file
-   into place. Do not publish a file while still editing/writing it.
+   folder. Prepare a temporary file on the **same filesystem/mount**, then
+   atomically rename it to its final published name. With an incoming-only bind,
+   use an unadvertised temporary name there; consumers must never stage temporary
+   names. Do not publish a file while still editing/writing it.
 2. `browser_file_stage(session_id, operation_id, path)` accepts a **relative**
    path under incoming. It opens anchored no-follow descriptors, rejects symlink
    leaves/intermediate directories, traversal, devices/FIFOs and directories,
