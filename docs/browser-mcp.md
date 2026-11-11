@@ -81,7 +81,7 @@ previous 23 tools until separately authorized activation. Native utilities are:
 | `browser_wait_for(selector, timeout_ms?)` | Bounded selector polling through a fixed evaluate script, 0–10000 ms (default5000). Native `/wait` ignores selectors and waits readiness/network instead. |
 | `browser_stats` | Sanitized URL and numeric tab counters, not request history. |
 | `browser_downloads` | Metadata only (`id`, `suggestedFilename`, `bytes`, `createdAt`, `mimeType`, normalized `failed`; absent sizes may be null); forces `includeData=false`, `consume=false`. No paths or bytes. |
-| `browser_attachable_tabs(profile)` | Candidates only from a privately configured alias and its exact allowed groups. |
+| `browser_attachable_tabs(profile)` | Candidates only from a privately configured alias and its allowed groups (exact-list mode by default). |
 | `browser_attach(profile, session_key, tab_id)` | Borrow the exact native tab using a fresh MCP session with no owned tabs. No last-tab/URL fallback. |
 | `browser_debug_start(ttl_ms?)`, `browser_debug_read(capture_id, cursor?, limit?)`, `browser_debug_stop(capture_id)` | Temporary page-local console/error/fetch/XHR observations; details below. |
 
@@ -107,8 +107,8 @@ controllers; take a fresh snapshot after DOM changes. The native actions do not
 gain this MCP's operation journal guarantees. Shared MCPHub tool grants are not
 per-Hermes-profile/client ACLs: all callers authorized to use this backend's
 native tools can access its configured aliases. Use a separately bound backend
-and appropriate tool grants for a different trust zone; never enroll all profiles
-as a shortcut.
+and appropriate tool grants for a different trust zone; never combine all native
+profile identities into one shared backend as an enrollment shortcut.
 
 Borrowed handles support the four native utilities, debug tools, upload, listing
 the exact borrowed tab, and detach. Ordinary navigation/interactions stay native;
@@ -144,6 +144,13 @@ model-supplied identities. Neither key nor physical staging paths enter tool
 output. Root URL is fixed to internal Camofox (loopback is permitted for isolated
 tests). Do not give the model credentials or expose generic proxy/admin routes.
 Malformed/present native bindings prevent startup; omission preserves base mode.
+
+An explicit alternative is `"profiles": {"native": {"userId":
+"example-hermes-user", "groupAccess": "profile"}}`. This mode requires **exactly
+one alias and fixed user identity**, with no `sessionKeys` field. It admits present
+and future task groups under that one user, never other users. Exact tab/group
+metadata is still checked before each action; it does not identify the current
+Hermes task automatically. The original exact-list schema remains the default.
 
 Staging remains on the existing REST FileStore, its sole filesystem writer.
 The published layout contract for this integration is
@@ -335,6 +342,71 @@ explicitly include reviewed overlays in the selected installation; this source
 overlay is not automatically loaded by `sg`. Do not weaken network policy,
 restart unrelated services or remove volumes/orphans. Disable/revoke only this
 new backend/principal for rollback; never restore whole settings over later work.
+
+## Per-profile provisioning (operator only)
+
+`scripts/configure_browser_profiles.py` handles explicitly selected, already
+MCP-enabled Hermes configs; `configure_mcphub.py` retains its original three-client
+bootstrap contract. See `infra/mcphub/browser-profiles.example.json` and
+`browser-native-template.example.json` in that directory for **nonworking** inputs.
+Supply actual private paths/digests, the current admin password in a0600 file,
+and native identities derived by the **installed Hermes identity function in the
+selected profile context**, not from host paths or guessed profile names.
+
+The protected manifest pins the six reviewed runtime modules and native template.
+Verify host/container path correspondence in the actual installation first. The
+helper does not install/copy code, discover homes, start services or alter network
+policy. Directory modes are0700; bindings/job/beforeimages are0600 with the runtime
+UID. Explicit selected native configs may be0600/0640/0644; their original bytes,
+owner/group and mode are backed up before atomic0600 publication. The job must be
+outside native discovery and retained for recovery; it contains credentials.
+
+```sh
+# Authenticated preflight; no configuration writes. Paths are operator variables.
+.venv/quality/bin/python scripts/configure_browser_profiles.py --manifest "$MANIFEST" --job "$JOB"
+# After source acceptance and installation-specific approval:
+.venv/quality/bin/python scripts/configure_browser_profiles.py --manifest "$MANIFEST" --job "$JOB" --apply
+# Only after checking exact current afterimages and affected consumers:
+.venv/quality/bin/python scripts/configure_browser_profiles.py --manifest "$MANIFEST" --job "$JOB" --rollback
+```
+
+Each selected profile gets a distinct REST browser/upload principal, scratch
+`browserUser`, native binding, shared-process stdio backend, journal, private
+MCPHub group and group-restricted key. Common backend selections/policies and
+source-group instructions are retained. A group alias preserves the existing
+browser tool namespace; only that profile's native URL/Authorization changes.
+The closed sentinel and exact native tool grants precede usable key publication.
+Identity-specific legacy policies or an already-native legacy backend require
+explicit mapping/consumer reconciliation, not guessed translation or silently
+leaving a broad native-access path active. Native API calls never rewrite live `mcp_settings.json` directly.
+
+New hub keys are created **disabled**. Their one-time secret must reach the
+fsynced private job before enable/publication. A lost create reply reconciles the
+owned disabled object and uses native reset; it never blindly creates another
+key. Lost reset replies remain disabled/reconcilable. Ambiguous operations stop,
+not retry automatically. Repeat the same manifest/job to reconcile; changed
+inputs, foreign afterimages or occupied unrelated objects refuse. This is a
+serialized operator rollout, **not** a distributed transaction or protection
+against concurrent administrators; use an exclusive configuration window.
+
+Configuration rollback restores only matching selected clients and disables only
+owned keys. It deliberately retains backend registrations, policy principals,
+bindings, journals and spool for pending-consumer/claim reconciliation. It does
+not reset journals, delete browser contexts, remove files by age or restore a
+whole hub snapshot. Keep legacy backend/keys/state while old consumers need them.
+For a canary then remaining profiles, preflight the full selection first and use
+separate protected subset jobs; do not change a running job's manifest.
+
+Reconnect selected native clients through supported controls (`/reload-mcp` for
+Hermes), preserving active work and respecting confirmations. Fresh-process
+discovery does not prove an already-open gateway/session reloaded. Verify a fresh
+synthetic native task/tab → exact MCP attachment → staged upload/debug → explicit
+stop/detach → native continuation for every selected profile before claiming
+operational acceptance. A new profile needs its own reviewed enrollment; copying
+another profile's key is intentional capability sharing, not identity isolation.
+Global REST workflow/FileStore capacities are still shared; per-profile journals
+do not reserve or raise them. The transfer incoming zone and same-UID backend
+processes remain shared trust surfaces, not hostile-tenant isolation.
 
 ## Verification
 

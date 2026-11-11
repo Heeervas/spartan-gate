@@ -287,6 +287,30 @@ acceptance. SDK/stdio, actual Firefox/rendering/site receipt, native discovery a
 operator registration/deployment are distinct boundaries; do not substitute one
 for another. Compose rendering never creates directories or starts the stack.
 
+### Per-profile browser provisioning
+
+The operator helper and unchanged three-client bootstrap have focused file,
+authority, key-recovery and rollback tests. The optional pinned-hub fixture uses
+actual provisioning APIs/stdio adapters, real REST/FileStore and an inert browser
+peer; it does not certify installed Hermes/Firefox or existing-client reload.
+Inputs are synthetic; all images must already exist locally, with no pulls/builds.
+
+```sh
+python3 -m unittest scripts.test_configure_browser_profiles scripts.test_configure_mcphub -v
+python3 infra/mcphub/browser_profiles_acceptance.py --caddy-image "$MCP_TEST_CADDY_IMAGE" --tool-image "$TOOL_TEST_PYTHON_IMAGE"
+# Only after isolated-operation/resource approval:
+python3 infra/mcphub/browser_profiles_acceptance.py --caddy-image "$MCP_TEST_CADDY_IMAGE" --tool-image "$TOOL_TEST_PYTHON_IMAGE" --profiles 7 --execute
+npm run pi:quality
+git diff --check
+```
+
+Three disposable containers are bounded; only Caddy publishes a loopback endpoint.
+The hub defaults to512MiB/128PIDs and records current usage, cgroup peaks and OOM
+counters. With explicit disposable-resource authority, `--hub-memory-mib 1024`
+selects a1GiB hub; production limits never change. Hitting a cap fails acceptance. Actual combined installation headroom, supported selected-client
+reload and each profile's fresh native same-tab workflow remain separate gates.
+See [browser-mcp.md](browser-mcp.md#per-profile-provisioning-operator-only).
+
 ## Deterministic quality and review
 
 `npm run pi:quality` requires the explicitly provisioned canonical

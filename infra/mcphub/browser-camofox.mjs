@@ -22,8 +22,10 @@ function nativeOrigin(value) {
 }
 
 function validateProfile(alias, profile) {
-  if (!id(alias) || !keys(profile, 'userId,sessionKeys') || !id(profile.userId)
-      || !Array.isArray(profile.sessionKeys) || !profile.sessionKeys.length || profile.sessionKeys.length > 32
+  if (!id(alias) || !object(profile) || !id(profile.userId)) fail('binding_unavailable');
+  if (keys(profile, 'userId,groupAccess') && profile.groupAccess === 'profile') return;
+  if (!keys(profile, 'userId,sessionKeys') || !Array.isArray(profile.sessionKeys)
+      || !profile.sessionKeys.length || profile.sessionKeys.length > 32
       || !profile.sessionKeys.every(id) || new Set(profile.sessionKeys).size !== profile.sessionKeys.length) fail('binding_unavailable');
 }
 
@@ -32,12 +34,20 @@ function validateProfiles(profiles, managedUserId) {
   const used = new Set();
   for (const [alias, profile] of Object.entries(profiles)) {
     validateProfile(alias, profile);
+    if (profile.groupAccess === 'profile') {
+      if (Object.keys(profiles).length !== 1 || profile.userId === managedUserId) fail('binding_unavailable');
+      continue;
+    }
     for (const group of profile.sessionKeys) {
       const identity = profile.userId + ':' + group;
       if (used.has(identity) || profile.userId === managedUserId) fail('binding_unavailable');
       used.add(identity);
     }
   }
+}
+
+function groupAllowed(profile, group) {
+  return id(group) && (profile.groupAccess === 'profile' || profile.sessionKeys.includes(group));
 }
 
 function validateUploadRoot(root) {
@@ -178,7 +188,7 @@ export class NativeBrowser {
     const profile = this.profile(alias);
     const data = await this.request('GET', '/tabs', profile.userId, { signal });
     if (!Array.isArray(data.tabs) || data.tabs.length > 256) fail('upstream_error');
-    return { tabs: data.tabs.filter(row => object(row) && id(row.tabId) && profile.sessionKeys.includes(row.listItemId))
+    return { tabs: data.tabs.filter(row => object(row) && id(row.tabId) && groupAllowed(profile, row.listItemId))
       .slice(0, 32).map(row => ({ tab_id: row.tabId, session_key: row.listItemId, url: safeURL(row.url) })) };
   }
   async inspect(userId, tabId, signal) {
@@ -189,7 +199,7 @@ export class NativeBrowser {
   }
   async attach(args, signal) {
     const profile = this.profile(args.profile);
-    if (!profile.sessionKeys.includes(args.session_key)) fail('forbidden');
+    if (!groupAllowed(profile, args.session_key)) fail('forbidden');
     const data = await this.inspect(profile.userId, args.tab_id, signal);
     if (data.sessionKey !== args.session_key) fail('forbidden');
     return { profile: args.profile, group: args.session_key, tab_id: args.tab_id, realm: this.realm };
@@ -200,7 +210,7 @@ export class NativeBrowser {
     if (attached) {
       if (attached.realm !== this.realm || attached.tab_id !== tabId) fail('forbidden');
       const profile = this.profile(attached.profile);
-      if (!profile.sessionKeys.includes(attached.group)) fail('forbidden');
+      if (!groupAllowed(profile, attached.group)) fail('forbidden');
       userId = profile.userId;
     } else if (!restTabs.some(row => row.tabId === tabId)) fail('forbidden');
     const data = await this.inspect(userId, tabId, signal);

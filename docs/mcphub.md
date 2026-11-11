@@ -322,6 +322,17 @@ profile consent or proof of the native client's currently selected tab. Native
 attachment upgrades the journal to version2; old adapters must not consume it.
 No source change authorizes production binding/grants or real-profile actions.
 
+For explicitly approved multi-profile enrollment, the separate
+`configure_browser_profiles.py` operator helper uses native management APIs,
+distinct group-restricted keys/backends and separate REST scratch principals.
+It preserves common grants and the existing tool namespace; it never inserts
+all native aliases into `agents`. Protected recovery records handle disabled
+one-time keys and guarded client rollback without resetting browser state.
+The original three-client bootstrap is unchanged. Follow the
+[per-profile contract](browser-mcp.md#per-profile-provisioning-operator-only)
+for preflight, resource measurements, supported client reload and actual native
+acceptance. Group routing is not an OS sandbox between same-UID processes.
+
 ## Native local Codebase Memory (current-repository workflow)
 
 Codebase Memory is different from shared account connectors: use native local

@@ -1,0 +1,41 @@
+{
+  "hub": "http://127.0.0.1:18793",
+  "passwordFile": "/srv/example/operator/current-hub-password",
+  "sourceGroup": "agents",
+  "legacyBrowser": "spartan-browser-tools",
+  "policyFile": "/srv/example/tool-access/clients.json",
+  "nativeTemplate": "/srv/example/operator/browser-native.json",
+  "nativeTemplateSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "runtimeHost": "/srv/example/mcphub/runtimes/browser-reviewed",
+  "runtimeContainer": "/state/runtimes/browser-reviewed",
+  "runtimeSha256": {
+    "browser-tools.mjs": "0000000000000000000000000000000000000000000000000000000000000000",
+    "browser-contracts.mjs": "0000000000000000000000000000000000000000000000000000000000000000",
+    "browser-state.mjs": "0000000000000000000000000000000000000000000000000000000000000000",
+    "browser-http.mjs": "0000000000000000000000000000000000000000000000000000000000000000",
+    "browser-camofox.mjs": "0000000000000000000000000000000000000000000000000000000000000000",
+    "browser-debug.mjs": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "bindingsHost": "/srv/example/mcphub/browser-profiles",
+  "bindingsContainer": "/state/browser-profiles",
+  "restBase": "http://tool-access:9081",
+  "clientBase": "http://caddy:18793",
+  "tools": [
+    "browser_session_create", "browser_session_close", "browser_create_tab", "browser_list_tabs",
+    "browser_snapshot", "browser_navigate", "browser_click", "browser_type", "browser_scroll",
+    "browser_back", "browser_forward", "browser_refresh", "browser_press", "browser_select",
+    "browser_viewport", "browser_screenshot", "browser_links", "browser_images", "browser_extract",
+    "browser_close_tab", "browser_file_stage", "browser_file_remove", "browser_upload",
+    "browser_evaluate", "browser_wait_for", "browser_stats", "browser_downloads",
+    "browser_attachable_tabs", "browser_attach", "browser_debug_start", "browser_debug_read", "browser_debug_stop"
+  ],
+  "profiles": [
+    {
+      "name": "example",
+      "slug": "example",
+      "config": "/srv/example/hermes-home/config.yaml",
+      "nativeUser": "example_native_user",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

@@ -25,6 +25,18 @@ test('native binding is private, exact-schema, fixed-origin and never silently f
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('profile-wide groups require one fixed identity and explicit opt-in; legacy lists remain strict', () => {
+  const base = binding('http://camofox:9377');
+  const wide = { userId: 'native', groupAccess: 'profile' };
+  assert.deepEqual(validateNativeBinding({ ...base, profiles: { native: wide } }).profiles.native, wide);
+  for (const profiles of [
+    { native: { ...wide, sessionKeys: ['group'] } },
+    { native: { ...wide, groupAccess: 'all-users' } },
+    { native: wide, other: { userId: 'other', sessionKeys: ['group'] } },
+  ]) assert.throws(() => validateNativeBinding({ ...base, profiles }));
+  assert.deepEqual(validateNativeBinding(base).profiles.main.sessionKeys, ['group']);
+});
+
 test('native transport rejects redirects, encoded/oversized responses, and arbitrary route/admin calls', async () => {
   let mode = 'redirect'; let calls = 0;
   const server = createServer((req, res) => {

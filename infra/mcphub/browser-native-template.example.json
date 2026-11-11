@@ -1,0 +1,5 @@
+{
+  "baseUrl": "http://camofox:9377",
+  "token": "<replace-with-private-native-key>",
+  "uploadRoot": "/root/.camofox/uploads/spartan-managed"
+}

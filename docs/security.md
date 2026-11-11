@@ -81,6 +81,12 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   resources; native evaluate itself can close a tab on timeout. Version2 journals
   fence old adapters from ignoring uncertain native upload claims. See
   [browser-mcp.md](browser-mcp.md) before granting or rolling back this mode.
+  Profile-wide group access is explicit and permits one fixed native user only.
+  Multi-profile provisioning separates hub keys/groups, backend journals and REST
+  scratch identities; it does not isolate hostile same-UID processes or the
+  intentionally shared incoming transfer zone. Disabled key creation and durable
+  one-time-secret recovery precede client publication; rollback retains state and
+  refuses foreign afterimages rather than replacing the whole hub configuration.
 - Tailscale exposure belongs in `private/compose.local.yml`; do not publish edge ports on `0.0.0.0` or LAN addresses in public files.
 - Extra Hermes app ports belong in `private/caddy.local.d` plus `private/compose.local.yml`; use `scripts/add-port.sh` instead of editing public Compose.
 - The OpenAI-compatible router stats, dashboards, and API endpoints require

@@ -92,6 +92,33 @@ Actual Firefox uploads/viewport/rendering, native-client discovery, private
 registration/grants, image/mount deployment and real-site/document exposure are
 separate operator acceptance. No source PASS certifies activation or receipt.
 
+## Per-profile browser MCP provisioning
+
+Existing `scripts/*.py` and `infra/mcphub/**` coverage applies; the accepted TOP
+floor/baseline/adapters/thresholds/exceptions are unchanged. The native API fixture
+uses synthetic manifests/configs, actual stdio adapters and real REST/FileStore
+with an inert Camofox peer. It checks disabled one-time key recovery, execution
+isolation, stable aliases/common grants, frontend/process resume and retained-state
+rollback. It is not installed Hermes/Firefox or active-client reload acceptance.
+
+```sh
+.venv/quality/bin/python -m unittest scripts.test_configure_browser_profiles scripts.test_configure_mcphub -v
+# Existing local images only; preflight starts no containers:
+.venv/quality/bin/python infra/mcphub/browser_profiles_acceptance.py --caddy-image "$MCP_TEST_CADDY_IMAGE" --tool-image "$TOOL_TEST_PYTHON_IMAGE"
+# With explicit isolated-operation/resource authority: three bounded disposable
+# containers, hub/REST internal-only, Caddy publishing loopback only; no pulls/builds.
+.venv/quality/bin/python infra/mcphub/browser_profiles_acceptance.py --caddy-image "$MCP_TEST_CADDY_IMAGE" --tool-image "$TOOL_TEST_PYTHON_IMAGE" --profiles 7 --execute
+npm run pi:quality
+git diff --check
+```
+
+The fixture samples container-wide current, cgroup peaks and OOM counters under
+its default512MiB/128PID hub limit. An explicitly authorized disposable1GiB hub
+can use `--hub-memory-mib 1024`; effective Docker limits are checked and production
+limits never change. Reaching a cap fails acceptance. Actual deployment needs measured combined headroom in its
+existing envelope and supported selected-client reload plus fresh native same-tab
+upload/debug/detach checks. Never raise limits/restart the stack to hide failure.
+
 ## MCPHub opt-in source acceptance
 
 Independent plan review (2026-10-30, READY / PASS_WITH_NOTES) approved additive

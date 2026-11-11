@@ -38,7 +38,7 @@ async function nativePeer(record, res, page) {
   return false;
 }
 
-async function fixture(run, { native = false } = {}) {
+async function fixture(run, { native = false, profileWide = false } = {}) {
   let owned = !native;
   const page = vm.createContext({ console: Object.fromEntries(['log', 'info', 'warn', 'error', 'debug'].map(key => [key, () => {}])),
     URL, TextEncoder, Request, location: { href: 'https://example.com/form' },
@@ -67,7 +67,8 @@ async function fixture(run, { native = false } = {}) {
   const binding = { baseUrl: `http://127.0.0.1:${http.address().port}`, host: 'tool-edge:18792', token: TOKEN, statePath: join(directory, 'state.json') };
   const nativeBindingPath = native ? join(directory, 'native.json') : undefined;
   if (native) await writeFile(nativeBindingPath, JSON.stringify({ baseUrl: binding.baseUrl, token: 'native-fixture-secret-key',
-    managedUserId: 'managed-scratch', profiles: { main: { userId: 'native-profile', sessionKeys: ['native-group'] } }, uploadRoot: '/browser/uploads' }), { mode: 0o600 });
+    managedUserId: 'managed-scratch', profiles: { main: profileWide ? { userId: 'native-profile', groupAccess: 'profile' }
+      : { userId: 'native-profile', sessionKeys: ['native-group'] } }, uploadRoot: '/browser/uploads' }), { mode: 0o600 });
   let server, client;
   const connect = async () => {
     server = await createBrowserToolsServer(binding, { nativeBindingPath }); client = new Client({ name: 'native-browser-fixture', version: '1' });
@@ -215,6 +216,26 @@ test('official SDK borrows only exact configured native groups; utility results 
   assert.deepEqual(pageValue(await call(f, 'downloads', args)), { downloads: [{ id: 'd2', suggestedFilename: 'failed.txt', bytes: null, mimeType: null, failed: true }] });
   await f.reconnect(); assert.equal(pageValue(await call(f, 'stats', args)).toolCalls, 2);
 }, { native: true }));
+
+test('profile-wide binding accepts future task groups but never substitutes identity or mismatched tab group', () => fixture(async f => {
+  const session_id = await session(f);
+  f.setHandler((record, res) => {
+    if (!record.path.startsWith('/tabs')) return false;
+    assert.equal(new URL(record.path, 'http://fixture').searchParams.get('userId'), 'native-profile');
+    if (record.path.includes('/stats?')) res.end('{"tabId":"future-tab","sessionKey":"new-conversation"}');
+    else res.end('{"tabs":[{"tabId":"future-tab","listItemId":"new-conversation"}]}');
+    return true;
+  });
+  const tabs = pageValue(await call(f, 'attachable_tabs', { session_id, profile: 'main' }));
+  assert.equal(tabs.tabs[0].session_key, 'new-conversation');
+  const input = { session_id, profile: 'main', tab_id: 'future-tab', session_key: 'wrong-group' };
+  assert.equal(code(await call(f, 'attach', input, true)), 'forbidden');
+  assert.equal(code(await call(f, 'attach', { ...input, profile: 'other' }, true)), 'forbidden');
+  assert.equal(code(await call(f, 'attach', { ...input, userId: 'other' }, true)), 'invalid_request');
+  assert.equal((await call(f, 'attach', { ...input, session_key: 'new-conversation' }, true)).isError, undefined);
+  await f.reconnect();
+  assert.equal(decode(await call(f, 'list_tabs', { session_id })).tabs[0].tab_id, 'future-tab');
+}, { native: true, profileWide: true }));
 
 test('one native borrower and historical denial replay survive reconnect', () => fixture(async f => {
   const args = await attach(f); const second = await session(f); const operation = randomUUID();

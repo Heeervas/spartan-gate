@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Prepare explicit per-profile browser-MCP provisioning through native MCPHub
+  APIs: fixed-user future-task access, distinct scoped keys/REST scratch users,
+  shared-process journals, preserved common grants/tool aliases, disabled
+  one-time-key recovery and guarded client rollback retaining browser state.
+  Preserve the three-client bootstrap and require separate native activation.
+
 - Add nine optional MCP-native browser tools for scoped evaluate, selector waits,
   stats, download metadata, exact Hermes-tab borrowing and temporary page-level
   console/error/fetch/XHR observations. Reuse existing Camofox APIs without new

@@ -32,3 +32,19 @@ Source checks exercise the real SDK, real REST/FileStore with an inert native
 peer, and the actual page producer in disposable Camoufox with network disabled
 and a synthetic file-triggered403. They do not prove current Hermes attachment,
 real-site receipt or deployed configuration. Full Playwright traces are excluded.
+
+## Multi-profile provisioning — prepared, not activated
+
+The separate operator provisioner can select existing MCP-enabled profiles and
+create one fixed-user native binding, REST scratch principal, journal/backend
+and group-restricted key for each. Explicit profile-wide group access permits
+future tasks under that identity; it never combines native users or guesses the
+current tab. Common grants and exposed browser tool names are preserved.
+
+Use protected pinned manifests and recovery jobs, native management APIs and an
+exclusive configuration window. Keys start disabled; lost create/reset replies
+remain recoverable without duplicate key creation. Rollback restores only matching
+client beforeimages and disables owned keys, retaining journals, spool and REST
+principals. Keep old consumers/state until reconciled. Use supported native MCP
+reload, not a gateway/service restart. Source/synthetic tests do not certify an
+already-open session reloaded or a real native same-tab upload/debug workflow.
