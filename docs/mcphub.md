@@ -293,7 +293,7 @@ not live search engines, production policy or selected-client activation.
 
 ## Managed browser (optional shared backend; operator activation)
 
-The separate [browser MCP contract](browser-mcp.md) adds 23 explicit-session tools
+The separate [browser MCP contract](browser-mcp.md) defines 23 base explicit-session tools
 for tabs, navigation, interactions, paginated snapshots, PNG screenshots, verified
 viewport, metadata/extraction and general regular-file attachments. It uses our
 adapter and existing tool-access/Camofox; no Pi, Hermes or MCPHub core changes.
@@ -309,6 +309,18 @@ recreation, registration/grants and real-file exposure remain separate operator
 gates. Existing search/Reader grants and native browser tools stay unchanged.
 See the contract for preparation, resource limits, failure/reconciliation and
 precisely separated source versus runtime verification.
+
+Source also provides nine optional native tools (32 total): evaluate, bounded
+selector wait, stats, non-consuming download metadata, exact native attach/list,
+and temporary page console/error/fetch/XHR capture. Set the separately protected
+`SPARTAN_BROWSER_NATIVE_BINDING` only after authorizing exact native user/groups
+and selecting new tool grants. Install all six runtime modules together; no
+Camofox/tool-access/Hermes/Pi/MCPHub source change or new package is needed.
+All native-tool callers of a shared backend can use its configured aliases;
+use separate bindings/backends for distinct trust zones. Tool discovery is not
+profile consent or proof of the native client's currently selected tab. Native
+attachment upgrades the journal to version2; old adapters must not consume it.
+No source change authorizes production binding/grants or real-profile actions.
 
 ## Native local Codebase Memory (current-repository workflow)
 

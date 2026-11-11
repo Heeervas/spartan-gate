@@ -71,6 +71,16 @@ Spartan Gate assumes a capable agent may try to reach arbitrary network destinat
   [shared-tool-access.md](shared-tool-access.md) for disclosure, native-history,
   revocation and trusted-desktop limitations. This opt-in source is not proof of
   activation in a particular installation.
+- Optional native browser MCP mode is a separate explicit expansion: its protected
+  backend binding holds the Camofox access key and exact native user/group aliases.
+  It adds arbitrary page evaluate and explicitly borrowed tabs, not an extension
+  of REST's narrower permissions. No key/profile directory reaches the model;
+  direct calls require current REST workflow authority and exact native scope.
+  Page diagnostics are untrusted and may contain private console/path data, not
+  full Network traces. Borrowed detach never evaluates cleanup or deletes native
+  resources; native evaluate itself can close a tab on timeout. Version2 journals
+  fence old adapters from ignoring uncertain native upload claims. See
+  [browser-mcp.md](browser-mcp.md) before granting or rolling back this mode.
 - Tailscale exposure belongs in `private/compose.local.yml`; do not publish edge ports on `0.0.0.0` or LAN addresses in public files.
 - Extra Hermes app ports belong in `private/caddy.local.d` plus `private/compose.local.yml`; use `scripts/add-port.sh` instead of editing public Compose.
 - The OpenAI-compatible router stats, dashboards, and API endpoints require

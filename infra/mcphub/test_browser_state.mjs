@@ -64,6 +64,18 @@ test('corrupt state is refused rather than silently reset', () => fixture(async 
   assert.equal(await readFile(f.path, 'utf8'), '{');
 }));
 
+test('native attachment upgrades state format and refuses downgraded authority instead of silently losing guards', () => fixture(async f => {
+  const create = randomUUID(); const id = (await f.state.begin(create, 'create', undefined, true)).session_id;
+  await f.state.complete(create, { content: [] }, { workflow: 'a'.repeat(64), status: 'active' });
+  assert.equal(JSON.parse(await readFile(f.path, 'utf8')).version, 1, 'old REST journals remain version 1');
+  const attach = randomUUID(); await f.state.begin(attach, 'attach', id);
+  await f.state.complete(attach, { content: [] }, { attachment: { profile: 'main', group: 'group', tab_id: 'native', realm: 'b'.repeat(64) } });
+  const state = await f.reopen(); assert.equal(state.session(id).attachment.tab_id, 'native');
+  const disk = JSON.parse(await readFile(f.path, 'utf8')); assert.equal(disk.version, 2);
+  await state.close(); disk.version = 1; await writeFile(f.path, JSON.stringify(disk));
+  await assert.rejects(BrowserState.open(f.path, 'fixture-realm'), /state_unavailable/);
+}));
+
 test('session capacity and mutation-result reservation stop before excess allocation', () => fixture(async f => {
   for (let index = 0; index < 8; index++) await f.state.begin(randomUUID(), 'create-' + index, undefined, true);
   await assert.rejects(f.state.begin(randomUUID(), 'ninth', undefined, true), /capacity/);

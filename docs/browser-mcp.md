@@ -4,9 +4,12 @@
 bundled official MCP SDK-v1 1.29.0. It adds no browser service and changes no Pi,
 Hermes or MCPHub code. Search/Reader remain in their separate backend.
 
-The path is **MCP client → MCPHub → browser adapter → tool-access → Camofox**.
-Only tool-access has the browser master credential. The adapter receives a fresh
-scoped policy token, never that master key or a profile directory.
+The base path is **MCP client → MCPHub → browser adapter → tool-access → Camofox**.
+In base mode only tool-access has the browser master credential; the adapter
+receives a scoped policy token, never a profile directory. The optional native
+mode below additionally gives this MCP backend a private Camofox access binding.
+That is an explicit authority expansion, not another use of the scoped REST token.
+It needs no Camofox/tool-access/Hermes/Pi/MCPHub source patch or new service.
 
 ## Explicit sessions, not native conversations
 
@@ -22,7 +25,9 @@ control; it is not a native conversation ID. Unknown IDs cannot create/adopt
 resources. Forking or copying a transcript does not establish a new isolation
 boundary. All sessions on this backend share its dedicated scratch cookie
 context; tabs are session-owned, cookies are not per-session. Existing Hermes,
-Pi REST and operator profiles/tabs are never adopted.
+Pi REST and operator profiles/tabs are never adopted automatically. Optional
+native attachment explicitly borrows only an exact privately authorized tab/group;
+it does not change the base-mode resource boundary.
 
 The MCPHub backend is shared: leave `perSessionClient` **false/unset**. Its state
 file admits only one process writer. A second writer fails closed instead of
@@ -42,8 +47,9 @@ No automatic stale-lock takeover is performed.
 | Files | `browser_file_stage(path)`, `browser_upload(file_ids, ref/selector)`, `browser_file_remove(file_id)` |
 
 Inputs reject unknown fields, arbitrary headers/backend URLs, profile/user IDs,
-cookie access, administration and generic JavaScript. There is no download,
-arbitrary wait, browser relaunch, file chooser/trigger fallback or auxiliary
+cookie-import/export APIs and administration. Base mode has no generic JavaScript; optional
+native mode explicitly grants `browser_evaluate`. There is no file-byte download,
+arbitrary sleep, browser relaunch, file chooser/trigger fallback or auxiliary
 vision-model call. Structured extraction projects existing accessibility-ref
 names to a bounded primitive-field subset; missing refs yield null, not invented
 values. It is not general JSON-Schema validation or semantic extraction.
@@ -61,6 +67,134 @@ emulation. Snapshots/link/image/extraction text remains framed as untrusted page
 content. Screenshots return MCP PNG image blocks; they may contain secrets and
 enter saved/model history. Limits remain 128 KiB JSON, 2 MiB PNG, 4096 pixels per
 dimension and 16 megapixels; oversized results fail explicitly.
+
+## Optional native utilities and shared Hermes tabs
+
+The source adds nine tools (32 total catalog entries). Without
+`SPARTAN_BROWSER_NATIVE_BINDING`, the nine return `unsupported_backend` and the
+original REST mode is unchanged. Installed catalogs may still have only the
+previous 23 tools until separately authorized activation. Native utilities are:
+
+| Tools | Contract |
+| --- | --- |
+| `browser_evaluate(expression)` | Explicitly mutating page JavaScript, not a read-only console. Can disclose page data/send requests/act. Native evaluation timeout may close the tab. |
+| `browser_wait_for(selector, timeout_ms?)` | Bounded selector polling through a fixed evaluate script, 0–10000 ms (default5000). Native `/wait` ignores selectors and waits readiness/network instead. |
+| `browser_stats` | Sanitized URL and numeric tab counters, not request history. |
+| `browser_downloads` | Metadata only (`id`, `suggestedFilename`, `bytes`, `createdAt`, `mimeType`, normalized `failed`; absent sizes may be null); forces `includeData=false`, `consume=false`. No paths or bytes. |
+| `browser_attachable_tabs(profile)` | Candidates only from a privately configured alias and its exact allowed groups. |
+| `browser_attach(profile, session_key, tab_id)` | Borrow the exact native tab using a fresh MCP session with no owned tabs. No last-tab/URL fallback. |
+| `browser_debug_start(ttl_ms?)`, `browser_debug_read(capture_id, cursor?, limit?)`, `browser_debug_stop(capture_id)` | Temporary page-local console/error/fetch/XHR observations; details below. |
+
+Create a normal MCP session first. The backend rechecks that REST workflow's
+current authority/generation before native calls, plus the native tab's current
+identity/group. For ordinary MCP-owned tabs it also requires an exact match in
+its REST-created-tab registry. A changed/stale binding or group never selects
+another tab. Missing native configuration fails closed rather than falling back.
+
+Native Hermes already tracks its own user/group/tab. Sharing only a `userId`
+shares cookies, **not the selected tab**. The operator must explicitly map the
+selected Hermes identity and allowed task groups in the private binding, then
+select the exact candidate `tab_id` and `session_key`. Native tool output is not
+automatic proof of its current backend tab. No client hook, native-conversation
+identity injection, profile-directory read/copy, or cookie-export API is introduced. Explicit page
+JavaScript can read JS-accessible cookies/storage and other private page data;
+it is not a read-only or secret-isolating capability.
+
+A typical sequence is: native Hermes opens a page → MCP `session_create` →
+`attachable_tabs(profile)` → explicit `attach` → optional debug/start or upload →
+`debug_stop` → MCP detach/session-close → native Hermes continues. Alternate
+controllers; take a fresh snapshot after DOM changes. The native actions do not
+gain this MCP's operation journal guarantees. Shared MCPHub tool grants are not
+per-Hermes-profile/client ACLs: all callers authorized to use this backend's
+native tools can access its configured aliases. Use a separately bound backend
+and appropriate tool grants for a different trust zone; never enroll all profiles
+as a shortcut.
+
+Borrowed handles support the four native utilities, debug tools, upload, listing
+the exact borrowed tab, and detach. Ordinary navigation/interactions stay native;
+unsupported borrowed actions fail explicitly. A second active MCP handle on this backend cannot
+borrow the same native tab. `browser_close_tab` detaches a borrowed handle instead
+of closing its physical tab. `browser_session_close` only closes its own backing
+REST workflow/files. Neither operation performs native evaluate or native DELETE.
+They report `capture_restoration:not_confirmed`; explicit stop is a separate
+operation and capture may remain until its page-local TTL/navigation. Never close
+a native profile/context as a cleanup workaround.
+
+### Native binding and upload lifecycle
+
+Keep the original binding unchanged. Optionally set
+`SPARTAN_BROWSER_NATIVE_BINDING` to another regular non-symlink0600 file owned by
+the backend UID in a canonical0700 directory. Exact schema:
+
+```json
+{
+  "baseUrl": "http://camofox:9377",
+  "token": "<private-camofox-access-key>",
+  "managedUserId": "example-mcp-scratch",
+  "profiles": {
+    "example": {"userId": "example-hermes-user", "sessionKeys": ["example-task-group"]}
+  },
+  "uploadRoot": "/root/.camofox/uploads/spartan-managed"
+}
+```
+
+`managedUserId` must match the existing REST principal's browser identity.
+Profiles are explicit aliases to exact native user/group allowlists, not
+model-supplied identities. Neither key nor physical staging paths enter tool
+output. Root URL is fixed to internal Camofox (loopback is permitted for isolated
+tests). Do not give the model credentials or expose generic proxy/admin routes.
+Malformed/present native bindings prevent startup; omission preserves base mode.
+
+Staging remains on the existing REST FileStore, its sole filesystem writer.
+The published layout contract for this integration is
+`uploadRoot/<file_id>/<original-basename>`, immutable within the session. Only
+validated stage results remembered by this MCP session may enter native upload;
+old/unknown file IDs cannot be guessed or adopted. The adapter persists native
+file claims **before** dispatching strict single-attempt upload. Ambiguous
+uploads retain their claims across reconnect and block removal/detach/session
+cleanup until operator reconciliation. A known result releases only its own
+claims. No additional spool writer/mount or automatic retry is introduced.
+
+Old version1 journals remain readable. The first native attachment (or native
+file claim) atomically upgrades the journal to **version2**, which old adapters
+refuse. This prevents a rollback from silently ignoring borrowed ownership or
+uncertain-file guards. Do not downgrade JSON, delete pending records or start an
+old adapter against that journal; reconcile native claims and choose a supported
+state generation before any rollback. The single-writer lock and original bounds
+remain unchanged. Generic evaluate results must fit the existing **2048-byte
+serialized MCP receipt**; select/paginate small values. `response_too_large` is a
+retained result, not proof that JavaScript did not execute; replay never executes
+it again. Debug reads are separately bounded read-only result retrieval.
+
+### Console and page-level network observations
+
+Start capture **before** the action, retain its returned `capture_id`, read with
+cursor/limit and call explicit stop when done. Defaults:60000 ms, maximum300000 ms;
+200 events/65536 serialized event bytes,20 events per read,100 pending fetch and
+100 pending XHR observers. Overflow is reported in `dropped`; it is not silently
+presented as a complete history. Console strings/primitives are truncated; page
+objects/getters are not serialized. Request URLs omit userinfo/query/fragment;
+headers, bodies and file bytes are not captured. Console strings and URL paths
+can still contain private data; redaction is not a secrecy guarantee. Returned
+observations/evaluate results are framed as untrusted web content and may remain
+in client/model history after capture expiry.
+
+This is **not DevTools Network or Playwright tracing**. It sees future main-page
+JS console calls/errors and fetch/XHR, not past messages, browser-internal CORS or
+preflight details, cached original API references, workers or all frames. A CORS
+failure may expose only an error/status0, not the server status. Navigation loses
+the capture (`capture_missing`); starting over an active capture returns
+`capture_busy`, and non-writable hooks return `capture_unsupported` after rollback.
+Instrumenting promise rejection observation can affect the page's
+unhandled-rejection reporting; stop after the diagnostic. No automatic navigation,
+form retry or candidate submission follows.
+
+Explicit stop restores only hooks still owned by this capture; later page changes
+are preserved. TTL stops/restores/clears data only when the page executes its
+scheduled callback, not at a guaranteed wall-clock deadline on a suspended page.
+Detach never evaluates cleanup on a potentially unresponsive native tab: that
+native evaluate timeout could itself destroy the tab. Call `debug_stop` explicitly
+or allow expiry/navigation, with that distinction visible to the caller.
 
 ## Mutation replay and recovery
 
@@ -162,7 +296,8 @@ plugin/tool code, but applying that mount recreates Hermes and needs its own qui
 window. Other callers need their own explicitly approved narrow file transport.
 
 Registration uses one protected runtime directory containing `browser-tools.mjs`,
-`browser-state.mjs`, `browser-http.mjs` and `browser-contracts.mjs`. A regular
+`browser-state.mjs`, `browser-http.mjs`, `browser-contracts.mjs`,
+`browser-camofox.mjs` and `browser-debug.mjs`. A regular
 non-symlink binding 0600 owned by the backend UID has exactly:
 
 ```json
@@ -180,8 +315,10 @@ The new policy principal uses a fresh scratch `browserUser`; preserve all prior
 policy entries/fingerprints. Register an admin-owned stdio backend with
 `command: node`, args pointing at its stable `browser-tools.mjs`, and env
 `SPARTAN_BROWSER_TOOLS_BINDING` pointing at the protected binding. Grant only the
-23 exact tools in the selected group, preserving the closed sentinel and all
-other backends/grants. Discovery alone is not runtime acceptance.
+base23 tools in the selected group, preserving the closed sentinel and all
+other backends/grants. Native utilities add nine explicitly selected grants;
+never assume existing native-profile access from a catalog entry. Discovery
+alone is not runtime acceptance.
 
 Uploads additionally require Camofox's advertised `singleAttemptBrowserUpload`
 capability. Without the reviewed patch, upload fails `unsupported_backend`
@@ -209,7 +346,9 @@ Executable gates belong to `.agents/validation.md`, publicly mirrored in
   an **inert browser peer**, including Docker RO enforcement;
 - executing the patched native Camofox upload handler with inert Playwright
   resources, target/call-count regressions, and full ordered-patch idempotency;
-- later actual Firefox, selected native clients and deployment readback.
+- an optional real Camoufox page-producer fixture using a disposable existing
+  image, synthetic intercepted requests and network disabled; not native Hermes;
+- later selected native clients and deployment readback.
 
 The isolated acceptance does not prove real-site receipt, CSS rendering, Firefox
 upload behavior, production mount deployment or current-client discovery. Those

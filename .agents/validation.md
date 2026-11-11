@@ -47,9 +47,9 @@ baseline, TOP floor, adapter, threshold or exception changes. Public contract:
 `docs/browser-mcp.md`; executable public mirror: `docs/development.md`.
 
 ```sh
-node --test infra/mcphub/test_browser_state.mjs infra/mcphub/test_browser_http.mjs
+node --test infra/mcphub/test_browser_state.mjs infra/mcphub/test_browser_http.mjs infra/mcphub/test_browser_camofox.mjs infra/mcphub/test_browser_debug.mjs
 .venv/quality/bin/python -m unittest discover -s infra/tool-access -p 'test_*.py'
-docker run --rm --pull never --network none --read-only --memory 192m --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --user 1000:1000 --tmpfs /tmp:rw,nosuid,nodev,size=32m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab --test --test-concurrency=1 /fixture/test_browser_state.mjs /fixture/test_browser_http.mjs /fixture/test_browser_tools.mjs /fixture/test_web_tools.mjs
+docker run --rm --pull never --network none --read-only --memory 192m --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --user 1000:1000 --tmpfs /tmp:rw,nosuid,nodev,size=32m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab --test --test-concurrency=1 /fixture/test_browser_state.mjs /fixture/test_browser_http.mjs /fixture/test_browser_camofox.mjs /fixture/test_browser_debug.mjs /fixture/test_browser_tools.mjs /fixture/test_web_tools.mjs
 # Existing pristine source/Express program inputs; no source-consuming skips:
 npm run test:camofox
 npm run test:camofox:native
@@ -71,6 +71,22 @@ python3 infra/mcphub/browser_acceptance.py --tool-image "$TOOL_TEST_PYTHON_IMAGE
 # Only with existing isolated-fixture/resource authority:
 python3 infra/mcphub/browser_acceptance.py --tool-image "$TOOL_TEST_PYTHON_IMAGE" --execute --resource-approved
 ```
+
+The optional native MCP source adds only existing `infra/mcphub/**` coverage;
+no policy/baseline/threshold/exception change. Joint SDK/REST/FileStore acceptance
+also exercises the direct borrowed-tab upload path and exact staged layout.
+Under separately authorized isolated-browser resource scope, run the actual
+page producer in an existing Camofox image with network disabled and no profiles:
+
+```sh
+docker run --rm --pull never --network none --memory 2g --pids-limit 512 --shm-size 1g --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node "$CAMOFOX_TEST_IMAGE" /fixture/browser_debug_acceptance.mjs
+```
+
+Use sufficient host memory reserve and one browser at a time; never pull/build.
+Writable disposable root/cache and the supported2GiB/512-PID/1GiB-shm envelope
+are required by this fixture, not production changes. The synthetic locally
+intercepted file PUT/403, console, stop/expiry test proves the real Camoufox page
+producer, not native-Hermes attachment, real-site receipt or installed activation.
 
 Actual Firefox uploads/viewport/rendering, native-client discovery, private
 registration/grants, image/mount deployment and real-site/document exposure are

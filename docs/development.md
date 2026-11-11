@@ -241,9 +241,9 @@ pulls, source activation or production bindings. Native Camofox program inputs
 are the pinned pristine source and matching Express declared above.
 
 ```sh
-node --test infra/mcphub/test_browser_state.mjs infra/mcphub/test_browser_http.mjs
+node --test infra/mcphub/test_browser_state.mjs infra/mcphub/test_browser_http.mjs infra/mcphub/test_browser_camofox.mjs infra/mcphub/test_browser_debug.mjs
 python3 -m unittest discover -s infra/tool-access -p 'test_*.py'
-docker run --rm --pull never --network none --read-only --memory 192m --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --user 1000:1000 --tmpfs /tmp:rw,nosuid,nodev,size=32m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab --test --test-concurrency=1 /fixture/test_browser_state.mjs /fixture/test_browser_http.mjs /fixture/test_browser_tools.mjs /fixture/test_web_tools.mjs
+docker run --rm --pull never --network none --read-only --memory 192m --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --user 1000:1000 --tmpfs /tmp:rw,nosuid,nodev,size=32m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node samanhappy/mcphub:1.1.14@sha256:700013d712b7e74750bb2ce05492688833f62a39472db5e88753557002735dab --test --test-concurrency=1 /fixture/test_browser_state.mjs /fixture/test_browser_http.mjs /fixture/test_browser_camofox.mjs /fixture/test_browser_debug.mjs /fixture/test_browser_tools.mjs /fixture/test_web_tools.mjs
 npm run test:camofox
 npm run test:camofox:native
 SPARTAN_BROWSER_TRANSFER_PATH=/synthetic/browser-transfer SPARTAN_BROWSER_TOOL_ACCESS_IMAGE=synthetic-tool:reviewed SPARTAN_BROWSER_CAMOFOX_IMAGE=synthetic-browser:reviewed docker compose -f infra/compose/compose.yml -f infra/compose/compose.browser-tools.yml -f infra/compose/compose.browser-transfer-hermes.yml --env-file .env.example --profile tool-access --profile camofox config --quiet
@@ -261,6 +261,23 @@ creation and images are never pulled/built. Preflight starts nothing:
 python3 infra/mcphub/browser_acceptance.py --tool-image "$TOOL_TEST_PYTHON_IMAGE"
 # Only after explicit isolated-operation/resource authority:
 python3 infra/mcphub/browser_acceptance.py --tool-image "$TOOL_TEST_PYTHON_IMAGE" --execute --resource-approved
+```
+
+The joint fixture also verifies direct upload to an explicitly borrowed native
+tab, using the real REST FileStore and its exact immutable layout, then detaches
+without native DELETE. The native binding/SDK fault tests cover permission/group
+changes, ambiguous upload claims, replay, result bounds and nondestructive detach.
+Page scripts are exercised directly, not replaced with a mock capture receipt.
+
+With explicit isolated-browser resource authority and an already installed
+Camofox image, the additional real page-producer check uses no profile mounts,
+credentials or network. The writable disposable container layer is needed for
+Firefox/font caches; 2GiB/512 PIDs/1GiB shm match the supported browser envelope.
+It intercepts synthetic requests locally and checks a file-triggered403, console,
+explicit stop and expiry restoration. It is not native-Hermes/production proof:
+
+```sh
+docker run --rm --pull never --network none --memory 2g --pids-limit 512 --shm-size 1g --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m -v "$PWD/infra/mcphub:/fixture:ro" --entrypoint node "$CAMOFOX_TEST_IMAGE" /fixture/browser_debug_acceptance.mjs
 ```
 
 The upload handler tests execute actual patched Camofox program text with inert

@@ -28,6 +28,33 @@ function validateSession(id, session) {
   if (!UUID.test(id) || !dictionary(session) || !['minting', 'active', 'closed'].includes(session.status)) fail('state_unavailable');
   if (session.workflow !== null && (typeof session.workflow !== 'string' || !/^[a-f0-9]{64}$/.test(session.workflow))) fail('state_unavailable');
   if (session.status === 'active' && session.workflow === null) fail('state_unavailable');
+  validateNativeState(session);
+}
+
+function validateAttachment(attached) {
+  if (!dictionary(attached) || !['profile', 'group', 'tab_id'].every(key => typeof attached[key] === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(attached[key]))
+      || !/^[a-f0-9]{64}$/.test(attached.realm)) fail('state_unavailable');
+}
+
+function validateStagedFile(id, file) {
+    if (!/^[a-f0-9]{32}$/.test(id) || !dictionary(file) || typeof file.name !== 'string'
+        || !file.name.length || Buffer.byteLength(file.name) > 128 || /[\\/\\\\\u0000-\u001f\u007f]/.test(file.name)
+        || !Number.isInteger(file.size) || file.size < 0 || file.size > 20971520
+        || !/^[a-f0-9]{64}$/.test(file.sha256) || !['ready', 'claimed'].includes(file.state)
+        || (file.state === 'claimed' && !UUID.test(file.claim))) fail('state_unavailable');
+}
+
+function validateNativeState(session) {
+  if (session.attachment !== undefined && session.attachment !== null) validateAttachment(session.attachment);
+  if (session.files === undefined) return;
+  if (!dictionary(session.files) || Object.keys(session.files).length > 8) fail('state_unavailable');
+  for (const [id, file] of Object.entries(session.files)) validateStagedFile(id, file);
+}
+
+function validateNativeVersion(version, sessions) {
+  const native = sessions.some(([, session]) => session.attachment
+    || Object.values(session.files || {}).some(file => file.state === 'claimed'));
+  if (native && version !== 2) fail('state_unavailable');
 }
 
 function operationReservation(id, op, sessions) {
@@ -38,10 +65,11 @@ function operationReservation(id, op, sessions) {
 }
 
 function validate(data, realm) {
-  if (data?.version !== 1 || data.realm !== realm || !dictionary(data.sessions) || !dictionary(data.operations)) fail('state_unavailable');
+  if (![1, 2].includes(data?.version) || data.realm !== realm || !dictionary(data.sessions) || !dictionary(data.operations)) fail('state_unavailable');
   const sessions = Object.entries(data.sessions); const operations = Object.entries(data.operations);
   if (sessions.length > 512 || operations.length > 512) fail('state_unavailable');
   for (const [id, session] of sessions) validateSession(id, session);
+  validateNativeVersion(data.version, sessions);
   if (sessions.filter(([, session]) => session.status !== 'closed').length > 8) fail('state_unavailable');
   const reserved = operations.reduce((total, [id, op]) => total + operationReservation(id, op, data.sessions), 0);
   if (size(data) + reserved > MAX_BYTES) fail('operation_capacity');
@@ -131,12 +159,38 @@ export class BrowserState {
     });
   }
 
+  claimFiles(id, fileIds) {
+    return this.transaction(data => {
+      const op = data.operations[id];
+      if (!op || op.status !== 'pending') fail('state_unavailable');
+      const files = data.sessions[op.session_id].files || {};
+      if (fileIds.some(key => !files[key])) fail('forbidden');
+      if (fileIds.some(key => files[key].state !== 'ready')) fail('file_in_use');
+      if (fileIds.reduce((sum, key) => sum + files[key].size, 0) > 41943040) fail('file_too_large');
+      data.version = 2; // Legacy adapters must not ignore native uncertainty on rollback.
+      for (const key of fileIds) { files[key].state = 'claimed'; files[key].claim = id; }
+    });
+  }
+
   complete(id, result, sessionUpdate) {
     return this.transaction(data => {
       const op = data.operations[id];
       if (!op || op.status !== 'pending' || size(result) > MAX_RESULT) fail('state_unavailable');
+      if (sessionUpdate?.attachment) {
+        data.version = 2;
+        const next = sessionUpdate.attachment;
+        if (Object.entries(data.sessions).some(([id, session]) => id !== op.session_id && session.status === 'active'
+            && session.attachment?.realm === next.realm && session.attachment.tab_id === next.tab_id)) {
+          const denied = { isError: true, content: [{ type: 'text', text: '{"error":{"code":"workflow_busy"}}' }] };
+          op.status = 'done'; op.result = denied; return denied;
+        }
+      }
       if (sessionUpdate) Object.assign(data.sessions[op.session_id], sessionUpdate);
+      for (const file of Object.values(data.sessions[op.session_id].files || {})) {
+        if (file.claim === id) { file.state = 'ready'; delete file.claim; }
+      }
       op.status = 'done'; op.result = result;
+      return result;
     });
   }
 

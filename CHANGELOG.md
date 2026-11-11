@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add nine optional MCP-native browser tools for scoped evaluate, selector waits,
+  stats, download metadata, exact Hermes-tab borrowing and temporary page-level
+  console/error/fetch/XHR observations. Reuse existing Camofox APIs without new
+  Camofox/tool-access/Hermes/Pi/MCPHub patches. Preserve REST staging and durable
+  native upload claims; version2 journals prevent unsafe legacy rollback. Detach
+  never evaluates cleanup or closes borrowed tabs. Full Playwright traces remain
+  excluded; native-profile activation and real-site acceptance are separate.
+
 - Record operator-approved MCPHub enrollment for six existing Hermes profiles,
   preserving the principal and excluding the SSR synthetic consumer. Verify native
   configuration and authenticated catalogs; archive private recovery beforeimages.
