@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Document hardening for writable Markdown vault backends behind MCPHub: mask
+  Git metadata and editor state, bind scripts and backend config read-only,
+  disable runtime helper downloads, and keep commits with the client agent.
+
 - Add a bounded RAM-only live Activity summary for cache reuse, reported token
   totals, finalized Chat/Responses request errors, duration and data coverage.
   Preserve optional-storage disablement and required quota/routing controls;

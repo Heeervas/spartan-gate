@@ -173,6 +173,22 @@ already-admitted provider endpoint can still fail DNS or be unavailable. Do not
 relax egress, consent on the user's behalf or repair an unrelated service to hide
 these blockers.
 
+### Writable Markdown vault backends
+
+A note-editing backend's path guard usually stops only `..` traversal: it can
+still read and write repository metadata, editor plugin code and scripts inside
+the vault. A write to `.git/config` (for example `core.fsmonitor`) executes on
+the host's next `git status`. When a vault is bind-mounted read-write into the
+hub, mask `.git` and the editor state directory (such as `.obsidian`) with
+read-only empty tmpfs mounts, bind script directories read-only, and give any
+backend-owned config directory inside the vault a read-only bind from protected
+hub state. Do this in the private override. Pre-create nested mountpoints as the
+vault owner so Docker does not create them as root. Verify reads and writes of
+those paths through the actual backend before granting tools. Also turn off
+any backend feature that downloads and runs helper binaries at runtime (for
+example a semantic-search daemon); supply pinned runtimes instead. Backend
+writes are not commits: the client agent still owns committing its changes.
+
 ## Google authorization is separate from agent access
 
 The agent's MCPHub bearer key authorizes access to the hub, not to a Google
