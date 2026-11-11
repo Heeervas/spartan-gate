@@ -26,6 +26,16 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
   [source task](../tasks/archive/2026/browser-tools-mcp/task.md);
   [operator contract](docs/browser-mcp.md).
 
+- **BROWSER-MCP-002** — Decide and separately authorize native-browser MCP
+  activation: select the exact Hermes identity/task groups and tab, install the
+  six-module source runtime/private binding and grant the nine native tools.
+  Source is independently accepted; actual native-Hermes interoperability,
+  diagnostics and selected-site upload receipt still need authorized checks.
+  No full tracing, current-form action, real-document exposure or profile/context
+  restart/closure is implied. This is separate from BROWSER-MCP-001.
+  [Task](../tasks/browser-mcp-native-debug/task.md);
+  [operator contract](docs/browser-mcp.md).
+
 - **WORKSPACE-001** — Finish shared-worktree collaboration: supported Ultimate
   relocation/future placement and owner reconciliation for external temporary
   checkouts. Hermes's single mount/Git upgrade is deployed, not full migration.
