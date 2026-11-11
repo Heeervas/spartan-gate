@@ -1,5 +1,7 @@
     const tokenInput = document.getElementById('token');
     const metricsEl = document.getElementById('metrics');
+    const liveMetricsEl = document.getElementById('live-metrics');
+    const liveStatusEl = document.getElementById('live-status');
     const sessionsEl = document.getElementById('sessions');
     const statusEl = document.getElementById('status');
     const filterStatusEl = document.getElementById('filter-status');
@@ -202,6 +204,7 @@
         if (!response.ok) {
           const error = new Error(payload?.error?.message || `${path} HTTP ${response.status}`);
           error.transient = response.status >= 500;
+          error.status = response.status;
           throw error;
         }
         return payload;
@@ -481,6 +484,7 @@
       ++loadGeneration;
       activeLoadController?.abort();
       cancelTurnLoads();
+      window.SpartanRouteLive.clear(liveMetricsEl, liveStatusEl);
       sessionsEl.replaceChildren();
       metricsEl.replaceChildren();
       renderedMarkup.delete(sessionsEl);
@@ -488,12 +492,36 @@
       clearTimeout(pollTimer);
       statusEl.textContent = 'Use token to load this account.';
     });
+    async function loadHistory(controller, current) {
+      const query = new URLSearchParams({ sessionLimit: '30', turnLimit: '12' });
+      for (const [key, value] of Object.entries(selectedFilters())) if (value) query.set(key, value);
+      const results = await Promise.allSettled([
+        getJson('/stats', controller.signal).then(stats => {
+          if (current()) renderStats(stats);
+        }),
+        getJson(`/api/routing/live?${query}`, controller.signal).then(live => {
+          if (!current()) return;
+          renderFilterState(live);
+          renderSessions(live);
+        }),
+      ]);
+      if (!current()) return;
+      const denied = results.find(result => result.status === 'rejected' && [401, 403].includes(result.reason.status));
+      if (denied) throw denied.reason;
+      const failures = results.flatMap((result, index) => result.status === 'rejected'
+        ? [`${index === 0 ? 'Summary' : 'Sessions'}: ${result.reason.message}`] : []);
+      if (failures.length) {
+        const retained = results[1].status === 'rejected' && sessionsEl.children.length;
+        statusEl.textContent = `${failures.join(' · ')}${retained ? ' · showing last successful sessions' : ''}`;
+      }
+    }
     async function load(background = false) {
       clearTimeout(pollTimer);
       if (background && activeLoadController && !activeLoadController.signal.aborted) return;
       if (renderedCredential !== tokenInput.value.trim()) {
         renderedCredential = tokenInput.value.trim();
         cancelTurnLoads();
+        window.SpartanRouteLive.clear(liveMetricsEl, liveStatusEl);
         sessionsEl.replaceChildren();
         metricsEl.replaceChildren();
         renderedMarkup.delete(sessionsEl);
@@ -503,34 +531,34 @@
       if (activeLoadController) activeLoadController.abort();
       const controller = new AbortController();
       activeLoadController = controller;
+      let accessDenied = false;
       try {
         if (!background) statusEl.textContent = 'Loading...';
-        const filters = selectedFilters();
-        const query = new URLSearchParams({ sessionLimit: '30', turnLimit: '12' });
-        for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
         const current = () => generation === loadGeneration && !controller.signal.aborted;
-        const results = await Promise.allSettled([
-          getJson('/stats', controller.signal).then(stats => {
-            if (current()) renderStats(stats);
-          }),
-          getJson(`/api/routing/live?${query}`, controller.signal).then(live => {
-            if (!current()) return;
-            renderFilterState(live);
-            renderSessions(live);
-          }),
-        ]);
+        const memory = await getJson('/api/telemetry/live', controller.signal);
         if (!current()) return;
-        const failures = results.flatMap((result, index) => result.status === 'rejected'
-          ? [`${index === 0 ? 'Summary' : 'Sessions'}: ${result.reason.message}`] : []);
-        if (failures.length) {
-          const retained = results[1].status === 'rejected' && sessionsEl.children.length;
-          statusEl.textContent = `${failures.join(' · ')}${retained ? ' · showing last successful sessions' : ''}`;
+        const historicalEnabled = window.SpartanRouteLive.render(liveMetricsEl, liveStatusEl, memory);
+        document.getElementById('history-filters').hidden = !historicalEnabled;
+        if (!historicalEnabled) {
+          cancelTurnLoads();
+          stableHTML(metricsEl, '<p class="muted">Historical telemetry is disabled. Live totals above are RAM only.</p>');
+          stableHTML(sessionsEl, '<p class="muted">Historical sessions are unavailable; omitted activity is not backfilled.</p>');
+          filterStatusEl.textContent = '';
+          statusEl.textContent = 'History disabled';
+          return;
         }
+        await loadHistory(controller, current);
       } catch (error) {
         if (generation !== loadGeneration || controller.signal.aborted) return;
+        accessDenied = [401, 403].includes(error.status);
+        window.SpartanRouteLive.unavailable(liveMetricsEl, liveStatusEl, accessDenied);
+        if (accessDenied) {
+          cancelTurnLoads(); sessionsEl.replaceChildren(); metricsEl.replaceChildren();
+          renderedMarkup.delete(sessionsEl); renderedMarkup.delete(metricsEl);
+        }
         statusEl.textContent = `${error.message}${sessionsEl.children.length ? ' · showing last successful data' : ''}`;
       } finally {
-        if (generation === loadGeneration) { activeLoadController = null; schedulePoll(); }
+        if (generation === loadGeneration) { activeLoadController = null; if (!accessDenied) schedulePoll(); }
       }
     }
     load();

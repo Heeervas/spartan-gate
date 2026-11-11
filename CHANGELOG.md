@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add a bounded RAM-only live Activity summary for cache reuse, reported token
+  totals, finalized Chat/Responses request errors, duration and data coverage.
+  Preserve optional-storage disablement and required quota/routing controls;
+  no historical recovery, persistence or provider polling is introduced. Clear
+  on process restart and distinguish unknown cache counters from measured zero.
+
 - Prepare explicit per-profile browser-MCP provisioning through native MCPHub
   APIs: fixed-user future-task access, distinct scoped keys/REST scratch users,
   shared-process journals, preserved common grants/tool aliases, disabled

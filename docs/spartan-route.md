@@ -38,7 +38,7 @@ explicitly unavailable while their optional storage is off, not silently x1 or
 zero activity. Saved x5 overrides remain on disk, untouched. Slot/limit controls
 remain available. `/health` remains degraded, with the explicit mode/reason and a
 bounded omission counter in `telemetry`, separate from physical database failures.
-Telemetry-only APIs return sanitized 503 responses; live readings can return 200
+Historical telemetry-only APIs return sanitized 503 responses; live readings can return 200
 with partial metadata. The normal-mode behavior below is unchanged.
 
 Pi inference stays compatible with older clients, but this contingency interval is
@@ -48,6 +48,49 @@ recovered totals without an explicit recovery decision; see the
 Activation still requires independently reviewed source, the exact final image
 and assets passing an isolated synthetic canary, a coordinated quiet window and
 separate installed/live verification. A source test is not deployment evidence.
+
+## RAM-only live telemetry
+
+Activity includes a separate **Live · last 15 minutes** summary. Authenticated
+`GET /api/telemetry/live` reads process memory only and returns `Cache-Control:
+no-store`, even while optional persisted telemetry is disabled. It does not read
+historical tables, acquire their locks, contact a provider, or enable accounting.
+The existing provider prompt-cache behavior and quota controls are unchanged.
+
+The unit is a finalized logical Chat/Responses request at the existing response
+cleanup boundary, including failures that reach that boundary. It is not a count
+of physical upstream retries, all rejected HTTP requests, image requests or
+realtime sessions. Client disconnects alone are not labeled provider errors.
+Counters update on finalization, not with every streamed token.
+
+The accumulator holds at most 900 one-second aggregate buckets, with no model or
+session grouping, identifiers, prompts, response content, or retained request
+objects. Window expiry and ages use monotonic time. `epoch`, `startedAt` and
+`lastObservedAt` identify process reset and observation freshness; restarting
+clears the data, with no disk fallback, replay, historical recovery or backfill.
+
+Cache reuse is token-weighted: confirmed cached-input tokens divided by their
+paired input tokens. Only valid native-v2 provider cache observations count;
+legacy/converted Chat compatibility zeroes or unavailable streamed counters do
+not establish a cache miss. Missing data or a zero denominator stays unknown;
+a confirmed zero cache count with positive input is 0%. Coverage is explicit.
+Token totals include usage-reported requests only, excluding requests with no
+reported usage, whose counters may be estimates. Usage can be partial; the
+coverage is request-level, not certification that every token field was reported.
+Mean duration includes request delivery and must not be interpreted as model
+throughput or isolated inference latency.
+
+Integer sums cap at the JavaScript-safe limit and set `saturated`; derived ratios
+and averages then become unavailable rather than misleading. Observer failures
+are counted separately and do not fail inference. These bounds are independent
+of request volume and do not grow with user-controlled labels.
+
+Activity reuses its visibility-aware, single-owner polling. When historical
+telemetry is disabled it reads only the RAM summary, not the disabled `/stats`
+or session APIs. Live totals are explicitly unfiltered, separate from historical
+filters. Unknown live mode does not enable historical queries. Credential edits
+or authorization failures clear the view; transient failures label the retained
+snapshot as not refreshed. Polling never advances the observation timestamp.
 
 ## Implementation Choice
 

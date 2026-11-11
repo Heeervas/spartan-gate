@@ -32,7 +32,12 @@
         <button id="refresh" class="primary">Refresh</button>
       </div>
     </div>
-    <details class="filter-disclosure"><summary>Filter activity</summary><div class="filters" aria-label="Routing filters">
+    <section aria-labelledby="live-heading">
+      <div class="section-head"><h2 id="live-heading">Live · last 15 minutes</h2></div>
+      <p class="muted" id="live-status" role="status" aria-live="polite">Live telemetry not loaded.</p>
+      <div class="grid metric-strip" id="live-metrics" aria-label="RAM-only live routing summary"></div>
+    </section>
+    <details id="history-filters" class="filter-disclosure"><summary>Filter activity</summary><div class="filters" aria-label="Routing filters">
       <label class="filter-field" for="model-filter">
         <span class="muted">Model</span>
         <select id="model-filter"><option value="">All models</option></select>
@@ -59,6 +64,7 @@
       <div id="sessions"></div>
     </section>
   </main>
+  <script defer src="/dashboard-assets/dashboard-live.js"></script>
   <script defer src="/dashboard-assets/dashboard.js"></script>
 </body>
 </html>

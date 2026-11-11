@@ -15,6 +15,6 @@ DASHBOARD_DOCUMENTS = {
 }
 
 DASHBOARD_ASSETS = frozenset({
-    "dashboard.css", "dashboard.js", "dashboard-codex.js",
+    "dashboard.css", "dashboard.js", "dashboard-live.js", "dashboard-codex.js",
     "dashboard-config.js", "dashboard-details.js", "accounts.css", "shell.css",
 })

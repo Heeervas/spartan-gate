@@ -26,6 +26,7 @@ from .model_variants import VariantPolicy, VariantCatalog, VARIANT_LIKE_PATTERN,
 from .provider_policy import ProviderPolicy, require_admission, register as register_provider_policy, model_payload as policy_model_payload, auto_capabilities, realtime_payload
 from .decisions import register as register_decisions
 from .dashboard_registry import DASHBOARD_DOCUMENTS, DASHBOARD_ASSETS
+from .live_telemetry import LiveTelemetry, api_live_telemetry
 from .native_responses import annotate_realm, capture_telemetry, execute_codex_responses, response_event_name, usage_values
 from .native_cache import NativeCacheDiagnostics, Observation, request_diagnostics
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected, PROBE_HEADER
@@ -125,6 +126,7 @@ class SpartanRouteState:
     routing_policy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cache_guard: dict[str, dict[str, Any]] = field(default_factory=dict)
     native_cache: NativeCacheDiagnostics = field(default_factory=NativeCacheDiagnostics)
+    live_telemetry: LiveTelemetry = field(default_factory=LiveTelemetry)
     cache_experiments: CacheExperiments = field(init=False)
     pi_usage: PiUsage = field(init=False)
 
@@ -1537,6 +1539,7 @@ def log_request(
         if result.total_response_time_ms is not None
         else max(0, int((time.monotonic() - started) * 1000))
     )
+    state.live_telemetry.observe(result, total_response_time_ms)
     upstream_response_time_ms = result.upstream_response_time_ms
     if result.transport_details and result.transport_details.get("kind") == "websocket":
         primary_response_time_ms = 0  # WS first-event time is not HTTP header latency.
@@ -3276,6 +3279,7 @@ def create_app(config: SpartanRouteConfig | None = None, telemetry: TelemetrySto
     app.on_cleanup.append(cleanup)
     app.router.add_get("/health", health)
     app.router.add_get("/stats", stats)
+    app.router.add_get("/api/telemetry/live", api_live_telemetry)
     app.router.add_get("/api/models", api_models)
     app.router.add_get("/api/routing/live", api_routing_live)
     app.router.add_get("/api/routing/turns/{turn_id}", api_routing_turn)

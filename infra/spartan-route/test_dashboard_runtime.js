@@ -9,6 +9,7 @@ class Element {
   constructor() {
     this.dataset = {};
     this.children = [];
+    this.options = [];
     this.listeners = {};
     this.attributes = {};
     this.value = '';
@@ -17,7 +18,10 @@ class Element {
     this.writes = 0;
     this._html = '';
   }
-  set innerHTML(value) { this._html = value; this.writes++; }
+  set innerHTML(value) {
+    this._html = value; this.writes++;
+    if (this.content) this.content.childNodes = value ? [{html: value}] : [];
+  }
   get innerHTML() { return this._html; }
   setAttribute(key, value) { this.attributes[key] = value; }
   getAttribute(key) { return this.attributes[key]; }
@@ -38,7 +42,11 @@ function harness(name = 'dashboard') {
     hidden: false,
     head: { appendChild(script) { scripts.push(script); } },
     getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
-    createElement() { return new Element(); },
+    createElement(tag) {
+      const element = new Element();
+      if (tag === 'template') element.content = {childNodes: [], querySelectorAll: () => []};
+      return element;
+    },
     querySelectorAll() { return []; },
     addEventListener(type, handler) { events[type] = handler; },
   };
@@ -50,10 +58,17 @@ function harness(name = 'dashboard') {
     clearTimeout(id) { timers.delete(id); }, setInterval() {},
     fetch(path, options) { return new Promise((resolve, reject) => requests.push({path, options, resolve, reject})); },
   });
+  if (name === 'dashboard') vm.runInContext(asset('dashboard-live'), context);
   vm.runInContext(asset(name).replace(/    load\(\);\s*$/, ''), context);
   const run = code => vm.runInContext(code, context);
   const respond = (request, payload = {}, status = 200) => request.resolve({ ok: status < 400, status, json: async () => payload });
   return { context, run, requests, elements, document, events, timers, scripts, respond };
+}
+
+function livePayload(historicalTelemetryEnabled = false) {
+  return {version: 1, source: 'memory', historicalTelemetryEnabled, lastObservedAgeSeconds: null,
+    metrics: {requests: 0, errors: 0, usageKnownRequests: 0, inputTokens: 0, outputTokens: 0,
+      cacheKnownRequests: 0, cacheHitPercent: null, averageDurationMs: null}};
 }
 
 test('details script loads on first expansion only; reopening coalesces the request', async () => {
@@ -188,7 +203,7 @@ test('hidden pages suspend polling and visible pages resume with one read', () =
     assert.equal(h.requests.length, 0);
     h.document.hidden = false;
     h.events.visibilitychange();
-    assert.equal(h.requests.length, name === 'dashboard' ? 2 : 1);
+    assert.equal(h.requests.length, 1);
   }
 });
 
@@ -309,10 +324,11 @@ test('Routing publishes sessions before stats finishes and keeps them when stats
   const rendered = [];
   h.context.recordSessions = payload => rendered.push(payload.label);
   h.run('renderFilterState = () => {}; renderSessions = recordSessions; pending = load()');
-  h.respond(h.requests[1], {label: 'sessions'});
+  h.respond(h.requests[0], livePayload(true)); await flush();
+  h.respond(h.requests[2], {label: 'sessions'});
   await flush();
   assert.deepEqual(rendered, ['sessions']);
-  h.respond(h.requests[0], {error: {message: 'stats unavailable'}}, 401);
+  h.respond(h.requests[1], {error: {message: 'stats unavailable'}}, 400);
   await h.run('pending');
   assert.deepEqual(rendered, ['sessions']);
   assert.match(h.elements.get('status').textContent, /stats unavailable/);
@@ -323,14 +339,14 @@ test('Routing publishes stats despite a sessions failure and rejects retired res
   const rendered = [];
   h.context.recordStats = payload => rendered.push(payload.label);
   h.run('renderStats = recordStats; pending = load()');
-  h.respond(h.requests[1], {error: {message: 'sessions unavailable'}}, 401);
-  h.respond(h.requests[0], {label: 'stats'});
+  h.respond(h.requests[0], livePayload(true)); await flush();
+  h.respond(h.requests[2], {error: {message: 'sessions unavailable'}}, 400);
+  h.respond(h.requests[1], {label: 'stats'});
   await h.run('pending');
   assert.deepEqual(rendered, ['stats']);
   h.run('retired = load()');
   h.elements.get('token').listeners.input();
-  h.respond(h.requests[2], {label: 'retired stats'});
-  h.respond(h.requests[3], {label: 'retired sessions'});
+  h.respond(h.requests[3], livePayload(true));
   await h.run('retired');
   assert.deepEqual(rendered, ['stats']);
 });
@@ -349,13 +365,90 @@ test('Routing timeout waits for the normal poll instead of replaying the expensi
   assert.equal(h.timers.size, 0);
 });
 
+test('RAM-only Activity loads counters without any historical reads', async () => {
+  const h = harness();
+  const pending = h.run('load()');
+  assert.equal(h.requests[0].path, '/api/telemetry/live');
+  h.respond(h.requests[0], livePayload()); await pending;
+  assert.equal(h.requests.length, 1);
+  assert.match(h.elements.get('live-metrics').innerHTML, /Cache reuse/);
+  assert.match(h.elements.get('live-metrics').innerHTML, /unknown/);
+  assert.match(h.elements.get('live-status').textContent, /Waiting for a finalized request/);
+  assert.equal(h.elements.get('history-filters').hidden, true);
+  assert.match(h.elements.get('sessions').innerHTML, /not backfilled/);
+  assert.equal([...h.timers.values()].filter(timer => timer.ms === 15000).length, 1);
+});
+
+test('unknown live mode never falls through to historical queries', async () => {
+  const h = harness();
+  const pending = h.run('load()');
+  h.respond(h.requests[0], {version: 1, source: 'memory', metrics: {}}); await pending;
+  assert.equal(h.requests.length, 1);
+  assert.match(h.elements.get('live-status').textContent, /no snapshot available/);
+});
+
+test('historical panels recover unchanged data after authorization denial', async () => {
+  const h = harness();
+  let pending = h.run('load()');
+  h.respond(h.requests[0], livePayload(true)); await flush();
+  h.respond(h.requests[1], {}); h.respond(h.requests[2], {}); await pending;
+  const originalMetrics = h.elements.get('metrics').innerHTML;
+  assert.equal(h.elements.get('sessions').children.length, 1, h.elements.get('status').textContent);
+  const originalSessions = h.elements.get('sessions').children[0].html;
+  assert.notEqual(originalMetrics, '');
+  pending = h.run('load()');
+  h.respond(h.requests[3], {error: {message: 'expired access'}}, 401); await pending;
+  assert.equal(h.elements.get('metrics').innerHTML, '');
+  assert.equal(h.elements.get('sessions').children.length, 0);
+  pending = h.run('load()');
+  h.respond(h.requests[4], livePayload(true)); await flush();
+  h.respond(h.requests[5], {}); h.respond(h.requests[6], {}); await pending;
+  assert.equal(h.elements.get('metrics').innerHTML, originalMetrics);
+  assert.equal(h.elements.get('sessions').children[0].html, originalSessions);
+});
+
+test('live data clears on credential edits and auth denial; late results cannot republish', async () => {
+  const h = harness();
+  let pending = h.run('load()');
+  h.respond(h.requests[0], livePayload()); await pending;
+  assert.notEqual(h.elements.get('live-metrics').innerHTML, '');
+  pending = h.run('load()');
+  h.elements.get('token').listeners.input();
+  assert.equal(h.elements.get('live-metrics').innerHTML, '');
+  h.respond(h.requests[1], livePayload()); await pending;
+  assert.equal(h.elements.get('live-metrics').innerHTML, '');
+  pending = h.run('load()'); h.respond(h.requests[2], livePayload()); await pending;
+  pending = h.run('load()'); h.respond(h.requests[3], {error: {message: 'no access'}}, 403); await pending;
+  assert.equal(h.elements.get('live-metrics').innerHTML, '');
+  assert.match(h.elements.get('live-status').textContent, /check dashboard access/);
+  assert.equal(h.timers.size, 0);
+});
+
+test('failed live refresh retains a visibly stale snapshot without inventing freshness', async () => {
+  const h = harness();
+  let pending = h.run('load()');
+  const payload = livePayload(); payload.lastObservedAgeSeconds = 12;
+  payload.metrics = {...payload.metrics, requests: 1, usageKnownRequests: 1, cacheKnownRequests: 1, cacheHitPercent: 0};
+  h.respond(h.requests[0], payload); await pending;
+  assert.match(h.elements.get('live-metrics').innerHTML, /0.0%/);
+  assert.match(h.elements.get('live-status').textContent, /12 s ago/);
+  const previous = h.elements.get('live-metrics').innerHTML;
+  pending = h.run('load()');
+  h.respond(h.requests[1], {error: {message: 'busy'}}, 503); await flush();
+  h.respond(h.requests[2], {error: {message: 'busy'}}, 503); await pending;
+  assert.equal(h.elements.get('live-metrics').innerHTML, previous);
+  assert.match(h.elements.get('live-status').textContent, /previous snapshot, not refreshed/);
+  assert.equal(h.requests.length, 3);
+});
+
 test('Routing visibility resume preserves an active poll instead of replacing its reads', async () => {
   const h = harness();
   h.run('renderStats = () => {}; renderFilterState = () => {}; renderSessions = () => {}; pending = load()');
   h.document.hidden = true; h.events.visibilitychange();
   h.document.hidden = false; h.events.visibilitychange();
-  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests.length, 1);
   assert.equal(h.requests[0].options.signal.aborted, false);
-  h.respond(h.requests[0], {}); h.respond(h.requests[1], {});
+  h.respond(h.requests[0], livePayload(true)); await flush();
+  h.respond(h.requests[1], {}); h.respond(h.requests[2], {});
   await h.run('pending');
 });

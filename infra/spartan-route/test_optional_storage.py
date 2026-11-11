@@ -237,6 +237,9 @@ class OptionalStorageTests(unittest.IsolatedAsyncioTestCase):
             payload = await response.json()
             self.assertEqual((response.status, payload["accounts"]), (200, []))
         self.assertEqual(state.codex.control_session.calls, [])
+        live = await client.get("/api/telemetry/live", headers=auth)
+        self.assertEqual(live.status, 200)
+        self.assertEqual((await live.json())["source"], "memory")
         for path in ("/stats", "/api/routing/live", "/api/routing/turns/t", "/api/codex/cache/day", "/api/pi/status"):
             self.assertEqual((await client.get(path, headers=auth)).status, 503, path)
         for path in ("/api/pi/usage/refresh", "/api/pi/sessions"):
