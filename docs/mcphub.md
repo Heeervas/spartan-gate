@@ -112,6 +112,17 @@ Existing private Caddy configurations must retain the public `route.d` import.
 
 ## First login and first backend
 
+The entrypoint validates file-mode settings before starting the hub. With an
+existing admin (`isAdmin: true`), it unsets `ADMIN_PASSWORD` and does not read the
+bootstrap password file; existing accounts are never rewritten. Invalid or
+unreadable settings, including a nonempty user list with no admin, fail closed.
+Only an empty user list enables the bootstrap password, which must be readable
+and nonempty. That first process retains it: **after the admin is created,
+restart the hub before enrolling or granting any backend**. Startup logs this
+requirement; it is an operator gate, not automatic backend isolation. Subsequent
+starts omit the variable. Do not put `ADMIN_PASSWORD` or the hub's `JWT_SECRET`
+in backend `env` settings; explicit entries are independent of inherited env.
+
 1. Open the loopback dashboard, username **admin**. Read the bootstrap password
    locally from `$STATE_DIR/bootstrap-password` in a private terminal/viewer;
    never paste it into chat, URLs, reports or a shell command argument. Change

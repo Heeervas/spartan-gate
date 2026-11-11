@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Limit MCPHub's inherited admin bootstrap password to the no-users first boot;
+  validate settings fail closed, preserve existing accounts, and require a hub
+  restart before granting backends after initial admin creation.
+
 - Document hardening for writable Markdown vault backends behind MCPHub: mask
   Git metadata and editor state, bind scripts and backend config read-only,
   disable runtime helper downloads, and keep commits with the client agent.
