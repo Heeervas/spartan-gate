@@ -25,6 +25,16 @@ test('native binding is private, exact-schema, fixed-origin and never silently f
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('native upload root accepts hidden directories but rejects noncanonical paths', () => {
+  const base = binding('http://camofox:9377');
+  const uploadRoot = '/root/.camofox/uploads/spartan-managed';
+  assert.equal(validateNativeBinding({ ...base, uploadRoot }).uploadRoot, uploadRoot);
+  for (const root of ['/root/.camofox/../outside', '/root/./.camofox/uploads',
+    '/root/.camofox/uploads/', '/root//.camofox/uploads', '/root/.camofox/uploads/..']) {
+    assert.throws(() => validateNativeBinding({ ...base, uploadRoot: root }), { message: 'binding_unavailable' });
+  }
+});
+
 test('profile-wide groups require one fixed identity and explicit opt-in; legacy lists remain strict', () => {
   const base = binding('http://camofox:9377');
   const wide = { userId: 'native', groupAccess: 'profile' };

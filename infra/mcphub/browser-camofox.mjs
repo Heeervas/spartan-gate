@@ -51,8 +51,8 @@ function groupAllowed(profile, group) {
 }
 
 function validateUploadRoot(root) {
-  if (typeof root !== 'string' || !/^\/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/?)+$/.test(root)
-      || root.length > 512 || root.endsWith('/')) fail('binding_unavailable');
+  if (typeof root !== 'string' || !/^\/(?:[A-Za-z0-9_.-]+\/?)+$/.test(root)
+      || root.length > 512 || root.endsWith('/') || resolve(root) !== root) fail('binding_unavailable');
 }
 
 export function validateNativeBinding(value) {

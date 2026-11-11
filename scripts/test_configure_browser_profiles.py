@@ -264,6 +264,19 @@ class ProfileFiles(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'native_template_drift'):
             self.prepare()
 
+    def test_hidden_native_upload_directory_is_valid_without_normalizing_traversal(self):
+        path = Path(self.manifest['nativeTemplate'])
+        template = profiles.read_json(str(path))
+        for root in ('/root/.camofox/uploads/spartan-managed', '/root/.camofox/../outside',
+                     '/root/./.camofox/uploads', '/root/.camofox/uploads/'):
+            self.put(path, encode({**template, 'uploadRoot': root}))
+            self.manifest['nativeTemplateSha256'] = profiles.digest(path.read_bytes())
+            if root == '/root/.camofox/uploads/spartan-managed':
+                self.assertEqual(profiles._template(self.manifest)['uploadRoot'], root)
+            else:
+                with self.assertRaisesRegex(ValueError, 'invalid_upload_root'):
+                    profiles._template(self.manifest)
+
     def test_symlink_and_source_grant_drift_block_resume(self):
         job, _, _ = self.prepare()
         self.hub.value['groups'][0]['servers'][1]['tools'].append('new-common')

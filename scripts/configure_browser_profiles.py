@@ -246,7 +246,7 @@ def _template(manifest):
     root = Path(value['uploadRoot'])
     if (not root.is_absolute() or '..' in root.parts or str(root) != value['uploadRoot']
             or len(value['uploadRoot']) > 512 or value['uploadRoot'].endswith('/')
-            or not re.fullmatch(r'/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/?)+', value['uploadRoot'])):
+            or not re.fullmatch(r'/(?:[A-Za-z0-9_.-]+/?)+', value['uploadRoot'])):
         raise ValueError('invalid_upload_root')
     _fixed_origin(value['baseUrl'], 'camofox:9377')
     _fixed_origin(manifest['restBase'], 'tool-access:9081')
