@@ -50,23 +50,19 @@ owning task evidence, including failures and explicit limits.
   Historical source-migration evidence:
   `../../../tasks/archive/2026/shared-development-workspace/task.md`.
 
-- MCPHub is active for selected native Hermes and host/container Pi clients:
-  eight shared backends/103 exact tools, including search/Reader-only Spartan web
-  tools via the existing REST boundary; browser remains on its native path.
-  No containers/networks or existing grants changed for this addition. Acceptance
-  and scoped recovery: `../../../tasks/archive/2026/web-tools-mcp/task.md`.
-  Codebase Memory now runs native local
-  stdio per selected Git repository (13 analysis tools), with real index/search/
-  snippet acceptance; the duplicate shared backend/grants were retired. Reconnect
-  after source/root changes; container filesystem visibility is unchanged.
-  Account/application blockers remain explicit in the private operator guide;
-  no new Google consent, token bridging or network-policy expansion occurred.
-  Pi parity foundation integration and its reviewed MCP opt-in deltas are now
-  included in the accepted storage integration commit and published to GitHub.
-  Source ownership/integration no longer blocks this batch; account/application
-  prerequisites and formal lifecycle closeout remain separate.
-  Acceptance, recovery and operator prerequisites are owned by
-  `../../../tasks/mcphub-integration/task.md`.
+- MCPHub's three selected native clients expose128 tools; agent keys still deny
+  management. Search/Reader REST and browser/network boundaries are unchanged:
+  `../../../tasks/archive/2026/web-tools-mcp/task.md`.
+  Native per-repository Codebase Memory retains13 tools, real index/search/snippet
+  acceptance and unchanged filesystem visibility. Shared Codebase grants remain
+  retired; reconnect after root/source changes.
+  Gog0.48.0 and Analytics MCP1.1.0 are active; exact GTM/GA4 write grants are enabled.
+  `sg-gog-login` reuses matching client/account grants. New Google scopes and mobile
+  end-to-end acceptance need operator consent; individual reloads settle to one
+  child/backend with headroom. Recovery: `../../../tasks/google-login-unified/task.md`.
+  Pi/MCP foundations remain integrated/published with storage. Other account/app
+  prerequisites and lifecycle gates: `../../../tasks/mcphub-integration/task.md`
+  and the private operator guide.
 
 - Reader Markdown/admission upgrade is live for Reader, tool-access and installed
   host Pi helpers; six-call managed-path public retrieval and installed identities

@@ -213,11 +213,29 @@ OAuth client/account pairing. A connected MCP transport does not prove either
 token is valid. Renewing those tokens is an operator-owned consent operation,
 followed by a targeted backend reload—not new hub keys or a Hermes rebuild.
 
-The existing Workspace login helper does not populate these MCPHub bindings.
-Unifying the operator command requires a separately named, verified read-only
-grant and each backend's native credential format. Do not copy a broad Workspace
-refresh token or label its GTM write scopes read-only. No automatic consent or
-credential bridging is provided by the hub/client provisioning helper.
+The operator's `sg-gog-login` wizard now populates the selected enabled GTM and
+Analytics bindings as well as Gog/native Workspace. It reuses a freshly verified
+Gog grant when the OAuth client, secret and displayed account match; different
+clients receive separate native login steps. This explicitly authorized shared
+grant may include write scopes: it is **not** a read-only credential. Agent hub
+keys remain separate and never carry the Google refresh token. See
+[the mobile login procedure](operations.md#interactive-tmux-sessions).
+
+Analytics MCP1.1.0 remains local stdio with user ADC; `--allow-write` and the
+`analytics.edit` scope enable its supported annotation/custom-dimension/key-event
+writes. It does not need a new HTTP/OAuth server or persistent login broker. Keep
+its pinned dependencies in a separate protected versioned environment, not in
+another backend's interpreter. GTM requires its native write/publish/capability
+gates and corresponding scopes. Select the exact newly enabled tools in each
+intended group and execution policy; retain the closed sentinel and unrelated
+permissions. Do not auto-grant future upstream tools or change non-Google backends.
+
+Account permissions are the upper bound; actual availability is their intersection
+with OAuth scopes, native implemented operations/gates and MCPHub tool grants.
+Enabling these tools is not consent to execute a particular live mutation. Native
+GTM confirmations and dry-run/plan contracts remain intact. After a token update,
+reload only the affected backends so cached credentials/clients are discarded.
+The hub/client provisioning helper still does not perform Google consent.
 
 ## Managed search and Reader (optional shared backend)
 

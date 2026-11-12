@@ -691,20 +691,71 @@ Within tmux, use `Ctrl-b s` for the native session tree, `Ctrl-b (` and
 and `Ctrl-b d` to detach. Creating or launching with an existing name switches
 or attaches to that session without starting a duplicate process.
 
-`sg-gog-login` requires a running Hermes container and performs GogCLI auth
-with the GogCLI version installed in Hermes, so the host CLI cannot write an
-older credential format into the shared store. In the manual browser flow,
-paste the complete final callback URL into the terminal after Google sign-in;
-the browser sign-in alone does not complete the refresh-token exchange. The
-helper fails unless the stored grant contains every scope requested through
-`GOGCLI_EXTRA_SCOPES`. The default extra scopes include Google Ads
-(`https://www.googleapis.com/auth/adwords`). If you set a nonempty
-`GOGCLI_EXTRA_SCOPES` override, include that scope explicitly. Run the login
-again to grant newly added scopes. Google Ads API calls also require a developer
-token. Verify the active grant at any time with:
+`sg-gog-login` is a numbered terminal wizard for GogCLI, native Google Workspace,
+and the enabled GTM/Analytics MCPHub bindings. Enter selects reauthentication of
+all configured destinations. Option2 reuses/refreshed stored authorization; `q`
+cancels. Multiple destinations with the same OAuth client **and secret** reuse one
+new login for the explicitly displayed `GOGCLI_ACCOUNT`. Different clients get
+separate steps; no account/profile discovery or cross-account token guessing occurs.
+Use `--skip-workspace` to leave native Workspace untouched, or `--check` to refresh
+and redistribute the existing grant without opening consent. Missing scopes still
+require a new login. This is an operator workflow, not an agent-facing tool.
+
+The wizard reuses Gog0.48.0's native manual S256 PKCE flow. Open its Google HTTPS
+link in the system browser (Safari/Chrome, not an embedded SSH-app browser), then
+paste the **complete final callback URL** into the hidden terminal input. The
+wizard prints the exact expected prefix, including HTTP/HTTPS, host, port and
+trailing slash. A loopback callback such as `http://localhost:1/` intentionally
+uses **HTTP, not HTTPS**; on a phone its page may fail to load. Copy the address
+bar anyway: the host does not need an incoming connection in this manual flow.
+An incorrect scheme or session can be corrected without starting another login.
+The authorization code is sent to Gog on stdin, never in command arguments.
+
+For an existing image, install the checksum-verified Gog0.48.0 release binary at
+`<actual Hermes /opt/data bind>/tools/gogcli/0.48.0/gog` and point the persistent
+`<bind>/.local/bin/gog` at it. Preserve any existing launcher before replacement.
+The wizard resolves the actual Docker bind (not a stale env home), runs that same
+binary as the host operator and requires its version to match Hermes' `gog`.
+It maps Gog config to `SPARTAN_GOGCLI_DATA_PATH`, and data/state/cache to the
+corresponding persistent Hermes XDG directories. This preserves0.48's split-path
+and legacy-keyring behavior; an unrelated host Gog is never selected. The image
+Dockerfile pins the same release/checksums for future builds. No Hermes rebuild
+is required for this managed-binary activation.
+
+Extra OAuth permissions include the existing Ads/Apps Script scopes, Analytics
+edit and GTM edit/publish/admin scopes. `GOGCLI_EXTRA_SCOPES` adds to these required
+scopes rather than silently removing them. Google Ads still requires a developer
+token and Google may require passkey enrollment for Ads consent. Account/API
+permissions remain enforced by Google. MCP write availability also depends on
+native connector capabilities and the operator's exact MCPHub grants.
+
+Before publishing native credentials, the helper verifies the exported account,
+client, refresh token and required scopes, and exercises refresh through Hermes'
+Google library. Workspace receives a current token/expiry as well as the refresh
+token; GTM receives a space-delimited scope string; GA4 receives user ADC. Files
+are owner-only, with one bounded `.sg-previous` backup per destination. If a batch
+write fails, files already written by that batch are restored when unchanged.
+Different-client steps are independent: a later failure does not revoke an earlier
+successful Google grant. No remote revoke is used for rollback.
+
+With `SPARTAN_MCPHUB_STATE_PATH` configured, bindings are resolved only from enabled
+native server definitions below `/state`. The helper reloads just those Google
+backends via MCPHub's native loopback management API. Admin credentials are read
+locally from `GOOGLE_AUTH_MCPHUB_PASSWORD_FILE` (default: the existing hub state's
+`bootstrap-password`); set it to the current private password file if the password
+was changed. `GOOGLE_AUTH_MCPHUB_URL` defaults to `http://127.0.0.1:18793` and only
+accepts loopback HTTP. Agent bearer keys are not management credentials. A reload
+failure is reported separately; it does not revoke already-saved Google access.
+
+Clients refresh short-lived access tokens under demand. No refresh daemon, timer,
+HTTP listener or persistent wizard process is added. `invalid_grant` is not normal
+access-token expiry: check consent status (external Testing grants normally expire
+after7days), revocation, password changes or account session policy. A timer cannot
+repair these conditions. Check the Gog grant or refresh all selected bindings with:
 
 ```sh
 sg-gog-check --json
+sg-gog-login --check
 ```
 
 `sg-up-core`, `sg-up-hermes`, and `sg-up-private-hermes` remain as compatibility

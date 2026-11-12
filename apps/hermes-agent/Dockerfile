@@ -164,11 +164,11 @@ COPY --chown=0:0 pocket-tts-client.py wrangler-auth.py /opt/hermes/bootstrap/
 # Install gogcli (Google CLI — Gmail, Calendar, Drive, Docs, Sheets, etc.)
 # https://github.com/openclaw/gogcli
 RUN set -eux; \
-    GOGCLI_VERSION="0.30.0"; \
+    GOGCLI_VERSION="0.48.0"; \
     ARCH="$(dpkg --print-architecture)"; \
     case "${ARCH}" in \
-        amd64) GOGCLI_SHA256="f9f4f407bb762959085b42007c4da538b3dafc5c76b53f3a30dc7ff7c6237fc1" ;; \
-        arm64) GOGCLI_SHA256="3ba0ce1c268bc95cf84c60c622e1e4cbf3bc257ecd6e447bd1cfcdd3aa09430a" ;; \
+        amd64) GOGCLI_SHA256="8809d2f4fe95a0299b1a2a5c6bc912c4aba4b90a7b5e2c1f5cf11b9945a50004" ;; \
+        arm64) GOGCLI_SHA256="fc40524368d2cb6213bdfe0b736b5884e1b55c6368706d7a285542cb7e559b68" ;; \
         *) echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;; \
     esac; \
     GOGCLI_ARCHIVE="/tmp/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz"; \

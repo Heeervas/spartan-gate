@@ -4,8 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-GOGCLI_AMD64_SHA256 = "f9f4f407bb762959085b42007c4da538b3dafc5c76b53f3a30dc7ff7c6237fc1"
-GOGCLI_ARM64_SHA256 = "3ba0ce1c268bc95cf84c60c622e1e4cbf3bc257ecd6e447bd1cfcdd3aa09430a"
+GOGCLI_AMD64_SHA256 = "8809d2f4fe95a0299b1a2a5c6bc912c4aba4b90a7b5e2c1f5cf11b9945a50004"
+GOGCLI_ARM64_SHA256 = "fc40524368d2cb6213bdfe0b736b5884e1b55c6368706d7a285542cb7e559b68"
 DENO_AMD64_SHA256 = "9b2928c032fd9fa058245b0105ca6382007d8f047ae8c1f4b40ea22106f591ed"
 DENO_ARM64_SHA256 = "a63a5a70d44d7a20d1f6f2894dcd14204f6bb350635d038f7c31989730b43b3a"
 UBLOCK_ORIGIN_SHA256 = "40c315b0da7871868155ecfae7a50a58dfa0920aebd865e008214986f1b7c578"
@@ -42,7 +42,7 @@ class VerifiedImageDownloadTests(unittest.TestCase):
     def test_gogcli_uses_architecture_specific_official_digests(self):
         source = self.read("apps/hermes-agent/Dockerfile")
         block = self.block(source, "# Install gogcli", "# Install Deno")
-        self.assertIn('GOGCLI_VERSION="0.30.0"', block)
+        self.assertIn('GOGCLI_VERSION="0.48.0"', block)
         self.assertIn(
             "https://github.com/openclaw/gogcli/releases/download/"
             "v${GOGCLI_VERSION}/gogcli_${GOGCLI_VERSION}_linux_${ARCH}.tar.gz",

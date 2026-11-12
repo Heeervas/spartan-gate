@@ -1,250 +1,225 @@
+"""Focused Google login journeys; native package smoke tests remain separate."""
+import argparse
+import contextlib
+import importlib.util
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+import io
+import json
 import os
-import shutil
+from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from pathlib import Path
-
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("google_auth", ROOT / "scripts/google_auth.py")
+auth = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(auth)
+CLIENT = {"client_id": "synthetic.apps.googleusercontent.com", "client_secret": "CLIENT_SECRET"}
+ACCOUNT = "person@example.com"
+AUTH_URL = "https://accounts.google.com/o/oauth2/auth?redirect_uri=http%3A%2F%2Flocalhost%3A1%2F&state=SESSION"
+CALLBACK = "http://localhost:1/?code=PRIVATE_CODE&state=SESSION"
 
 
-class GogWorkspaceAuthTests(unittest.TestCase):
+class GoogleLoginTests(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp_dir.name)
-        self.bin_dir = self.root / "bin"
-        self.log = self.root / "calls.log"
-        self.root.joinpath("scripts").mkdir()
-        self.root.joinpath("private", "env").mkdir(parents=True)
-        self.bin_dir.mkdir()
-        shutil.copy2(ROOT / "scripts" / "gog-workspace-auth.sh", self.root / "scripts")
-        self.script = self.root / "scripts" / "gog-workspace-auth.sh"
-        self.client_secret = self.root / "client_secret.json"
-        self.client_secret.write_text("{}\n", encoding="utf-8")
-        self.env_file = self.root / "private" / "env" / "local.env"
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / "hermes"
+        self.home.mkdir()
+        self.state = self.root / "hub"
+        self.state.mkdir()
+        self.calls = self.root / "calls.jsonl"
+        self.client = self.root / "client.json"
+        self.client.write_text(json.dumps({"installed": CLIENT}))
+        for name in ("gtm", "ga4"):
+            (self.state / name).mkdir()
+        (self.state / "gtm/client.json").write_text(json.dumps({"installed": CLIENT}))
+        (self.state / "ga4/adc.json").write_text(json.dumps({"type": "authorized_user", **CLIENT, "refresh_token": "OLD"}))
+        self.settings = {"mcpServers": {
+            "gtm": {"enabled": True, "env": {
+                "GTM_MCP_CREDENTIALS_FILE": "/state/gtm/client.json", "GTM_MCP_TOKEN_FILE": "/state/gtm/tokens.json"}},
+            "analytics": {"enabled": True, "env": {"GOOGLE_APPLICATION_CREDENTIALS": "/state/ga4/adc.json"}},
+            "unrelated": {"enabled": True, "command": "unchanged"},
+        }}
+        (self.state / "mcp_settings.json").write_text(json.dumps(self.settings))
+        self.config = {"SPARTAN_GOGCLI_DATA_PATH": str(self.root / "store"),
+                       "GOGCLI_ACCOUNT": ACCOUNT, "GOGCLI_CLIENT_SECRET_PATH": str(self.client),
+                       "GOG_KEYRING_PASSWORD": "KEYRING_SECRET", "SPARTAN_MCPHUB_STATE_PATH": str(self.state)}
+        self.gog = self.root / "gog"
+        self.gog.write_text("""#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+args=sys.argv[1:]
+with open(os.environ['CALLS'],'a') as log: log.write(json.dumps(args)+'\\n')
+if 'login' in args:
+ print(os.environ['AUTH_URL'],flush=True)
+ callback=sys.stdin.readline()
+ if not callback: raise SystemExit(130)
+elif 'export' in args:
+ Path(args[args.index('--out')+1]).write_text(json.dumps(json.loads(os.environ['GRANT'])))
+""")
+        self.gog.chmod(0o755)
+        self.grant = {"email": ACCOUNT, "client": "default", "refresh_token": "REFRESH_SECRET",
+                      "services": auth.SERVICES.split(","), "scopes": list(dict.fromkeys(auth.EXTRA_SCOPES + auth.WORKSPACE_SCOPES))}
+        self.env = {**os.environ, "CALLS": str(self.calls), "AUTH_URL": AUTH_URL, "GRANT": json.dumps(self.grant)}
 
-    def tearDown(self):
-        self.temp_dir.cleanup()
+    def invoke(self, check=False, refresh=None):
+        args = argparse.Namespace(check=check, skip_workspace=False)
+        def fresh(grant, client):
+            grant.update(access_token="ACCESS_SECRET", expiry="2026-11-12T12:00:00Z")
+            return grant
+        with patch.object(auth, "runtime", return_value=(str(self.gog), self.home, self.env)), \
+             patch.object(auth, "refresh_grant", side_effect=refresh or fresh), \
+             patch.object(auth, "reload_backends") as reload, \
+             patch("builtins.input", return_value=""), \
+             patch.object(auth.getpass, "getpass", return_value=CALLBACK), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            auth.run(self.config, args)
+        return output.getvalue(), reload
 
-    def write_env(self, extra=""):
-        self.env_file.write_text(
-            "\n".join(
-                [
-                    f"SPARTAN_GOGCLI_DATA_PATH='{self.root / 'shared' / 'gogcli'}'",
-                    "GOG_KEYRING_PASSWORD='super-secret-password'",
-                    "GOGCLI_ACCOUNT='person@example.com'",
-                    f"GOGCLI_CLIENT_SECRET_PATH='{self.client_secret}'",
-                    "GOOGLE_PROJECT_ID='project-id'",
-                    "GOOGLE_CLOUD_PROJECT='cloud-project'",
-                    extra,
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
+    def test_one_native_login_populates_workspace_gtm_and_adc_without_secret_arguments(self):
+        original = (self.state / "mcp_settings.json").read_bytes()
+        output, reload = self.invoke()
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        logins = [call for call in calls if "login" in call]
+        self.assertEqual(len(logins), 1)
+        self.assertEqual(logins[0][logins[0].index("--services") + 1], auth.SERVICES)
+        scopes = logins[0][logins[0].index("--extra-scopes") + 1]
+        self.assertIn("analytics.edit", scopes)
+        self.assertIn("tagmanager.publish", scopes)
+        workspace = json.loads((self.home / "google_token.json").read_text())
+        adc = json.loads((self.state / "ga4/adc.json").read_text())
+        gtm = json.loads((self.state / "gtm/tokens.json").read_text())
+        self.assertEqual(workspace["token"], "ACCESS_SECRET")
+        self.assertEqual(workspace["refresh_token"], adc["refresh_token"])
+        self.assertEqual(gtm["refresh_token"], adc["refresh_token"])
+        self.assertIsInstance(gtm["scope"], str)
+        self.assertIn(auth.SCOPE + "tagmanager.publish", gtm["scope"].split())
+        self.assertEqual(adc["type"], "authorized_user")
+        self.assertEqual(adc["client_id"], CLIENT["client_id"])
+        self.assertEqual((self.state / "mcp_settings.json").read_bytes(), original)
+        self.assertEqual((self.state / "ga4/adc.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads((self.state / "ga4/adc.json.sg-previous").read_text())["refresh_token"], "OLD")
+        reload.assert_called_once_with(self.config, self.state, ["gtm", "analytics"])
+        for secret in ("PRIVATE_CODE", "REFRESH_SECRET", "CLIENT_SECRET", "KEYRING_SECRET", "ACCESS_SECRET"):
+            self.assertNotIn(secret, self.calls.read_text())
+            self.assertNotIn(secret, output)
 
-    def write_stub(self, name, content):
-        path = self.bin_dir / name
-        path.write_text(content, encoding="utf-8")
-        path.chmod(0o755)
+    def test_native_cached_export_can_be_refreshed_before_publication(self):
+        cached = {**self.grant, "access_token": "CACHED_ACCESS", "access_token_expires_at": "2026-11-12T10:00:00Z"}
+        fresh = {"token": "FRESH_ACCESS", "expiry": "2026-11-12T12:00:00Z"}
+        with patch.object(auth, "command", return_value=b"[runtime audit]\nSG_GOOGLE_AUTH_JSON:" + json.dumps(fresh).encode()) as run:
+            result = auth.refresh_grant(cached, CLIENT)
+        supplied = json.loads(run.call_args.kwargs["input_data"])
+        self.assertNotIn("token", supplied)
+        self.assertEqual(supplied["refresh_token"], "REFRESH_SECRET")
+        adc = auth.native_credentials(result, CLIENT)
+        self.assertEqual(adc["token"], "FRESH_ACCESS")
+        self.assertEqual(adc["expiry"], fresh["expiry"])
 
-    def write_stubs(self):
-        self.write_stub(
-            "gog",
-            f"""#!/usr/bin/env bash
-{{
-  printf 'host-gog'
-  printf ' %s' "$@"
-  printf '\\n'
-  printf 'XDG_CONFIG_HOME=%s\\n' "$XDG_CONFIG_HOME"
-}} >> {self.log}
-""",
-        )
-        self.write_stub(
-            "docker",
-            f"""#!/usr/bin/env bash
-if [[ "${{1:-}}" == "inspect" ]]; then
-  printf 'true\\n'
-  exit 0
-fi
-if [[ "${{1:-}}" == "exec" && "${{2:-}}" == "-u" && "${{3:-}}" == "root" ]]; then
-  printf '1000:1000\\n'
-  exit 0
-fi
-printf 'docker' >> {self.log}
-printf ' %s' "$@" >> {self.log}
-printf '\\n' >> {self.log}
-args=" $* "
-last="${{@: -1}}"
-state={self.root / 'workspace-authed'}
-if [[ "$args" == *" gog login "* ]]; then
-  IFS= read -r _gog_callback || true
-  exit 0
-fi
-if [[ "$args" == *" gog auth list --check --json "* ]]; then
-  if [[ "${{DOCKER_SCOPE_MODE:-complete}}" == "missing" ]]; then
-    printf '%s\\n' '{{"accounts":[{{"email":"person@example.com","scopes":["scope-a"]}}]}}'
-  else
-    printf '%s\\n' '{{"accounts":[{{"email":"person@example.com","scopes":["scope-a","scope-b","https://www.googleapis.com/auth/adwords","https://www.googleapis.com/auth/analytics.readonly","https://www.googleapis.com/auth/tagmanager.readonly","https://www.googleapis.com/auth/tagmanager.edit.containers","https://www.googleapis.com/auth/tagmanager.edit.containerversions","https://www.googleapis.com/auth/script.projects","https://www.googleapis.com/auth/script.deployments","https://www.googleapis.com/auth/script.processes","https://www.googleapis.com/auth/script.metrics"]}}]}}' | python3 -c 'import json, os, sys; payload = json.load(sys.stdin); scopes = payload["accounts"][0]["scopes"]; scopes[:] = [scope for scope in scopes if not (os.environ.get("DOCKER_SCOPE_MODE") == "missing-ads" and scope == "https://www.googleapis.com/auth/adwords")]; json.dump(payload, sys.stdout)'
-  fi
-  exit 0
-fi
-if [[ "$last" == "--auth-url" ]]; then
-  printf 'https://accounts.example/auth\\n'
-  exit 0
-fi
-if [[ "$last" == "--check" ]]; then
-  [[ -f "$state" ]]
-  exit $?
-fi
-if [[ "$2" == "--auth-code" || "$last" == "CODE_FROM_BROWSER" ]]; then
-  touch "$state"
-  exit 0
-fi
-exit 0
-""",
-        )
+    def test_check_reuses_grant_without_starting_consent(self):
+        self.invoke(check=True)
+        calls = self.calls.read_text()
+        self.assertNotIn('"login"', calls)
+        self.assertTrue((self.home / "google_token.json").exists())
 
-    def run_script(self, input_text="", extra_env=None):
-        env = os.environ.copy()
-        env["PATH"] = f"{self.bin_dir}:{env['PATH']}"
-        env.update(extra_env or {})
-        return subprocess.run(
-            [self.script],
-            cwd=self.root,
-            env=env,
-            input=input_text,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+    def test_missing_scope_and_invalid_grant_preserve_existing_credentials(self):
+        original = (self.state / "ga4/adc.json").read_bytes()
+        self.env["GRANT"] = json.dumps({**self.grant, "scopes": [auth.SCOPE + "analytics.readonly"]})
+        with self.assertRaisesRegex(auth.AuthError, "Faltan permisos"):
+            self.invoke(check=True)
+        self.env["GRANT"] = json.dumps(self.grant)
+        def revoked(grant, client):
+            raise auth.AuthError("Google/Gog: invalid_grant")
+        with self.assertRaisesRegex(auth.AuthError, "invalid_grant"):
+            self.invoke(check=True, refresh=revoked)
+        self.assertEqual((self.state / "ga4/adc.json").read_bytes(), original)
+        self.assertFalse((self.home / "google_token.json").exists())
 
-    def test_runs_gog_and_workspace_reauth_with_private_env(self):
-        self.write_env("GOGCLI_EXTRA_SCOPES='scope-a,scope-b'")
-        self.write_stubs()
+    def test_callback_can_be_corrected_without_a_second_native_login(self):
+        with patch.object(auth.getpass, "getpass", side_effect=[CALLBACK.replace("http:", "https:"), CALLBACK.replace("SESSION", "OTHER"), CALLBACK]), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            auth.manual_login([str(self.gog), "login", ACCOUNT], self.env)
+        self.assertIn("HTTP/HTTPS", output.getvalue())
+        self.assertIn("otra sesión", output.getvalue())
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
 
-        result = self.run_script("GOG_CALLBACK\nCODE_FROM_BROWSER\n")
+    def test_cancel_reaps_the_actual_waiting_child(self):
+        pid_path = self.root / "pid"
+        sleeper = self.root / "waiting"
+        sleeper.write_text(f"#!/usr/bin/env python3\nimport os,time\nopen({str(pid_path)!r},'w').write(str(os.getpid()))\nprint({AUTH_URL!r},flush=True)\ntime.sleep(30)\n")
+        sleeper.chmod(0o755)
+        with patch.object(auth.getpass, "getpass", side_effect=KeyboardInterrupt), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                auth.manual_login([str(sleeper)], self.env)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pid_path.read_text()), 0)
 
+    def test_preflight_and_failed_batch_write_preserve_native_files(self):
+        first = self.root / "one.json"
+        second = self.root / "two.json"
+        first.write_text('{"old":true}')
+        original_replace = auth.os.replace
+        def fail_second(source, destination):
+            if destination == second:
+                raise OSError("synthetic full disk")
+            return original_replace(source, destination)
+        with patch.object(auth.os, "replace", side_effect=fail_second):
+            with self.assertRaisesRegex(auth.AuthError, "guardar"):
+                auth.publish_files({first: {"new": True}, second: {"new": True}})
+        self.assertEqual(first.read_text(), '{"old":true}')
+        self.assertFalse(second.exists())
+        self.assertFalse(list(self.root.glob(".sg-google-*")))
+
+    def test_native_hub_reload_uses_dashboard_session_header(self):
+        calls = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                calls.append((self.path, self.headers.get("x-auth-token")))
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                valid = self.path == "/api/auth/login" or self.headers.get("x-auth-token") == "SESSION_TOKEN"
+                self.send_response(200 if valid else 401)
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": valid, "token": "SESSION_TOKEN"}).encode())
+            def log_message(self, *args):
+                pass
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        (self.state / "bootstrap-password").write_text("SYNTHETIC_PASSWORD")
+        config = {"GOOGLE_AUTH_MCPHUB_URL": f"http://127.0.0.1:{server.server_port}"}
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                auth.reload_backends(config, self.state, ["gtm", "analytics"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+        self.assertEqual(calls, [("/api/auth/login", None), ("/api/servers/gtm/reload", "SESSION_TOKEN"),
+                                 ("/api/servers/analytics/reload", "SESSION_TOKEN")])
+
+    def test_store_preflight_rejects_a_stale_env_path(self):
+        store = self.root / "store"
+        info = {"Mounts": [{"Destination": "/opt/data/.config/gogcli", "Source": str(store)}],
+                "Config": {"Env": ["XDG_CONFIG_HOME=/opt/data/.config"]}}
+        auth.verify_store_mapping(info, store)
+        with self.assertRaisesRegex(auth.AuthError, "no coincide"):
+            auth.verify_store_mapping(info, self.root / "old-store")
+
+    def test_large_existing_hub_config_is_supported(self):
+        self.settings["unrelated_metadata"] = "x" * 400000
+        (self.state / "mcp_settings.json").write_text(json.dumps(self.settings))
+        self.invoke(check=True)
+        self.assertTrue((self.state / "gtm/tokens.json").exists())
+
+    def test_wrapper_help_runs_without_private_configuration(self):
+        result = subprocess.run([ROOT / "scripts/gog-workspace-auth.sh", "--help"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        calls = self.log.read_text(encoding="utf-8")
-        self.assertIn("docker exec -i -u 1000:1000", calls)
-        self.assertIn("gog auth credentials set", calls)
-        self.assertNotIn(str(self.client_secret), calls)
-        self.assertIn(
-            "gog login person@example.com --services "
-            "gmail,calendar,chat,classroom,drive,docs,slides,contacts,tasks,"
-            "sheets,people,forms,appscript,ads --extra-scopes scope-a,scope-b "
-            "--force-consent --manual",
-            calls,
-        )
-        self.assertIn("gog auth list --check --json", calls)
-        self.assertIn("gog --account person@example.com gmail labels list", calls)
-        self.assertIn(
-            "docker exec -u 1000:1000 -e HOME=/opt/data -e HERMES_HOME=/opt/data "
-            "-e USER=hermes -e LOGNAME=hermes spartan_gate_hermes",
-            calls,
-        )
-        self.assertIn(" --check", calls)
-        self.assertIn(" --auth-url", calls)
-        self.assertIn(" --auth-code CODE_FROM_BROWSER", calls)
-        self.assertNotIn("host-gog", calls)
-        self.assertNotIn("super-secret-password", result.stdout)
-        self.assertNotIn("super-secret-password", result.stderr)
-        self.assertNotIn("super-secret-password", calls)
-
-    def test_default_login_includes_ads_and_appscript_scopes(self):
-        self.write_env()
-        self.write_stubs()
-
-        result = self.run_script("GOG_CALLBACK\nCODE_FROM_BROWSER\n")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        calls = self.log.read_text(encoding="utf-8")
-        self.assertIn(
-            "gog login person@example.com --services "
-            "gmail,calendar,chat,classroom,drive,docs,slides,contacts,tasks,"
-            "sheets,people,forms,appscript,ads",
-            calls,
-        )
-        self.assertIn("https://www.googleapis.com/auth/adwords", calls)
-        self.assertIn("https://www.googleapis.com/auth/analytics.readonly", calls)
-        self.assertIn("https://www.googleapis.com/auth/tagmanager.readonly", calls)
-        self.assertIn("https://www.googleapis.com/auth/tagmanager.edit.containers", calls)
-        self.assertIn("https://www.googleapis.com/auth/tagmanager.edit.containerversions", calls)
-        self.assertIn("https://www.googleapis.com/auth/script.projects", calls)
-        self.assertIn("https://www.googleapis.com/auth/script.deployments", calls)
-        self.assertIn("https://www.googleapis.com/auth/script.processes", calls)
-        self.assertIn("https://www.googleapis.com/auth/script.metrics", calls)
-
-    def test_missing_requested_scope_fails_before_workspace_reauth(self):
-        self.write_env("GOGCLI_EXTRA_SCOPES='scope-a,scope-b'")
-        self.write_stubs()
-
-        result = self.run_script(
-            "GOG_CALLBACK\nCODE_FROM_BROWSER\n",
-            extra_env={"DOCKER_SCOPE_MODE": "missing"},
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("missing requested OAuth scopes: scope-b", result.stderr)
-        calls = self.log.read_text(encoding="utf-8")
-        self.assertNotIn("--auth-url", calls)
-
-    def test_missing_ads_scope_fails_before_workspace_reauth(self):
-        self.write_env()
-        self.write_stubs()
-
-        result = self.run_script(
-            "GOG_CALLBACK\nCODE_FROM_BROWSER\n",
-            extra_env={"DOCKER_SCOPE_MODE": "missing-ads"},
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(
-            "missing requested OAuth scopes: https://www.googleapis.com/auth/adwords",
-            result.stderr,
-        )
-        calls = self.log.read_text(encoding="utf-8")
-        self.assertNotIn("--auth-url", calls)
-        self.assertNotIn("gmail labels list", calls)
-
-    def test_missing_required_env_fails_before_external_commands(self):
-        self.write_env()
-        self.env_file.write_text(
-            self.env_file.read_text(encoding="utf-8").replace("GOGCLI_ACCOUNT='person@example.com'\n", ""),
-            encoding="utf-8",
-        )
-        self.write_stubs()
-
-        result = self.run_script()
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("GOGCLI_ACCOUNT is not set", result.stderr)
-        self.assertFalse(self.log.exists())
-
-    def test_hermes_must_already_be_running(self):
-        self.write_env()
-        self.write_stub("gog", f"#!/usr/bin/env bash\nprintf 'gog %s\\n' \"$*\" >> {self.log}\n")
-        self.write_stub(
-            "docker",
-            f"""#!/usr/bin/env bash
-if [[ "${{1:-}}" == "inspect" ]]; then
-  printf 'false\\n'
-  exit 0
-fi
-printf 'docker %s\\n' "$*" >> {self.log}
-""",
-        )
-
-        result = self.run_script()
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("spartan_gate_hermes is not running", result.stderr)
-        calls = self.log.read_text(encoding="utf-8") if self.log.exists() else ""
-        self.assertNotIn("host-gog", calls)
-        self.assertNotIn("auth credentials set", calls)
-        self.assertNotIn("up -d hermes", calls)
+        self.assertIn("--skip-workspace", result.stdout)
 
 
 if __name__ == "__main__":

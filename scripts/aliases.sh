@@ -511,7 +511,7 @@ Common commands:
                               back up and repair stopped legacy SQLite state
   sg-whitelist-domain <host>  allow an outbound domain temporarily
   sg-reader-test [url]        test the bounded reader service
-  sg-gog-login                refresh GogCLI and Google Workspace auth
+  sg-gog-login                Google login wizard: Gog, Workspace, GTM and GA4
 
 Examples:
   sg up -d hermes

@@ -4,6 +4,13 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Upgrade GogCLI to0.48.0 and add a mobile-friendly `sg-gog-login` wizard for
+  Gog, native Workspace and selected Google MCP bindings. Reuse compatible
+  account/client grants, show the exact HTTP/HTTPS callback, refresh natively,
+  keep owner-only recoverable credential writes and reload only Google backends.
+  Document Analytics MCP1.1.0 and operator-enabled Google write capabilities;
+  account permissions, OAuth scopes and native tool/confirmation contracts apply.
+
 - Make Pocket TTS models wake on valid audio requests and release their worker
   after 30 idle minutes. Keep a lightweight healthy listener, existing offline
   cache/voices and internal-only networking; bound worker I/O and reap on shutdown.
