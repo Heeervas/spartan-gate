@@ -20,7 +20,7 @@ RUN python -m pip install \
         -r /app/requirements.txt \
     && python -c "import importlib.metadata, torch; assert torch.__version__.startswith('2.10.0'); assert importlib.metadata.version('pocket-tts') == '2.1.0'"
 
-COPY runtime.py server.py prefetch.py benchmark.py /app/
+COPY runtime.py residency.py server.py prefetch.py benchmark.py /app/
 
 RUN useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin pockettts
 

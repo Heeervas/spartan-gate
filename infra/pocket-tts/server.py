@@ -3,17 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from runtime import (
-    BilingualSynthesizer,
-    PocketTTSConfigurationError,
-    configure_huggingface_cache,
-    selected_profile,
-    validate_active_cache,
-)
+from residency import ResidentSynthesizer, idle_seconds
+from runtime import LANGUAGES, selected_profile, validate_active_cache
 
 
 HOST = "0.0.0.0"
@@ -28,12 +24,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("spartan-pocket-tts")
 
-synthesizer: BilingualSynthesizer | None = None
+synthesizer: ResidentSynthesizer | None = None
 startup_error: str | None = None
 
 
 def _json_bytes(payload: dict) -> bytes:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+
+def _validated_payload(body: bytes) -> tuple[str, object]:
+    payload = json.loads(body)
+    if not isinstance(payload, dict):
+        raise ValueError("request must be a JSON object")
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be a non-empty string")
+    if len(text) > MAX_TEXT_LENGTH:
+        raise ValueError(f"text exceeds {MAX_TEXT_LENGTH} characters")
+    return text, payload.get("language", "auto")
 
 
 class PocketTTSHandler(BaseHTTPRequestHandler):
@@ -65,7 +73,10 @@ class PocketTTSHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             {
                 "status": "healthy",
-                "languages": synthesizer.loaded_languages,
+                "languages": list(LANGUAGES),
+                "resident_languages": synthesizer.loaded_languages,
+                "idle_seconds": synthesizer.idle_timeout,
+                "last_worker_error": synthesizer.last_error,
                 "voices": synthesizer.voices,
                 "models": synthesizer.profile.models,
                 "offline": True,
@@ -101,13 +112,7 @@ class PocketTTSHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            payload = json.loads(self.rfile.read(length))
-            text = payload.get("text")
-            language = payload.get("language", "auto")
-            if not isinstance(text, str) or not text.strip():
-                raise ValueError("text must be a non-empty string")
-            if len(text) > MAX_TEXT_LENGTH:
-                raise ValueError(f"text exceeds {MAX_TEXT_LENGTH} characters")
+            text, language = _validated_payload(self.rfile.read(length))
             selected_language, audio = synthesizer.synthesize(text, language)
         except json.JSONDecodeError:
             self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "invalid JSON"})
@@ -145,30 +150,40 @@ def initialize() -> None:
     try:
         profile = selected_profile()
         validate_active_cache(CACHE_ROOT, profile)
-        configure_huggingface_cache(CACHE_ROOT / "active", offline=True)
-        candidate = BilingualSynthesizer(profile)
-        candidate.load_all()
-        synthesizer = candidate
-        logger.info(
-            "Pocket TTS ready: languages=%s voices=%s",
-            synthesizer.loaded_languages,
-            synthesizer.voices,
-        )
+        synthesizer = ResidentSynthesizer(profile, CACHE_ROOT, idle_seconds())
+        startup_error = None
+        logger.info("Pocket TTS listener ready; models wake on request, idle timeout=%ss",
+                    synthesizer.idle_timeout)
     except Exception as exc:
         startup_error = str(exc)
         logger.exception("Pocket TTS initialization failed")
 
 
-if __name__ == "__main__":
+class PocketTTSServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def service_actions(self) -> None:
+        if synthesizer is not None:
+            synthesizer.reap_idle()
+
+
+def _stop_on_signal(signum, frame) -> None:
+    raise SystemExit(0)
+
+
+def main() -> None:
     initialize()
-    server = ThreadingHTTPServer((HOST, PORT), PocketTTSHandler)
-    server.daemon_threads = True
+    signal.signal(signal.SIGTERM, _stop_on_signal)
+    signal.signal(signal.SIGINT, _stop_on_signal)
+    server = PocketTTSServer((HOST, PORT), PocketTTSHandler)
     logger.info("Pocket TTS listening on %s:%d", HOST, PORT)
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        pass
     finally:
         server.server_close()
         if synthesizer is not None:
             synthesizer.close()
+
+
+if __name__ == "__main__":
+    main()

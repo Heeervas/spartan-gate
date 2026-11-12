@@ -10,6 +10,40 @@ Hugging Face token, or arbitrary voice-upload endpoint. The one-shot prefetch
 service is the only component allowed to download model files, through the
 normal Spartan Gate proxy and DNS boundary.
 
+## Wake on request and idle memory
+
+The HTTP listener starts without loading Pocket/PyTorch models. The first valid
+`/v1/tts` request starts one model worker, using the existing offline cache and
+selected English/Spanish voices. Later requests reuse it. After 30 minutes with
+no synthesis in progress, measured from the last completed synthesis, the worker
+is terminated and reaped so its interpreter, models and native allocations return
+to the OS. The small listener stays available; no Docker socket or wake-up daemon
+is needed. Health checks, invalid requests and busy responses do not wake models
+or extend their residency. Idle expiry is checked approximately every half second.
+
+`POCKET_TTS_IDLE_SECONDS` is an operator-only positive finite number of seconds,
+default `1800`. It is not a request parameter. Model selection/cache/profile and
+network restrictions are unchanged. The first request after sleep includes cold
+model loading, so it is slower. One 150-second worker I/O budget covers cold load,
+request transfer and synthesis, followed by at most four seconds of normal worker
+termination escalation; the existing command client defaults to 180 seconds.
+Concurrent synthesis requests still receive HTTP 429; no background queue, automatic
+retry or provider fallback is added. Shutdown interrupts worker I/O and reaps it.
+
+`/health` now means **listener/configuration ready**, not models already loaded.
+`languages`, `models` and `voices` advertise configured capabilities;
+`resident_languages` is empty while asleep/loading, and populated after successful
+synthesis. `last_worker_error` exposes a generic worker failure until the next
+successful request. Cache/profile validation failures still return unhealthy/503.
+A failed cold load or crashed/timed-out worker returns an explicit synthesis
+error; only a subsequent independent request can start a fresh worker.
+
+Process exit proves worker reclamation, not exact host savings: container memory
+can include reclaimable model file cache. Measure current process-tree residency
+and cgroup anonymous/file memory before/after, not peak RSS. Synthetic tests do
+not establish native cold-start latency or savings. Deployment needs only a
+Pocket image update/recreation after approval; Hermes and callers need no change.
+
 ## Voices and language selection
 
 - English: `anna`, standard English model.

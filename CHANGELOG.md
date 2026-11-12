@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Make Pocket TTS models wake on valid audio requests and release their worker
+  after 30 idle minutes. Keep a lightweight healthy listener, existing offline
+  cache/voices and internal-only networking; bound worker I/O and reap on shutdown.
+  Cold requests include model loading; deployment remains an operator action.
+
 - Limit MCPHub's inherited admin bootstrap password to the no-users first boot;
   validate settings fail closed, preserve existing accounts, and require a hub
   restart before granting backends after initial admin creation.
