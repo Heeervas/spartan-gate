@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import signal
 import socket
 import struct
 import subprocess
@@ -14,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 
+from audio import check_processor, validate_speed
 from runtime import (
     BilingualSynthesizer,
     LANGUAGES,
@@ -72,7 +74,9 @@ def send_frame(channel: socket.socket, payload: dict, deadline: float) -> None:
 
 
 class ResidentSynthesizer:
-    def __init__(self, profile, cache_root: Path, idle_timeout: float):
+    def __init__(self, profile, cache_root: Path, idle_timeout: float, *, speed: float = 1.0):
+        self.speed = validate_speed(speed)
+        check_processor(self.speed)
         self.profile = profile
         self.voices = profile.voices
         self.cache_root = cache_root
@@ -98,12 +102,13 @@ class ResidentSynthesizer:
         environment = dict(os.environ,
                            POCKET_TTS_CACHE_ROOT=str(self.cache_root),
                            POCKET_TTS_SPANISH_MODEL=self.profile.spanish_model,
-                           POCKET_TTS_SPANISH_VOICE=self.profile.spanish_voice)
+                           POCKET_TTS_SPANISH_VOICE=self.profile.spanish_voice,
+                           POCKET_TTS_SPEED=str(self.speed))
         try:
             self._worker = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve()), str(child.fileno())],
                 pass_fds=(child.fileno(),), env=environment,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, start_new_session=True,
             )
         finally:
             child.close()
@@ -118,13 +123,16 @@ class ResidentSynthesizer:
             self._channel = None
         worker = self._worker
         if worker is not None:
-            if worker.poll() is None:
-                worker.terminate()
+            _signal_group(worker.pid, signal.SIGTERM)
             try:
                 worker.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                worker.kill()
-                worker.wait(timeout=2)
+                pass
+            # The leader may already be dead while FFmpeg still owns descriptors.
+            _signal_group(worker.pid, signal.SIGKILL)
+            deadline = time.monotonic() + 2
+            worker.wait(timeout=_remaining(deadline))
+            _wait_group_exit(worker.pid, deadline)
             self._worker = None
         self._ready = False
 
@@ -139,7 +147,8 @@ class ResidentSynthesizer:
             if self._worker is None or self._worker.poll() is not None:
                 self._start()
             # Validate before waking, but let the model interpret directives once.
-            send_frame(self._channel, {"text": text, "language": requested_language}, deadline)
+            send_frame(self._channel, {"text": text, "language": requested_language,
+                                       "deadline": deadline}, deadline)
             response = receive_frame(self._channel, deadline)
             if response.get("error"):
                 raise RuntimeError(response["error"])
@@ -183,7 +192,29 @@ class ResidentSynthesizer:
             self._stop()
 
 
+def _signal_group(pid: int, signum: int) -> None:
+    try:
+        os.killpg(pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+def _wait_group_exit(pid: int, deadline: float) -> None:
+    # Docker init reaps adopted descendants; never release admission prematurely.
+    while True:
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(min(0.01, _remaining(deadline)))
+
+
+def _terminate_worker(signum, frame) -> None:
+    raise SystemExit(0)
+
+
 def run_worker(descriptor: int) -> None:
+    signal.signal(signal.SIGTERM, _terminate_worker)
     channel = socket.socket(fileno=descriptor)
     cache_root = Path(os.environ["POCKET_TTS_CACHE_ROOT"])
     profile = selected_profile()
@@ -195,10 +226,13 @@ def run_worker(descriptor: int) -> None:
         while True:
             # Parent owns idle/deadline enforcement and terminates this process.
             payload = receive_frame(channel, time.monotonic() + 86400)
-            language, audio = synthesizer.synthesize(payload["text"], payload["language"])
+            deadline = payload["deadline"]
+            _remaining(deadline)
+            language, audio = synthesizer.synthesize(payload["text"], payload["language"],
+                                                     deadline=deadline)
             send_frame(channel, {"language": language,
                                  "audio": base64.b64encode(audio).decode("ascii")},
-                       time.monotonic() + REQUEST_TIMEOUT_SECONDS)
+                       deadline)
     except EOFError:
         pass
     finally:

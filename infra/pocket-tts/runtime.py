@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from audio import apply_speed, check_processor, selected_speed, validate_speed
+
 
 POCKET_TTS_VERSION = "4.0.1"
 # Verified release wheel, not an inferred Git revision. Docker checks direct_url.json.
@@ -279,9 +281,11 @@ class LoadedLanguage:
 
 
 class BilingualSynthesizer:
-    def __init__(self, profile: PocketTTSProfile | None = None):
+    def __init__(self, profile: PocketTTSProfile | None = None, *, speed: float | None = None):
         self.profile = profile if profile is not None else selected_profile()
         self.voices = self.profile.voices
+        self.speed = selected_speed() if speed is None else validate_speed(speed)
+        check_processor(self.speed)
         self._loaded: dict[str, LoadedLanguage] = {}
         self._synthesis_lock = threading.Lock()
 
@@ -301,7 +305,8 @@ class BilingualSynthesizer:
         self._loaded.clear()
         gc.collect()
 
-    def synthesize(self, text: str, requested_language: str | None = "auto") -> tuple[str, bytes]:
+    def synthesize(self, text: str, requested_language: str | None = "auto", *,
+                   deadline: float | None = None) -> tuple[str, bytes]:
         language, normalized_text = select_language(text, requested_language)
         loaded = self._loaded.get(language)
         if loaded is None:
@@ -324,6 +329,6 @@ class BilingualSynthesizer:
             wav = output.getvalue()
             if len(wav) <= 44 or not wav.startswith(b"RIFF") or wav[8:12] != b"WAVE":
                 raise RuntimeError("Pocket TTS generated an invalid WAV payload")
-            return language, wav
+            return language, apply_speed(wav, self.speed, deadline=deadline)
         finally:
             self._synthesis_lock.release()

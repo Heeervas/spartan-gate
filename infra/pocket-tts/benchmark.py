@@ -72,6 +72,7 @@ def run_comparison(cache_root: Path, output_dir: Path) -> dict:
                 "manifest": manifest,
                 "models": profile.models,
                 "voices": profile.voices,
+                "speed": synth.speed,
                 "offline": True,
                 "load_seconds": load_seconds,
                 # Linux/Docker ru_maxrss is KiB; includes Python, warmup and both models.

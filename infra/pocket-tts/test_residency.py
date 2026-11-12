@@ -150,7 +150,8 @@ class Model:
         assert os.environ["HF_HUB_OFFLINE"] == "1"
         assert os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
         assert "torch" not in sys.modules
-    def synthesize(self, text, language):
+    def synthesize(self, text, language, *, deadline):
+        assert deadline > __import__('time').monotonic()
         language, text = select_language(text, language)
         assert text in ("Hola", "[en] Hello") and language == "spanish"
         output = io.BytesIO()
@@ -191,7 +192,7 @@ residency.run_worker(int(sys.argv[1]))
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):
-        self.synth = residency.ResidentSynthesizer(PocketTTSProfile(), Path("/synthetic"), 0.1)
+        self.synth = residency.ResidentSynthesizer(PocketTTSProfile(), Path("/synthetic"), 0.1, speed=1.15)
         self.addCleanup(self.synth.close)
         self.patches = [
             mock.patch.object(server, "synthesizer", self.synth),
@@ -229,6 +230,7 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 400)
             error.exception.close()
         self.assertEqual(self.health()["resident_languages"], [])
+        self.assertEqual(self.health()["speed"], 1.15)
         self.assertEqual(self.mocks[-1].call_count, 0)
         with self.post({"text": "[es] Hola"}) as response:
             self.assertEqual(response.headers["X-Pocket-TTS-Language"], "spanish")

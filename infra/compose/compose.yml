@@ -348,6 +348,7 @@ services:
       context: ../pocket-tts
     image: ${POCKET_TTS_IMAGE:-spartan-gate-pocket-tts:4.0.1}
     container_name: spartan_gate_pocket_tts
+    init: true
     restart: unless-stopped
     user: "10001:10001"
     read_only: true
@@ -369,6 +370,7 @@ services:
       POCKET_TTS_CACHE_ROOT: /models
       POCKET_TTS_MAX_TEXT_LENGTH: ${POCKET_TTS_MAX_TEXT_LENGTH:-5000}
       POCKET_TTS_IDLE_SECONDS: ${POCKET_TTS_IDLE_SECONDS:-1800}
+      POCKET_TTS_SPEED: ${POCKET_TTS_SPEED:-1.0}
       POCKET_TTS_SPANISH_MODEL: ${POCKET_TTS_SPANISH_MODEL:-spanish}
       POCKET_TTS_SPANISH_VOICE: ${POCKET_TTS_SPANISH_VOICE:-eponine}
       HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"

@@ -8,6 +8,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from audio import selected_speed
 from residency import ResidentSynthesizer, idle_seconds
 from runtime import LANGUAGES, selected_profile, validate_active_cache
 
@@ -76,6 +77,7 @@ class PocketTTSHandler(BaseHTTPRequestHandler):
                 "languages": list(LANGUAGES),
                 "resident_languages": synthesizer.loaded_languages,
                 "idle_seconds": synthesizer.idle_timeout,
+                "speed": synthesizer.speed,
                 "last_worker_error": synthesizer.last_error,
                 "voices": synthesizer.voices,
                 "models": synthesizer.profile.models,
@@ -150,7 +152,7 @@ def initialize() -> None:
     try:
         profile = selected_profile()
         validate_active_cache(CACHE_ROOT, profile)
-        synthesizer = ResidentSynthesizer(profile, CACHE_ROOT, idle_seconds())
+        synthesizer = ResidentSynthesizer(profile, CACHE_ROOT, idle_seconds(), speed=selected_speed())
         startup_error = None
         logger.info("Pocket TTS listener ready; models wake on request, idle timeout=%ss",
                     synthesizer.idle_timeout)

@@ -26,15 +26,18 @@ or extend their residency. Idle expiry is checked approximately every half secon
 default `1800`. It is not a request parameter. Model selection/cache/profile and
 network restrictions are unchanged. The first request after sleep includes cold
 model loading, so it is slower. One 150-second worker I/O budget covers cold load,
-request transfer and synthesis, followed by at most four seconds of normal worker
-termination escalation; the existing command client defaults to 180 seconds.
+request transfer, synthesis, optional tempo processing and reply, followed by at
+most four seconds of worker-group termination escalation; the existing command client defaults to 180 seconds.
 Concurrent synthesis requests still receive HTTP 429; no background queue, automatic
-retry or provider fallback is added. Shutdown interrupts worker I/O and reaps it.
+retry or provider fallback is added. Shutdown interrupts worker I/O and stops its
+owned process group, including an active FFmpeg child. Docker init reaps adopted
+children even if the model worker dies first.
 
 `/health` now means **listener/configuration ready**, not models already loaded.
 `languages`, `models` and `voices` advertise configured capabilities;
 `resident_languages` is empty while asleep/loading, and populated after successful
-synthesis. `last_worker_error` exposes a generic worker failure until the next
+synthesis. `speed` reports the captured operator setting, also used by the worker
+and benchmark; it is not a per-request control. `last_worker_error` exposes a generic worker failure until the next
 successful request. Cache/profile validation failures still return unhealthy/503.
 A failed cold load or crashed/timed-out worker returns an explicit synthesis
 error; only a subsequent independent request can start a fresh worker.
@@ -78,12 +81,38 @@ not to an individual Hermes generation request. The current command does not
 forward Hermes' generic `{speed}` or `{voice}` placeholders; setting `tts.speed`,
 passing `voice_id`, or supplying speaking-style `instructions` does not implement
 those controls for this Pocket integration. Pitch, gain, emotion, SSML and custom
-voice cloning are not exposed either. Upgrading to 4.0.1 does not add these
-controls. Playback-rate changes or pitch-preserving time-stretching would be
-postprocessing, not native natural-language style conditioning. Text and
-punctuation may affect phrasing;
-`[es]`/`[en]` explicitly choose language, not a different voice. Adding a validated
-speed/audio-processing bridge would be a separate feature, not an existing knob.
+voice cloning are not exposed either. The operator-only tempo setting below is
+postprocessing, not native natural-language style conditioning or a forwarded
+Hermes speed control. Text and punctuation may affect phrasing;
+`[es]`/`[en]` explicitly choose language, not a different voice.
+
+### Operator-only output tempo
+
+`POCKET_TTS_SPEED` accepts finite numbers from **1.0 to 1.25**, default **1.0**.
+The default returns identical audio bytes and never invokes FFmpeg. `1.15` applies
+pitch-preserving FFmpeg `atempo`: audio is approximately 13% shorter (duration
+÷1.15), not 15% shorter. It does not accelerate model generation; conversion adds
+some request latency and may introduce subtle audible artifacts. Both configured
+languages use the same captured setting. Model/voice selection, cache identity,
+public int8 weights and the 1800-second idle default are unchanged.
+
+The Pocket image supplies `/usr/bin/ffmpeg`; host/Hermes binaries are not used.
+Enabled conversion accepts at most 20 MiB of mono PCM16 WAV and caps the output
+during writing at 20 MiB plus a small muxer-packet margin. Two anonymous seekable
+files fit the existing 64 MiB tmpfs and disappear when descriptors close, including
+forced worker termination. The finalized WAV must have truthful lengths and
+complete PCM frames; cap hits/truncation are errors, even if FFmpeg exits 0.
+FFmpeg has at most 10 seconds and never more than the remaining shared 150-second
+request budget. Missing FFmpeg, invalid configuration, conversion failure or
+exhausted limits produce explicit errors, never silently unprocessed audio.
+
+Build a uniquely tagged Pocket candidate and verify synthetic tone duration/pitch,
+WAV headers and converter cleanup before native testing. Set the desired speed in
+the private operator environment only after acceptance, verify effective Compose
+configuration, then recreate **only Pocket**. No model download, cache relabel,
+Hermes rebuild/restart or command-provider edit is needed. Roll back to `1.0` and
+recreate only Pocket; retain the prior image for image-level rollback. Preserve
+existing cache path, Spanish model/voice, resource limits and idle setting.
 
 ## Upgrade from 2.1 without replacing its cache
 

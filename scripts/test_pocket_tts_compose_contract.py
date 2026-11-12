@@ -20,6 +20,8 @@ class PocketTTSComposeContractTests(unittest.TestCase):
         self.assertEqual(service["networks"], ["pocket_tts_internal"])
         self.assertNotIn("ports", service)
         self.assertTrue(service["read_only"])
+        self.assertTrue(service["init"])
+        self.assertEqual(service["environment"]["POCKET_TTS_SPEED"], "${POCKET_TTS_SPEED:-1.0}")
         self.assertEqual(service["cap_drop"], ["ALL"])
         self.assertEqual(service["user"], "10001:10001")
         self.assertNotIn("HTTP_PROXY", service.get("environment", {}))
@@ -37,6 +39,7 @@ class PocketTTSComposeContractTests(unittest.TestCase):
         self.assertEqual(prefetch["networks"], ["spartan_internal"])
         self.assertEqual(prefetch["environment"]["HTTP_PROXY"], "http://proxy:8888")
         self.assertNotIn("HF_TOKEN", prefetch.get("environment", {}))
+        self.assertNotIn("POCKET_TTS_SPEED", prefetch["environment"])
         for key in ("POCKET_TTS_SPANISH_MODEL", "POCKET_TTS_SPANISH_VOICE"):
             self.assertEqual(runtime["environment"][key], prefetch["environment"][key])
 

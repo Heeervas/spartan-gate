@@ -373,6 +373,15 @@ comparison in `infra/pocket-tts/README.md` before selecting a candidate. This do
 not enable automatic audio or change Hermes: occasional replies use its native
 `text_to_speech` tool after separately authorized provider activation.
 
+Operator-only `POCKET_TTS_SPEED` (`1.0`–`1.25`, default `1.0`) applies
+pitch-preserving FFmpeg tempo processing inside Pocket. `1.15` makes playback
+about 13% shorter without accelerating model generation. Use the Pocket image's
+converter, not a Hermes command wrapper; keep the existing model/voice/cache/idle
+settings. After candidate verification, change the private setting and recreate
+only Pocket. No Hermes restart or model download is required. `/health` reports
+`speed`; invalid values or failed conversion are explicit errors, not fallback.
+See the sidecar README for size/time bounds, testing and `1.0` rollback.
+
 The configuration helper is idempotent, keeps the first pre-Pocket config
 backup, and restores the previous provider with `--disable`. A stopped or
 unhealthy sidecar returns an explicit `pocket-tts` error; Hermes does not fall

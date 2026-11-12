@@ -40,6 +40,7 @@ class OfflineComparisonTests(unittest.TestCase):
     def test_comparison_sets_offline_before_loading_and_writes_audio_and_measurements(self):
         synth = mock.Mock()
         synth.synthesize.return_value = ("spanish", one_second_wav())
+        synth.speed = 1.15
 
         def make_synth(profile):
             self.assertEqual(os.environ["HF_HUB_OFFLINE"], "1")
@@ -51,6 +52,7 @@ class OfflineComparisonTests(unittest.TestCase):
                 mock.patch.object(benchmark.time, "perf_counter", side_effect=[0, 2, 2, 3, 3, 4, 4, 5]):
             report = benchmark.run_comparison(self.cache, output)
         self.assertEqual(report["load_seconds"], 2)
+        self.assertEqual(report["speed"], 1.15)
         self.assertTrue(report["rss_includes_english_model"])
         self.assertGreater(report["peak_rss_bytes"], 0)
         self.assertEqual(len(report["samples"]), 3)

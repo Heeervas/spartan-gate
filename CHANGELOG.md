@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add bounded, pitch-preserving Pocket TTS tempo processing with operator-only
+  speed selection. Preserve byte-identical 1.0 output and existing model caches;
+  use anonymous seekable WAV files, one request deadline and owned process-group
+  cleanup with native init. No Hermes or natural-language style control change.
+
 - Add a desktop/mobile selector to `sg-gog-login`. Mobile mode restores an omitted
   callback scheme only for the current session's expected localhost prefix,
   preserving host/path/state checks and native PKCE; desktop input stays strict.

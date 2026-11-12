@@ -166,6 +166,10 @@ public L4 installs keep it disabled until its cache and provider are configured.
   retain the previous image/cache pair for rollback.
 - `POCKET_TTS_DATA_PATH`: private host path for the versioned model cache.
 - `POCKET_TTS_MAX_TEXT_LENGTH`: sidecar request limit, default `5000`.
+- `POCKET_TTS_SPEED`: operator-only pitch-preserving output tempo, finite `1.0`–`1.25`;
+  default `1.0` returns unchanged bytes. `1.15` shortens playback by about 13%, not
+  model generation time. Health reports the effective setting. Change only Pocket;
+  cache identity and the Hermes command API stay unchanged.
 - `POCKET_TTS_SPANISH_MODEL`: operator-only `spanish` (default, 6 layers) or
   `spanish_24l` (24 layers); requires a matching prefetched cache.
 - `POCKET_TTS_SPANISH_VOICE`: predefined `eponine` (default) or `lola`, not an
