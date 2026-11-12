@@ -176,10 +176,13 @@ def authorization_url(process):
     raise AuthError("Gog no generó el enlace de Google; revisa el cliente OAuth y el keyring.")
 
 
-def validate_callback(raw, auth_url):
+def validate_callback(raw, auth_url, mobile=False):
     auth = urllib.parse.parse_qs(urllib.parse.urlsplit(auth_url).query)
     expected = urllib.parse.urlsplit(auth["redirect_uri"][0])
-    callback = urllib.parse.urlsplit(raw.strip())
+    raw = raw.strip()
+    if mobile and raw.startswith(expected.netloc + expected.path):
+        raw = expected.scheme + "://" + raw
+    callback = urllib.parse.urlsplit(raw)
     params = urllib.parse.parse_qs(callback.query)
     if (callback.scheme, callback.netloc, callback.path) != (expected.scheme, expected.netloc, expected.path):
         raise AuthError(f"Pega la URL que empieza por {urllib.parse.urlunsplit(expected)}; conserva ese HTTP/HTTPS, host y ruta.")
@@ -192,20 +195,23 @@ def validate_callback(raw, auth_url):
     return raw.strip()
 
 
-def manual_login(args, env):
+def manual_login(args, env, mobile=False):
     with child(args + ["--manual", "--redirect-uri", "http://localhost:1/", "--timeout", "10m"], env) as process:
         url = authorization_url(process)
         callback = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["redirect_uri"][0]
         print(f"\nAbre en Safari/Chrome (no navegador incrustado):\n\n{url}\n")
         print(f"Después pega la URL final COMPLETA. Debe empezar por:\n{callback}")
         print("Respeta HTTP/HTTPS. Si localhost no carga en el móvil, es normal: copia la barra de direcciones.\n")
+        if mobile:
+            scheme = urllib.parse.urlsplit(callback).scheme
+            print(f"Modo móvil: si el navegador omite {scheme}://, pega igualmente la URL; se completará solo para esta sesión.\n")
         while True:
             raw = getpass.getpass("URL final (entrada oculta; Ctrl-C cancela): ")
             if len(raw) > LIMIT:
                 print("URL demasiado larga; vuelve a copiarla.")
                 continue
             try:
-                value = validate_callback(raw, url)
+                value = validate_callback(raw, url, mobile=mobile)
                 break
             except (AuthError, ValueError) as exc:
                 print(exc)
@@ -394,18 +400,29 @@ def choose_mode(args):
     return True
 
 
-def login_group(config, check, runtime_info, identity, group):
+def choose_device():
+    print("\n¿Dónde abrirás el enlace de Google?")
+    print("[Enter/1] Ordenador\n[2] Móvil / Termius\n[q] Salir")
+    choice = input("> ").strip().lower()
+    if choice == "q":
+        raise KeyboardInterrupt
+    if choice not in ("", "1", "2"):
+        raise AuthError("Selecciona 1, 2 o q.")
+    return choice == "2"
+
+
+def login_group(config, args, runtime_info, identity, group):
     gog, env = runtime_info
     name, client = identity
     scopes = list(dict.fromkeys(EXTRA_SCOPES + [s for t in group for s in t["scopes"]]))
     scopes += [s for s in config.get("GOGCLI_EXTRA_SCOPES", "").split(",") if s and s not in scopes]
-    if not check:
+    if not args.check:
         with tempfile.TemporaryDirectory(prefix="sg-google-client-") as directory:
             path = Path(directory) / "client.json"
             atomic_bytes(path, json.dumps({"installed": client}).encode())
             command([gog, "--client", name, "auth", "credentials", "set", str(path)], env)
         manual_login([gog, "--client", name, "login", config["GOGCLI_ACCOUNT"],
-                      "--services", SERVICES, "--extra-scopes", ",".join(scopes), "--force-consent"], env)
+                      "--services", SERVICES, "--extra-scopes", ",".join(scopes), "--force-consent"], env, mobile=args.mobile)
     grant = refresh_grant(export_grant(gog, config["GOGCLI_ACCOUNT"], name, env), client)
     if set(scopes) - set(grant.get("scopes", [])):
         raise AuthError("Faltan permisos Google solicitados; ejecuta sg-gog-login y concede todos los permisos del paso.")
@@ -433,10 +450,11 @@ def run(config, args):
     print(f"Consentimientos necesarios si reautenticas todo: {len(groups)}")
     if not choose_mode(args):
         return
+    args.mobile = not args.check and choose_device()
     for identity, group in groups.items():
         client = json.loads(identity)
         name = "default" if client == main else "sg-" + hashlib.sha256(identity.encode()).hexdigest()[:12]
-        login_group(config, args.check, (gog, env), (name, client), group)
+        login_group(config, args, (gog, env), (name, client), group)
     reload_backends(config, root, [t["name"] for t in selected if t["name"] != "Workspace"])
     print("\nCredenciales listas. Los clientes refrescan los access tokens bajo demanda.")
     print("Si aparece invalid_grant: revisa Testing (7 días), revocación o política de sesión; un temporizador no lo corrige.")

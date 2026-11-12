@@ -702,13 +702,20 @@ or attaches to that session without starting a duplicate process.
 
 `sg-gog-login` is a numbered terminal wizard for GogCLI, native Google Workspace,
 and the enabled GTM/Analytics MCPHub bindings. Enter selects reauthentication of
-all configured destinations. Option2 reuses/refreshed stored authorization; `q`
+all configured destinations. Option2 reuses/refreshes stored authorization; `q`
 cancels. Multiple destinations with the same OAuth client **and secret** reuse one
 new login for the explicitly displayed `GOGCLI_ACCOUNT`. Different clients get
 separate steps; no account/profile discovery or cross-account token guessing occurs.
 Use `--skip-workspace` to leave native Workspace untouched, or `--check` to refresh
 and redistribute the existing grant without opening consent. Missing scopes still
 require a new login. This is an operator workflow, not an agent-facing tool.
+
+Before opening Google, choose **Ordenador** (Enter/1) or **Móvil / Termius** (2).
+In mobile mode, `localhost:1/?code=...&state=...` is accepted without `http://`:
+the wizard adds only the scheme from that session's expected callback. Host,
+port, path and state validation remain unchanged; an explicit wrong scheme is
+not rewritten. Desktop mode still expects the complete URL. No device question
+is shown when reusing/refreshing credentials without consent.
 
 The wizard reuses Gog0.48.0's native manual S256 PKCE flow. Open its Google HTTPS
 link in the system browser (Safari/Chrome, not an embedded SSH-app browser), then

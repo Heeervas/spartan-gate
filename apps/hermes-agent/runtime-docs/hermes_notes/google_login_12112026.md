@@ -18,13 +18,16 @@
   client/account destinations; other clients get separate steps. The displayed
   account is authoritative. `--skip-workspace` leaves native Workspace alone;
   `--check` refreshes/redistributes without new consent.
-- Native S256 PKCE and stdin callback input are reused. The wizard displays the
-  actual callback prefix, including HTTP/HTTPS and trailing slash. Loopback HTTP
-  failing to load on a phone is expected; copy the complete final address anyway.
+- Native S256 PKCE and stdin callback input are reused. Before consent, choose
+  Ordenador or Móvil/Termius. Mobile mode restores an omitted scheme only for
+  the current session's expected callback prefix; host/path/state checks remain.
+  The reference still includes HTTP/HTTPS and trailing slash. Loopback HTTP
+  failing to load on a phone is expected; copy the final address anyway.
 - The helper is implemented to publish refresh tokens, granted scopes and the
   current Workspace token/expiry to the native files, with one owner-only
-  `.sg-previous` backup per destination. Actual publication awaits the new
-  consent; no Google revocation or cloud mutation was performed.
+  `.sg-previous` backup per destination. The operator now reports successful
+  mobile login; independent native readback remains pending. No Google revocation
+  or cloud mutation was performed by the implementation checks.
 
 ## Resource evidence and limits
 
@@ -36,15 +39,17 @@ under its unchanged1.5GiB cap, with no post-recovery max/OOM events. This is bou
 observed lifecycle evidence, not a universal guarantee about upstream memory.
 The ordinary login performs only individual reloads, not group/config rebuilds.
 
-## Pending operator action
+## Operator confirmation and remaining acceptance
 
-Run `sg-gog-login` in the actual SSH/Termius terminal and choose Enter to grant the
-new Google scopes. The existing Gog refresh worked, but the new write scopes are
-not present yet, so `--check` correctly refuses publication. Then validate mobile
-completion and minimal native reads. Enabling tools does not prove Google access;
-account permissions, scopes and backend-supported operations all apply. Reconnect
-existing MCP client sessions to pick up their refreshed catalogs. Never send the
-callback URL, password, refresh token or ADC through chat.
+The operator reports that the login completed successfully from mobile. The
+follow-up desktop/mobile selector addresses the browser omitting `http://` when
+copying localhost; no new consent, token change or service restart is needed to
+install this UI adjustment. On the next normal login, select2 for Móvil/Termius.
+Minimal native reads and installed-grant readback remain separate from this user
+confirmation. Enabling tools alone does not prove Google resource access; account
+permissions, scopes and backend-supported operations all apply. Reconnect existing
+MCP client sessions for refreshed catalogs. Never send callback URLs, passwords,
+refresh tokens or ADC through chat.
 
 There is no new daemon, periodic token-refresh job, callback listener or HTTP
 service. Clients refresh access tokens under demand; Google Testing/revocation/

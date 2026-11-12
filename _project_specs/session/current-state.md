@@ -57,9 +57,10 @@ owning task evidence, including failures and explicit limits.
   acceptance and unchanged filesystem visibility. Shared Codebase grants remain
   retired; reconnect after root/source changes.
   Gog0.48.0 and Analytics MCP1.1.0 are active; exact GTM/GA4 write grants are enabled.
-  `sg-gog-login` reuses matching client/account grants. New Google scopes and mobile
-  end-to-end acceptance need operator consent; individual reloads settle to one
-  child/backend with headroom. Recovery: `../../../tasks/google-login-unified/task.md`.
+  `sg-gog-login` reuses matching client/account grants. The operator confirms mobile
+  OAuth; an explicit mobile selector handles callbacks copied without a scheme.
+  Native resource-read acceptance remains separate; reloads settle to one child
+  per backend with headroom. Recovery: `../../../tasks/google-login-unified/task.md`.
   Pi/MCP foundations remain integrated/published with storage. Other account/app
   prerequisites and lifecycle gates: `../../../tasks/mcphub-integration/task.md`
   and the private operator guide.

@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add a desktop/mobile selector to `sg-gog-login`. Mobile mode restores an omitted
+  callback scheme only for the current session's expected localhost prefix,
+  preserving host/path/state checks and native PKCE; desktop input stays strict.
+
 - Prepare Pocket TTS4.0.1 with a hash-pinned release wheel, explicit distribution/
   model/voice/int8 cache identities and early embedding checks. Preserve the
   30-minute idle worker and existing client; use separate caches and retained

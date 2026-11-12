@@ -59,6 +59,7 @@ if 'login' in args:
  print(os.environ['AUTH_URL'],flush=True)
  callback=sys.stdin.readline()
  if not callback: raise SystemExit(130)
+ if not callback.startswith('http://localhost:1/'): raise SystemExit(2)
 elif 'export' in args:
  Path(args[args.index('--out')+1]).write_text(json.dumps(json.loads(os.environ['GRANT'])))
 """)
@@ -67,7 +68,7 @@ elif 'export' in args:
                       "services": auth.SERVICES.split(","), "scopes": list(dict.fromkeys(auth.EXTRA_SCOPES + auth.WORKSPACE_SCOPES))}
         self.env = {**os.environ, "CALLS": str(self.calls), "AUTH_URL": AUTH_URL, "GRANT": json.dumps(self.grant)}
 
-    def invoke(self, check=False, refresh=None):
+    def invoke(self, check=False, refresh=None, mobile=False):
         args = argparse.Namespace(check=check, skip_workspace=False)
         def fresh(grant, client):
             grant.update(access_token="ACCESS_SECRET", expiry="2026-11-12T12:00:00Z")
@@ -75,10 +76,11 @@ elif 'export' in args:
         with patch.object(auth, "runtime", return_value=(str(self.gog), self.home, self.env)), \
              patch.object(auth, "refresh_grant", side_effect=refresh or fresh), \
              patch.object(auth, "reload_backends") as reload, \
-             patch("builtins.input", return_value=""), \
-             patch.object(auth.getpass, "getpass", return_value=CALLBACK), \
+             patch("builtins.input", side_effect=["", "2" if mobile else "1"]), \
+             patch.object(auth.getpass, "getpass", side_effect=[CALLBACK.removeprefix("http://"), CALLBACK] if mobile else [CALLBACK]) as callback_input, \
              contextlib.redirect_stdout(io.StringIO()) as output:
             auth.run(self.config, args)
+        self.callback_prompts = callback_input.call_count
         return output.getvalue(), reload
 
     def test_one_native_login_populates_workspace_gtm_and_adc_without_secret_arguments(self):
@@ -108,6 +110,20 @@ elif 'export' in args:
         for secret in ("PRIVATE_CODE", "REFRESH_SECRET", "CLIENT_SECRET", "KEYRING_SECRET", "ACCESS_SECRET"):
             self.assertNotIn(secret, self.calls.read_text())
             self.assertNotIn(secret, output)
+
+    def test_mobile_selector_accepts_callback_without_scheme_on_first_paste(self):
+        output, _ = self.invoke(mobile=True)
+        self.assertEqual(self.callback_prompts, 1)
+        self.assertIn("Modo móvil", output)
+        self.assertTrue((self.home / "google_token.json").exists())
+
+    def test_mobile_shorthand_preserves_host_and_session_validation(self):
+        shorthand = CALLBACK.removeprefix("http://")
+        for invalid in (shorthand.replace("localhost", "other.example"), shorthand.replace("SESSION", "OTHER"), CALLBACK.replace("http:", "https:")):
+            with self.subTest(callback=invalid), self.assertRaises(auth.AuthError):
+                auth.validate_callback(invalid, AUTH_URL, mobile=True)
+        with self.assertRaises(auth.AuthError):
+            auth.validate_callback(shorthand, AUTH_URL)
 
     def test_native_cached_export_can_be_refreshed_before_publication(self):
         cached = {**self.grant, "access_token": "CACHED_ACCESS", "access_token_expires_at": "2026-11-12T10:00:00Z"}
