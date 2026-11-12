@@ -55,6 +55,27 @@ class CacheManifestTests(unittest.TestCase):
             (root / "active").symlink_to(Path("versions") / CACHE_VERSION)
             self.assertEqual(validate_active_cache(root)["cache_version"], CACHE_VERSION)
 
+    def test_old_release_and_changed_provenance_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "active").mkdir()
+            path = root / "active" / "manifest.json"
+            valid = expected_manifest()
+            path.write_text(json.dumps(valid), encoding="utf-8")
+            validate_active_cache(root)
+            changes = {
+                "pocket_tts_version": "2.1.0",
+                "cache_version": "v2.1.0-en-anna-es-eponine-int8",
+                "distribution": {"url": "https://example.invalid/wrong.whl", "sha256": "0" * 64},
+                "models": {"english": "english", "spanish": "spanish_24l"},
+                "quantization": "int4",
+            }
+            for key, value in changes.items():
+                with self.subTest(field=key):
+                    path.write_text(json.dumps(dict(valid, **{key: value})), encoding="utf-8")
+                    with self.assertRaisesRegex(PocketTTSConfigurationError, f"mismatch for {key}"):
+                        validate_active_cache(root)
+
     def test_manifest_mismatch_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

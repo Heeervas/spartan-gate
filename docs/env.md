@@ -162,7 +162,8 @@ beside the selected browser, so plain `sg up -d` starts the sidecar. Fresh
 public L4 installs keep it disabled until its cache and provider are configured.
 
 - `POCKET_TTS_IMAGE`: local sidecar image, default
-  `spartan-gate-pocket-tts:2.1.0`.
+  `spartan-gate-pocket-tts:4.0.1`. Upgrade with a separate matching cache;
+  retain the previous image/cache pair for rollback.
 - `POCKET_TTS_DATA_PATH`: private host path for the versioned model cache.
 - `POCKET_TTS_MAX_TEXT_LENGTH`: sidecar request limit, default `5000`.
 - `POCKET_TTS_SPANISH_MODEL`: operator-only `spanish` (default, 6 layers) or

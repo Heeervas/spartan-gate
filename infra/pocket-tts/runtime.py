@@ -12,9 +12,15 @@ from pathlib import Path
 from typing import Any
 
 
-POCKET_TTS_VERSION = "2.1.0"
-POCKET_TTS_SOURCE_REVISION = "058886528d0b6f2f2d4022de2e244a5260729e6e"
-CACHE_VERSION = "v2.1.0-en-anna-es-eponine-int8"
+POCKET_TTS_VERSION = "4.0.1"
+# Verified release wheel, not an inferred Git revision. Docker checks direct_url.json.
+POCKET_TTS_WHEEL_URL = (
+    "https://files.pythonhosted.org/packages/6c/33/"
+    "e95df6d67fac720836b8240cb2512a253c0e64da85b9c485df31aad0ce71/"
+    "pocket_tts-4.0.1-py3-none-any.whl"
+)
+POCKET_TTS_WHEEL_SHA256 = "a6baf5fd9195399a632d7ef1cb75d4ee772b8d3534c85b90164b39c687a69961"
+CACHE_VERSION = "v4.0.1-en-anna-es-spanish-eponine-int8"
 LANGUAGES = ("english", "spanish")
 DEFAULT_VOICES = {"english": "anna", "spanish": "eponine"}
 LANGUAGE_ALIASES = {
@@ -133,8 +139,6 @@ class PocketTTSProfile:
 
     @property
     def cache_version(self) -> str:
-        if self.spanish_model == "spanish" and self.spanish_voice == "eponine":
-            return CACHE_VERSION
         return f"v{POCKET_TTS_VERSION}-en-anna-es-{self.spanish_model}-{self.spanish_voice}-int8"
 
 
@@ -186,18 +190,16 @@ def cache_manifest_path(cache_root: Path) -> Path:
 
 def expected_manifest(profile: PocketTTSProfile | None = None) -> dict[str, Any]:
     profile = profile if profile is not None else selected_profile()
-    manifest = {
+    return {
         "cache_version": profile.cache_version,
         "pocket_tts_version": POCKET_TTS_VERSION,
-        "source_revision": POCKET_TTS_SOURCE_REVISION,
+        "distribution": {"url": POCKET_TTS_WHEEL_URL, "sha256": POCKET_TTS_WHEEL_SHA256},
         "quantized": True,
+        "quantization": "int8-attention-ffn",
         "languages": list(LANGUAGES),
+        "models": profile.models,
         "voices": profile.voices,
     }
-    # Preserve existing standard/Eponine caches without inventing a migration.
-    if profile.cache_version != CACHE_VERSION:
-        manifest["models"] = profile.models
-    return manifest
 
 
 def validate_active_cache(
@@ -261,10 +263,11 @@ def load_language_model(
 
     profile = profile if profile is not None else selected_profile()
     model_name = profile.models[language]
-    model = TTSModel.load_model(config=_public_model_config(model_name), quantize=True)
+    # Fail on missing model-specific embeddings before downloading large weights.
     voice_path = download_if_necessary(
         get_predefined_voice(language=model_name, name=voice)
     )
+    model = TTSModel.load_model(config=_public_model_config(model_name), quantize=True)
     voice_state = model.get_state_for_audio_prompt(voice_path)
     return model, voice_state
 

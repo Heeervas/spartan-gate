@@ -1,8 +1,9 @@
 # Pocket TTS sidecar
 
-Spartan Gate runs Pocket TTS 2.1.0 as an optional local English/Spanish
-sidecar. Hermes uses its command-provider interface, so enabling this service
-does not rebuild the Hermes image.
+Spartan Gate packages Pocket TTS 4.0.1 as an optional local English/Spanish
+sidecar, pinned to an exact release wheel URL and SHA256 in `requirements.txt`.
+Hermes uses its command-provider interface, so enabling this service does not
+rebuild the Hermes image.
 
 The runtime has no published port and joins only `pocket_tts_internal`, a
 Docker-internal network shared with Hermes. It has no proxy, external network,
@@ -58,9 +59,13 @@ The integration uses public non-cloning weights. Operator-only
 fail closed before loading/downloading. Requests still select only language/text,
 never a model, voice, file or URL. Custom cloning and arbitrary uploads are not exposed.
 
-The default cache identity is unchanged. Each alternative model/voice combination
-has a distinct identity and manifest; changing selection without matching
-prefetch causes startup refusal, not fallback. A larger model is not a verified
+Every 4.0.1 model/voice combination has a distinct new cache identity and
+manifest, including explicit models, voices, recommended int8 groups and the
+release wheel URL/SHA256. Changing selection or using a 2.1 cache without matching
+prefetch causes startup refusal, not fallback. The image build checks pip's
+installed `direct_url.json` against the provenance used by the manifest; this is
+wheel provenance, not a claimed Git commit. Bundled configs and predefined voices
+refer to immutable Hugging Face revisions. A larger model is not a verified
 quality improvement on a particular CPU. The selected model-specific predefined
 embedding must exist upstream; constructing its pinned path is not proof of asset
 availability. No Spanish-from-Spain accent is guaranteed by the voice name.
@@ -73,9 +78,38 @@ not to an individual Hermes generation request. The current command does not
 forward Hermes' generic `{speed}` or `{voice}` placeholders; setting `tts.speed`,
 passing `voice_id`, or supplying speaking-style `instructions` does not implement
 those controls for this Pocket integration. Pitch, gain, emotion, SSML and custom
-voice cloning are not exposed either. Text and punctuation may affect phrasing;
+voice cloning are not exposed either. Upgrading to 4.0.1 does not add these
+controls. Playback-rate changes or pitch-preserving time-stretching would be
+postprocessing, not native natural-language style conditioning. Text and
+punctuation may affect phrasing;
 `[es]`/`[en]` explicitly choose language, not a different voice. Adding a validated
 speed/audio-processing bridge would be a separate feature, not an existing knob.
+
+## Upgrade from 2.1 without replacing its cache
+
+Keep the old image ID/tag, cache path and model/voice selection for rollback.
+Build a uniquely tagged 4.0.1 candidate (set `POCKET_TTS_IMAGE` before building),
+never over the 2.1 tag. Use a **new cache root** for prefetch and comparison;
+never edit an old manifest, reuse its voice state or relink its `active` pointer
+to make it pass validation. Tokenizers, weights and model-specific embeddings
+changed. Prefetch checks the selected embedding before loading large weights,
+then smoke-generates both languages and atomically activates only a complete
+new cache. Asset availability and real compatibility still require native checks.
+
+Preserve an operator's existing `spanish_24l`/Eponine selection across the upgrade;
+the public 6-layer default is not a recommendation to downgrade. Compare fresh
+4.0.1 Spanish24l samples against the retained 2.1 Spanish24l reference with the
+same three prompts before promoting the candidate. Official bundled Spanish tiers
+are 6 and 24 layers, not an intermediate tier; small English models are not Spanish
+replacements. Default CPU int8 quantizes attention/FFN, not all modules. Neither
+int4 nor broader quantization is enabled by this integration.
+
+The package/API/schema/tiny quantized-forward screen does not establish native
+voice compatibility, audio quality or memory. After offline generation/listener
+acceptance and listening, change image and matching cache path together, preserving
+model/voice and idle settings. Recreate **only Pocket** (`sg up -d --no-build
+--no-deps pocket-tts`); an already configured Hermes provider needs no rebuild,
+restart or reconfiguration. Validate the effective live resource limits first.
 
 ## Compare without enabling Hermes audio
 
@@ -83,9 +117,12 @@ The source supports comparison; builds/downloads, listening and activation are
 separate operator actions. Nothing here requires changing Hermes configuration
 or adding `pocket-tts` to persistent `COMPOSE_PROFILES`. Do not rebuild Hermes.
 Keep at least 8 GiB free before prefetch and 5 GiB throughout; check available RAM.
-Existing 2-GiB/2-CPU service limits remain unchanged. If the large model cannot
-load within them, record the failure; do not silently raise limits or use a cloud
-provider. Run candidates sequentially, never concurrently on a shared host.
+Public 2-GiB/2-CPU service limits remain unchanged. Spanish24l plus English has
+previously exceeded 2 GiB; use an explicitly approved isolated **4-GiB/2-CPU**
+envelope for **prefetch, benchmark and listener checks**, only with measured host
+headroom. Never silently raise production limits or use a cloud provider. Run
+candidates sequentially, never concurrently on a shared host. A comparison override
+does not configure live deployment; verify its effective limits separately.
 
 After authorizing the sidecar build, run once:
 
@@ -95,8 +132,21 @@ sg build pocket-tts
 ```
 
 Choose a private stable comparison location, **not the existing production
-cache**. In this subshell, replace the example path. Proxy/DNS must already be
-healthy; `--no-deps` prevents starting neighboring services. Prefetch uses the
+cache**. After resource approval, save this as `compose.resources.yml` there:
+
+```yaml
+services:
+  pocket-tts:
+    mem_limit: 4g
+    cpus: 2.0
+  pocket-tts-prefetch:
+    mem_limit: 4g
+    cpus: 2.0
+```
+
+In this subshell, replace the example path. Use the same explicit override for
+any isolated listener lifecycle checks, not only benchmarking. Proxy/DNS must
+already be healthy; `--no-deps` prevents starting neighboring services. Prefetch uses the
 gated download network; comparison uses only the offline TTS network and a
 read-only model mount. `compose run` does not accept `--no-build`: omit `--build`
 and use the already-built local image with `--pull never`.
@@ -105,22 +155,24 @@ and use the already-built local image with `--pull never`.
 (
   export TTS_COMPARE_ROOT=/absolute/private/path/tts-comparison
   mkdir -p "$TTS_COMPARE_ROOT/output"
-  export POCKET_TTS_SPANISH_MODEL=spanish
+  export POCKET_TTS_SPANISH_MODEL=spanish_24l
   export POCKET_TTS_SPANISH_VOICE=eponine
-  export POCKET_TTS_DATA_PATH="$TTS_COMPARE_ROOT/cache-standard-eponine"
+  export POCKET_TTS_DATA_PATH="$TTS_COMPARE_ROOT/cache-v4.0.1-large-eponine"
   mkdir -p "$POCKET_TTS_DATA_PATH"
-  sg run --rm --no-deps --pull never \
+  sg -f "$TTS_COMPARE_ROOT/compose.resources.yml" config --quiet
+  sg -f "$TTS_COMPARE_ROOT/compose.resources.yml" run --rm --no-deps --pull never \
     --user "$(id -u):$(id -g)" --env USER=operator --env LOGNAME=operator \
     pocket-tts-prefetch
-  sg run --rm --no-deps --pull never \
+  sg -f "$TTS_COMPARE_ROOT/compose.resources.yml" run --rm --no-deps --pull never \
     --user "$(id -u):$(id -g)" --env USER=operator --env LOGNAME=operator \
     --volume "$TTS_COMPARE_ROOT/output:/comparison:rw,z" \
     --entrypoint python pocket-tts /app/benchmark.py \
-    --output-dir /comparison/standard-eponine
+    --output-dir /comparison/v4.0.1-large-eponine
 )
 ```
 
-Repeat sequentially with fresh candidate cache/output names and these selections:
+For additional listening comparisons, run sequentially with fresh version-labelled
+cache/output names and these finite selections (do not replace the chosen24l reference):
 
 | Model | Voice | Cache suffix / output name |
 | --- | --- | --- |
@@ -216,8 +268,10 @@ sg stop pocket-tts
 sg up -d --no-build --force-recreate hermes
 ```
 
-For a model/voice-only rollback, restore the previous model, voice and matching
-cache path together; recreate only Pocket after operator approval. The Hermes
+For an upgrade rollback, restore the retained previous **image and cache path**
+together, preserving its model/voice and effective resource limits. For a
+model/voice-only rollback, restore the previous model, voice and matching cache
+path together; recreate only Pocket after operator approval. The Hermes
 provider need not change. Never relink the production cache merely to compare.
 Removing images/caches is a separate explicit cleanup step. Failed prefetch never
 changes the `active` cache symlink.

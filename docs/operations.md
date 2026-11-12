@@ -320,7 +320,7 @@ enrolled configurations, then recreate only Hermes; retain the shared library.
 
 ## Pocket TTS
 
-Pocket TTS 2.1.0 runs as an optional local English/Spanish sidecar.
+Pocket TTS 4.0.1 is packaged as an optional local English/Spanish sidecar.
 Hermes uses its existing command-provider interface. The client is baked into
 the root-owned Hermes image rather than mounted over `/opt/hermes`. The defaults
 are Anna for English and Eponine for Spanish;
@@ -334,11 +334,11 @@ private cache path there as well. Keep at least 8 GiB free before the first pref
 ```env
 COMPOSE_PROFILES=camofox,pocket-tts
 POCKET_TTS_DATA_PATH=/absolute/private/path/pocket-tts
-POCKET_TTS_IMAGE=spartan-gate-pocket-tts:2.1.0
+POCKET_TTS_IMAGE=spartan-gate-pocket-tts:4.0.1
 ```
 
-Build only the sidecar, prefetch the public non-cloning assets, then enable the
-Hermes command provider:
+For a new installation, build only the sidecar, prefetch the public non-cloning
+assets, then enable the Hermes command provider:
 
 ```sh
 sg build pocket-tts
@@ -355,6 +355,15 @@ normal full-stack startup includes Pocket TTS:
 sg up -d
 sg ps pocket-tts hermes
 ```
+
+For a 2.1 upgrade, retain the old image/cache pair and prepare a separate 4.0.1
+cache; never relabel an old manifest or reuse old voice state. Preserve the chosen
+`spanish_24l`/Eponine profile and idle settings, compare fresh Spanish samples, then
+switch the image/cache pair together. Existing Hermes needs no change or restart.
+Public limits stay 2 GiB; Spanish24l comparison needs an approved 4-GiB/2-CPU
+override for prefetch, benchmark and listener checks with sufficient host headroom.
+Verify effective live limits independently before activation. See the detailed
+upgrade/comparison procedure in `infra/pocket-tts/README.md`.
 
 Optional operator-only `POCKET_TTS_SPANISH_MODEL=spanish_24l` selects the larger
 Spanish model; `POCKET_TTS_SPANISH_VOICE=lola` selects another predefined voice.

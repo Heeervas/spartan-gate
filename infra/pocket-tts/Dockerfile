@@ -18,9 +18,12 @@ RUN python -m pip install \
     && python -m pip install \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         -r /app/requirements.txt \
-    && python -c "import importlib.metadata, torch; assert torch.__version__.startswith('2.10.0'); assert importlib.metadata.version('pocket-tts') == '2.1.0'"
+    && python -m pip check
 
 COPY runtime.py residency.py server.py prefetch.py benchmark.py /app/
+
+# Bind the installed, hash-checked wheel to the cache manifest's provenance.
+RUN python -c "import importlib.metadata as m, json, torch; from runtime import POCKET_TTS_VERSION, POCKET_TTS_WHEEL_URL, POCKET_TTS_WHEEL_SHA256; d = m.distribution('pocket-tts'); p = json.loads(d.read_text('direct_url.json')); assert torch.__version__ == '2.10.0+cpu'; assert d.version == POCKET_TTS_VERSION; assert p['url'] == POCKET_TTS_WHEEL_URL; assert p['archive_info']['hashes']['sha256'] == POCKET_TTS_WHEEL_SHA256"
 
 RUN useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin pockettts
 

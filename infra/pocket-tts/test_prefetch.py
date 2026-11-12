@@ -135,6 +135,28 @@ class PrefetchAtomicityTests(unittest.TestCase):
             self.assertEqual((root / "active").resolve(), root / "versions" / profile.cache_version)
             self.assertTrue((legacy / "manifest.json").is_file())
 
+    def test_failed_upgrade_keeps_old_active_cache_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "versions" / "v2.1.0-en-anna-es-spanish_24l-eponine-int8"
+            old.mkdir(parents=True)
+            before = b'{"pocket_tts_version":"2.1.0","source_revision":"old"}\n'
+            (old / "manifest.json").write_bytes(before)
+            (old / "voice.safetensors").write_bytes(b"old voice state")
+            (root / "active").symlink_to(Path("versions") / old.name)
+            model = mock.Mock()
+            model.generate_audio.return_value.numel.return_value = 1
+            with (mock.patch.object(prefetch, "require_free_space"),
+                  mock.patch.object(prefetch, "configure_huggingface_cache"),
+                  mock.patch.object(prefetch, "load_language_model",
+                                    side_effect=[(model, {}), RuntimeError("missing Spanish asset")])):
+                with self.assertRaisesRegex(RuntimeError, "missing Spanish asset"):
+                    prefetch.run_prefetch(root, 1, 1)
+            self.assertEqual((root / "active").resolve(), old)
+            self.assertEqual((old / "manifest.json").read_bytes(), before)
+            self.assertEqual((old / "voice.safetensors").read_bytes(), b"old voice state")
+            self.assertEqual(list((root / "versions").iterdir()), [old])
+
     def test_invalid_selection_fails_before_creating_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "cache"

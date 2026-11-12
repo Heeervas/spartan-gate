@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Prepare Pocket TTS4.0.1 with a hash-pinned release wheel, explicit distribution/
+  model/voice/int8 cache identities and early embedding checks. Preserve the
+  30-minute idle worker and existing client; use separate caches and retained
+  image/cache rollback for operator activation and Spanish audio comparison.
+
 - Upgrade GogCLI to0.48.0 and add a mobile-friendly `sg-gog-login` wizard for
   Gog, native Workspace and selected Google MCP bindings. Reuse compatible
   account/client grants, show the exact HTTP/HTTPS callback, refresh natively,

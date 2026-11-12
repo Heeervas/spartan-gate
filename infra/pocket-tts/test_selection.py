@@ -14,11 +14,16 @@ import runtime
 
 
 class SpanishSelectionTests(unittest.TestCase):
-    def test_legacy_profile_keeps_cache_and_manifest_contract(self):
+    def test_default_profile_manifest_identifies_distribution_and_models(self):
         profile = runtime.PocketTTSProfile()
         self.assertEqual(profile.cache_version, runtime.CACHE_VERSION)
         manifest = runtime.expected_manifest(profile)
-        self.assertNotIn("models", manifest)
+        self.assertEqual(manifest["pocket_tts_version"], "4.0.1")
+        self.assertEqual(manifest["distribution"]["sha256"],
+                         "a6baf5fd9195399a632d7ef1cb75d4ee772b8d3534c85b90164b39c687a69961")
+        self.assertEqual(manifest["models"], {"english": "english", "spanish": "spanish"})
+        self.assertEqual(manifest["quantization"], "int8-attention-ffn")
+        self.assertNotIn("source_revision", manifest)
         self.assertEqual(manifest["voices"], {"english": "anna", "spanish": "eponine"})
 
     def test_candidate_selections_have_distinct_caches_and_reject_legacy_cache(self):
@@ -52,7 +57,10 @@ class SpanishSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "spanish_24l.yaml").write_text(
-                "weights_path: hf://gated/model\nweights_path_without_voice_cloning: hf://public/model@pinned\n",
+                "weights_path: hf://gated/model\nweights_path_without_voice_cloning: hf://public/model@pinned\n"
+                "default_temperature: 0.3\nflow_lm:\n  insert_bos_before_voice: true\n"
+                "  lookup_table:\n    tokenizer: tokenizers\n"
+                "    tokenizer_path: hf://public/tokenizer.json@pinned\n",
                 encoding="utf-8")
             model = mock.Mock()
             model_api = mock.Mock()
@@ -73,8 +81,27 @@ class SpanishSelectionTests(unittest.TestCase):
             config = yaml.safe_load(model_api.load_model.call_args.kwargs["config"].read_text())
             self.assertEqual(config["weights_path"], "hf://public/model@pinned")
             self.assertTrue(model_api.load_model.call_args.kwargs["quantize"])
+            self.assertTrue(config["flow_lm"]["insert_bos_before_voice"])
+            self.assertEqual(config["default_temperature"], 0.3)
+            self.assertEqual(config["flow_lm"]["lookup_table"]["tokenizer_path"],
+                             "hf://public/tokenizer.json@pinned")
             voice_lookup.assert_called_once_with(language="spanish_24l", name="lola")
             model.get_state_for_audio_prompt.assert_called_once_with(root / "lola.safetensors")
+
+    def test_missing_embedding_fails_before_model_load(self):
+        model_api = mock.Mock()
+        modules = {
+            "pocket_tts": types.SimpleNamespace(TTSModel=model_api),
+            "pocket_tts.utils.utils": types.SimpleNamespace(
+                get_predefined_voice=mock.Mock(return_value="hf://public/voice.safetensors@pinned"),
+                download_if_necessary=mock.Mock(side_effect=FileNotFoundError("missing embedding"))),
+        }
+        with (mock.patch.dict("sys.modules", modules),
+              mock.patch.object(runtime, "_public_model_config", return_value=Path("synthetic.yaml"))):
+            with self.assertRaisesRegex(FileNotFoundError, "missing embedding"):
+                runtime.load_language_model("spanish", "eponine",
+                                            profile=runtime.PocketTTSProfile("spanish_24l", "eponine"))
+        model_api.load_model.assert_not_called()
 
     def test_service_uses_captured_operator_profile_for_both_languages(self):
         profile = runtime.PocketTTSProfile("spanish_24l", "lola")
