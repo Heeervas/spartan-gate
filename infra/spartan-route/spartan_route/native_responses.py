@@ -31,6 +31,7 @@ from .util import stable_json, token_count_estimate
 from .native_cache import NativeCacheDiagnostics, provider_cache_fields, request_diagnostics, cache_read_known
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected
 from .transport import TransportError
+from .tool_guard import DegenerateToolArguments
 from .attempt import CodexAttempt, apply_outcome
 from .pi_usage import CURRENT_REQUEST
 from .reasoning_replay import output_transform
@@ -46,6 +47,7 @@ class OpenedResponse:
     response: Any
     response_time_ms: int | None
     transform: Any = lambda payload: payload
+    model: str = "unknown"
 
 
 def response_event_name(event: str | None, payload: dict[str, Any]) -> str:
@@ -240,7 +242,7 @@ async def open_response(
             transport_details=getattr(response, "transport_details", None),
             retry_allowed=getattr(response, "retry_allowed", True),
         )
-    return OpenedResponse(response, elapsed, output_transform(auth))
+    return OpenedResponse(response, elapsed, output_transform(auth), str(body.get("model") or "unknown"))
 
 
 async def collect_response(
@@ -257,7 +259,7 @@ async def collect_response(
     terminal: dict[str, Any] | None = None
     completed_output_items: list[dict[str, Any]] = []
     try:
-        async for event, data in parse_sse_response(opened.response):
+        async for event, data in parse_sse_response(opened.response, opened.model):
             if not data or data == "[DONE]":
                 continue
             try:
@@ -356,7 +358,7 @@ async def prepare_stream(
     slot: CodexSlot,
     realm: str,
 ) -> bool:
-    events = parse_sse_response(opened.response)
+    events = parse_sse_response(opened.response, opened.model)
     try:
         buffered, first_terminal = await buffer_precommit(events, result, realm, opened.transform)
         if not buffered:
@@ -365,6 +367,12 @@ async def prepare_stream(
     except TransportError as exc:
         result.status, result.error, result.retry_allowed = exc.status, exc.code, exc.retry_allowed
         result.body = {"error": exc.error}
+        opened.response.release()
+        return False
+    except DegenerateToolArguments as exc:
+        error = router._stream_transport_error(exc)
+        result.status, result.error = 502, router._error_code(error)
+        result.body = {"error": error}
         opened.response.release()
         return False
     except Exception:

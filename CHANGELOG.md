@@ -4,6 +4,12 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Abort degenerate Codex tool-argument streams after a configurable excessive
+  whitespace tail outside JSON strings. Responses and Chat fail explicitly,
+  close upstream before error delivery and never finish the partial tool call;
+  one content-free warning replaces prolonged non-progress without new telemetry.
+  Native harness retry budgets remain client-owned.
+
 - Add bounded, pitch-preserving Pocket TTS tempo processing with operator-only
   speed selection. Preserve byte-identical 1.0 output and existing model caches;
   use anonymous seekable WAV files, one request deadline and owned process-group
