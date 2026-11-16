@@ -31,6 +31,7 @@ from .util import stable_json, token_count_estimate
 from .native_cache import NativeCacheDiagnostics, provider_cache_fields, request_diagnostics, cache_read_known
 from .cache_experiments import CacheExperiments, ProbeTicket, ProbeRejected
 from .transport import TransportError
+from .tool_guard import DegenerateToolArguments
 from .attempt import CodexAttempt, apply_outcome
 from .pi_usage import CURRENT_REQUEST
 from .reasoning_replay import output_transform
@@ -366,6 +367,12 @@ async def prepare_stream(
     except TransportError as exc:
         result.status, result.error, result.retry_allowed = exc.status, exc.code, exc.retry_allowed
         result.body = {"error": exc.error}
+        opened.response.release()
+        return False
+    except DegenerateToolArguments as exc:
+        error = router._stream_transport_error(exc)
+        result.status, result.error = 502, router._error_code(error)
+        result.body = {"error": error}
         opened.response.release()
         return False
     except Exception:
