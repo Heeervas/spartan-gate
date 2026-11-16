@@ -8,7 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY spartan_route ./spartan_route
 COPY web ./web
 
-RUN mkdir -p /app/data
+RUN chmod -R a+rX /app/spartan_route /app/web \
+    && mkdir -p /app/data
 
 ENV PYTHONUNBUFFERED=1
 ENV CLAWROUTE_HOST=0.0.0.0

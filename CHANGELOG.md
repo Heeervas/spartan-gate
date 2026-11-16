@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Make copied Spartan Route code and dashboard assets readable by the non-root
+  container user regardless of source checkout permissions, preserving directory traversal.
+
 - Abort degenerate Codex tool-argument streams after a configurable excessive
   whitespace tail outside JSON strings. Responses and Chat fail explicitly,
   close upstream before error delivery and never finish the partial tool call;
