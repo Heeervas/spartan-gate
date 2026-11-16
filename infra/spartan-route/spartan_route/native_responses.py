@@ -46,6 +46,7 @@ class OpenedResponse:
     response: Any
     response_time_ms: int | None
     transform: Any = lambda payload: payload
+    model: str = "unknown"
 
 
 def response_event_name(event: str | None, payload: dict[str, Any]) -> str:
@@ -240,7 +241,7 @@ async def open_response(
             transport_details=getattr(response, "transport_details", None),
             retry_allowed=getattr(response, "retry_allowed", True),
         )
-    return OpenedResponse(response, elapsed, output_transform(auth))
+    return OpenedResponse(response, elapsed, output_transform(auth), str(body.get("model") or "unknown"))
 
 
 async def collect_response(
@@ -257,7 +258,7 @@ async def collect_response(
     terminal: dict[str, Any] | None = None
     completed_output_items: list[dict[str, Any]] = []
     try:
-        async for event, data in parse_sse_response(opened.response):
+        async for event, data in parse_sse_response(opened.response, opened.model):
             if not data or data == "[DONE]":
                 continue
             try:
@@ -356,7 +357,7 @@ async def prepare_stream(
     slot: CodexSlot,
     realm: str,
 ) -> bool:
-    events = parse_sse_response(opened.response)
+    events = parse_sse_response(opened.response, opened.model)
     try:
         buffered, first_terminal = await buffer_precommit(events, result, realm, opened.transform)
         if not buffered:

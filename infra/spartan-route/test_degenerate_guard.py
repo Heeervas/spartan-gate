@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 from spartan_route.codex import CodexCallResult
 from spartan_route.native_responses import execute_codex_responses
-from test_codex import FakeResponse, NativeResponsesTests
+from aiohttp import ClientSession, web
+from aiohttp.test_utils import TestServer
+from spartan_route.codex import parse_sse_response
+from spartan_route.tool_guard import DegenerateToolArguments
+import test_codex as fixtures
 
 
 def tool_events(parts):
@@ -19,8 +23,9 @@ def tool_events(parts):
 
 class DegenerateGuardTests(unittest.IsolatedAsyncioTestCase):
     async def run_stream(self, parts, native=True):
-        upstream = FakeResponse(events=list(tool_events(parts)))
-        router = NativeResponsesTests.router([upstream])
+        upstream = fixtures.FakeResponse(events=list(tool_events(parts)))
+        upstream.headers = {"x-request-id": "synthetic-request"}
+        router = fixtures.NativeResponsesTests.router([upstream])
         if native:
             result = await execute_codex_responses(router, {"input": "synthetic"}, "codex/gpt-6.1-sol", True, None, None)
             stream = result.stream
@@ -37,7 +42,7 @@ class DegenerateGuardTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(native=native), patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES="1024"):
                 with self.assertLogs("spartan_route", level="WARNING") as logs:
                     upstream, result, text = await asyncio.wait_for(self.run_stream(['{"secret":"never-log-this"', *(['   \n'] * 1000)], native), 2)
-                self.assertEqual(result.error, "codex_tool_arguments_degenerate")
+                    self.assertEqual(result.error, "codex_tool_arguments_degenerate")
                 self.assertFalse(result.completed)
                 self.assertTrue(upstream.released)
                 self.assertLess(upstream.content.index, 270)
@@ -48,7 +53,8 @@ class DegenerateGuardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(logs.output), 1)
                 self.assertIn("whitespace_bytes=1025", logs.output[0])
                 self.assertIn("duration_ms=", logs.output[0])
-                self.assertIn("model=", logs.output[0])
+                self.assertIn("gpt-6.1-sol", logs.output[0])
+                self.assertIn('request_id="synthetic-request"', logs.output[0])
                 self.assertNotIn("never-log-this", logs.output[0])
                 self.assertNotIn("fc_test", logs.output[0])
 
@@ -62,3 +68,71 @@ class DegenerateGuardTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNone(result.error)
                     self.assertTrue(result.completed)
                     self.assertNotIn("codex_tool_arguments_degenerate", text)
+
+    async def test_exact_limit_progress_reset_initial_arguments_and_call_isolation(self):
+        events = [("response.output_item.added", {"item": {"type": "function_call", "id": "a", "arguments": '{"code":"'}})]
+        events += [("response.function_call_arguments.delta", {"item_id": "a", "delta": ' ' * 600 + '\\"\\\\' + ' ' * 600 + '"'})]
+        for item in ("a", "b", "a", "b"):
+            events.append(("response.function_call_arguments.delta", {"item_id": item, "delta": ' ' * 256 + ','}))
+        upstream = fixtures.FakeResponse(events=events)
+        with patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES="256"):
+            observed = [event async for event in parse_sse_response(upstream, "synthetic")]
+        self.assertEqual(len(observed), len(events))
+        upstream = fixtures.FakeResponse(events=list(tool_events([' ' * 257])))
+        with patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES="256"), self.assertLogs("spartan_route", level="WARNING"):
+            with self.assertRaises(DegenerateToolArguments):
+                _ = [event async for event in parse_sse_response(upstream)]
+        self.assertTrue(upstream.released)
+
+    async def test_default_invalid_and_configured_limits_on_direct_event_transport(self):
+        class DirectResponse:
+            released = False
+
+            def release(self):
+                self.released = True
+
+            async def iter_events(self):
+                for event, payload in tool_events([' ' * 1024, ' ']):
+                    yield event, json.dumps(payload)
+
+        for configured, consumed in (("invalid", 2), ("1024", 2), ("2048", 4)):
+            with self.subTest(configured=configured), patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES=configured):
+                response = DirectResponse()
+                seen = []
+                if configured == "2048":
+                    seen = [event async for event in parse_sse_response(response)]
+                    self.assertFalse(response.released)
+                else:
+                    with self.assertLogs("spartan_route", level="WARNING"), self.assertRaises(DegenerateToolArguments):
+                        async for event in parse_sse_response(response):
+                            seen.append(event)
+                    self.assertTrue(response.released)
+                self.assertEqual(len(seen), consumed)
+
+    async def test_live_synthetic_http_connection_closes_without_reading_the_tail(self):
+        disconnected = asyncio.Event()
+
+        async def upstream(request):
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            try:
+                for event, payload in tool_events(['{"key":"private"', *([' ' * 64] * 1000)]):
+                    await response.write(fixtures.sse_event(event, payload))
+                    await asyncio.sleep(0.001)
+            except (ConnectionResetError, RuntimeError, asyncio.CancelledError):
+                disconnected.set()
+            return response
+
+        app = web.Application()
+        app.router.add_get("/", upstream)
+        with patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES="256"):
+            async with TestServer(app) as server, ClientSession() as client:
+                response = await client.get(server.make_url("/"))
+                with self.assertLogs("spartan_route", level="WARNING") as logs:
+                    with self.assertRaises(DegenerateToolArguments):
+                        async with asyncio.timeout(2):
+                            _ = [event async for event in parse_sse_response(response, "synthetic")]
+                self.assertTrue(response.closed)
+                await asyncio.wait_for(disconnected.wait(), 2)
+                self.assertEqual(len(logs.output), 1)
+                self.assertNotIn("private", logs.output[0])

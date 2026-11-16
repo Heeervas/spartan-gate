@@ -31,6 +31,7 @@ from .telemetry import TelemetryStore
 from .transport import CodexTransport, TransportError, observe_event
 from .speed import capture_service_tier
 from .sse import frames as sse_frames
+from .tool_guard import DegenerateToolArguments, ToolArgumentGuard
 from .util import (
     epoch_millis,
     is_jwt_expired,
@@ -1899,7 +1900,7 @@ class CodexRouter:
     async def _collect_codex_response(self, response: Any, model: str, slot: CodexSlot) -> CodexCallResult:
         state = CodexEventState()
         try:
-            async for event, data in parse_sse_response(response):
+            async for event, data in parse_sse_response(response, model):
                 if not data or data == "[DONE]":
                     continue
                 try:
@@ -1948,7 +1949,7 @@ class CodexRouter:
                     "model": model,
                     "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
                 }))
-                async for event, data in parse_sse_response(response):
+                async for event, data in parse_sse_response(response, model):
                     outputs, done = self._codex_chat_outputs_for_event(event, data, state, result, slot, chat_id, created, model)
                     for output in outputs:
                         await emit(output)
@@ -2175,6 +2176,8 @@ class CodexRouter:
         }
 
     def _stream_transport_error(self, exc: BaseException) -> dict[str, Any]:
+        if isinstance(exc, DegenerateToolArguments):
+            return dict(exc.error)
         if isinstance(exc, asyncio.TimeoutError):
             return {
                 "message": "Codex stream timed out while reading the upstream response",
@@ -3532,7 +3535,23 @@ class CodexRouter:
         })
 
 
-async def parse_sse_response(response: Any) -> AsyncIterator[tuple[str | None, str]]:
+async def parse_sse_response(response: Any, model: str = "unknown") -> AsyncIterator[tuple[str | None, str]]:
+    guard = ToolArgumentGuard(model, getattr(response, "headers", {}).get("x-request-id"))
+    async for event, data in _raw_sse_response(response):
+        try:
+            payload = json.loads(data)
+        except (ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            try:
+                guard.observe(event, payload)
+            except DegenerateToolArguments:
+                response.release()  # Close upstream before downstream error delivery can block.
+                raise
+        yield event, data
+
+
+async def _raw_sse_response(response: Any) -> AsyncIterator[tuple[str | None, str]]:
     direct = getattr(response, "iter_events", None)
     if direct is not None:
         async for event, data in direct():
