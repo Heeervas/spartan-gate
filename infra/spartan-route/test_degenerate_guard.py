@@ -58,6 +58,40 @@ class DegenerateGuardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("never-log-this", logs.output[0])
                 self.assertNotIn("fc_test", logs.output[0])
 
+    async def test_initial_degenerate_arguments_preserve_precommit_error_and_slot_retry(self):
+        for recover in (False, True):
+            with self.subTest(recover=recover), patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES="1024"):
+                upstream = fixtures.FakeResponse(events=[
+                    ("response.created", {"type": "response.created", "response": {"id": "synthetic"}}),
+                    ("response.output_item.added", {"item": {"type": "function_call", "id": "fc_bad", "call_id": "call_bad", "name": "edit", "arguments": " " * 1025}}),
+                ])
+                healthy = fixtures.FakeResponse(events=[("response.completed", {"type": "response.completed", "response": {"status": "completed", "output": []}})])
+                router = fixtures.NativeResponsesTests.router([upstream, healthy] if recover else [upstream])
+                if not recover:
+                    router.slots = router.slots[:1]
+                with self.assertLogs("spartan_route", level="WARNING") as logs:
+                    result = await execute_codex_responses(router, {"input": "synthetic"}, "codex/gpt-6.1-sol", True, None, None)
+                self.assertTrue(upstream.released)
+                self.assertEqual(len(logs.output), 1)
+                self.assertEqual(len(router.session.calls), 2 if recover else 1)
+                if recover:
+                    text = b"".join([chunk async for chunk in result.stream]).decode()
+                    self.assertEqual(result.status, 200)
+                    self.assertTrue(result.completed)
+                    self.assertIsNone(result.error)
+                    self.assertTrue(healthy.released)
+                    self.assertNotIn("fc_bad", text)
+                    self.assertNotIn("call_bad", text)
+                else:
+                    self.assertEqual(result.status, 502)
+                    self.assertEqual(result.error, "codex_tool_arguments_degenerate")
+                    self.assertEqual(result.body["error"]["code"], "codex_tool_arguments_degenerate")
+                    self.assertEqual(result.body["error"]["type"], "server_error")
+                    self.assertIn("excessive tool argument whitespace", result.body["error"]["message"])
+                    self.assertIsNone(result.stream)
+                    self.assertFalse(result.completed)
+                self.assertTrue(all(slot.in_flight == 0 for slot in router.slots))
+
     async def test_fragmented_escaped_strings_and_long_legitimate_spaces_complete(self):
         arguments = json.dumps({"code": 'quote " slash \\ unicode ☃ ' + ' ' * 5000 + '\nend'})
         with patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES="256"):
