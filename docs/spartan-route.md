@@ -654,6 +654,26 @@ Reliability contract:
   `response.failed`. Non-streaming reads return retryable `502` with the same
   stable codes. Local stream read failures do not put the selected slot into the
   generic transient 5xx cooldown; terminal upstream server errors still do.
+- Codex's shared Responses/Chat SSE reader aborts a tool call when its JSON
+  arguments exceed **1,024 consecutive bytes of JSON whitespace outside strings**.
+  `SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES` configures the threshold (256–1,048,576;
+  invalid values use the default). Spaces inside strings, escaped quotes/backslashes
+  and string state split across deltas are preserved; non-whitespace resets the
+  per-call tail. This is a progress bound, not a total-duration/inactivity timeout:
+  at roughly 180–200 whitespace bytes/s it cuts in about 5–6 seconds.
+  The upstream connection is released before emitting the explicit
+  `codex_tool_arguments_degenerate` / `server_error` failure. A committed stream
+  is never transparently replayed by Route and receives no successful tool finish.
+  Native Responses may already have delivered provisional argument deltas; clients
+  must discard calls from failed turns, never execute partial arguments.
+  One normal warning logs only model, whitespace byte count, elapsed milliseconds
+  and upstream request ID when available. No telemetry, database or per-request
+  logging is added or enabled.
+  The error is retry-eligible in native Pi and Zenith, but their retry budgets
+  remain client-owned: this does **not** enforce exactly one retry. For an operator-
+  approved single retry, use Pi's `retry.maxRetries: 1` / `retry.enabled: true` and
+  Zenith's `providers.maxRetries: 1`; existing completed tool rounds stay in
+  context. Neither consumer nor its configuration is changed by this guard.
 - `CODEX_REQUEST_TIMEOUT_MS` matches ClawRoute semantics: it bounds the wait
   for Codex response headers, not the total duration of the streamed response
   body.

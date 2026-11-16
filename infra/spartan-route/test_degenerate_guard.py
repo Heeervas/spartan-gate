@@ -71,14 +71,19 @@ class DegenerateGuardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exact_limit_progress_reset_initial_arguments_and_call_isolation(self):
         events = [("response.output_item.added", {"item": {"type": "function_call", "id": "a", "arguments": '{"code":"'}})]
+        events += [("response.function_call_arguments.delta", {"item_id": "b", "delta": ' ' * 256})]
         events += [("response.function_call_arguments.delta", {"item_id": "a", "delta": ' ' * 600 + '\\"\\\\' + ' ' * 600 + '"'})]
+        events += [("response.function_call_arguments.delta", {"item_id": "b", "delta": ','})]
         for item in ("a", "b", "a", "b"):
             events.append(("response.function_call_arguments.delta", {"item_id": item, "delta": ' ' * 256 + ','}))
         upstream = fixtures.FakeResponse(events=events)
         with patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES="256"):
             observed = [event async for event in parse_sse_response(upstream, "synthetic")]
         self.assertEqual(len(observed), len(events))
-        upstream = fixtures.FakeResponse(events=list(tool_events([' ' * 257])))
+        upstream = fixtures.FakeResponse(events=[
+            ("response.output_item.added", {"item": {"type": "function_call", "id": "a", "arguments": '{"v":"'}}),
+            ("response.function_call_arguments.delta", {"item_id": "b", "delta": ' ' * 257}),
+        ])
         with patch.dict(os.environ, SPARTAN_ROUTE_TOOL_WHITESPACE_MAX_BYTES="256"), self.assertLogs("spartan_route", level="WARNING"):
             with self.assertRaises(DegenerateToolArguments):
                 _ = [event async for event in parse_sse_response(upstream)]
