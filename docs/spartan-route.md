@@ -444,7 +444,18 @@ Kept in v1:
   without a resolved key omit the header. Other provider transports do not
   receive this subscription header.
 - Per-key Codex cache leases, rate-limit cooldowns, transient 5xx cooldowns,
-  and retry across slots/accounts.
+  and retry across slots/accounts. After Codex slot selection, native Responses,
+  Chat compatibility and image fallback responses include `x-spartan-route-slot`
+  (the numeric slot index, never an account ID, email or credential fingerprint)
+  and `x-spartan-route-lease`: `hit` if an existing affinity lease decided that
+  attempt's slot, `new` otherwise, or `none` without an affinity key or with
+  leases disabled. Retries report the final selected slot and its lease decision;
+  errors after selection retain that attribution. Responses with no selected
+  slot omit both headers. Streams send them at HTTP response start, before
+  consuming the body. These process-local observations need no new persistence
+  or telemetry and work with optional telemetry disabled. A lease `hit` is not
+  proof of a provider cache hit: use `usage` cached-token counts to measure reuse.
+  Slot indices identify configured positions, not durable account identities.
 - Codex image generation and image edits, including multipart PNG alpha masks
   translated to Responses `input_image_mask`. The outer Codex model is selected
   by the Route service environment variable `CODEX_IMAGE_HOST_MODEL` (alias:

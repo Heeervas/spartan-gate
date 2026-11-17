@@ -4,6 +4,14 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Add per-response Codex slot and lease-attribution headers to native Responses,
+  Chat compatibility and image fallback, including stream start and final retry
+  selection. Keep account identifiers out of headers and require no new storage,
+  telemetry or routing configuration. Lease hits remain distinct from provider
+  cached-token measurements.
+- Target GPT-6.1 Terra (`codex/gpt-6.1-terra`) instead of Astra for the opt-in
+  cache probe and its shared cohort model, preserving all existing gates.
+
 - Make copied Spartan Route code and dashboard assets readable by the non-root
   container user regardless of source checkout permissions, preserving directory traversal.
 

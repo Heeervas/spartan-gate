@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .reasoning_replay import prefers_auth
+from .cache_attribution import LEASE, SelectionAttribution, begin_selection
 from .quota_limits import QuotaAdmission, operational_admission, dispatch_admission, observe_usage, open_image_inference
 from .usage_display import memory_usage_snapshot, memory_usage_projection, display_usage_row, replace_display_account, usage_active_slots
 from .usage_windows import valid_live_usage_window, live_usage_allows_recovery, normalize_usage_windows, usage_account_row
@@ -1419,6 +1420,7 @@ class CodexRouter:
 
     async def choose_slot(self, affinity_key: str | None, excluded: set[int], excluded_accounts: set[str], model_id: str | None = None, reasoning_effort: str | None = None) -> tuple[CodexSlot, CodexAuth] | None:
         self._clear_expired_leases()
+        begin_selection(affinity_key, self._lease_settings()[0])
         now = time.time()
         candidates = []
         for slot, auth in await self._operational_candidates(excluded, excluded_accounts):
@@ -1437,6 +1439,7 @@ class CodexRouter:
                     if slot.index == lease.slot_index and auth.account_key == lease.account_key:
                         if (slot, auth) in selection:
                             lease.last_used_at = now
+                            LEASE.set("hit")
                             return slot, auth
                         # A valid lease outside the advisory subset stays valid.
                         break
@@ -1726,6 +1729,7 @@ class CodexRouter:
         excluded_accounts: set[str] = set()
         deadline = time.time() + (self._recovery_wait_ms() / 1000)
         selection_diagnostics: dict[str, Any] = {}
+        attribution = SelectionAttribution()
         while True:
             for _attempt in range(slot_count):
                 chosen = await self.choose_slot_with_catalog_recovery(
@@ -1735,11 +1739,12 @@ class CodexRouter:
                 if not chosen:
                     break
                 slot, auth = chosen
+                attribution = SelectionAttribution.capture(slot, auth)
                 attempt = CodexAttempt(slot, auth, slot.auth_fingerprint)
                 slot.in_flight, slot.last_selected_at = slot.in_flight + 1, time.time()
                 pi_attempt = pi_request.start("codex") if pi_request is not None else None
                 try:
-                    result = await self._single_chat_call(body, model_id, model_name, wants_stream, slot, auth)
+                    result = attribution.apply(await self._single_chat_call(body, model_id, model_name, wants_stream, slot, auth))
                 except BaseException:
                     slot.in_flight = max(0, slot.in_flight - 1)
                     if pi_attempt is not None:
@@ -1786,8 +1791,6 @@ class CodexRouter:
                     result.stream_cleanup = cleanup_stream
                     result.stream = stream_with_inflight_guard()
                 result.selection_diagnostics = selection_diagnostics or None
-                result.slot_index = slot.index
-                result.account_key = auth.account_key
                 if not result.usage_seen:
                     result.input_tokens = token_count_estimate(request)
                 if not result.retry_allowed:
@@ -1811,13 +1814,13 @@ class CodexRouter:
 
             state = await self.slot_availability()
             if state.eligible == 0 and state.rate_limited and not state.transient_5xx:
-                return await self._unavailable_result(selection_diagnostics)
+                return attribution.apply(await self._unavailable_result(selection_diagnostics))
             recovery_at = state.earliest_recovery()
             if recovery_at is not None and recovery_at <= deadline and await self._wait_for_temporary_recovery(deadline):
                 excluded_slots.clear()
                 excluded_accounts.clear()
                 continue
-            return await self._unavailable_result(selection_diagnostics)
+            return attribution.apply(await self._unavailable_result(selection_diagnostics))
 
     async def _single_chat_call(
         self,
@@ -2801,6 +2804,7 @@ class CodexRouter:
             response.release()
 
     async def execute_image(self, request: dict[str, Any]) -> CodexCallResult:
+        attribution = SelectionAttribution()
         slot_count = max(1, len(self.slots))
         initial_state = await self.slot_availability()
         if initial_state.eligible == 0 and initial_state.rate_limited:
@@ -2814,6 +2818,7 @@ class CodexRouter:
                 if not chosen:
                     break
                 slot, auth = chosen
+                attribution = SelectionAttribution.capture(slot, auth)
                 attempt = CodexAttempt(slot, auth, slot.auth_fingerprint)
                 slot.in_flight += 1
                 slot.last_selected_at = time.time()
@@ -2821,8 +2826,7 @@ class CodexRouter:
                     result = await self._single_image_call(request, slot, auth)
                 finally:
                     slot.in_flight = max(0, slot.in_flight - 1)
-                result.slot_index = slot.index
-                result.account_key = auth.account_key
+                attribution.apply(result)
                 result.input_tokens = token_count_estimate(request)
                 if result.status not in {401, 429, 500, 502}:
                     return result
@@ -2841,13 +2845,13 @@ class CodexRouter:
 
             state = await self.slot_availability()
             if state.eligible == 0 and state.rate_limited and not state.transient_5xx:
-                return await self._unavailable_result()
+                return attribution.apply(await self._unavailable_result())
             recovery_at = state.earliest_recovery()
             if recovery_at is not None and recovery_at <= deadline and await self._wait_for_temporary_recovery(deadline):
                 excluded_slots.clear()
                 excluded_accounts.clear()
                 continue
-            return await self._unavailable_result()
+            return attribution.apply(await self._unavailable_result())
 
     def _usage_cache_signature(self) -> tuple[Any, ...]:
         return tuple(

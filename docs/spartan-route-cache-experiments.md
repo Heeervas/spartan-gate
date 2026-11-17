@@ -2,7 +2,11 @@
 
 Cache diagnostics are passive. Experimental requests and prompt changes are off
 unless an operator explicitly starts the helper below. The experiment targets
-`codex/gpt-6-astra` through native `/v1/responses` only. Provider API support for
+`codex/gpt-6.1-terra` (GPT-6.1 Terra) through native `/v1/responses` only. The
+probe helper and opt-in cohort share this exact model ID; authority, evidence,
+budget and expiry gates remain unchanged. Existing Astra manifests/evidence do
+not authorize a Terra run or cohort. The model must be available in Route's
+configured/discovered catalog and on the selected accounts. Provider API support for
 a cache option does not establish Codex subscription support or quota savings.
 
 ## Baseline and probe
@@ -141,7 +145,7 @@ seven days, the policy expires to off.
 Normal cost calibration remains available through:
 
 ```sh
-python3 scripts/spartan-route-quota-report.py --model codex/gpt-6-astra --since 2026-09-07T00:00:00Z
+python3 scripts/spartan-route-quota-report.py --model codex/gpt-6.1-terra --since 2026-11-17T00:00:00Z
 ```
 
 The report's tokens-per-unit rate includes input plus output; cached input is

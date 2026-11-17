@@ -30,6 +30,15 @@ class CacheExperimentTests(unittest.TestCase):
     def admit(self, case=1, body=None):
         return self.controller.admit(f"{self.run_id}:{case}", body or probe_fixture(self.run_id, case), MODEL)
 
+    def test_probe_and_cohort_target_terra_and_reject_old_model_authority(self):
+        self.assertEqual(MODEL, "codex/gpt-6.1-terra")
+        self.assertEqual(probe_fixture(self.run_id, 1)["model"], "codex/gpt-6.1-terra")
+        self.assertEqual(self.manifest["model"], "codex/gpt-6.1-terra")
+        self.write({**self.manifest, "model": "codex/gpt-6-astra"})
+        with self.assertRaises(ProbeRejected):
+            self.admit()
+        self.assertEqual(self.store._conn.execute("SELECT count(*) FROM cache_probe_reservations").fetchone()[0], 0)
+
     def test_missing_or_unsafe_manifest_never_reserves(self):
         for mode in ("missing", "public", "symlink", "oversized"):
             with self.subTest(mode=mode):
@@ -131,7 +140,8 @@ class CacheExperimentTests(unittest.TestCase):
             marked = probe_fixture(self.run_id, 4)
             self.assertTrue(call(marked)[1]["skipped"])
         for key, value in (("epoch", "restart"), ("expires_at", 999), ("expires_at", 99999999),
-                           ("issued_at", True), ("probe_benefit_verified", False), ("accounts", ["a", "a"])):
+                           ("issued_at", True), ("probe_benefit_verified", False), ("accounts", ["a", "a"]),
+                           ("model", "codex/gpt-6-astra")):
             self.write({**policy, key: value}, "cache-cohort.json")
             self.assertEqual(call(), (body, None))
 

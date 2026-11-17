@@ -26,6 +26,7 @@ from .codex import (
     should_retry,
     sse,
 )
+from .cache_attribution import SelectionAttribution, begin_selection
 from .speed import capture_service_tier
 from .util import stable_json, token_count_estimate
 from .native_cache import NativeCacheDiagnostics, provider_cache_fields, request_diagnostics, cache_read_known
@@ -455,6 +456,7 @@ async def execute_codex_responses(
     excluded_accounts: set[str] = set()
     last_result: CodexCallResult | None = None
     selection_diagnostics: dict[str, Any] = {}
+    attribution = SelectionAttribution()
 
     if probe is None:
         initial_state = await router.slot_availability()
@@ -467,6 +469,7 @@ async def execute_codex_responses(
                 raise ProbeRejected("probe_unavailable")
             try:
                 chosen = await experiments.choose(router, probe)
+                begin_selection(affinity_key, router._lease_settings()[0])
             except BaseException as exc:
                 experiments.finish(probe, success=False, sent=False)
                 if not isinstance(exc, Exception):
@@ -480,11 +483,12 @@ async def execute_codex_responses(
         if not chosen:
             break
         slot, auth = chosen
+        attribution = SelectionAttribution.capture(slot, auth)
         attempt = CodexAttempt(slot, auth, slot.auth_fingerprint)
         catalog = getattr(router, "model_catalog", None)
         if probe is not None and catalog is not None and not catalog.supports(slot, auth, model_id, reasoning_effort):
             experiments.finish(probe, success=False, sent=False)
-            return CodexCallResult(status=503, body={"error": {"code": "probe_account_unavailable"}}, error="probe_account_unavailable")
+            return attribution.apply(CodexCallResult(status=503, body={"error": {"code": "probe_account_unavailable"}}, error="probe_account_unavailable"))
         body, experiment = base_body, probe.metadata() if probe else None
         if experiments is not None and probe is None:
             body, experiment = experiments.cohort_body(
@@ -519,6 +523,7 @@ async def execute_codex_responses(
             # Only result objects carry usage. OpenedResponse is never accepted.
             if not isinstance(current, CodexCallResult):
                 return
+            attribution.apply(current)
             attempts.append(diagnostics.finish(
                 observation, success=delivered and current.completed and not current.error,
                 cache_write_tokens=current.cache_write_tokens,
@@ -546,8 +551,6 @@ async def execute_codex_responses(
         if isinstance(opened, CodexCallResult):
             slot.in_flight = max(0, slot.in_flight - 1)
             opened.selection_diagnostics = selection_diagnostics or None
-            opened.slot_index = slot.index
-            opened.account_key = auth.account_key
             await finish_cache(opened)
             last_result = opened
             text = opened.body.decode("utf-8", errors="replace") if isinstance(opened.body, bytes) else stable_json(opened.body)
@@ -559,16 +562,14 @@ async def execute_codex_responses(
             apply_outcome(router, attempt, opened.status, text)
             continue
 
-        result = CodexCallResult(
+        result = attribution.apply(CodexCallResult(
             status=200,
             selection_diagnostics=selection_diagnostics or None,
-            slot_index=slot.index,
-            account_key=auth.account_key,
             input_tokens=token_count_estimate(request),
             upstream_response_time_ms=opened.response_time_ms,
             transport_details=getattr(opened.response, "transport_details", None),
             retry_allowed=getattr(opened.response, "retry_allowed", True),
-        )
+        ))
         if wants_stream:
             try:
                 committed = await prepare_stream(router, opened, result, attempt, CODEX_RESPONSES_REALM)
@@ -645,8 +646,6 @@ async def execute_codex_responses(
                 status=502,
                 body={"error": {"message": "Codex Responses stream ended before commit", "type": "upstream_error", "code": "codex_stream_error"}},
                 error="codex_stream_error",
-                slot_index=slot.index,
-                account_key=auth.account_key,
             )
             await finish_cache(last_result)
             continue
@@ -662,8 +661,6 @@ async def execute_codex_responses(
         finally:
             slot.in_flight = max(0, slot.in_flight - 1)
         collected.selection_diagnostics = selection_diagnostics or None
-        collected.slot_index = slot.index
-        collected.account_key = auth.account_key
         await finish_cache(collected)
         if not collected.retry_allowed or collected.status < 400 or not should_retry(collected.status, stable_json(collected.body)):
             if collected.completed and not collected.error and affinity_key:
@@ -685,7 +682,7 @@ async def execute_codex_responses(
         unavailable = await router._unavailable_result(selection_diagnostics)
         if last_result is not None:
             unavailable.native_cache = last_result.native_cache
-        return unavailable
+        return attribution.apply(unavailable)
     if last_result is not None:
         last_result.selection_diagnostics = selection_diagnostics or None
         return last_result
