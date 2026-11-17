@@ -4,6 +4,9 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Accept Codex 0.167.0 catalog models, including GPT-6.2 Sol and Astra, and
+  align the image-fallback client User-Agent with that version.
+
 - Preserve Codex slot/lease attribution when an upstream error body cannot be
   read: native Responses and Chat return a sanitized 502 without replaying the
   request, release upstream resources and preserve cancellation.

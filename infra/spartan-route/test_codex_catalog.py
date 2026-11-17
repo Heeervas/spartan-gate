@@ -50,11 +50,18 @@ class CatalogParserTests(unittest.TestCase):
         }]})
         self.assertEqual(catalog["codex/gpt-6.1-sol"].entry.max_context, 872000)
 
+    def test_gpt_6_2_models_accept_current_client_minimum(self) -> None:
+        catalog = parse_catalog({"models": [
+            row("gpt-6.2-sol", version="0.166.0"),
+            row("gpt-6.2-astra", version="0.167.0"),
+        ]})
+        self.assertEqual(set(catalog), {"codex/gpt-6.2-sol", "codex/gpt-6.2-astra"})
+
     def test_visible_compatible_models_only(self) -> None:
         catalog = parse_catalog({"models": [
             row("gpt-6-sol"), row("gpt-6-luna", efforts=("low", "medium")),
             row("gpt-reserve", visibility="hide"),
-            row("future-model", version="0.156.0"),
+            row("future-model", version="0.168.0"),
             {**row("not-api"), "supported_in_api": False},
             {**row("audio-only"), "input_modalities": ["audio"]},
         ]})
@@ -79,16 +86,16 @@ class CatalogVersionTests(unittest.TestCase):
     def test_newest_enabled_cache_applies_to_all_accounts_without_regression(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             slots = []
-            for index, version in enumerate(("0.148.0", "0.160.0", "0.999.0")):
+            for index, version in enumerate(("0.148.0", "0.168.0", "0.999.0")):
                 home = Path(directory) / str(index)
                 home.mkdir()
                 (home / "models_cache.json").write_text(json.dumps({"client_version": version}))
                 slots.append(SimpleNamespace(path=str(home / "auth.json"), enabled=index != 2))
             router = SimpleNamespace(slots=slots, slot_routing_status=lambda slot: {"routingEnabled": slot.enabled})
             catalog = CodexModelDiscovery(router, AsyncMock(), set())
-            self.assertEqual(catalog.catalog_request_version(), (0, 160, 0))
+            self.assertEqual(catalog.catalog_request_version(), (0, 168, 0))
             Path(slots[1].path).with_name("models_cache.json").write_text('{"client_version":"0.148.0"}')
-            self.assertEqual(catalog.catalog_request_version(), (0, 160, 0))
+            self.assertEqual(catalog.catalog_request_version(), (0, 168, 0))
             router.slots = []
             self.assertEqual(CodexModelDiscovery(router, AsyncMock(), set()).catalog_request_version(), CATALOG_CLIENT_VERSION)
 
@@ -154,7 +161,7 @@ class CatalogFetchTests(unittest.IsolatedAsyncioTestCase):
             router.session = session
             fetched = await catalog._fetch(CodexAuth("secret", account_id="account"))
             self.assertIn("codex/gpt-6-sol", fetched)
-            self.assertEqual(session.request[1]["params"], {"client_version": "0.159.0"})
+            self.assertEqual(session.request[1]["params"], {"client_version": "0.167.0"})
             self.assertFalse(session.request[1]["allow_redirects"])
             router.session = Session([raw])
             await catalog._fetch(CodexAuth("secret", account_id="account"), client_version=(0, 160, 0))
@@ -384,26 +391,26 @@ class CatalogRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_newer_request_version_retries_baseline_for_each_account(self) -> None:
         models = parse_catalog({"models": [row("gpt-6.1-sol", version="0.153.0")]})
         self.catalog._fetch = AsyncMock(side_effect=[ValueError("catalog_http_400"), models] * 2)
-        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 160, 0)):
+        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 168, 0)):
             await self.catalog.refresh()
         self.assertEqual(self.catalog._fetch.await_args_list, [
-            call(self.router.slots[0].auth, client_version=(0, 160, 0)),
+            call(self.router.slots[0].auth, client_version=(0, 168, 0)),
             call(self.router.slots[0].auth, client_version=CATALOG_CLIENT_VERSION),
-            call(self.router.slots[1].auth, client_version=(0, 160, 0)),
+            call(self.router.slots[1].auth, client_version=(0, 168, 0)),
             call(self.router.slots[1].auth, client_version=CATALOG_CLIENT_VERSION),
         ])
         self.assertIn("codex/gpt-6.1-sol", self.publications[-1])
 
     async def test_failed_hint_and_fallback_keep_previous_account_catalog(self) -> None:
         self.catalog._fetch = AsyncMock(side_effect=RuntimeError("unavailable"))
-        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 160, 0)):
+        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 168, 0)):
             await self.catalog.refresh()
         self.assertEqual(self.catalog._fetch.await_count, 4)
         self.assertFalse(self.catalog.known_unavailable("codex/gpt-6-sol"))
 
     async def test_cancelled_hint_is_not_retried(self) -> None:
         self.catalog._fetch = AsyncMock(side_effect=asyncio.CancelledError)
-        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 160, 0)):
+        with patch.object(self.catalog, "catalog_request_version", return_value=(0, 168, 0)):
             with self.assertRaises(asyncio.CancelledError):
                 await self.catalog.refresh()
         self.assertEqual(self.catalog._fetch.await_count, 1)

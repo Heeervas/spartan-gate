@@ -2749,7 +2749,7 @@ class CodexRouter:
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             "OpenAI-Beta": "responses=experimental",
-            "User-Agent": "codex_cli_rs/0.130.0 (spartan-route image fallback)",
+            "User-Agent": "codex_cli_rs/0.167.0 (spartan-route image fallback)",
         }
         if auth.account_id:
             headers["chatgpt-account-id"] = auth.account_id

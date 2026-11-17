@@ -16,13 +16,13 @@ from aiohttp import ClientTimeout
 from .codex import CODEX_AUTH_MAX_BYTES, CODEX_BASE_URL, derive_account_id, read_auth_file
 from .config import ModelEntry
 
-# This is the newest Codex wire version validated with Spartan Route's
-# stateless Responses transport. A newer minimum version needs a transport test.
-VERIFIED_CODEX_CLIENT_VERSION = (0, 155, 1)
+# Codex CLI compatibility ceiling for Route's stateless Responses transport.
+# Accept 0.167.0 catalog models, including GPT-6.2 (minimum client 0.166.0).
+VERIFIED_CODEX_CLIENT_VERSION = (0, 167, 0)
 # Catalog visibility depends on the requesting CLI version, independently of
 # each model's minimum transport version. Newer cache hints never lift the
 # validated transport ceiling above.
-CATALOG_CLIENT_VERSION = (0, 159, 0)
+CATALOG_CLIENT_VERSION = (0, 167, 0)
 CODEX_CATALOG_URL = f"{CODEX_BASE_URL}/models"
 REFRESH_SECONDS = 3600
 MAX_AGE_SECONDS = 24 * 3600
