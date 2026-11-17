@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Preserve Codex slot/lease attribution when an upstream error body cannot be
+  read: native Responses and Chat return a sanitized 502 without replaying the
+  request, release upstream resources and preserve cancellation.
+
 - Add per-response Codex slot and lease-attribution headers to native Responses,
   Chat compatibility and image fallback, including stream start and final retry
   selection. Keep account identifiers out of headers and require no new storage,

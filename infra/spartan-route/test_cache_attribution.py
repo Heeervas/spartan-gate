@@ -5,6 +5,7 @@ import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from aiohttp import ClientPayloadError
 from aiohttp.test_utils import TestClient, TestServer
 
 from spartan_route.app import STATE_KEY, create_app
@@ -121,6 +122,18 @@ class CacheAttributionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("x-spartan-route-slot", result.headers)
             self.assertNotIn("x-spartan-route-lease", result.headers)
 
+    async def test_cancelled_error_body_read_releases_upstream_and_propagates(self):
+        for native in (True, False):
+            with self.subTest(native=native):
+                upstream = fixtures.FakeResponse(status=400)
+                upstream.text = AsyncMock(side_effect=asyncio.CancelledError())
+                router = self.router([upstream])
+                with self.assertRaises(asyncio.CancelledError):
+                    await self.call(router, native)
+                self.assertTrue(upstream.released)
+                self.assertEqual(len(router.session.calls), 1)
+                self.assertEqual(router.slots[0].in_flight, 0)
+
     async def test_image_retry_reports_final_slot_without_affinity(self):
         image = fixtures.CodexTests().png_b64(1024, 1024)
         router = self.router([
@@ -159,6 +172,43 @@ class CacheAttributionTests(unittest.IsolatedAsyncioTestCase):
 
 @patch.dict(os.environ, SPARTAN_ROUTE_OPTIONAL_TELEMETRY_ENABLED="false", SPARTAN_REASONING_BINDING_SECRET="41" * 32)
 class CacheAttributionHTTPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unreadable_upstream_error_body_keeps_selected_http_attribution(self):
+        store = TelemetryStore(":memory:", optional_telemetry_enabled=False)
+        app = create_app(test_config(), store)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        self.addAsyncCleanup(client.close)
+        await app[STATE_KEY].codex_catalog.stop()
+        app[STATE_KEY].codex_catalog = None
+        router = app[STATE_KEY].codex
+        router.model_catalog = None
+        router.slots = [CodexSlot(7, auth=CodexAuth("private-token", account_id="private-account"))]
+        router.load_auth = AsyncMock(side_effect=lambda slot: slot.auth)
+        self.assertFalse(store.optional_telemetry_enabled)
+        for path in ("responses", "chat/completions"):
+            for stream in (False, True):
+                with self.subTest(path=path, stream=stream):
+                    upstream = fixtures.FakeResponse(status=400)
+                    upstream.text = AsyncMock(side_effect=ClientPayloadError("private-error-body"))
+                    session = fixtures.NativeResponsesTests.SequenceSession([upstream])
+                    router.transport.session = session
+                    router.leases.clear()
+                    # Verify the decision survives the fault, rather than deriving it after cleanup.
+                    router._remember_lease("broken-body", router.slots[0])
+                    body = {"model": "codex/gpt-6-sol", "stream": stream, "prompt_cache_key": "broken-body"}
+                    body.update({"input": "hello"} if path == "responses" else {"messages": [{"role": "user", "content": "hello"}]})
+                    response = await client.post("/v1/" + path, headers={"Authorization": "Bearer secret"}, json=body)
+                    self.assertEqual(response.headers.get("x-spartan-route-slot"), "7")
+                    self.assertEqual(response.headers.get("x-spartan-route-lease"), "hit")
+                    self.assertEqual(response.status, 502)
+                    payload = await response.json()
+                    self.assertEqual(payload["error"]["code"], "codex_error")
+                    for private in ("private-error-body", "private-account", "private-token"):
+                        self.assertNotIn(private, str(payload) + str(response.headers))
+                    self.assertEqual(len(session.calls), 1)
+                    self.assertTrue(upstream.released)
+                    self.assertEqual(router.slots[0].in_flight, 0)
+
     async def test_native_and_chat_headers_reach_http_start_without_optional_storage(self):
         store = TelemetryStore(":memory:", optional_telemetry_enabled=False)
         app = create_app(test_config(), store)

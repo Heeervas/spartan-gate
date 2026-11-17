@@ -450,8 +450,10 @@ Kept in v1:
   and `x-spartan-route-lease`: `hit` if an existing affinity lease decided that
   attempt's slot, `new` otherwise, or `none` without an affinity key or with
   leases disabled. Retries report the final selected slot and its lease decision;
-  errors after selection retain that attribution. Responses with no selected
-  slot omit both headers. Streams send them at HTTP response start, before
+  errors after selection retain that attribution. An unreadable non-200 upstream
+  error body returns a sanitized HTTP 502 (`codex_error`) with attribution and
+  without retrying; the upstream is released, including on cancellation.
+  Responses with no selected slot omit both headers. Streams send them at HTTP response start, before
   consuming the body. These process-local observations need no new persistence
   or telemetry and work with optional telemetry disabled. A lease `hit` is not
   proof of a provider cache hit: use `usage` cached-token counts to measure reuse.

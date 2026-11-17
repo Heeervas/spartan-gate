@@ -1855,8 +1855,16 @@ class CodexRouter:
         except Exception as exc:
             return CodexCallResult(status=502, body={"error": {"message": str(exc), "type": "upstream_error", "code": "codex_error"}}, error=str(exc))
         if response.status != 200:
-            text = await response.text()
-            response.release()
+            try:
+                text = await response.text()
+            except Exception:
+                return CodexCallResult(
+                    status=502, error="codex_error", retry_allowed=False,
+                    body={"error": {"message": "Codex error response body could not be read", "type": "upstream_error", "code": "codex_error"}},
+                    upstream_response_time_ms=None if getattr(response, "is_websocket", False) else upstream_response_time_ms,
+                )
+            finally:
+                response.release()
             return CodexCallResult(
                 status=response.status,
                 body=text.encode(),
