@@ -20,6 +20,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.web_request import FileField
 
 from .codex import CodexCallResult, CodexRouter, build_content_prompt_cache_key, resolve_prompt_cache_key, session_id_from_request, sse
+from .cache_attribution import HEADER_NAMES
 from .codex_catalog import CodexModelDiscovery, SlotCatalog
 from .config import AUTO_ROUTING_TIERS, ModelEntry, SpartanRouteConfig, load_config
 from .model_variants import VariantPolicy, VariantCatalog, VARIANT_LIKE_PATTERN, base_eligible
@@ -1591,6 +1592,7 @@ async def write_execution_response(
         response = web.StreamResponse(
             status=result.status,
             headers={
+                **{key: value for key, value in (result.headers or {}).items() if key in HEADER_NAMES},
                 "Content-Type": content_type or (result.headers or {}).get("Content-Type", "text/event-stream"),
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",

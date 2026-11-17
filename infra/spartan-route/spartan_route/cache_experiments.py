@@ -19,7 +19,7 @@ from typing import Any
 
 from .native_cache import Budget, canonical_chunks, developer_boundary
 
-MODEL = "codex/gpt-6-astra"
+MODEL = "codex/gpt-6.1-terra"
 PROBE_HEADER = "X-Spartan-Cache-Probe"
 MAX_ATTEMPTS = 12
 MAX_INPUT_TOKENS = 100000
