@@ -74,6 +74,29 @@ test('catalog requires advertised Responses and realm, preserving chat and suppo
   assert.throws(() => normalizeCatalog({ data: [catalogRow, catalogRow] }), /duplicate/);
 });
 
+test('Responses realms keep the tool list stable when tools load mid-conversation', async () => {
+  const [codex, chat] = normalizeCatalog({ data: [catalogRow, { ...catalogRow, id: 'auto', reasoning_realm: null }] });
+  assert.equal(chat.compat, undefined);
+  const { stream } = harness();
+  const tool = name => ({ name, description: `${name} tool`, parameters: { type: 'object', properties: {} } });
+  const base = [{ role: 'system', content: 'base', toolsAdded: [tool('read')], timestamp: 0 }, ...prompt];
+  const loaded = [...base, { role: 'system', content: '', toolsAdded: [tool('mcp__vault__info')], timestamp: 2 },
+    { role: 'user', content: 'Use it', timestamp: 3 }];
+  const received = [];
+  for (const messages of [base, loaded]) {
+    const result = await stream({ ...model, ...codex }, { messages }, {
+      apiKey: 'synthetic', sessionId: session, maxRetries: 0, fetch: fakeFetch(received),
+    }).result();
+    assert.notEqual(result.stopReason, 'error', result.errorMessage);
+  }
+  // Cache invariant: the earlier request is an exact prefix of the later one.
+  const [before, after] = received.map(entry => entry.body);
+  assert.deepEqual(after.tools, before.tools);
+  assert.deepEqual(after.input.slice(0, before.input.length), before.input);
+  const added = after.input.slice(before.input.length).filter(item => item.type === 'additional_tools');
+  assert.deepEqual(added.flatMap(item => item.tools.map(entry => entry.name)), ['mcp__vault__info']);
+});
+
 test('native wire omits unsupported none effort when thinking is unspecified', async () => {
   const { stream } = harness();
   for (const efforts of [['low', 'medium', 'max'], ['none', 'low', 'medium']]) {

@@ -62,6 +62,15 @@ preference, not an account pin. Mixed-issuer continuation can fall back to the
 ordinary eligible pool without changing Pi production code or stored histories.
 Cross-account completion is not proof of lossless hidden-reasoning reuse.
 
+Catalog models with a Responses realm (`codex_subscription`, `openai_api`)
+declare Pi's `supportsToolSearch`, `supportsAdditionalTools` and
+`supportsMidConvoSystemMessages`, matching Pi's own `openai`/`openai-codex`
+catalogs. Route forwards native Responses input verbatim for both realms, so
+tools loaded later by `tool_search` arrive as `additional_tools` transcript
+items and the earlier request stays an exact cacheable prefix. Chat-completions
+models declare none of these and fall back to rebuilding the tool list;
+`codemode` MCP exposure avoids that because it never changes declared tools.
+
 ## Pi session cache key
 
 `extensions/spartan-route-cache.ts` supplies an explicit prompt-cache key for

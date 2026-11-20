@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Pi Route provider: Responses-realm catalog models declare Pi's tool-search,
+  additional-tools and mid-conversation system-message support, so tools
+  loaded by `tool_search` keep the prompt cache instead of rewriting `tools`.
+
 - Accept Codex 0.167.0 catalog models, including GPT-6.2 Sol and Astra, and
   align the image-fallback client User-Agent with that version.
 

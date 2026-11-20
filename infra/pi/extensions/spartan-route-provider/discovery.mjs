@@ -65,6 +65,10 @@ function validateRow(row, seen) {
   return { contextWindow: context, maxTokens };
 }
 
+const RESPONSES_TOOL_COMPAT = Object.freeze({
+  supportsToolSearch: true, supportsAdditionalTools: true, supportsMidConvoSystemMessages: true,
+});
+
 function catalogModel(row, seen) {
   const sizes = validateRow(row, seen);
   const realm = responsesRealm(row);
@@ -72,6 +76,10 @@ function catalogModel(row, seen) {
     id: row.id, name: typeof row.name === 'string' ? row.name : row.id,
     api: realm ? 'openai-responses' : 'openai-completions',
     spartanReasoningRealm: realm,
+    // Both realms forward native Responses input verbatim. Matching Pi's own
+    // openai/openai-codex flags lets tool_search add tools as transcript items
+    // instead of rewriting `tools`, which would discard the cached prefix.
+    ...(realm ? { compat: RESPONSES_TOOL_COMPAT } : {}),
     input: row.multimodal === true ? ['text', 'image'] : ['text'],
     reasoning: typeof row.reasoning === 'boolean' ? row.reasoning : Boolean(realm) || row.owned_by === 'codex',
     thinkingLevelMap: thinkingMap(row),
