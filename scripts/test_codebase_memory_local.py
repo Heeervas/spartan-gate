@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts import codebase_memory_local as launcher
+from scripts.test_codebase_memory_retention import age_session
 
 
 class PreflightTests(unittest.TestCase):
@@ -223,56 +224,6 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), '')
         self.assertNotIn('SYNTHETIC_PRIVATE_SOURCE', stderr.getvalue())
         self.assertIn('refused startup', stderr.getvalue())
-
-
-def age_session(state):
-    old = time.time() - 25 * 3600
-    for path in (state, state / 'runtime', *state.rglob('*.lock'), state / '.lease'):
-        if path.exists() and not path.is_symlink():
-            os.utime(path, (old, old))
-
-
-class RetentionTests(unittest.TestCase):
-    def test_prunes_only_old_initialized_and_unlocked_sessions(self):
-        with tempfile.TemporaryDirectory() as directory:
-            parent = Path(directory)
-            names = ('expired', 'lease', 'native', 'young', 'young-lock', 'legacy', 'empty', 'bad-lock')
-            states = {name: parent / f'session-{name}' for name in names}
-            states['foreign'] = parent / 'foreign'
-            for name, state in states.items():
-                daemon = state / 'runtime/cbm-daemon-test'
-                daemon.mkdir(parents=True)
-                if name not in ('legacy', 'empty'):
-                    with launcher.session_lease(state) as fd:
-                        self.assertTrue(os.get_inheritable(fd))
-                elif name == 'empty':
-                    (state / '.lease').touch()
-                (daemon / 'native.lock').touch()
-                age_session(state)
-            (states['young'] / 'runtime').touch()
-            (states['young-lock'] / 'runtime/cbm-daemon-test/native.lock').touch()
-            (parent / 'session-link').symlink_to(states['foreign'], target_is_directory=True)
-            lock = states['bad-lock'] / 'runtime/cbm-daemon-test/native.lock'
-            lock.unlink()
-            lock.symlink_to(states['foreign'] / '.lease')
-            hold = ('import fcntl, sys\nfiles = [open(p, "rb") for p in sys.argv[1:]]\n'
-                    'for f in files: fcntl.flock(f, fcntl.LOCK_EX)\n'
-                    'print("ready", flush=True); sys.stdin.read()')
-            with subprocess.Popen([sys.executable, '-c', hold, str(states['lease'] / '.lease'),
-                                   str(states['native'] / 'runtime/cbm-daemon-test/native.lock')],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE) as child:
-                try:
-                    with selectors.DefaultSelector() as selector:
-                        selector.register(child.stdout, selectors.EVENT_READ)
-                        self.assertTrue(selector.select(5), 'fixture did not acquire locks')
-                    self.assertEqual(child.stdout.readline(), b'ready\n')
-                    launcher.prune_sessions(parent)
-                finally:
-                    child.stdin.close()
-            self.assertEqual(child.returncode, 0)
-            self.assertEqual(set(parent.iterdir()), (set(states.values()) - {states['expired']})
-                             | {parent / 'session-link'})
-            self.assertTrue((parent / 'session-link').is_symlink())
 
 
 @unittest.skipUnless(os.environ.get('CBM_TEST_BINARY') and os.environ.get('CBM_TEST_SCRATCH'),

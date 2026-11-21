@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import stat
 import subprocess
@@ -122,60 +123,116 @@ def session_lease(state):
         os.close(fd)
 
 
-def old_owned_directory(path, cutoff):
-    info = path.lstat()
-    return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and info.st_mtime < cutoff
+def open_directory(stack, name, parent_fd):
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    stack.callback(os.close, fd)
+    return fd
 
 
-def native_locks(runtime):
-    pending = []
-    for daemon in runtime.iterdir():
-        if daemon.name.startswith('cbm-daemon-'):
-            if not stat.S_ISDIR(daemon.lstat().st_mode):
-                raise OSError('Unexpected daemon runtime path')
-            pending.append(daemon)
-    while pending:
-        for path in pending.pop().iterdir():
-            if path.name.endswith('.lock'):
-                yield path
-            elif stat.S_ISDIR(path.lstat().st_mode):
-                pending.append(path)
-
-
-def try_session_lock(stack, path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+def try_session_lock(stack, directory_fd, name):
+    fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
     stack.callback(os.close, fd)
     info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
         raise OSError('Unexpected session lock file')
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    return fd, os.fstat(fd).st_mtime
+    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fd
 
 
-def prune_session(state, cutoff):
-    runtime = state / 'runtime'
-    if not old_owned_directory(state, cutoff) or not old_owned_directory(runtime, cutoff):
+def old_entries(stack, fd, names, cutoff, native):
+    for name in names:
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if info.st_mtime >= cutoff or stat.S_ISLNK(info.st_mode):
+            return False
+        if native and stat.S_ISREG(info.st_mode):
+            lock = try_session_lock(stack, fd, name)
+            if os.fstat(lock).st_mtime >= cutoff:
+                return False
+    return True
+
+
+def old_session(stack, fd, cutoff):
+    def raise_walk_error(error):
+        raise error
+
+    if os.fstat(fd).st_mtime >= cutoff:
+        return False
+    lease = try_session_lock(stack, fd, '.lease')
+    if os.read(lease, len(LEASE_MARKER) + 1) != LEASE_MARKER:
+        return False
+    for folder, dirs, files, directory_fd in os.fwalk(dir_fd=fd, onerror=raise_walk_error):
+        parts = Path(folder).parts
+        native = len(parts) >= 2 and parts[0] == 'runtime' and parts[1].startswith('cbm-daemon-')
+        if not old_entries(stack, directory_fd, dirs + files, cutoff, native):
+            return False
+    return os.fstat(fd).st_mtime < cutoff
+
+
+def same_entry(parent_fd, name, info):
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    return os.path.samestat(current, info) and current.st_uid == info.st_uid
+
+
+def remove_detached(parent_fd, name, fd, info):
+    if not same_entry(parent_fd, name, info):
         return
-    with ExitStack() as locks:
-        fd, mtime = try_session_lock(locks, state / '.lease')
-        if mtime >= cutoff or os.read(fd, len(LEASE_MARKER) + 1) != LEASE_MARKER:
-            return  # Legacy, incomplete, or still-young sessions are not eligible.
-        for path in native_locks(runtime):
-            if try_session_lock(locks, path)[1] >= cutoff:
+    # Use the checked inode for payload removal, not another lookup of its path.
+    for entry in os.listdir(fd):
+        mode = os.stat(entry, dir_fd=fd, follow_symlinks=False).st_mode
+        if stat.S_ISDIR(mode):
+            shutil.rmtree(entry, dir_fd=fd)
+        else:
+            os.unlink(entry, dir_fd=fd)
+    if same_entry(parent_fd, name, info):
+        os.rmdir(name, dir_fd=parent_fd)
+
+
+def restore_swapped(parent_fd, trash, name):
+    # Reserve the old name without clobbering an entry that appeared meanwhile.
+    mode = os.stat(trash, dir_fd=parent_fd, follow_symlinks=False).st_mode
+    if stat.S_ISDIR(mode):
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+    else:
+        os.close(os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=parent_fd))
+    os.rename(trash, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+
+
+def prune_entry(parent_fd, name, cutoff):
+    with ExitStack() as stack:
+        fd = open_directory(stack, name, parent_fd)
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid():
+            return
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # Serialize pruning and trash retries.
+        # A swapped inode must not become eligible trash if restoration fails.
+        prefix = f'trash-{info.st_dev:x}-{info.st_ino:x}-'
+        if name.startswith(prefix):
+            remove_detached(parent_fd, name, fd, info)
+        elif name.startswith('session-') and old_session(stack, fd, cutoff):
+            trash = prefix + secrets.token_hex(16)
+            at_parent = dict(src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.rename(name, trash, **at_parent)
+            if not same_entry(parent_fd, trash, info):
+                restore_swapped(parent_fd, trash, name)
                 return
-        if old_owned_directory(state, cutoff) and old_owned_directory(runtime, cutoff):
-            shutil.rmtree(state)
+            remove_detached(parent_fd, trash, fd, info)
 
 
 def prune_sessions(parent):
     if not shutil.rmtree.avoids_symlink_attacks:
         return
     cutoff = time.time() - PRUNE_GRACE_SECONDS
-    with suppress(OSError):
-        for state in parent.iterdir():
-            if state.name.startswith('session-'):
+    with suppress(OSError), ExitStack() as stack:
+        parent_fd = None
+        for part in parent.absolute().parts:
+            parent_fd = open_directory(stack, part, parent_fd)
+        if os.fstat(parent_fd).st_uid != os.getuid():
+            return
+        for name in os.listdir(parent_fd):
+            if name.startswith(('session-', 'trash-')):
                 with suppress(OSError, RecursionError):
-                    prune_session(state, cutoff)
+                    prune_entry(parent_fd, name, cutoff)
 
 
 def native_setup(binary, root, env, state, lease_fds=()):

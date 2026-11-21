@@ -472,11 +472,13 @@ against malicious concurrent repository/policy changes**.
 
 Session caches contain regenerable, source-derived data. After preflight, each
 launch makes a best-effort pass over old sessions with an initialized launcher
-lease; it keeps legacy directories, sessions touched in the last 24 hours
-(by session directory, `runtime/`, or lock mtime), and any session whose launcher
-or native runtime locks cannot all be acquired. It holds the locks through removal
-and never signals processes. A daemon frozen for more than 24 hours between lock
-release and state access can lose its cache; its client must reconnect to rebuild it.
+lease. It keeps legacy directories and any session with a tree mtime within the
+last 24 hours or a contended launcher or native runtime lock. The pruner checks
+both `flock` and POSIX record locks, holds them through removal, and never signals
+processes. It moves an eligible session to an inode-tagged trash name so a later
+launch can retry interrupted removal without the lease file. A daemon frozen for
+more than 24 hours between lock release and state access can lose its cache; its
+client must reconnect to rebuild it.
 Host/container index → search → snippet acceptance, installation, and manual
 cleanup of legacy caches remain operator-owned.
 
