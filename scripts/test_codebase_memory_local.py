@@ -225,6 +225,56 @@ class PreflightTests(unittest.TestCase):
         self.assertIn('refused startup', stderr.getvalue())
 
 
+def age_session(state):
+    old = time.time() - 25 * 3600
+    for path in (state, state / 'runtime', *state.rglob('*.lock'), state / '.lease'):
+        if path.exists() and not path.is_symlink():
+            os.utime(path, (old, old))
+
+
+class RetentionTests(unittest.TestCase):
+    def test_prunes_only_old_initialized_and_unlocked_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            names = ('expired', 'lease', 'native', 'young', 'young-lock', 'legacy', 'empty', 'bad-lock')
+            states = {name: parent / f'session-{name}' for name in names}
+            states['foreign'] = parent / 'foreign'
+            for name, state in states.items():
+                daemon = state / 'runtime/cbm-daemon-test'
+                daemon.mkdir(parents=True)
+                if name not in ('legacy', 'empty'):
+                    with launcher.session_lease(state) as fd:
+                        self.assertTrue(os.get_inheritable(fd))
+                elif name == 'empty':
+                    (state / '.lease').touch()
+                (daemon / 'native.lock').touch()
+                age_session(state)
+            (states['young'] / 'runtime').touch()
+            (states['young-lock'] / 'runtime/cbm-daemon-test/native.lock').touch()
+            (parent / 'session-link').symlink_to(states['foreign'], target_is_directory=True)
+            lock = states['bad-lock'] / 'runtime/cbm-daemon-test/native.lock'
+            lock.unlink()
+            lock.symlink_to(states['foreign'] / '.lease')
+            hold = ('import fcntl, sys\nfiles = [open(p, "rb") for p in sys.argv[1:]]\n'
+                    'for f in files: fcntl.flock(f, fcntl.LOCK_EX)\n'
+                    'print("ready", flush=True); sys.stdin.read()')
+            with subprocess.Popen([sys.executable, '-c', hold, str(states['lease'] / '.lease'),
+                                   str(states['native'] / 'runtime/cbm-daemon-test/native.lock')],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE) as child:
+                try:
+                    with selectors.DefaultSelector() as selector:
+                        selector.register(child.stdout, selectors.EVENT_READ)
+                        self.assertTrue(selector.select(5), 'fixture did not acquire locks')
+                    self.assertEqual(child.stdout.readline(), b'ready\n')
+                    launcher.prune_sessions(parent)
+                finally:
+                    child.stdin.close()
+            self.assertEqual(child.returncode, 0)
+            self.assertEqual(set(parent.iterdir()), (set(states.values()) - {states['expired']})
+                             | {parent / 'session-link'})
+            self.assertTrue((parent / 'session-link').is_symlink())
+
+
 @unittest.skipUnless(os.environ.get('CBM_TEST_BINARY') and os.environ.get('CBM_TEST_SCRATCH'),
                      'Native proof requires explicit network/PID-isolated binary and scratch')
 class NativeTests(unittest.TestCase):
@@ -376,6 +426,48 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(refused.stdout, b'')
         self.assertEqual(len(list(self.state.iterdir())), 2)
         print('SECOND_ROOT_PRIVATE_REFUSED_WITH_SAME_GLOBAL_ARGS')
+
+    @contextlib.contextmanager
+    def serving(self):
+        before = set(self.state.iterdir())
+        command = [sys.executable, str(Path(launcher.__file__).resolve()),
+                   '--binary', self.binary, '--state-parent', str(self.state)]
+        self.buffer = b''
+        with (self.base / 'retention.stderr').open('ab') as stderr, subprocess.Popen(
+                command, cwd=self.repo, env=self.env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=stderr) as self.proc:
+            try:
+                self.assertIn('result', self.call('initialize', {
+                    'protocolVersion': '2024-11-05', 'capabilities': {},
+                    'clientInfo': {'name': 'retention-test', 'version': '1'}}))
+                state, = set(self.state.iterdir()) - before
+                yield state
+            finally:
+                self.proc.stdin.close()
+                self.proc.wait(timeout=10)
+        self.assertEqual(self.proc.returncode, 0)
+
+    def test_prune_finished_session_without_affecting_live_or_fresh_queries(self):
+        def assert_search():
+            result = self.tool('search_code', project='current_repository', pattern='NATIVE_PUBLIC_MARKER',
+                               mode='full', format='json')
+            self.assertFalse(result['isError'])
+            self.assertIn('NATIVE_PUBLIC_MARKER', json.dumps(result))
+
+        with self.serving() as finished:
+            pass
+        with self.serving() as live:
+            assert_search()
+            age_session(finished)
+            age_session(live)
+            launcher.prune_sessions(self.state)
+            self.assertFalse(finished.exists())
+            self.assertTrue(live.is_dir())
+            assert_search()
+        age_session(live)
+        with self.serving():
+            self.assertFalse(live.exists())  # A new launcher runs pruning before indexing.
+            assert_search()
 
     def test_actual_launcher_refuses_opaque_nested_repo_before_indexing(self):
         nested = self.repo / 'nested'

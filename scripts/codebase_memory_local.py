@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """Index the selected full Git root once, then exec native analysis-only stdio."""
 import argparse
+from contextlib import ExitStack, contextmanager, suppress
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 
+PRUNE_GRACE_SECONDS = 24 * 3600
+LEASE_MARKER = b'1'
 BINARY_SHA256 = '77745491f0a9c346d6da23eed4d92b5feaa31a27a883c9faa4fa9f47c8183705'
 SENSITIVE_DIRS = {'.ssh', '.aws', '.azure', '.gcloud', '.config', '.pi', '.codex',
                   '.hermes', 'private', 'credentials', 'secrets'}
@@ -103,15 +110,83 @@ def trusted_state(path, root):
     return directory
 
 
-def native_setup(binary, root, env, state):
+@contextmanager
+def session_lease(state):
+    fd = os.open(state / '.lease', os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, LEASE_MARKER)  # Only a lease that was successfully locked is initialized.
+        os.set_inheritable(fd, True)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def old_owned_directory(path, cutoff):
+    info = path.lstat()
+    return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and info.st_mtime < cutoff
+
+
+def native_locks(runtime):
+    pending = []
+    for daemon in runtime.iterdir():
+        if daemon.name.startswith('cbm-daemon-'):
+            if not stat.S_ISDIR(daemon.lstat().st_mode):
+                raise OSError('Unexpected daemon runtime path')
+            pending.append(daemon)
+    while pending:
+        for path in pending.pop().iterdir():
+            if path.name.endswith('.lock'):
+                yield path
+            elif stat.S_ISDIR(path.lstat().st_mode):
+                pending.append(path)
+
+
+def try_session_lock(stack, path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    stack.callback(os.close, fd)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise OSError('Unexpected session lock file')
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fd, os.fstat(fd).st_mtime
+
+
+def prune_session(state, cutoff):
+    runtime = state / 'runtime'
+    if not old_owned_directory(state, cutoff) or not old_owned_directory(runtime, cutoff):
+        return
+    with ExitStack() as locks:
+        fd, mtime = try_session_lock(locks, state / '.lease')
+        if mtime >= cutoff or os.read(fd, len(LEASE_MARKER) + 1) != LEASE_MARKER:
+            return  # Legacy, incomplete, or still-young sessions are not eligible.
+        for path in native_locks(runtime):
+            if try_session_lock(locks, path)[1] >= cutoff:
+                return
+        if old_owned_directory(state, cutoff) and old_owned_directory(runtime, cutoff):
+            shutil.rmtree(state)
+
+
+def prune_sessions(parent):
+    if not shutil.rmtree.avoids_symlink_attacks:
+        return
+    cutoff = time.time() - PRUNE_GRACE_SECONDS
+    with suppress(OSError):
+        for state in parent.iterdir():
+            if state.name.startswith('session-'):
+                with suppress(OSError, RecursionError):
+                    prune_session(state, cutoff)
+
+
+def native_setup(binary, root, env, state, lease_fds=()):
     for key in ('ui_enabled', 'auto_watch', 'watcher_enabled', 'auto_index'):
         subprocess.run([str(binary), 'config', 'set', key, 'false'], cwd=root, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, pass_fds=lease_fds)
     with tempfile.TemporaryFile(dir=state) as output:
         subprocess.run([str(binary), 'cli', '--json', 'index_repository',
                         json.dumps({'repo_path': str(root), 'name': 'current_repository', 'mode': 'full',
                                     'doc_candidates': False, 'persistence': False})],
-                       cwd=root, env=env, stdout=output, stderr=subprocess.DEVNULL, check=True)
+                       cwd=root, env=env, stdout=output, stderr=subprocess.DEVNULL, check=True, pass_fds=lease_fds)
         output.seek(0)
         result = json.loads(output.read(1024 * 1024))
     if result.get('isError') is not False or result.get('structuredContent', {}).get('status') != 'indexed':
@@ -126,17 +201,19 @@ def run(binary, state_parent, public_templates=()):
         if hashlib.file_digest(stream, 'sha256').hexdigest() != BINARY_SHA256:
             raise ValueError('Expected the approved Codebase Memory 0.12.1 program')
     os.umask(0o077)
+    # A daemon frozen for over 24 h between lock release and state access can
+    # lose its regenerable cache; its client must reconnect to rebuild it.
+    prune_sessions(parent)
     state = Path(tempfile.mkdtemp(prefix='session-', dir=parent))
     (state / 'runtime').mkdir(mode=0o700)
     env = {k: v for k, v in os.environ.items() if not k.startswith('CBM_')}
     env.update(CBM_CACHE_DIR=str(state), CBM_RUNTIME_DIR=str(state / 'runtime'),
                CBM_ALLOWED_ROOT=str(root), CBM_LOG_LEVEL='error',
                CBM_MEM_BUDGET_MB='256', CBM_WORKERS='1')
-    # Native daemons may outlive their CLI/client. Never remove live storage or
-    # signal discovered PIDs. Retention is deliberate, including failed launches.
-    native_setup(binary, root, env, state)
-    os.chdir(root)
-    os.execve(binary, [str(binary), '--tool-profile=analysis', '--ui=false'], env)
+    with session_lease(state) as fd:
+        native_setup(binary, root, env, state, (fd,))
+        os.chdir(root)
+        os.execve(binary, [str(binary), '--tool-profile=analysis', '--ui=false'], env)
 
 
 def main():

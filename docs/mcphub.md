@@ -470,13 +470,15 @@ Stop using a session immediately when its source authorization changes. This is 
 trusted coding-repository workflow, **not a global filesystem sandbox or protection
 against malicious concurrent repository/policy changes**.
 
-Session caches contain source-derived data and are deliberately retained on both
-normal EOF and startup failure: native daemons may outlive a CLI/client. The
-launcher neither deletes possibly-live storage nor discovers/kills PIDs. Operator
-cleanup may remove only the exact generated session directory after independently
-confirming no native consumer still uses it; there is no age-based cleanup. Budget
-storage accordingly. Host/container client index → search → snippet acceptance,
-actual native installation and cache disposition remain operator-owned checks.
+Session caches contain regenerable, source-derived data. After preflight, each
+launch makes a best-effort pass over old sessions with an initialized launcher
+lease; it keeps legacy directories, sessions touched in the last 24 hours
+(by session directory, `runtime/`, or lock mtime), and any session whose launcher
+or native runtime locks cannot all be acquired. It holds the locks through removal
+and never signals processes. A daemon frozen for more than 24 hours between lock
+release and state access can lose its cache; its client must reconnect to rebuild it.
+Host/container index → search → snippet acceptance, installation, and manual
+cleanup of legacy caches remain operator-owned.
 
 ## Secrets, persistence, upgrades and rollback
 
