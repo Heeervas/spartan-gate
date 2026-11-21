@@ -1,4 +1,5 @@
 """Cache pruning regressions with real filesystem state and child locks."""
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import selectors
@@ -36,6 +37,24 @@ class RetentionTests(unittest.TestCase):
         age_session(state)
         return state
 
+    @contextmanager
+    def held_locks(self, *locks):
+        hold = ('import fcntl, sys\nfiles = [open(p, "r+b") for p in sys.argv[2::2]]\n'
+                'for kind, f in zip(sys.argv[1::2], files): getattr(fcntl, kind)(f, fcntl.LOCK_EX)\n'
+                'print("ready", flush=True); sys.stdin.read()')
+        args = [str(arg) for lock in locks for arg in lock]
+        with subprocess.Popen([sys.executable, '-c', hold, *args],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE) as child:
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(child.stdout, selectors.EVENT_READ)
+                    self.assertTrue(selector.select(5), 'fixture did not acquire locks')
+                self.assertEqual(child.stdout.readline(), b'ready\n')
+                yield
+            finally:
+                child.stdin.close()
+        self.assertEqual(child.returncode, 0)
+
     def test_pruning_respects_flocks_record_locks_and_whole_tree_age(self):
         expired = self.session('session-expired')
         cases = {'lease': '.lease', 'flock': 'native.turn', 'posix': 'native.lifetime.lock',
@@ -49,21 +68,8 @@ class RetentionTests(unittest.TestCase):
             paths[kind] = lock
         for kind in ('turn', 'rw', 'payload'):
             paths[kind].touch()
-        hold = ('import fcntl, sys\nfiles = [open(p, "r+b") for p in sys.argv[1:]]\n'
-                'for f in files[:2]: fcntl.flock(f, fcntl.LOCK_EX)\n'
-                'fcntl.lockf(files[2], fcntl.LOCK_EX)\n'
-                'print("ready", flush=True); sys.stdin.read()')
-        with subprocess.Popen([sys.executable, '-c', hold, *(str(paths[k]) for k in ('lease', 'flock', 'posix'))],
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE) as child:
-            try:
-                with selectors.DefaultSelector() as selector:
-                    selector.register(child.stdout, selectors.EVENT_READ)
-                    self.assertTrue(selector.select(5), 'fixture did not acquire locks')
-                self.assertEqual(child.stdout.readline(), b'ready\n')
-                launcher.prune_sessions(self.parent)
-            finally:
-                child.stdin.close()
-        self.assertEqual(child.returncode, 0)
+        with self.held_locks(('flock', paths['lease']), ('flock', paths['flock']), ('lockf', paths['posix'])):
+            launcher.prune_sessions(self.parent)
         self.assertFalse(expired.exists())
         for kind, path in paths.items():
             with self.subTest(kind=kind):
@@ -119,6 +125,31 @@ class RetentionTests(unittest.TestCase):
                 path.chmod(0o700)
         launcher.prune_sessions(self.parent)
         self.assertEqual(list(self.parent.iterdir()), [])
+
+    def test_trash_retry_respects_native_flock_and_record_lock(self):
+        for kind in ('flock', 'lockf'):
+            with self.subTest(kind=kind):
+                state = self.session('session-' + kind)
+                relative_lock = Path('runtime/cbm-daemon-test/native.rw')
+                (state / relative_lock).touch()
+                age_session(state)
+                with patch.object(launcher, 'remove_detached', side_effect=PermissionError):
+                    launcher.prune_sessions(self.parent)
+                trash, = self.parent.glob('trash-*')
+                (trash / '.lease').unlink()
+                lock = trash / relative_lock
+                with self.held_locks((kind, lock)):
+                    launcher.prune_sessions(self.parent)
+                    self.assertTrue(lock.is_file())
+                launcher.prune_sessions(self.parent)
+                self.assertFalse(trash.exists())
+
+    def test_trash_name_without_random_suffix_is_untouched(self):
+        state = self.session('not-trash')
+        info = state.stat()
+        near_miss = state.rename(self.parent / f'trash-{info.st_dev:x}-{info.st_ino:x}-')
+        launcher.prune_sessions(self.parent)
+        self.assertTrue((near_miss / '.lease').is_file())
 
     def test_directory_swapped_at_rename_is_not_deleted(self):
         state = self.session('session-checked')

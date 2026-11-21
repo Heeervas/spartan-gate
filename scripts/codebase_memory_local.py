@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import stat
@@ -16,6 +17,7 @@ import tempfile
 import time
 
 PRUNE_GRACE_SECONDS = 24 * 3600
+TRASH_NONCE_BYTES = 16
 LEASE_MARKER = b'1'
 BINARY_SHA256 = '77745491f0a9c346d6da23eed4d92b5feaa31a27a883c9faa4fa9f47c8183705'
 SENSITIVE_DIRS = {'.ssh', '.aws', '.azure', '.gcloud', '.config', '.pi', '.codex',
@@ -152,21 +154,25 @@ def old_entries(stack, fd, names, cutoff, native):
     return True
 
 
-def old_session(stack, fd, cutoff):
+def lock_tree(stack, fd, cutoff):
     def raise_walk_error(error):
         raise error
 
-    if os.fstat(fd).st_mtime >= cutoff:
-        return False
-    lease = try_session_lock(stack, fd, '.lease')
-    if os.read(lease, len(LEASE_MARKER) + 1) != LEASE_MARKER:
-        return False
     for folder, dirs, files, directory_fd in os.fwalk(dir_fd=fd, onerror=raise_walk_error):
         parts = Path(folder).parts
         native = len(parts) >= 2 and parts[0] == 'runtime' and parts[1].startswith('cbm-daemon-')
         if not old_entries(stack, directory_fd, dirs + files, cutoff, native):
             return False
     return os.fstat(fd).st_mtime < cutoff
+
+
+def old_session(stack, fd, cutoff):
+    if os.fstat(fd).st_mtime >= cutoff:
+        return False
+    lease = try_session_lock(stack, fd, '.lease')
+    if os.read(lease, len(LEASE_MARKER) + 1) != LEASE_MARKER:
+        return False
+    return lock_tree(stack, fd, cutoff)
 
 
 def same_entry(parent_fd, name, info):
@@ -207,10 +213,12 @@ def prune_entry(parent_fd, name, cutoff):
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # Serialize pruning and trash retries.
         # A swapped inode must not become eligible trash if restoration fails.
         prefix = f'trash-{info.st_dev:x}-{info.st_ino:x}-'
-        if name.startswith(prefix):
+        trash_pattern = rf'{prefix}[0-9a-f]{{{2 * TRASH_NONCE_BYTES}}}'
+        # A detached tree can be younger after partial cleanup and have no lease.
+        if re.fullmatch(trash_pattern, name) and lock_tree(stack, fd, float('inf')):
             remove_detached(parent_fd, name, fd, info)
         elif name.startswith('session-') and old_session(stack, fd, cutoff):
-            trash = prefix + secrets.token_hex(16)
+            trash = prefix + secrets.token_hex(TRASH_NONCE_BYTES)
             at_parent = dict(src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
             os.rename(name, trash, **at_parent)
             if not same_entry(parent_fd, trash, info):
@@ -258,6 +266,9 @@ def run(binary, state_parent, public_templates=()):
         if hashlib.file_digest(stream, 'sha256').hexdigest() != BINARY_SHA256:
             raise ValueError('Expected the approved Codebase Memory 0.12.1 program')
     os.umask(0o077)
+    # Pruning covers cooperating launches, native consumers and crashes, not
+    # pathname swaps or nested-tree restores by a same-UID writer who can already
+    # alter this trusted, user-owned cache directly.
     # A daemon frozen for over 24 h between lock release and state access can
     # lose its regenerable cache; its client must reconnect to rebuild it.
     prune_sessions(parent)
