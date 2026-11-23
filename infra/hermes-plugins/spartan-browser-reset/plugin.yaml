@@ -1,0 +1,8 @@
+name: spartan-browser-reset
+version: "0.1.0"
+kind: standalone
+description: Reset the current tracked Camofox site's cookies and reload without HTTP cache; cannot read cookies.
+requires_plugins:
+  - camofox
+provides_tools:
+  - browser_reset_site

@@ -9,6 +9,11 @@ All notable changes to Spartan Gate are documented here.
   persistence and reloads without the HTTP cache. It returns only fixed status
   fields and never exposes cookie data.
 
+- Hermes: add the optional `spartan-browser-reset` plugin (`browser_reset_site`),
+  which calls that route for the conversation's tracked Camofox tab through the
+  loaded official Camofox client. It takes no arguments and cannot read cookies.
+  Compose mounts it read-only; it stays inactive until a profile enables it.
+
 - Pi Route provider: Responses-realm catalog models declare Pi's tool-search,
   additional-tools and mid-conversation system-message support, so tools
   loaded by `tool_search` keep the prompt cache instead of rewriting `tools`.

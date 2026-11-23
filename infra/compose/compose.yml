@@ -582,6 +582,8 @@ services:
       - ../hermes-plugins/spartan-cache-lineage:/opt/data/plugins/spartan-cache-lineage:ro
       # optional: approval-gated fixed-workstation terminal plugin; remains disabled until explicitly enabled.
       - ../hermes-plugins/spartan-workstation-terminal:/opt/data/plugins/spartan-workstation-terminal:ro
+      # optional: deletion-only current-site reset; explicit per-home plugin opt-in required.
+      - ../hermes-plugins/spartan-browser-reset:/opt/data/plugins/spartan-browser-reset:ro
     networks:
       - spartan_internal
       - pocket_tts_internal

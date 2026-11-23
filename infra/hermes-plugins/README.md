@@ -1,7 +1,8 @@
 # Gate-owned Hermes integrations
 
 This directory contains adapters tied to Spartan Gate services: cache lineage,
-Discord voice relay/Talk, supervised Workstation access and the Reader backend.
+Discord voice relay/Talk, supervised Workstation access, Camofox site reset and
+the Reader backend.
 They remain owned by Gate, with their native and boundary tests.
 
 General-purpose `discord-deferred-thread-title`, `self-improvement-governor` and
