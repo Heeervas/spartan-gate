@@ -424,6 +424,66 @@ screenshot dimensions, verifies the screenshot is non-empty and dimensionally
 matches the effective viewport, records viewport strategy and before/effective
 dimensions, and deletes the scratch session.
 
+## Site Reset
+
+Spartan Gate adds a deletion-only route that resets the cookies of the site
+open in one tab and reloads it without the HTTP cache:
+
+```http
+POST /tabs/{tabId}/spartan/reset-site
+Authorization: Bearer <CAMOFOX_ACCESS_KEY>
+Content-Type: application/json
+
+{ "userId": "<user>", "sessionKey": "<tab group>", "operationId": "<uuid-v4>" }
+```
+
+The site is the tab's current top-level `http`/`https` host; callers cannot
+name a domain. The route deletes every unpartitioned cookie the browser would
+send to that host, on all paths: host-only cookies for the exact host, and
+dotted cookies for the host and its parent domains. This logs the profile out of
+the site, of sibling subdomains that share a parent-domain cookie, and of other
+ports on the same host. Each cookie is expired individually; Playwright's
+filtered `clearCookies` (clear everything, then re-add) is never used. After
+deletion the route saves a persistence checkpoint and then reloads the
+captured URL with a GET under a temporary page route, which disables Firefox's
+HTTP cache for that load only. Service-worker responses are outside that
+guarantee. localStorage, IndexedDB and other site storage are not touched.
+
+Responses carry only fixed fields: `ok`, `site`, `cookies`
+(`deleted|deleted_with_residual|none|partial|failed`), `persisted`
+(`saved|unknown|not_attempted`), `reload`
+(`reloaded|skipped_navigated|not_attempted|failed`) and an optional fixed
+`code`. No cookie names, values or counts are returned or logged.
+
+The route fails closed before reading any cookie:
+
+- the access key is wrong or missing (the dedicated cookie-import key is not
+  accepted);
+- the tab does not belong to `userId` and `sessionKey`;
+- the session has any operator-group tab, with or without a live lease;
+- the context is traced;
+- persistence cannot checkpoint that user.
+
+It runs under user admission, the per-tab lock and the browser lifecycle lease.
+A per-user fence returns `busy` until the operation and its underlying
+checkpoint write settle. A repeated `operationId` returns the stored result for
+ten minutes without running again. If the checkpoint is not confirmed, the route
+does not reload. If the tab's URL changed meanwhile, it returns
+`reload: skipped_navigated`.
+
+Known limit: Firefox does not expose cookie partitions to Playwright. A
+partitioned cookie (the site embedded in another top-level site) is not deleted
+and is reported as `deleted_with_residual`. It is not sent to the site as a top-level page. Existing
+persistence already restores partitioned cookies as ordinary cookies after a
+Camofox restart, so a residual can reappear then. Repeating the reset after the
+restart deletes it. The opt-in acceptance fixture `site_reset_acceptance.mjs`
+proves these primitives against a real Camoufox in a network-disabled
+container with synthetic cookies.
+
+The Hermes adapter is the optional plugin
+`infra/hermes-plugins/spartan-browser-reset` (`browser_reset_site`), mounted
+read-only and disabled until a profile enables it.
+
 ## noVNC
 
 The image and all Camofox Compose tiers set `CAMOFOX_INTERACTIVE=off`.

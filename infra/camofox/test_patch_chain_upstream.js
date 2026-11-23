@@ -20,6 +20,7 @@ const patchers = [
   ['patch-operator-lease-api.js'],
   ['patch-memory-pressure.js'],
   ['patch-vault-evaluate.js'],
+  ['patch-site-reset.js'],
 ];
 
 function digest(file) {
@@ -209,6 +210,8 @@ test('ordered patch chain transforms pristine pinned Camofox source idempotently
     assert.match(server, /addons: addonPaths,\n        fonts: \['Onest'\],/);
     assert.match(server, /SPARTAN_CAMOFOX_UPSTREAM_LEASES_REVISION = 1/);
     assert.match(server, /SPARTAN_OPERATOR_LEASE_V2/);
+    assert.match(server, /SPARTAN_SITE_RESET_V1/);
+    assert.match(server, /siteResetVersion: 1/);
     assert.match(server, /if \(timer\) clearTimeout\(timer\)/);
     assert.match(server, /if \(state\.queue\.length >= MAX_SESSIONS\)/);
     assert.match(server, /const index = state\.queue\.indexOf\(waiter\)/);
