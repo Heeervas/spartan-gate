@@ -4,6 +4,11 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Camofox: add a deletion-only `POST /tabs/{tabId}/spartan/reset-site` route that
+  expires the cookies of the tab's current site individually, checkpoints
+  persistence and reloads without the HTTP cache. It returns only fixed status
+  fields and never exposes cookie data.
+
 - Pi Route provider: Responses-realm catalog models declare Pi's tool-search,
   additional-tools and mid-conversation system-message support, so tools
   loaded by `tool_search` keep the prompt cache instead of rewriting `tools`.
