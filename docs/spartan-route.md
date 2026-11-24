@@ -150,22 +150,31 @@ Relevant files:
 
 The authenticated `/` opens the Accounts workspace. `/accounts` and the legacy
 `/dashboard-codex` serve this same document directly, without redirects. Accounts
-is the daily control surface: per-account capacity x1/x5, paired weekly/five-hour
-consumed-percentage rings, independent per-window limit drafts with explicit
+is the daily control surface: per-account capacity x1/x5, concentric usage rings,
+independent weekly, five-hour and daily-budget limit drafts with explicit
 **Save limits**, and slot-labelled **Enable/Disable** and **Check usage** actions.
 Activation is per slot, not a whole-account toggle. Blank limits remove that
 window's admission cap; invalid or failed saves preserve drafts for correction.
 Limits are admission guards, not exact spending guarantees.
 
-The desktop workspace uses a navigation rail and a compact two-column account
-summary grid with small paired rings. Small screens use top navigation and two
-labelled consumption bars per card, not rings. **Edit limits & controls** expands
-one native disclosure for limit edits, capacity and all linked slot actions;
-weighted units and full observation details also remain available there. All
-accounts and slot-only identities remain reachable. Open disclosures, unsaved
-limit drafts and focused controls follow account identity through polling and
-reordering. Slot authentication/reset-credit details and usage analytics remain
-secondary disclosures, without dropping data.
+A glance band at the top summarizes the fleet: reset credits available across
+accounts (with earliest expiry per account; `N+` when some accounts did not report
+credits), how many accounts are routing, and the next five-hour and weekly resets.
+Each account shows one ring glyph at every screen size: weekly (outer), today's
+daily budget (middle, only when a daily budget is set) and five-hour (inner). A
+radial tick marks each configured stop limit, and a hollow dot on the weekly ring
+marks even pace through the 7-day window. Missing readings draw a dashed track,
+never 0%. Reset credits sit on the card itself, outside any disclosure.
+
+Desktop and tablet cards add one compact row per window (bar, raw percentage,
+short reset countdown, weighted units and pace). Phones show one compressed row
+per account: ring, identity, status, reset-credit badge and a single
+`W 42% 3d5h · D 6/15 · 5h 68% 2h14m` meter line. **Limits & controls** expands one
+native disclosure for limit edits, capacity, all linked slot actions and account
+details (paths, lease, authentication lifecycle). All accounts and slot-only
+identities remain reachable. Open disclosures, unsaved limit drafts and focused
+controls follow account identity through polling and reordering. Usage analytics
+remain a secondary disclosure, without dropping data.
 `/activity` owns routing investigation and `/settings` exposes the three independent
 routing, provider-policy and model-variant editors. Legacy `/dashboard` and
 `/dashboard-config` directly serve Activity and Settings. These three destinations
@@ -543,25 +552,46 @@ Kept in v1:
   x1 plans have 100 units and x5 plans have 500 units. The authenticated
   `PATCH /api/codex/balancer/accounts/{account_key}/capacity` endpoint accepts
   only `capacityMultiplier: 1 | 5`; x5 overrides persist by account key and x1
-  removes the override. Ring geometry and warning colors still use the raw
-  provider percentage: 90-100% used is red, 70-89.9% is amber, and lower usage
-  is green.
+  removes the override. Rings and bars still use the raw provider percentage.
+  Ring arcs keep a fixed colour per window (weekly, today, five-hour) and turn
+  red at or over that window's configured limit; the per-window bars use
+  red for 90-100% used, amber for 70-89.9% and green below.
 - Per-account consumed-percent limits are optional and independent of plan capacity
-  and manual Enable/Disable. Expand **Edit limits & controls**, enter a Weekly
-  or Five-hour limit greater than 0 and at most 100, then **Save limits** to save
-  both fields atomically.
-  Blank clears that window's limit; existing accounts have no default caps. For
+  and manual Enable/Disable. Expand **Limits & controls**, enter a Weekly or
+  Five-hour limit greater than 0 and at most 100, optionally a **Daily budget**,
+  then **Save limits** to save all fields atomically.
+  Blank clears that limit; existing accounts have no default caps. For
   example, weekly 70 and five-hour 50 pause the account when **either** provider
   percentage is greater than or equal to its cap. The raw rings and x1/x5 units
   remain unchanged. Drafts and save errors survive dashboard polling.
+  - The **daily budget** caps how many percentage points of the *weekly* window an
+    account may consume per day. With weekly usage at 40% when the day starts and
+    a daily budget of 15, the account pauses once weekly usage reaches 55%. Days are
+    24-hour slices aligned to the weekly window's start (`resetAt` minus 7 days), so
+    they follow the provider's reset clock rather than a local timezone; the last
+    slice ends at the weekly reset. The provider's reported reset time can drift
+    by seconds or a few minutes within one window; shifts of up to 15 minutes keep
+    the stored anchor, while larger moves count as a new weekly window. The
+    baseline is the first confirmed weekly reading in each slice and persists
+    across restarts. Consumption the router did not observe before that first
+    reading (for example, use from another client right after the slice starts)
+    is not counted. A weekly reset starts a fresh slice. With a daily budget set,
+    a missing, stale or invalid weekly reading, or a slice without a confirmed
+    baseline yet, pauses the account until a fresh reading arrives (reason
+    `daily: …`); reaching the budget pauses it with `daily: daily budget reached`
+    until the next slice.
   - Authenticated `PATCH /api/codex/balancer/accounts/{account_key}/limits` accepts
-    exactly `{"weekly":70,"fiveHour":50}` (each value can instead be `null`).
-    Unknown accounts and invalid, missing or extra fields are rejected. The response
-    contains the exact saved `quotaLimits` and current `quotaPolicy`. Usage accounts
-    and slots also expose these fields. Limits persist in an additive SQLite table
-    by stable account key across restarts and token/slot changes. Failed writes keep
-    the previous committed policy; policy-load failure refuses startup, never
-    silently removes caps.
+    `{"weekly":70,"fiveHour":50,"daily":15}`. `weekly` and `fiveHour` are required;
+    `daily` is optional (omitted keeps the stored value, `null` clears it). Each
+    value is `null` or greater than 0 and at most 100. Unknown accounts and invalid,
+    missing or extra fields are rejected. The response contains the exact saved
+    `quotaLimits`, current `quotaPolicy` and `dailyBudget`
+    (`{limit, consumed, sliceStart, sliceEnd, status}` with status `off`, `ok`,
+    `reached` or `unknown`). Usage accounts and slots also expose these fields.
+    Limits and daily baselines persist in additive SQLite tables by stable account
+    key across restarts and token/slot changes; older databases gain the `daily`
+    column automatically. Failed writes keep the previous committed policy;
+    policy-load failure refuses startup, never silently removes caps.
   - **Paused by limit** is separate from Disabled, Failed and provider cooldowns.
     Manual settings are not changed. Paused accounts are excluded from Chat,
     Responses, image fallback and new Realtime mint/ticket redemption, including
@@ -1113,8 +1143,9 @@ through the certificate-covered private hostname reaches Caddy.
 
 Dashboard and `/api/*` requests require the same bearer token as model
 requests when `CLAWROUTE_TOKEN` is configured. Query-string `?token=...`
-authentication is intentionally not accepted; enter the token in the dashboard
-field or send `Authorization: Bearer <token>`.
+authentication is intentionally not accepted; enter the token under **Dashboard
+access** at the bottom of Accounts or Activity (it opens automatically when the
+token is missing or rejected) or send `Authorization: Bearer <token>`.
 
 ## Validation
 

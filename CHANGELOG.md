@@ -4,6 +4,23 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Spartan Route: add an optional per-account **daily budget** that caps the weekly
+  percentage points an account may consume per day. Days are 24-hour slices aligned
+  to the weekly reset clock. Baselines persist across restarts, and missing or stale
+  weekly readings pause the account while a budget is set. The limits endpoint
+  accepts an optional `daily` field and returns `dailyBudget`; older databases
+  migrate automatically.
+
+- Spartan Route dashboard: redesign Accounts and Activity.
+  - Accounts: a top glance band (reset credits available, routing count, next
+    resets) and concentric weekly/today/five-hour rings at every screen size, with
+    stop-limit and pace ticks.
+  - Phones: one compressed row per account. Reset credits sit outside the
+    disclosures; limits, slots and details stay inside **Limits & controls**.
+  - Activity: instrument-style metric tiles (label and value only on phones),
+    denser session facts, and the token field moved into a **Dashboard access**
+    disclosure that opens when the token is missing or rejected.
+
 - Camofox: add a deletion-only `POST /tabs/{tabId}/spartan/reset-site` route that
   expires the cookies of the tab's current site individually, checkpoints
   persistence and reloads without the HTTP cache. It returns only fixed status
