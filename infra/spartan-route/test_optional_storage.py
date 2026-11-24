@@ -21,7 +21,8 @@ from test_app import test_config
 from test_codex import FakeJsonContextResponse
 from test_telemetry import routing_entry
 
-REQUIRED = {"provider_config", "codex_slot_overrides", "codex_account_quota_limits", "routing_model_overrides",
+REQUIRED = {"provider_config", "codex_slot_overrides", "codex_account_quota_limits", "codex_account_daily_budget",
+            "routing_model_overrides",
             "model_variant_config", "reasoning_chain_bindings", "cache_probe_reservations",
             "cache_experiment_reservations"}
 
@@ -49,8 +50,10 @@ class GuardedConnection(sqlite3.Connection):
         return sqlite3.SQLITE_DENY
 
     def execute(self, sql, parameters=()):
-        # Two separate schema owners bootstrap compact control/Pi tables.
-        ddl = sql.strip().startswith(("CREATE TABLE IF NOT EXISTS pi_usage_sessions", "CREATE TABLE IF NOT EXISTS codex_account_quota_limits"))
+        # Only named schema bootstraps/migration may inspect schema metadata.
+        ddl = sql.strip().startswith(("CREATE TABLE IF NOT EXISTS pi_usage_sessions",
+            "CREATE TABLE IF NOT EXISTS codex_account_quota_limits",
+            "ALTER TABLE codex_account_quota_limits ADD COLUMN daily REAL"))
         self.bootstrap = ddl
         try:
             return super().execute(sql, parameters)

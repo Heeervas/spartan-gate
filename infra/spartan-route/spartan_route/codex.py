@@ -3484,6 +3484,7 @@ class CodexRouter:
                     "remainingPercent": 100.0 - used,
                     "resetAt": reset_at,
                     "windowMinutes": seconds // 60,
+                    "windowSeconds": seconds,
                     "updatedAt": usage_observed_at,
                 }
                 row[window_name] = window
@@ -3538,7 +3539,7 @@ class CodexRouter:
                 row["resetCredits"] = reset["api"]
                 reset_record = reset["db"]
 
-        return observe_usage(self, generation, account_key, {
+        return await observe_usage(self, generation, account_key, {
             "row": row,
             "usageError": usage_error,
             "resetError": reset_error,
