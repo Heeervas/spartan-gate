@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,7 +77,7 @@ class DashboardQueryTests(unittest.TestCase):
         self.assertEqual(store.today_summary("2026-10-20")["loggedRequests"], 1)
         log("2026-10-20")
         self.assertEqual(store.today_summary("2026-10-20")["loggedRequests"], 2)
-        store.enforce_routing_retention()
+        store.enforce_routing_retention(now=datetime(2026, 10, 20, tzinfo=timezone.utc))
         self.assertEqual(store.today_summary("2026-10-20")["loggedRequests"], 1)
         self.assertEqual(store.today_summary("2026-10-19")["loggedRequests"], 0)
 
