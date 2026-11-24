@@ -64,6 +64,11 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
 
 ## Backlog
 
+- **ROUTE-002** — Dashboard wide-screen scale is too big on Alberto's 2560x1440
+  desktop (2026-11-24 feedback). Tune the body `zoom` steps in `shell.css`
+  (now 1.15 at >= 1800 px, 1.3 at >= 2300 px) and the wide hero sizes down,
+  then check with him on that screen before deploying.
+  [Task](../tasks/archive/2026/route-dashboard-r7/task.md).
 - **RECOVERY-001** — Review a better Hermes safecopy-to-Windows connection:
   reliability, startup/recovery and access boundaries.
 - **AUDIT-001** — Audit effective private configuration, services and recovery
