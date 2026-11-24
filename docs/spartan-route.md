@@ -159,7 +159,8 @@ Limits are admission guards, not exact spending guarantees.
 
 A glance band at the top summarizes the fleet: reset credits available across
 accounts (with earliest expiry per account; `N+` when some accounts did not report
-credits), how many accounts are routing, and the next five-hour and weekly resets.
+credits), how many accounts are routing, and the next five-hour and weekly resets
+with their countdowns and local clock times.
 Each account shows one ring glyph at every screen size: weekly (outer), today's
 daily budget (middle, only when a daily budget is set) and five-hour (inner). A
 radial tick marks each configured stop limit, and a hollow dot on the weekly ring
@@ -167,9 +168,13 @@ marks even pace through the 7-day window. Missing readings draw a dashed track,
 never 0%. Reset credits sit on the card itself, outside any disclosure.
 
 Desktop and tablet cards add one compact row per window (bar, raw percentage,
-short reset countdown, weighted units and pace). Phones show one compressed row
-per account: ring, identity, status, reset-credit badge and a single
-`W 42% 3d5h · D 6/15 · 5h 68% 2h14m` meter line. **Limits & controls** expands one
+reset countdown and local clock time such as `3d5h · Thu 15:08`, weighted units
+and pace). Reset times use the browser's locale and timezone: `HH:MM` within 24
+hours, otherwise weekday and time. Phones show one compressed row per account:
+ring, identity, status, reset-credit badge and a single
+`W 42% Thu 15:08 · D 6/15 · 5h 68% 13:27` meter line (countdowns on hover).
+On wide screens (1800 px and up) the whole interface scales up and widens so it
+stays readable on 1440p and larger monitors. **Limits & controls** expands one
 native disclosure for limit edits, capacity, all linked slot actions and account
 details (paths, lease, authentication lifecycle). All accounts and slot-only
 identities remain reachable. Open disclosures, unsaved limit drafts and focused
@@ -553,9 +558,9 @@ Kept in v1:
   `PATCH /api/codex/balancer/accounts/{account_key}/capacity` endpoint accepts
   only `capacityMultiplier: 1 | 5`; x5 overrides persist by account key and x1
   removes the override. Rings and bars still use the raw provider percentage.
-  Ring arcs keep a fixed colour per window (weekly, today, five-hour) and turn
-  red at or over that window's configured limit; the per-window bars use
-  red for 90-100% used, amber for 70-89.9% and green below.
+  Rings and bars are coloured by load: green below 70% used, yellow for
+  70-89.9% and red from 90%. A window at or over its configured limit is red
+  regardless, and the today ring uses the share of the daily budget consumed.
 - Per-account consumed-percent limits are optional and independent of plan capacity
   and manual Enable/Disable. Expand **Limits & controls**, enter a Weekly or
   Five-hour limit greater than 0 and at most 100, optionally a **Daily budget**,

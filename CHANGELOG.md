@@ -4,6 +4,10 @@ All notable changes to Spartan Gate are documented here.
 
 ## Unreleased
 
+- Spartan Route dashboard: restore green/yellow/red load colours on rings and
+  bars (red at a configured limit), show each reset's local clock time next to
+  its countdown, and scale the interface up on wide (1440p and larger) screens.
+
 - Spartan Route: add an optional per-account **daily budget** that caps the weekly
   percentage points an account may consume per day. Days are 24-hour slices aligned
   to the weekly reset clock. Baselines persist across restarts, and missing or stale
