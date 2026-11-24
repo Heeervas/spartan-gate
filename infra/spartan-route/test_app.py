@@ -2446,7 +2446,9 @@ class DashboardStaticTests(unittest.TestCase):
         web = Path(__file__).resolve().parent / "web"
         paths = [web / f"{name}.html", web / "assets" / f"{name}.js", web / "assets" / "dashboard.css"]
         if name == "dashboard":
-            paths.append(web / "assets" / "dashboard-details.js")
+            paths.extend(web / "assets" / asset for asset in ("dashboard-details.js", "dashboard-live.js"))
+        elif name == "dashboard-codex":
+            paths.append(web / "assets" / "accounts.css")
         return "\n".join(path.read_text(encoding="utf-8") for path in paths if path.exists())
 
     def test_routing_dashboard_uses_expandable_request_details(self) -> None:
@@ -2489,7 +2491,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("disabled = false", helper)
         self.assertIn("textContent", helper)
 
-        load_start = html.find("async function load")
+        load_start = html.find("async function load(force = false, background = false)")
         load_end = html.find("\n    setInterval", load_start)
         load = html[load_start:load_end]
         self.assertIn("activeLoadController.abort()", load)
@@ -2520,18 +2522,27 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("healthDataSource", html)
         self.assertIn("server refresh may still be running", html)
 
-    def test_codex_dashboard_uses_threshold_colored_rings(self) -> None:
+    def test_codex_dashboard_uses_svg_rings_with_configured_stop_ticks(self) -> None:
         html = self.source("dashboard-codex")
 
-        self.assertIn("function balanceTone", html)
-        self.assertIn("value >= 90", html)
-        self.assertIn("value >= 70", html)
-        self.assertIn("--tone", html)
+        self.assertIn("secondary ? 'var(--c-5h)' : 'var(--c-week)'", html)
+        self.assertIn('--tone:${tone}', html)
+        self.assertIn("value >= Math.min(100, cap) ? 'var(--bad)' : color", html)
+        self.assertIn("quotaTone(used, cap, color)", html)
+        self.assertIn("account.dailyBudget?.status === 'reached' ? 'var(--bad)' : 'var(--c-day)'", html)
+        self.assertIn('style="--window-color:var(--c-day)"', html)
         self.assertIn("Weekly usage", html)
         self.assertIn("Five-hour usage", html)
         self.assertIn("account.fiveHour", html)
         self.assertIn("function windowPercent", html)
-        self.assertIn("used * 3.6", html)
+        self.assertIn("function ringGlyph", html)
+        self.assertIn('viewBox="0 0 100 100" role="img"', html)
+        self.assertIn('pathLength="100" stroke-dasharray="${value} 100"', html)
+        self.assertIn("quotaTone(known ? ring.value : null, cap, ring.color)", html)
+        self.assertIn('class="glyph-stop"', html)
+        self.assertIn('class="glyph-pace"', html)
+        self.assertIn('stroke-dasharray="2 3"', html)
+        self.assertNotIn("conic-gradient", html)
         self.assertIn("row.usedUnits", html)
         self.assertIn("row.capacityUnits", html)
         self.assertIn("raw consumed", html)
@@ -2592,6 +2603,57 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertNotIn("<h2>Slots</h2>", html)
 
 
+    def test_dashboard_flight_deck_responsive_and_accessible_instruments(self) -> None:
+        accounts = self.source("dashboard-codex")
+        activity = self.source("dashboard")
+        self.assertIn('id="glance" class="glance" aria-label="At a glance"', accounts)
+        self.assertIn('class="window-grid"', accounts)
+        self.assertIn('class="account-strip"', accounts)
+        self.assertIn("Daily budget (pts of weekly)", accounts)
+        self.assertIn("['weekly', 'fiveHour', 'daily']", accounts)
+        self.assertIn('data-countdown-format="short"', accounts)
+        self.assertIn("--glyph-size: 52px", accounts)
+        self.assertIn("--glyph-size: 88px", accounts)
+        self.assertIn("--glyph-size: 112px", accounts)
+        self.assertIn(".window-grid, .account-controls .observation { display: none; }", accounts)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", accounts)
+        self.assertIn(":has(> .account:nth-child(4):last-child)", accounts)
+        self.assertIn("@media (min-width: 601px) {\n  .account-main:has(.credit-row) .credit-badge { display: none; }", accounts)
+        self.assertIn('class="window-value" title="${esc(percent)}"', accounts)
+        self.assertIn("windowStaleBadge(row, account)", accounts)
+        self.assertIn('class="observation" title="${esc(observationText(account.weekly, account))}"', accounts)
+        self.assertNotIn(".ring-glyph { display: none", accounts)
+        self.assertIn(".summary-metrics .fact-secondary, .summary-metrics .fact-pair { display: none; }", activity)
+        self.assertIn('#filter-status:empty { display: none; }', activity)
+        self.assertIn('id="history-heading">Today &amp; all time</h2>', activity)
+        self.assertIn("${summaryTime(turn.lastAt)}", activity)
+        self.assertIn("req ${esc(requested)}", activity)
+        self.assertIn("srv ${esc(served)}", activity)
+        self.assertIn('@media (min-width: 1100px) {', activity)
+        desktop_facts = activity.split('@media (min-width: 1100px) {', 1)[1].split('}', 3)
+        self.assertIn('.summary-metrics { grid-template-columns: repeat(8, minmax(0, max-content)); gap: 8px 16px;', desktop_facts[0])
+        self.assertIn('.summary-metrics .fact.speed { grid-column: auto;', desktop_facts[1])
+        self.assertIn('.summary-metrics .fact-pair { display: contents;', desktop_facts[2])
+        self.assertIn('@media (min-width: 601px) and (max-width: 1099px) {\n  .summary-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }', activity)
+        self.assertIn("white-space: nowrap; overflow: hidden; text-overflow: ellipsis", activity)
+        self.assertLess(activity.index('id="sessions"'), activity.index('id="dashboard-access"'))
+        self.assertIn("document.getElementById('dashboard-access').open = true", activity)
+        self.assertIn("#live-metrics, #metrics { grid-template-columns: repeat(3, minmax(0, 1fr))", activity)
+        self.assertIn("function cacheRing", activity)
+        mobile = activity.split('@media (max-width: 600px) {', 1)[1].split('@media (forced-colors: active)', 1)[0]
+        self.assertIn('#live-metrics .metric, #metrics .metric { padding: 8px 10px; }', mobile)
+        self.assertIn('#live-metrics .value, #metrics .value { font-size: 18px;', mobile)
+        self.assertIn('#metrics .metric > .label:first-child { font-size: 10px;', mobile)
+        self.assertIn('#live-metrics .metric > .muted:last-child, #metrics .metric > .muted:last-child { display: none; }', mobile)
+        self.assertIn('.routing-page .page-heading p { display: none; }', mobile)
+        self.assertIn('#live-metrics { margin-bottom: 0; }', mobile)
+        self.assertIn('#metrics { margin-bottom: 8px; }', mobile)
+        for source in (accounts, activity):
+            self.assertIn("@media (max-width: 600px)", source)
+            self.assertIn("@media (forced-colors: active)", source)
+            self.assertIn("@media (prefers-reduced-motion: reduce)", source)
+            self.assertIn("@media (prefers-color-scheme: dark)", source)
+
     def test_dashboard_navigation_and_config_contract_are_consistent(self) -> None:
         web_dir = Path(__file__).resolve().parent / "web"
         routing = self.source("dashboard")
@@ -2623,7 +2685,7 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("const tone = slot.healthStatus", html)
         self.assertIn("health-badge", html)
         self.assertIn("account-health", html)
-        self.assertIn("textContent = summary", html)
+        self.assertIn("textContent = staleText + summary", html)
         self.assertIn("telemetryErrors", html)
         self.assertIn("Telemetry degraded", html)
 

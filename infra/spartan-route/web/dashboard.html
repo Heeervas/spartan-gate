@@ -20,17 +20,9 @@
     </div>
   </header>
   <main class="wrap" id="main">
-    <div class="page-heading"><div><h1>Routing activity</h1><p>Requests, sessions and the route each turn takes.</p></div><span class="scope-label">Operator console</span></div>
-    <div class="toolbar" aria-label="Dashboard access and refresh">
-      <label class="token-field" for="token">
-        <span class="label">Dashboard access · Bearer token</span>
-        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Enter bearer token">
-      </label>
-      <div class="actions">
-        <button id="save">Use token</button>
-        <button id="collapse">Collapse</button>
-        <button id="refresh" class="primary">Refresh</button>
-      </div>
+    <div class="page-heading">
+      <div><h1>Routing activity</h1><p>Requests, sessions and the route each turn takes.</p></div>
+      <div class="actions"><button id="collapse">Collapse</button><button id="refresh" class="primary">Refresh</button></div>
     </div>
     <section aria-labelledby="live-heading">
       <div class="section-head"><h2 id="live-heading">Live · last 15 minutes</h2></div>
@@ -54,7 +46,10 @@
     </div>
     </details>
     <div class="filter-status muted" id="filter-status" role="status" aria-live="polite"></div>
-    <section class="grid metric-strip" id="metrics" aria-label="Routing totals"></section>
+    <section aria-labelledby="history-heading">
+      <div class="section-head"><h2 id="history-heading">Today &amp; all time</h2></div>
+      <div class="grid metric-strip" id="metrics" aria-label="Routing totals"></div>
+    </section>
     <section>
       <div class="section-head">
         <h2>Sessions</h2>
@@ -63,6 +58,14 @@
       <p class="muted">Related conversations stay separate. Cache observations are passive comparisons of requests, not extra model calls.</p>
       <div id="sessions"></div>
     </section>
+    <details id="dashboard-access" class="dashboard-access">
+      <summary>Dashboard access <span class="muted">Bearer token &amp; refresh behavior</span></summary>
+      <div class="toolbar" aria-label="Dashboard access">
+        <label class="token-field" for="token"><span class="label">Bearer token</span><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Enter bearer token"></label>
+        <button id="save">Use token</button>
+      </div>
+      <p class="muted">Tokens stay in this browser session. Refresh reads the current routing snapshot.</p>
+    </details>
   </main>
   <script defer src="/dashboard-assets/dashboard-live.js"></script>
   <script defer src="/dashboard-assets/dashboard.js"></script>

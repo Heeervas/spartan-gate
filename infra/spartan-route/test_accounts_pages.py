@@ -26,7 +26,7 @@ class AccountsPagesTests(unittest.IsolatedAsyncioTestCase):
             "/dashboard": "dashboard.html", "/dashboard-codex": "dashboard-codex.html",
             "/dashboard-config": "dashboard-config.html",
         }
-        assets = ["dashboard-codex.js", "accounts.css", "shell.css"]
+        assets = ["dashboard-codex.js", "accounts.css", "shell.css", "dashboard.css", "dashboard.js", "dashboard-live.js"]
         paths = {**documents, **{f"/dashboard-assets/{name}": f"assets/{name}" for name in assets}}
         root = Path(__file__).parent / "web"
         for path, filename in paths.items():
@@ -57,3 +57,16 @@ class AccountsPagesTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(html.count('aria-current="page"'), 1)
             self.assertNotIn('>Overview</a>', html)
             self.assertIn(f'src="/dashboard-assets/{script}"', html)
+            if script == "dashboard-codex.js":
+                self.assertIn('<section id="glance" class="glance" aria-label="At a glance">', html)
+                self.assertLess(html.index('id="glance"'), html.index('id="accounts"'))
+            elif script == "dashboard.js":
+                self.assertIn('id="live-metrics"', html)
+                self.assertIn('src="/dashboard-assets/dashboard-live.js"', html)
+                self.assertLess(html.index('id="sessions"'), html.index('id="dashboard-access"'))
+                self.assertRegex(html, r'<details id="dashboard-access" class="dashboard-access">[\s\S]*?<input id="token"[\s\S]*?<button id="save">Use token</button>[\s\S]*?</details>')
+                heading = html[html.index('class="page-heading"'):html.index('aria-labelledby="live-heading"')]
+                self.assertIn('id="collapse"', heading)
+                self.assertIn('id="refresh"', heading)
+                self.assertNotIn('id="token"', heading)
+                self.assertLess(html.index('id="history-heading">Today &amp; all time</h2>'), html.index('id="metrics"'))

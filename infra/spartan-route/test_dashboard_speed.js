@@ -30,11 +30,15 @@ test('session Speed distinguishes requests from provider-reported tiers with acc
     h.context.session = { id: 'session', metrics: { speed }, turns: [] };
     return h.run('sessionCard(session, 0, [session])');
   };
-  const speedFact = html => html.match(/<span class="fact speed"[\s\S]*?<\/strong><\/span>/)?.[0] || '';
+  const speedFact = html => html.match(/<span class="fact speed fact-secondary"[\s\S]*?<\/strong><\/span>/)?.[0] || '';
   const downgraded = speedFact(render({ requested: { priority: 1 }, served: { default: 1 } }));
   assert.match(downgraded, /Speed/);
   assert.match(downgraded, /Requested:.*Fast · 1/);
   assert.match(downgraded, /Served:.*Normal · 1/);
+  assert.match(downgraded, /title="Requested: fast 1\. Served: normal 1\./);
+  assert.match(downgraded, /class="speed-line" aria-hidden="true">req fast 1<\/span>/);
+  assert.match(downgraded, /class="speed-line" aria-hidden="true">srv normal 1<\/span>/);
+  assert.match(downgraded, /class="speed-full">Requested:/);
   assert.equal((downgraded.match(/<path /g) || []).length, 1);
   assert.match(downgraded, /<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
   const ultra = speedFact(render({ requested: { ultrafast: 2 }, served: { ultrafast: 2 } }));
@@ -47,6 +51,8 @@ test('session Speed distinguishes requests from provider-reported tiers with acc
   assert.match(mixed, /Unknown · 2/);
   assert.match(mixed, /Ultrafast · 2/);
   assert.equal((mixed.match(/<path /g) || []).length, 6);
+  assert.match(mixed, /req fast 1 · ultrafast 2 · unspecified 2/);
+  assert.match(mixed, /srv fast 1 · ultrafast 2 · unknown 2/);
   for (const speed of [undefined, { requested: { unspecified: 1 }, served: { unknown: 1 } },
     { requested: { auto: 1 }, served: { default: 1 } }]) {
     const html = speedFact(render(speed));

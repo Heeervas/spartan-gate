@@ -80,8 +80,14 @@
       const d = new Date(value);
       return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
     }
+    function summaryTime(value) {
+      const date = new Date(value);
+      const compact = !value || Number.isNaN(date.getTime()) ? fmtTime(value)
+        : date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      return `<span class="summary-time" title="${esc(fmtTime(value))}"><span class="time-full">${esc(fmtTime(value))}</span><span class="time-short">${esc(compact)}</span></span>`;
+    }
     function metric(label, value, extra = '') {
-      return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(extra)}</div></div>`;
+      return `<div class="metric" title="${esc(extra)}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(extra)}</div></div>`;
     }
     function cacheUsagePercent(input, cached, native = {}) {
       const missing = Number(native.cacheReadMissingRequests || 0);
@@ -109,7 +115,10 @@
       return `${percent} legacy likely cache`;
     }
     function fact(label, value, tone = '', title = '') {
-      return `<span class="fact ${tone}"${title ? ` title="${esc(title)}"` : ''}><span class="fact-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
+      const secondary = ['Cache observations', 'Reasoning', 'Tools'].includes(label) ? ' fact-secondary' : '';
+      const model = label === 'Model';
+      const short = model ? String(value).split(', ').map(name => name.replace(/^[^/]+\//, '')).join(', ') : '';
+      return `<span class="fact ${tone}${secondary}${label === 'Est. usage' ? ' fact-usage' : ''}" title="${esc(`${label}: ${value}${title ? ` · ${title}` : ''}`)}"><span class="fact-label">${esc(label)}</span><strong${model ? ' class="model-full"' : ''}>${esc(value)}</strong>${model ? `<strong class="model-short">${esc(short)}</strong>` : ''}</span>`;
     }
     function reasoningSummary(metrics = {}) {
       const efforts = metrics.reasoningEfforts || {};
@@ -146,8 +155,15 @@
       });
       return `${parts.length > 1 ? 'mixed · ' : ''}${parts.join(', ') || 'Unknown'}`;
     }
+    function compactSpeed(counts = {}) {
+      const labels = {priority: 'fast', ultrafast: 'ultrafast', default: 'normal', auto: 'auto', flex: 'flex', scale: 'scale', unspecified: 'unspecified', unknown: 'unknown'};
+      return Object.entries(labels).filter(([tier]) => Number(counts[tier]) > 0).map(([tier, label]) => `${label} ${num(counts[tier])}`).join(' · ') || 'unknown';
+    }
     function speedFact(speed = {}) {
-      return `<span class="fact speed" title="Requested is client intent, not confirmation. Served is provider-reported, not measured latency. Counts cover only requests in this view."><span class="fact-label">Speed</span><strong><span class="speed-line">Requested: ${speedBreakdown(speed.requested)}</span><span class="speed-line">Served: ${speedBreakdown(speed.served)}</span></strong></span>`;
+      const requested = compactSpeed(speed.requested);
+      const served = compactSpeed(speed.served);
+      const title = `Requested: ${requested}. Served: ${served}. Requested is client intent, not confirmation. Served is provider-reported, not measured latency. Counts cover only requests in this view.`;
+      return `<span class="fact speed fact-secondary" title="${esc(title)}"><span class="fact-label">Speed</span><strong><span class="speed-full">Requested: ${speedBreakdown(speed.requested)}; Served: ${speedBreakdown(speed.served)}</span><span class="speed-line" aria-hidden="true">req ${esc(requested)}</span><span class="speed-line" aria-hidden="true">srv ${esc(served)}</span></strong></span>`;
     }
     function metricLine(metrics = {}, models = []) {
       const cache = Number(metrics.usageSeenRequests || 0) ? cacheUsagePercent(metrics.inputTokens, metrics.cachedInputTokens, metrics.nativeCache) : 'unknown';
@@ -158,8 +174,7 @@
         fact('Cache observations', metrics.nativeCache?.requests ? `${num(metrics.nativeCache.requests)} requests` : 'none yet', '', nativeCacheSummary(metrics.nativeCache)),
         fact('Est. usage', usageUnitSummary(metrics)),
         speedFact(metrics.speed),
-        fact('Reasoning', reasoningSummary(metrics)),
-        fact('Tools', toolSummary(metrics)),
+        `<span class="fact-pair">${fact('Reasoning', reasoningSummary(metrics))}${fact('Tools', toolSummary(metrics))}</span>`,
         fact('Status', errors ? `${errors} errors` : 'OK', errors ? 'bad' : ''),
       ].join('');
     }
@@ -404,15 +419,15 @@
       const turns = session.turns || [];
       const latestTurn = turns[0] || {};
       const title = activityTitle(latestTurn, `Session at ${fmtTime(session.lastAt)}`);
-      return `<details class="panel session-card" data-session-id="${esc(session.id)}" ${index === 0 ? 'open' : ''}>
+      return `<details class="panel session-card${Number(session.metrics?.errors || 0) > 0 ? ' has-errors' : ''}" data-session-id="${esc(session.id)}" ${index === 0 ? 'open' : ''}>
           <summary class="session-summary">
-            <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(title)}</strong><span class="muted">${esc(fmtTime(session.lastAt))} · ${esc(session.turnCount || turns.length)} turns</span>${correlationSummary(session)}</span>
+            <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(title)}</strong><span class="muted session-meta">${summaryTime(session.lastAt)}<span>· ${esc(session.turnCount || turns.length)} turns</span>${correlationSummary(session)}</span></span>
             <span class="summary-metrics">${metricLine(session.metrics, session.models)}</span>
           </summary>
           <div class="turn-list">
             ${turns.map(turn => `<details class="turn" data-turn-id="${esc(turn.id)}" data-session-id="${esc(session.id)}" data-detail-version="${esc(JSON.stringify([turn.lastAt, turn.metrics]))}">
               <summary class="turn-summary">
-                <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(activityTitle(turn, 'Turn without preview'))}</strong><span class="muted">${esc(fmtTime(turn.lastAt))}</span></span>
+                <span class="title"><strong class="activity-title"><span class="chev">›</span>${esc(activityTitle(turn, 'Turn without preview'))}</strong><span class="muted">${summaryTime(turn.lastAt)}</span></span>
                 <span class="summary-metrics">${metricLine(turn.metrics, turn.models)}</span>
               </summary>
               <div class="turn-requests"></div>
@@ -553,6 +568,7 @@
         accessDenied = [401, 403].includes(error.status);
         window.SpartanRouteLive.unavailable(liveMetricsEl, liveStatusEl, accessDenied);
         if (accessDenied) {
+          document.getElementById('dashboard-access').open = true;
           cancelTurnLoads(); sessionsEl.replaceChildren(); metricsEl.replaceChildren();
           renderedMarkup.delete(sessionsEl); renderedMarkup.delete(metricsEl);
         }

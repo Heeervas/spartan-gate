@@ -207,11 +207,14 @@ test('hidden pages suspend polling and visible pages resume with one read', () =
   }
 });
 
-test('raw percentages stay inside rings while weighted units remain alongside', () => {
+test('raw percentages stay inside the SVG glyph while weighted units remain alongside', () => {
   const h = harness('dashboard-codex');
-  const html = h.run("balanceRing('Weekly balance', {usedPercent: 37.4, capacityMultiplier: 5, usedUnits: 187, capacityUnits: 500})");
-  assert.match(html, /ring-value">37\.4%/);
-  assert.match(html, /187 \/ 500 units/);
+  const html = h.run("accountGlyph({weekly: {usedPercent: 37.4}, fiveHour: null})");
+  assert.match(html, /pathLength="100" stroke-dasharray="37\.4 100"/);
+  assert.match(html, /aria-label="Weekly 37\.4% used; 5-hour usage unknown"/);
+  const detail = h.run("balanceRing('Weekly balance', {usedPercent: 37.4, capacityMultiplier: 5, usedUnits: 187, capacityUnits: 500})");
+  assert.match(detail, /187 \/ 500 units/);
+  assert.match(detail, /37\.4% raw consumed/);
 });
 
 
@@ -398,6 +401,7 @@ test('historical panels recover unchanged data after authorization denial', asyn
   assert.notEqual(originalMetrics, '');
   pending = h.run('load()');
   h.respond(h.requests[3], {error: {message: 'expired access'}}, 401); await pending;
+  assert.equal(h.elements.get('dashboard-access').open, true);
   assert.equal(h.elements.get('metrics').innerHTML, '');
   assert.equal(h.elements.get('sessions').children.length, 0);
   pending = h.run('load()');
@@ -421,6 +425,7 @@ test('live data clears on credential edits and auth denial; late results cannot 
   pending = h.run('load()'); h.respond(h.requests[3], {error: {message: 'no access'}}, 403); await pending;
   assert.equal(h.elements.get('live-metrics').innerHTML, '');
   assert.match(h.elements.get('live-status').textContent, /check dashboard access/);
+  assert.equal(h.elements.get('dashboard-access').open, true);
   assert.equal(h.timers.size, 0);
 });
 
