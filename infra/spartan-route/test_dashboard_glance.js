@@ -1,3 +1,4 @@
+process.env.TZ = 'UTC';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -21,7 +22,7 @@ test('account glyph encodes raw windows, daily ratio, stop marks and weekly pace
   const html = h.run('accountGlyph(account)');
   assert.match(html, /viewBox="0 0 100 100" role="img"/);
   assert.match(html, /aria-label="Weekly 42% used, stop at 85%; today 6 of 15 points; 5-hour 68% used, stop at 60%"/);
-  for (const [radius, percent, color] of [[44, 42, 'c-week'], [34, 40, 'c-day'], [24, 68, 'bad']]) {
+  for (const [radius, percent, color] of [[44, 42, 'good'], [34, 40, 'good'], [24, 68, 'bad']]) {
     assert.match(html, new RegExp(`r="${radius}"[^>]*stroke="var\\(--${color}\\)"[^>]*pathLength="100" stroke-dasharray="${percent} 100"`));
   }
   assert.equal((html.match(/class="glyph-stop"/g) || []).length, 3);
@@ -69,6 +70,39 @@ test('short countdowns use a controlled clock and the existing ticker honors for
   assert.equal(short.textContent, '2h13m');
 });
 
+test('reset clocks use local 24-hour time, add weekday at 24h, and retain full accessible deadlines while ticking', () => {
+  const h = harness('dashboard-codex'); clock(h);
+  const short = new Intl.DateTimeFormat(undefined, {hour: '2-digit', minute: '2-digit', hour12: false});
+  const week = new Intl.DateTimeFormat(undefined, {hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short'});
+  for (const minutes of [134, 1439, 1440, 3 * 1440 + 300]) {
+    h.context.deadline = at(minutes);
+    const expected = (minutes < 1440 ? short : week).format(new Date(at(minutes)));
+    const html = h.run('balanceRing("Weekly usage", {usedPercent: 42, resetAt: deadline})');
+    assert.ok(html.includes(`· ${expected}</span>`));
+    const full = new Date(at(minutes)).toLocaleString();
+    assert.ok(html.includes(`title="Resets ${full} · in `));
+    assert.ok(html.includes(`aria-label="Resets ${full} · in `));
+  }
+  assert.match(h.run('balanceRing("Weekly usage", {resetAt: "invalid"})'), /No reset timestamp/);
+  assert.match(h.run('balanceRing("Weekly usage", null)'), />unknown · unknown<\/span>/);
+  const mobile = new Element(); mobile.setAttribute('data-countdown', at(1440)); mobile.setAttribute('data-countdown-format', 'clock');
+  const desktop = new Element(); desktop.setAttribute('data-countdown', at(134)); desktop.setAttribute('data-countdown-format', 'reset');
+  h.document.querySelectorAll = selector => selector === '[data-countdown]' ? [mobile, desktop] : [];
+  h.run('updateCountdowns()');
+  assert.equal(mobile.textContent, week.format(new Date(at(1440))));
+  assert.equal(desktop.textContent, `2h14m · ${short.format(new Date(at(134)))}`);
+  h.context.now += 60000; h.run('updateCountdowns()');
+  assert.equal(mobile.textContent, short.format(new Date(at(1440))));
+  assert.match(mobile.getAttribute('title'), /in 23h 59m 0s$/);
+  assert.equal(mobile.getAttribute('aria-label'), mobile.getAttribute('title'));
+  assert.equal(desktop.textContent, `2h13m · ${short.format(new Date(at(134)))}`);
+  h.context.row = {usedPercent: 68, resetAt: at(134)};
+  const meter = h.run('meterWindow("5h", "5h", row)');
+  assert.ok(meter.includes(`>${short.format(new Date(at(134)))}</span>`));
+  assert.match(meter, /data-countdown-format="clock"/);
+  assert.match(meter, /title="Resets [^"]*in 2h 13m 0s"/);
+});
+
 test('glance totals are identity-deduplicated, mark unknown credits and link the earliest available expiry', () => {
   const h = harness('dashboard-codex'); clock(h);
   const paused = '1123456789abcdef'; const disabled = '2123456789abcdef'; const unknown = '3123456789abcdef';
@@ -94,7 +128,8 @@ test('glance totals are identity-deduplicated, mark unknown credits and link the
   assert.match(html, /1 paused · 1 disabled/);
   assert.equal((html.match(new RegExp(`href="#acct-${key}"`, 'g')) || []).length, 1);
   assert.ok(html.includes(`…cdef ×2 · exp ${new Date(at(9000)).toLocaleDateString(undefined, {day: 'numeric', month: 'short'})}`));
-  assert.match(html, /2h14m/);
+  assert.match(html, /2h14m · 14:14/);
+  assert.ok(html.includes(`4d0h · ${new Intl.DateTimeFormat(undefined, {hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short'}).format(new Date(at(4 * 1440)))}`));
   assert.match(html, /reset-kind">week/);
   assert.equal((html.match(/class="glance-tile /g) || []).length, 3);
   const order = ['tile-credits', 'tile-routing', 'tile-next'].map(name => html.indexOf(name));
@@ -135,29 +170,40 @@ test('compact window rows retain raw consumption, units and distinct stale sourc
   assert.match(weekly, /title="42.0% raw consumed"/);
   assert.match(weekly, /class="window-value" title="42\.0% raw consumed">42%<\/strong>/);
   assert.ok(weekly.includes('42.0 / 100 units · 12 pts under pace'));
-  assert.match(weekly, /data-countdown-format="short"[^>]*>3d5h/);
+  h.context.rows = [{...h.context.account, accountKey: key}];
+  h.run('reconcileAccountCards = markup => { rendered = markup; }; renderAccountCards(rows)');
+  assert.match(h.run('rendered'), /class="observation" title="Observed · synthetic[^"\n]*">Observed 11:59<\/span>/);
+  assert.match(weekly, /data-countdown-format="reset"[^>]*>3d5h · /);
   assert.doesNotMatch(weekly, /class="observation"|>stale</);
   assert.match(h.run("balanceRing('Five-hour usage', account.fiveHour, true, account)"), /title="Observed · other[^"]*">stale/);
   const daily = h.run('dailyWindow(account)');
   assert.ok(daily.includes('9.3/15 pts'));
+  assert.match(daily, /data-countdown-format="slice"[^>]*>14h59m → 02:59/);
   assert.match(daily, /slice resets [\s\S]*14h59m/);
   assert.doesNotMatch(daily, /Weekly points|>reached</);
   h.context.account.dailyBudget.status = 'reached';
   assert.match(h.run('dailyWindow(account)'), /pill warn">reached/);
 });
 
-test('window bars warn at configured caps, not generic pressure thresholds', () => {
+test('window arcs and bars share inclusive 70/90 load thresholds and configured cap overrides', () => {
   const h = harness('dashboard-codex');
   for (const secondary of [false, true]) {
-    for (const [usedPercent, cap, tone] of [[59, 60, secondary ? 'c-5h' : 'c-week'], [60, 60, 'bad'], [61, 60, 'bad'], [90, null, secondary ? 'c-5h' : 'c-week'], [null, 60, secondary ? 'c-5h' : 'c-week']]) {
+    for (const [usedPercent, cap, tone] of [[59, 60, 'good'], [60, 60, 'bad'], [61, 60, 'bad'], [69.9, null, 'good'], [70, null, 'warn'], [89.9, 95, 'warn'], [90, null, 'bad'], [95, 95, 'bad'], [null, 60, 'muted']]) {
       h.context.account = {quotaLimits: {[secondary ? 'fiveHour' : 'weekly']: cap}};
       h.context.row = {usedPercent}; h.context.secondary = secondary;
       assert.ok(h.run("balanceRing('Window', row, secondary, account)").includes(`--tone:var(--${tone})`));
+      h.context.account[secondary ? 'fiveHour' : 'weekly'] = h.context.row;
+      const glyph = h.run('accountGlyph(account)');
+      if (usedPercent !== null) assert.match(glyph, new RegExp(`r="${secondary ? 24 : 44}"[^>]*stroke="var\\(--${tone}\\)"`));
+      else assert.match(glyph, /glyph-unknown/);
     }
   }
-  for (const [status, tone] of [['ok', 'c-day'], ['reached', 'bad'], ['unknown', 'c-day']]) {
-    h.context.account = {quotaLimits: {daily: 15}, dailyBudget: {status, consumed: 15}};
+  for (const [status, consumed, tone] of [['ok', 6, 'good'], ['ok', 10.5, 'warn'], ['ok', 13.5, 'bad'], ['reached', 6, 'bad'], ['unknown', 0, 'muted']]) {
+    h.context.account = {quotaLimits: {daily: 15}, dailyBudget: {status, consumed}};
     assert.ok(h.run('dailyWindow(account)').includes(`--tone:var(--${tone})`));
+    const glyph = h.run('accountGlyph(account)');
+    if (status !== 'unknown') assert.match(glyph, new RegExp(`r="34"[^>]*stroke="var\\(--${tone}\\)"`));
+    else assert.doesNotMatch(glyph, /class="glyph-arc"/);
   }
 });
 
@@ -202,7 +248,7 @@ test('Activity cache reuse leads the band and never turns missing or saturated c
   assert.doesNotMatch(metrics.innerHTML, /glyph-arc/);
   h.context.payload.metrics.cacheHitPercent = 42;
   h.run('window.SpartanRouteLive.render(liveMetricsEl, liveStatusEl, payload)');
-  assert.match(metrics.innerHTML, /stroke-dasharray="42 100"/);
+  assert.match(metrics.innerHTML, /stroke="var\(--good\)"[^>]*stroke-dasharray="42 100"/);
   h.context.payload.saturated = true;
   h.run('window.SpartanRouteLive.render(liveMetricsEl, liveStatusEl, payload)');
   assert.match(metrics.innerHTML, /Cache reuse unknown/);

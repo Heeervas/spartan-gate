@@ -4,7 +4,6 @@
   color-scheme: light dark;
   --bg: #f4f2ee; --panel: #fff; --raised: #eceae5;
   --text: #181c22; --muted: #58616b; --line: #d6d9dc; --control: #7e8791;
-  --c-week: #16745d; --c-day: #916005; --c-5h: #6243c4;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --grid-line: #17251c0a;
   --accent: #147966; --good: #187348; --warn: #925a09; --bad: #b42d3c;
@@ -14,7 +13,6 @@
   :root {
     --bg: #0b0d10; --panel: #12161b; --raised: #1b2129;
     --text: #f0f3f7; --muted: #acb6c3; --line: #232a33; --control: #657180;
-    --c-week: #7ee0c3; --c-day: #f5b94a; --c-5h: #a98bff;
     --grid-line: #d5e2ff0a;
     --accent: #6ccab2; --good: #6ccab2; --warn: #e6b75d; --bad: #f28b98;
     --primary: #ededee; --on-primary: #181818;
@@ -317,17 +315,17 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .tile-label, #live-metrics .metric > .muted:first-child, #metrics .metric > .label:first-child { color: var(--muted); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; }
 .tile-value, #live-metrics .value, #metrics .value { margin-block: 4px; font: 600 36px/1.2 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.045em; }
 .tile-detail, #live-metrics .metric > .muted:last-child, #metrics .metric > .muted:last-child { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.tile-next .tile-value { font: 600 20px/1.5 var(--mono); letter-spacing: -.035em; white-space: nowrap; }
-.tile-next .tile-detail { font: 12px/1.5 var(--mono); white-space: nowrap; }
+.tile-next .tile-value { font: 600 20px/1.5 var(--mono); letter-spacing: -.035em; white-space: normal; }
+.tile-next .tile-detail { font: 12px/1.5 var(--mono); white-space: normal; }
 .reset-kind, .reset-account { font-size: 12px; letter-spacing: 0; }
 .credit-links { display: flex; flex-wrap: wrap; gap: 6px; }
 .credit-link { min-height: 24px; text-decoration: none; font: 11px var(--mono); padding: 4px 6px; }
 .credit-link:hover { text-decoration: underline; }
-.tile-credits { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-content: start; border-top: 3px solid var(--c-day); }
+.tile-credits { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-content: start; border-top: 3px solid var(--warn); }
 .tile-credits .tile-label, .tile-credits .credit-links { grid-column: 1 / -1; }
 .tile-credits .tile-detail { align-self: center; }
-.tile-routing { border-top: 3px solid var(--c-week); }
-.tile-next { border-top: 3px solid var(--c-5h); }
+.tile-routing { border-top: 3px solid var(--good); }
+.tile-next { border-top: 3px solid var(--good); }
 .ring-glyph { display: block; flex-shrink: 0; overflow: visible; }
 .glyph-track { opacity: .25; }
 .glyph-unknown { opacity: .7; }
@@ -339,7 +337,7 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .live-cache-value { display: flex; align-items: center; gap: 8px; }
 .live-cache-value svg { width: 42px; height: 42px; }
 .live-cache-value .glyph-track { opacity: .65; }
-.session-card { border-left: 3px solid var(--c-week); padding: 14px 16px; box-shadow: inset 0 1px 0 #ffffff0a; }
+.session-card { border-left: 3px solid var(--good); padding: 14px 16px; box-shadow: inset 0 1px 0 #ffffff0a; }
 .session-card.has-errors { border-left-color: var(--bad); }
 details.session-card > summary, .turn > summary { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .session-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; }
@@ -424,6 +422,18 @@ details.session-card > summary, .turn > summary { grid-template-columns: minmax(
   .toolbar .token-field { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .toolbar .actions { width: 100%; }
   .filter-disclosure > summary { min-height: 44px; display: flex; align-items: center; }
+}
+@media (min-width: 1800px) {
+  h2 { font-size: 20px; }
+  .glance .tile-value { font-size: 44px; }
+  .glance .tile-next .tile-value { font-size: 20px; white-space: normal; }
+  .tile-next .tile-detail { white-space: normal; }
+  .tile-label, #live-metrics .metric > .muted:first-child, #metrics .metric > .label:first-child { font-size: 11px; }
+  #live-metrics .value, #metrics .value { font-size: 32px; }
+  .tile-detail, #live-metrics .metric > .muted:last-child, #metrics .metric > .muted:last-child, .session-meta { font-size: 12px; }
+}
+@media (max-width: 600px) {
+  .tile-next .tile-value { font-size: 12px; line-height: 1.4; white-space: normal; }
 }
 @media (forced-colors: active) {
   body { background-image: none; }

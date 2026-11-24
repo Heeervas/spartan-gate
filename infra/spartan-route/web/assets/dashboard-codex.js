@@ -70,8 +70,23 @@
       if (hours) return `${hours}h${minutes % 60}m`;
       return minutes ? `${minutes}m` : '<1m';
     }
+    function resetClock(value) {
+      const target = deadlineMs(value);
+      if (!Number.isFinite(target)) return 'unknown';
+      const options = { hour: '2-digit', minute: '2-digit', hour12: false };
+      if (target - Date.now() >= 86400000) options.weekday = 'short';
+      return new Intl.DateTimeFormat(undefined, options).format(new Date(target));
+    }
     function resetTitle(value) {
-      return value ? `Resets ${fmtTime(value)}` : 'No reset timestamp';
+      return Number.isFinite(deadlineMs(value)) ? `Resets ${fmtTime(value)} · in ${countdownText(value)}` : 'No reset timestamp';
+    }
+    function resetText(value, format) {
+      if (format === 'clock') return resetClock(value);
+      return `${shortCountdown(value)} ${format === 'slice' ? '→' : '·'} ${resetClock(value)}`;
+    }
+    function resetMarkup(value, format = 'reset', className = '') {
+      const title = esc(resetTitle(value));
+      return `<span class="${className}" title="${title}" aria-label="${title}" data-countdown-format="${format}" data-countdown="${esc(value || '')}">${esc(resetText(value, format))}</span>`;
     }
     function cooldown(until) {
       if (!until) return '-';
@@ -82,8 +97,15 @@
       if (document.hidden) return;
       document.querySelectorAll('[data-countdown]').forEach(element => {
         const prefix = element.getAttribute('data-countdown-prefix') || '';
-        const format = element.getAttribute('data-countdown-format') === 'short' ? shortCountdown : countdownText;
-        element.textContent = `${prefix}${format(element.getAttribute('data-countdown'))}`;
+        const format = element.getAttribute('data-countdown-format');
+        const value = element.getAttribute('data-countdown');
+        if (['reset', 'clock', 'slice'].includes(format)) {
+          element.textContent = resetText(value, format);
+          element.setAttribute('title', resetTitle(value));
+          element.setAttribute('aria-label', resetTitle(value));
+        } else {
+          element.textContent = `${prefix}${format === 'short' ? shortCountdown(value) : countdownText(value)}`;
+        }
       });
     }
     function pct(cached, input) {
@@ -121,6 +143,12 @@
       const observed = row?.updatedAt ? fmtTime(row.updatedAt) : 'time unknown';
       return `${stale} · ${source} · ${observed}`;
     }
+    function shortObservation(row, account) {
+      const label = row?.stale || account.stale ? 'Stale' : 'Observed';
+      const target = deadlineMs(row?.updatedAt);
+      const time = Number.isFinite(target) ? new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(target)) : '?';
+      return `${label} ${time}`;
+    }
     function windowUnits(row) {
       return Number.isFinite(row?.usedUnits) && Number.isFinite(row?.capacityUnits)
         ? `${fmtUnits(row.usedUnits)} / ${fmtUnits(row.capacityUnits)} units` : 'Weighted units unavailable';
@@ -129,22 +157,32 @@
       const differentSource = row?.source && row.source !== (account.source || account.weekly?.source);
       return account.stale || row?.stale || differentSource ? `<span class="pill window-stale" title="${esc(observationText(row, account))}">stale</span>` : '';
     }
-    function quotaTone(value, cap, color) {
-      return value !== null && Number.isFinite(cap) && cap > 0 && value >= Math.min(100, cap) ? 'var(--bad)' : color;
+    function balanceTone(value) {
+      if (value === null) return 'var(--muted)';
+      if (value >= 90) return 'var(--bad)';
+      if (value >= 70) return 'var(--warn)';
+      return 'var(--good)';
+    }
+    function quotaTone(value, cap) {
+      return value !== null && Number.isFinite(cap) && cap > 0 && value >= Math.min(100, cap) ? 'var(--bad)' : balanceTone(value);
+    }
+    function dailyTone(account) {
+      const consumed = dailyConsumed(account);
+      const limit = dailyLimit(account);
+      return account.dailyBudget?.status === 'reached' ? 'var(--bad)' : balanceTone(consumed === null || limit === null ? null : consumed / limit * 100);
     }
     function balanceRing(windowName, row, secondary = false, account = {}) {
       row = row || {};
       const used = windowPercent(row);
       const percent = used === null ? 'Usage unavailable' : `${used.toFixed(1)}% raw consumed`;
-      const color = secondary ? 'var(--c-5h)' : 'var(--c-week)';
       const cap = account.quotaLimits?.[secondary ? 'fiveHour' : 'weekly'];
-      const tone = quotaTone(used, cap, color);
+      const tone = quotaTone(used, cap);
       const extras = [windowUnits(row), secondary ? '' : paceVerdict(account)].filter(Boolean).join(' · ');
-      return `<div class="ring-wrap${secondary ? ' secondary' : ''}" style="--window-color:${color}" aria-label="${esc(windowName)}">
+      return `<div class="ring-wrap${secondary ? ' secondary' : ''}" style="--tone:${tone}" aria-label="${esc(windowName)}">
         <h4>${esc(secondary ? '5h' : 'Weekly')}</h4>
         <div class="usage-bar${used === null ? ' bar-unavailable' : ''}" style="--used:${used ?? 0}%;--tone:${tone}" aria-hidden="true"><span></span></div>
         <strong class="window-value" title="${esc(percent)}">${used === null ? '—' : `${Number(used.toFixed(1))}%`}</strong>
-        <span class="window-reset" title="${esc(resetTitle(row.resetAt))}" data-countdown-format="short" data-countdown="${esc(row.resetAt || '')}">${esc(shortCountdown(row.resetAt))}</span>
+        ${resetMarkup(row.resetAt, 'reset', 'window-reset')}
         <div class="window-extra">${esc(extras)} ${windowStaleBadge(row, account)}</div>
       </div>`;
     }
@@ -399,12 +437,12 @@
         const known = typeof ring.value === 'number' && Number.isFinite(ring.value) && ring.value >= 0;
         const value = known ? Math.min(100, ring.value) : null;
         const cap = Number.isFinite(ring.cap) && ring.cap > 0 ? Math.min(100, ring.cap) : null;
-        const tone = quotaTone(known ? ring.value : null, cap, ring.color);
+        const tone = ring.tone || quotaTone(known ? ring.value : null, cap);
         const start = point(radius - 5, cap);
         const end = point(radius + 5, cap);
         const pace = point(radius, ring.pace);
         return `<circle class="glyph-track${known ? '' : ' glyph-unknown'}" cx="50" cy="50" r="${radius}" fill="none" stroke="var(--control)" stroke-width="8"${known ? '' : ' stroke-dasharray="2 3"'}/>
-          ${known ? `<circle class="glyph-arc" cx="50" cy="50" r="${radius}" fill="none" stroke="${tone}" stroke-width="8" stroke-linecap="round" pathLength="100" stroke-dasharray="${value} 100" transform="rotate(-90 50 50)"/>` : ''}
+          ${known ? `<circle class="glyph-arc" style="color:${tone}" cx="50" cy="50" r="${radius}" fill="none" stroke="${tone}" stroke-width="8" stroke-linecap="round" pathLength="100" stroke-dasharray="${value} 100" transform="rotate(-90 50 50)"/>` : ''}
           ${cap !== null ? `<line class="glyph-stop" x1="${start[0]}" y1="${start[1]}" x2="${end[0]}" y2="${end[1]}" stroke="var(--text)" stroke-width="2"/>` : ''}
           ${Number.isFinite(ring.pace) ? `<circle class="glyph-pace" cx="${pace[0]}" cy="${pace[1]}" r="2.7" fill="var(--panel)" stroke="var(--text)" stroke-width="1.5"/>` : ''}`;
       }).join('');
@@ -417,14 +455,14 @@
       const daily = dailyLimit(account);
       const consumed = dailyConsumed(account);
       const label = (name, value, cap) => `${name} ${value === null ? 'usage unknown' : `${value}% used`}${cap != null ? `, stop at ${cap}%` : ''}${account.stale ? ', stale' : ''}`;
-      const rings = [{ key: 'weekly', value: weekly, cap: limits.weekly, pace: weeklyPace(account.weekly, account.stale), color: 'var(--c-week)', label: label('Weekly', weekly, limits.weekly) }];
-      if (daily !== null) rings.push({ key: 'today', value: consumed === null ? null : consumed / daily * 100, cap: 100, color: 'var(--c-day)', label: `today ${consumed === null ? 'unknown' : consumed} of ${daily} points` });
-      rings.push({ key: 'fiveHour', value: fiveHour, cap: limits.fiveHour, color: 'var(--c-5h)', label: label('5-hour', fiveHour, limits.fiveHour) });
+      const rings = [{ key: 'weekly', value: weekly, cap: limits.weekly, pace: weeklyPace(account.weekly, account.stale), label: label('Weekly', weekly, limits.weekly) }];
+      if (daily !== null) rings.push({ key: 'today', value: consumed === null ? null : consumed / daily * 100, cap: 100, tone: dailyTone(account), label: `today ${consumed === null ? 'unknown' : consumed} of ${daily} points` });
+      rings.push({ key: 'fiveHour', value: fiveHour, cap: limits.fiveHour, label: label('5-hour', fiveHour, limits.fiveHour) });
       return ringGlyph(rings, 112, weekly === null ? '—' : `${Math.round(weekly)}%`);
     }
     function meterWindow(label, name, row) {
       const used = windowPercent(row);
-      return `<span class="meter m-${name}">${label} ${used === null ? '?' : `${Math.round(used)}%`} <span title="${esc(resetTitle(row?.resetAt))}" data-countdown-format="short" data-countdown="${esc(row?.resetAt || '')}">${esc(shortCountdown(row?.resetAt))}</span></span>`;
+      return `<span class="meter m-${name}">${label} ${used === null ? '?' : `${Math.round(used)}%`} ${resetMarkup(row?.resetAt, 'clock')}</span>`;
     }
     function dailyWindow(account) {
       const limit = dailyLimit(account);
@@ -432,11 +470,11 @@
       const consumed = dailyConsumed(account);
       const end = account.dailyBudget?.sliceEnd;
       const ratio = consumed === null ? null : Math.min(100, consumed / limit * 100);
-      return `<div class="ring-wrap today-window" style="--window-color:var(--c-day)">
+      return `<div class="ring-wrap today-window" style="--tone:${dailyTone(account)}">
         <h4>Today</h4>
-        <div class="usage-bar${ratio === null ? ' bar-unavailable' : ''}" style="--used:${ratio ?? 0}%;--tone:${account.dailyBudget?.status === 'reached' ? 'var(--bad)' : 'var(--c-day)'}" aria-hidden="true"><span></span></div>
+        <div class="usage-bar${ratio === null ? ' bar-unavailable' : ''}" style="--used:${ratio ?? 0}%;--tone:${dailyTone(account)}" aria-hidden="true"><span></span></div>
         <strong class="window-value" title="Weekly percentage points consumed in this daily slice">${consumed === null ? '?' : consumed.toFixed(1)}/${limit} pts</strong>
-        <span class="window-reset" title="${esc(resetTitle(end))}" data-countdown-format="short" data-countdown="${esc(end || '')}">${esc(shortCountdown(end))}</span>
+        ${resetMarkup(end, 'slice', 'window-reset')}
         <div class="window-extra">slice resets <span data-countdown-format="short" data-countdown="${esc(end || '')}">${esc(shortCountdown(end))}</span>${account.dailyBudget?.status === 'reached' ? ' <span class="pill warn">reached</span>' : ''}</div>
       </div>`;
     }
@@ -462,7 +500,7 @@
       const nextReset = name => cards.filter(account => deadlineMs(account[name]?.resetAt) > Date.now()).sort((a, b) => deadlineMs(a[name].resetAt) - deadlineMs(b[name].resetAt))[0];
       const next = nextReset('fiveHour');
       const week = nextReset('weekly');
-      const reset = (account, name) => account ? `<span title="${esc(resetTitle(account[name].resetAt))}" data-countdown-format="short" data-countdown="${esc(account[name].resetAt)}">${esc(shortCountdown(account[name].resetAt))}</span> <span class="reset-account">…${esc(account.accountKey.slice(-4))}</span>` : 'unknown';
+      const reset = (account, name) => account ? `${resetMarkup(account[name].resetAt)} <span class="reset-account">…${esc(account.accountKey.slice(-4))}</span>` : 'unknown';
       stableHTML(glanceEl, `<div class="glance-tile tile-credits"><div class="tile-label"><span class="label-wide">Resets available</span><span class="label-compact">Resets</span></div><div class="tile-value">${fleetKnown ? `${total}${unknown ? '+' : ''}` : '?'}</div><div class="tile-detail">${unknown ? 'some accounts unknown' : total === 0 ? 'None banked' : 'Banked reset credits'}</div><div class="credit-links">${chips}</div></div>
         <div class="glance-tile tile-routing"><div class="tile-label">Routing</div><div class="tile-value">${fleetKnown ? `${routing}/${cards.length}` : '?'}</div><div class="tile-detail">${health.filter(row => row.status === 'paused').length} paused · ${health.filter(row => row.status === 'disabled').length} disabled</div></div>
         <div class="glance-tile tile-next"><div class="tile-label">Next reset</div><div class="tile-value"><span class="reset-kind">5h</span> ${reset(next, 'fiveHour')}</div><div class="tile-detail"><span class="reset-kind">week</span> ${reset(week, 'weekly')}</div></div>`);
@@ -564,7 +602,7 @@
             ${balanceRing('Five-hour usage', account.fiveHour, true, account)}
           </div>
           <details class="account-controls" data-account-key="${esc(accountCardKey(account))}">
-            <summary><span class="controls-label">Limits &amp; controls</span><span class="observation" title="${esc(observationText(account.weekly, account))}">${esc(observationText(account.weekly, account))}</span><span class="detail-source">${sourceBadge(account)}</span></summary>
+            <summary><span class="controls-label">Limits &amp; controls</span><span class="observation" title="${esc(observationText(account.weekly, account))}">${esc(shortObservation(account.weekly, account))}</span><span class="detail-source">${sourceBadge(account)}</span></summary>
             <div class="control-fields">
               ${quotaLimit(account, 'weekly', 'Weekly usage')}
               ${quotaLimit(account, 'fiveHour', 'Five-hour usage')}

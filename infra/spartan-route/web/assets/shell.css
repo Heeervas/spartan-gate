@@ -1,13 +1,13 @@
 /* Operator workspace: persistent desktop rail, compact mobile navigation.
    Electric instrument-panel treatment; geometry and state colors stay independent. */
 :root {
-  --signal: var(--c-week); --on-signal: #fff;
+  --signal: var(--good); --on-signal: #fff;
   --ink: var(--text); --on-ink: var(--panel); --ink-muted: var(--muted);
   --texture: var(--grid-line);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --signal: var(--c-week); --on-signal: #0b1b17; --texture: var(--grid-line);
+    --signal: var(--good); --on-signal: #0b1b17; --texture: var(--grid-line);
   }
 }
 body {
@@ -59,6 +59,15 @@ header nav a[aria-current="page"] { font-weight: 800; color: var(--on-signal); b
   header nav a[aria-current="page"] { border-left-color: var(--accent); }
   header nav a[aria-current="page"]::after { display: none; }
   main.wrap { width: calc(100% - 80px); max-width: 1600px; padding-top: 40px; }
+}
+/* Query widths stay viewport-based; zoom scales the rail and all three pages together. */
+@media (min-width: 1800px) {
+  body { zoom: 1.15; }
+  main.wrap { max-width: 1800px; }
+}
+@media (min-width: 2300px) {
+  body { zoom: 1.3; }
+  main.wrap { max-width: 2100px; }
 }
 @media (max-width: 900px) {
   .wrap { width: calc(100% - 32px); }

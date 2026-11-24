@@ -5,7 +5,7 @@ window.SpartanRouteLive = (() => {
   const metric = (label, value, detail) => `<div class="metric" title="${detail}"><div class="muted">${label}</div><div class="value">${value}</div><div class="muted">${detail}</div></div>`;
   function cacheRing(value) {
     const known = typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100;
-    return `<svg class="ring-glyph" viewBox="0 0 100 100" width="42" height="42" role="img" aria-label="Cache reuse ${known ? ratio(value) : 'unknown'}"><circle class="glyph-track${known ? '' : ' glyph-unknown'}" cx="50" cy="50" r="44" fill="none" stroke="var(--control)" stroke-width="8"${known ? '' : ' stroke-dasharray="2 3"'}/>${known ? `<circle class="glyph-arc" cx="50" cy="50" r="44" fill="none" stroke="var(--c-week)" stroke-width="8" stroke-linecap="round" pathLength="100" stroke-dasharray="${value} 100" transform="rotate(-90 50 50)"/>` : ''}</svg>`;
+    return `<svg class="ring-glyph" viewBox="0 0 100 100" width="42" height="42" role="img" aria-label="Cache reuse ${known ? ratio(value) : 'unknown'}"><circle class="glyph-track${known ? '' : ' glyph-unknown'}" cx="50" cy="50" r="44" fill="none" stroke="var(--control)" stroke-width="8"${known ? '' : ' stroke-dasharray="2 3"'}/>${known ? `<circle class="glyph-arc" cx="50" cy="50" r="44" fill="none" stroke="var(--good)" stroke-width="8" stroke-linecap="round" pathLength="100" stroke-dasharray="${value} 100" transform="rotate(-90 50 50)"/>` : ''}</svg>`;
   }
   function clear(metrics, status) {
     metrics.replaceChildren();
