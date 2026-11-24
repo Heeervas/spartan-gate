@@ -55,6 +55,12 @@ A newly confirmed P0/P1 interrupts this order. No completed-work log here.
   deployed-asset/browser readback. [Task](../tasks/route-dashboard-speed/task.md).
   Preserve candidate/rollback and the recorded `quiet_window_observed:false`;
   no fresh service action or interruption is implied.
+- **HOST-002** — NVMe media error (one sector, since 2026-10-31) leaves Spartan
+  Route database page 48069 unreadable: `routing_log`, its session index and
+  Codex usage history are damaged, and an online backup is impossible. Optional
+  telemetry stays disabled and repair is deferred by Alberto (2026-11-24). Next:
+  `sudo nvme smart-log` and a btrfs scrub, then decide drive replacement and a
+  stopped-service copy of readable rows. [Discovery](../tasks/archive/2026/route-dashboard-r6/task.md).
 
 ## Backlog
 
